@@ -16,14 +16,13 @@ local HttpService = game:GetService("HttpService")
 -- =========================
 -- EPIC CONFIG (END-GAME RARITY)
 -- =========================
--- EXACT PROBABILITIES (Total = 100)
--- Sadie (80%), Sirene (18%), Vortex (2%)
 local CAR_WEIGHTS = {Sadie = 80, Sirene = 18, Vortex = 2}
-local ALWAYS_STOCK = {} -- DISABLED: Nothing is guaranteed
+local ALWAYS_STOCK = {}
 
-local RESTOCK_INTERVAL = 14400 -- 4 Hours (14,400 seconds)
-local PURCHASE_COOLDOWN = 1.0 -- Cooldown to prevent spam
-local MAX_STOCK = 1 -- Only 1 available per restock
+local RESTOCK_INTERVAL = 14400 -- 4 Hours
+local PURCHASE_COOLDOWN = 1.0
+local MAX_STOCK = 1
+local MAX_INTERACTION_DISTANCE = 20 -- Max studs from RayW to interact/buy
 
 -- =========================
 -- MODULES
@@ -54,8 +53,7 @@ local RemoteOpen = getRemote("OpenEpicShop", "RemoteEvent")
 local RemoteUpdate = getRemote("EpicShopUpdate", "RemoteEvent")          
 local FuncGetState = getRemote("GetEpicShopState", "RemoteFunction")     
 local FuncBuyCar = getRemote("BuyEpicCar", "RemoteFunction")        
-
-local MAX_INTERACTION_DISTANCE = 20 -- Max studs from RayW to interact/buy
+local RayWFeedback = getRemote("RayWPurchaseFeedback", "RemoteEvent") -- ✅ FIX: Created at startup
 
 -- =========================
 -- BINDABLES (ISOLATED)
@@ -119,7 +117,7 @@ local function safeInvoke(bindable, timeout, ...)
 end
 
 -- =========================
--- SHOP LOGIC (STRICT 1 CAR, 1 STOCK)
+-- SHOP LOGIC
 -- =========================
 local function getGlobalSeedID()
 	return math.floor(os.time() / RESTOCK_INTERVAL)
@@ -129,7 +127,6 @@ local function generateStockConfiguration(seedValue)
 	local rng = Random.new(seedValue)
 	local featuredFlags = {}
 	local stockLimits = {}
-
 	local poolKeys = {}
 	local poolWeights = {}
 	local totalWeight = 0
@@ -144,7 +141,6 @@ local function generateStockConfiguration(seedValue)
 		return { Featured = featuredFlags, Limits = stockLimits }
 	end
 
-	-- Pick EXACTLY 1 car based on weights
 	local roll = rng:NextInteger(1, totalWeight)
 	local current = 0
 	local picked = nil
@@ -156,10 +152,9 @@ local function generateStockConfiguration(seedValue)
 		end
 	end
 
-	-- Apply the strict limits
 	if picked then
 		featuredFlags[picked] = true
-		stockLimits[picked] = MAX_STOCK -- Set to exactly 1
+		stockLimits[picked] = MAX_STOCK
 	end
 
 	return { Featured = featuredFlags, Limits = stockLimits }
@@ -287,15 +282,31 @@ FuncGetState.OnServerInvoke = function(player)
 end
 
 RemoteOpen.OnServerEvent:Connect(function(player)
-	local session = getSession(player)
-	pushUpdate(player, session, "Open")
+	-- ✅ FIX: Added Anti-Exploit proximity check for opening UI
+	local char = player.Character
+	if not char or not char.PrimaryPart then return end
+
+	local npcs = workspace:FindFirstChild("NPCS")
+	local rayw = npcs and npcs:FindFirstChild("RayW")
+	if not rayw then return end
+
+	local raywRoot = rayw:FindFirstChild("HumanoidRootPart")
+	if not raywRoot then return end
+
+	local distance = (char.PrimaryPart.Position - raywRoot.Position).Magnitude
+	if distance <= MAX_INTERACTION_DISTANCE then
+		local session = getSession(player)
+		pushUpdate(player, session, "Open")
+		RemoteOpen:FireClient(player)
+	else
+		warn(string.format("🛡️ [Security] %s attempted to open Epic Shop from %d studs away.", player.Name, math.floor(distance)))
+	end
 end)
 
 FuncBuyCar.OnServerInvoke = function(player, carName)
 	if typeof(carName) ~= "string" then return false, "Invalid Car" end
 	if not player or not player.Parent then return false, "Player missing" end
 
-	-- 🛡️ SECURITY: PROXIMITY CHECK (PREVENT REMOTE EXPLOIT BUYING)
 	local char = player.Character
 	if not char or not char.PrimaryPart then return false, "Character missing" end
 
@@ -310,9 +321,7 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		warn(string.format("🛡️ [Security] %s attempted to BUY from %d studs away.", player.Name, math.floor(distance)))
 		return false, "Too far away!"
 	end
-	-- 🛡️ END SECURITY CHECK
 
-	-- SECURITY: Ensure the car requested is actually part of the Epic pool
 	if not CAR_WEIGHTS[carName] and not ALWAYS_STOCK[carName] then
 		return false, "Invalid Epic Car"
 	end
@@ -365,7 +374,6 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
 
-		-- 📣 NEW: TELL RAYW'S CLIENT SCRIPT ABOUT THE PURCHASE
 		local feedbackRemote = getRemote("RayWPurchaseFeedback", "RemoteEvent")
 		feedbackRemote:FireClient(player, carName)
 
@@ -388,7 +396,7 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 end
 
 -- =========================
--- REROLL
+-- REROLL & ROTATION
 -- =========================
 function RerollBindable.OnInvoke(player)
 	if not player or not player.Parent then return false end
@@ -400,9 +408,6 @@ function RerollBindable.OnInvoke(player)
 	return true
 end
 
--- =========================
--- ROTATION LOOP
--- =========================
 task.spawn(function()
 	local lastGlobalID = getGlobalSeedID()
 	while true do
