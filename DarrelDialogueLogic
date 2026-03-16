@@ -1,12 +1,7 @@
--- Purpose: Handles Dialogue Logic and UI for Darrel NPC (Uncommon Shop).
+-- Purpose: Handles Dialogue Logic and UI for Darrel NPC (Uncommon Shop) with Cash & Robux Purchase Reactions.
 -- Runs on: Client
 -- Location: StarterPlayerScripts > DarrelDialogueLogic
--- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
--- Public API: None
--- Networking: Fires 'OpenUncommonShop' RemoteEvent to the server
--- Security: Validates local character state before locking movement. Disconnects memory leaks.
--- Performance: Event-driven. Camera overhead removed.
--- Notes: Safely hides other UI using ScreenGui.Enabled=false (Angelo Logic) to protect Inventory state.
+-- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage, CarStats
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
@@ -15,15 +10,24 @@ local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+local leaderstats = player:WaitForChild("leaderstats", 10)
+local walletValue = leaderstats and leaderstats:WaitForChild("Wallet", 10)
 
 -- 📡 NETWORKING
 local remotes = ReplicatedStorage:WaitForChild("ShopRemotes")
 local openUncommonRemote = remotes:WaitForChild("OpenUncommonShop")
+local purchaseFeedbackRemote = remotes:WaitForChild("DarrelPurchaseFeedback")
 
 -- 🎨 COLOR CONFIGURATION
 local USER_COLOR = "#55AAFF"
+local UNCOMMON_COLOR = "#00FF7F"
+local MONEY_COLOR = "#55FF7F" 
+local CPS_COLOR = "#FFD700" 
+local ROBUX_COLOR = "#FFD700" -- Gold color for Robux text
 
 -- 🆔 UNIQUE IDENTIFIERS
 local GUI_ID = "UI_NPC_Darrel" 
@@ -40,6 +44,8 @@ local PROMPT_NAME = "TalkPrompt"
 
 -- 🎥 SETTINGS
 local TYPEWRITER_SPEED = 0.02
+local DIALOGUE_PAUSE = 1
+local REACTION_PAUSE = 3.0 -- Slightly longer wait for Robux thanks
 
 -- ✨ ANIMATION SETTINGS
 local HOVER_SCALE = 1.1 
@@ -52,7 +58,52 @@ local HOVER_SOUND_ID = "rbxassetid://6895079853"
 local CLICK_SOUND_ID = "rbxassetid://9083627113" 
 
 -- ============================================================================
--- 🛠️ STATE VARIABLES
+-- 📊 FORMATTING HELPER
+-- ============================================================================
+local SUFFIXES = {"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"}
+
+local function formatMoney(n)
+	n = tonumber(n) or 0
+	if n < 1000 then return tostring(math.floor(n)) .. "$" end
+	local i = math.floor(math.log(n, 1000))
+	local v = math.pow(1000, i)
+	local suffix = SUFFIXES[i] or "?"
+	return string.format("%.2f%s$", n / v, suffix)
+end
+
+-- 💬 DIALOGUE POOLS
+local DIALOGUE_POOLS = {
+	Greetings = {
+		"Hello there {player}, welcome to my shop. Wanna buy?",
+		"Ah, {player}! I see you've got <font color='"..MONEY_COLOR.."'><b>{money}</b></font> in that Wallet. Ready to boost your Garage?",
+		"Step right up, {player}. Let's put that <font color='"..MONEY_COLOR.."'><b>Money</b></font> to good use on your Tycoon.",
+		"Welcome back! Those cars on your plot must be printing cash. Let's get you an upgrade.",
+		"Greetings! The <font color='"..UNCOMMON_COLOR.."'><b>Uncommon</b></font> shop is open, {player}."
+	},
+	Buy = {
+		"Okay here you go, {player}.",
+		"Let's take a look at the stock...",
+		"Good eye. Let's see what we have available."
+	},
+	Leave = {
+		"Alright, see you around.",
+		"Keep placing those cars on your pads, {player}!",
+		"Catch you later. Come back when you need more CPS."
+	},
+	Reactions = { -- IN-GAME CASH REACTIONS
+		"A wise investment, {player}. Place that <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> on a pad and watch it print <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>!",
+		"The <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font>? Oh yeah, that's gonna look incredible on your plot. Plus, it generates <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>.",
+		"Pleasure doing business. I can't wait to see the <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> sitting in your garage making <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>."
+	},
+	RobuxReactions = { -- NEW: ROBUX SPECIFIC REACTIONS
+		"Whoa, paying with <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>? Thanks, {player}! That <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> is worth every penny.",
+		"Ah, a high roller! Thanks for the <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>, {player}. Enjoy your new <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> making <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>!",
+		"Using <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>, I see? I really appreciate the support, {player}. Get that <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> on a pad ASAP!"
+	}
+}
+
+-- ============================================================================
+-- 🛠️ STATE VARIABLES & UI HIDING
 -- ============================================================================
 local isInteracting = false
 local currentDialogueJob = nil 
@@ -66,22 +117,15 @@ local function getControls()
 	return require(PlayerModule):GetControls()
 end
 
--- ============================================================================
--- 🔍 EXACT ANGELO UI HIDING LOGIC
--- ============================================================================
 local function getUIElements()
 	local myGui = playerGui:FindFirstChild(GUI_ID)
 	if not myGui then return nil end
-
 	local container = myGui:FindFirstChild(CONTAINER_ID)
 	if not container then return myGui, nil end
-
 	local textLabel = container:FindFirstChild(TEXT_ID)
 	local buttonsFrame = container:FindFirstChild(BUTTONS_FRAME_ID)
-
 	local buyBtn = buttonsFrame and buttonsFrame:FindFirstChild(BTN_BUY_ID)
 	local leaveBtn = buttonsFrame and buttonsFrame:FindFirstChild(BTN_LEAVE_ID)
-
 	return myGui, container, textLabel, buttonsFrame, buyBtn, leaveBtn
 end
 
@@ -95,9 +139,7 @@ local function toggleNamedGuiObjects(shouldHide, objectName)
 		end
 	else
 		for _, obj in pairs(hiddenObjects) do
-			if obj and obj.Parent and obj:IsA("GuiObject") then
-				obj.Visible = true
-			end
+			if obj and obj.Parent and obj:IsA("GuiObject") then obj.Visible = true end
 		end
 		hiddenObjects = {}
 	end
@@ -107,20 +149,14 @@ local function toggleOtherGuis(shouldHide)
 	if shouldHide then
 		hiddenGuis = {}
 		for _, otherGui in pairs(playerGui:GetChildren()) do
-			if otherGui:IsA("ScreenGui")
-				and otherGui.Name ~= GUI_ID
-				and otherGui.Enabled == true
-				and otherGui.Name ~= "Balance Indicator" then
-
+			if otherGui:IsA("ScreenGui") and otherGui.Name ~= GUI_ID and otherGui.Enabled == true and otherGui.Name ~= "Balance Indicator" then
 				otherGui.Enabled = false
 				table.insert(hiddenGuis, otherGui)
 			end
 		end
 	else
 		for _, otherGui in pairs(hiddenGuis) do
-			if otherGui and otherGui.Parent then
-				otherGui.Enabled = true
-			end
+			if otherGui and otherGui.Parent then otherGui.Enabled = true end
 		end
 		hiddenGuis = {}
 	end
@@ -136,31 +172,20 @@ end
 -- ============================================================================
 local function setButtonsState(isActive)
 	local _, _, _, _, buyBtn, leaveBtn = getUIElements()
-
-	if buyBtn then
-		buyBtn.Visible = isActive 
-		buyBtn.Active = isActive  
-	end
-	if leaveBtn then
-		leaveBtn.Visible = isActive 
-		leaveBtn.Active = isActive  
-	end
+	if buyBtn then buyBtn.Visible = isActive; buyBtn.Active = isActive end
+	if leaveBtn then leaveBtn.Visible = isActive; leaveBtn.Active = isActive end
 end
 
 local function clearConnections()
 	for _, conn in pairs(buttonConnections) do if conn then conn:Disconnect() end end
 	buttonConnections = {}
-
 	for _, conn in pairs(buttonHoverConnections) do if conn then conn:Disconnect() end end
 	buttonHoverConnections = {}
 end
 
 local function playSound(id, vol)
 	local s = Instance.new("Sound")
-	s.SoundId = id
-	s.Volume = vol or 0.5
-	s.Parent = SoundService
-	s:Play()
+	s.SoundId = id; s.Volume = vol or 0.5; s.Parent = SoundService; s:Play()
 	game.Debris:AddItem(s, 1)
 end
 
@@ -168,10 +193,7 @@ local function typewrite(label, text, onComplete)
 	if not label then return end
 	label.RichText = true
 
-	if currentDialogueJob then 
-		task.cancel(currentDialogueJob) 
-		currentDialogueJob = nil 
-	end
+	if currentDialogueJob then task.cancel(currentDialogueJob); currentDialogueJob = nil end
 
 	label.Text = text
 	label.MaxVisibleGraphemes = 0
@@ -185,20 +207,35 @@ local function typewrite(label, text, onComplete)
 			label.MaxVisibleGraphemes = i
 			if i % 3 == 0 then 
 				local s = Instance.new("Sound", SoundService)
-				s.SoundId = TYPING_SOUND_ID
-				s.Volume = 0.1
-				s.PlayOnRemove = true
-				s:Destroy()
+				s.SoundId = TYPING_SOUND_ID; s.Volume = 0.1; s.PlayOnRemove = true; s:Destroy()
 			end
 			task.wait(TYPEWRITER_SPEED)
 		end
 		label.MaxVisibleGraphemes = -1 
 		currentDialogueJob = nil
-
-		if onComplete and isInteracting then
-			task.spawn(onComplete)
-		end
+		if onComplete and isInteracting then task.spawn(onComplete) end
 	end)
+end
+
+local function getRandomDialogue(poolKey, optionalCarId, optionalCPS)
+	local pool = DIALOGUE_POOLS[poolKey]
+	if not pool or #pool == 0 then return "..." end
+
+	local rawText = pool[math.random(1, #pool)]
+	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+	rawText = string.gsub(rawText, "{player}", coloredName)
+
+	if string.find(rawText, "{money}") then
+		local currentCash = walletValue and walletValue.Value or 0
+		rawText = string.gsub(rawText, "{money}", formatMoney(currentCash))
+	end
+
+	if optionalCarId and optionalCPS then
+		rawText = string.gsub(rawText, "{carName}", optionalCarId)
+		rawText = string.gsub(rawText, "{cps}", tostring(optionalCPS))
+	end
+
+	return rawText
 end
 
 local function stopInteraction()
@@ -207,8 +244,6 @@ local function stopInteraction()
 
 	if currentDialogueJob then task.cancel(currentDialogueJob) end
 	clearConnections() 
-
-	-- Restores the UI using exact Angelo logic
 	setFocusMode(false)
 
 	local controls = getControls()
@@ -264,12 +299,10 @@ local function animateButton(btn)
 end
 
 local function startInteraction(npcModel)
-	print("💬 [DarrelLogic] Starting interaction...")
 	if isInteracting then return end
 	isInteracting = true
 	clearConnections() 
 
-	-- Lock Movement, Anchor & Hide UI using Angelo's logic
 	local controls = getControls()
 	if controls then controls:Disable() end
 	setFocusMode(true)
@@ -279,7 +312,6 @@ local function startInteraction(npcModel)
 		local humanoid = player.Character:FindFirstChild("Humanoid")
 		if humanoid then 
 			humanoid.WalkSpeed = 0 
-
 			local deathConn
 			deathConn = humanoid.Died:Connect(function()
 				if deathConn then deathConn:Disconnect() end
@@ -290,30 +322,17 @@ local function startInteraction(npcModel)
 		if hrp then hrp.Velocity = Vector3.zero; hrp.Anchored = true end
 	end
 
-	-- UI Setup
 	local myGui = playerGui:WaitForChild(GUI_ID, 5)
-	if not myGui then 
-		warn("⚠️ UI not found! Checked for: " .. GUI_ID)
-		stopInteraction() 
-		return 
-	end
+	if not myGui then return end
 
 	local _, container, dialogueLabel, buttonsFrame, buyBtn, leaveBtn = getUIElements()
-
-	if not container or not dialogueLabel or not buttonsFrame then
-		warn("⚠️ UI Hierarchy mismatch inside Frame_Darrel_Container!")
-		stopInteraction()
-		return
-	end
-
 	myGui.Enabled = true
 	container.Visible = true
 	setButtonsState(false)
 
-	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
-	local greeting = "Hello there " .. coloredName .. ", welcome to my shop. Wanna buy?"
-
+	local greeting = getRandomDialogue("Greetings")
 	typewrite(dialogueLabel, greeting, function()
+		task.wait(DIALOGUE_PAUSE) 
 		setButtonsState(true)
 	end)
 
@@ -328,26 +347,56 @@ local function startInteraction(npcModel)
 		end
 	end
 
-	-- 🔘 BUY CARS (UPDATED WITH TRANSITION)
 	setupBtn(buyBtn, function()
 		setButtonsState(false) 
-		local responseText = "Okay here you go " .. coloredName .. "."
-
+		local responseText = getRandomDialogue("Buy")
 		typewrite(dialogueLabel, responseText, function()
-			task.wait(0.6) 
+			task.wait(DIALOGUE_PAUSE) 
 			stopInteraction()
 			openUncommonRemote:FireServer() 
 		end)
 	end)
 
-	-- 🔘 LEAVE
 	setupBtn(leaveBtn, function()
 		setButtonsState(false)
-		typewrite(dialogueLabel, "Alright, see you around.")
-		task.wait(1.2)
-		stopInteraction()
+		local responseText = getRandomDialogue("Leave")
+		typewrite(dialogueLabel, responseText, function()
+			task.wait(DIALOGUE_PAUSE)
+			stopInteraction()
+		end)
 	end)
 end
+
+-- ============================================================================
+-- 📣 POST-PURCHASE REACTION EVENT LOGIC
+-- ============================================================================
+-- Notice the new 'isRobux' parameter below:
+purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux)
+	local carData = CarStats.Cars[carId]
+	if not carData then return end
+
+	if isInteracting then stopInteraction() end
+
+	print("💬 [DarrelLogic] Triggering Post-Purchase Reaction. Car: " .. carId .. " | Robux: " .. tostring(isRobux))
+	isInteracting = true
+	setFocusMode(true)
+
+	local myGui, container, dialogueLabel = getUIElements()
+	if myGui and container and dialogueLabel then
+		myGui.Enabled = true
+		container.Visible = true
+		setButtonsState(false) 
+
+		-- Dynamically pick the right dialogue pool
+		local poolToUse = isRobux and "RobuxReactions" or "Reactions"
+		local reactionText = getRandomDialogue(poolToUse, carId, carData.CPS)
+
+		typewrite(dialogueLabel, reactionText, function()
+			task.wait(REACTION_PAUSE) 
+			stopInteraction() 
+		end)
+	end
+end)
 
 -- ============================================================================
 -- 🚀 DYNAMIC NPC SETUP
@@ -358,30 +407,19 @@ local function attachPrompt(npc)
 		local prompt = hrp:WaitForChild(PROMPT_NAME, math.huge)
 
 		prompt.Triggered:Connect(function()
-			print("🔘 [DarrelLogic] ProximityPrompt Triggered!")
 			startInteraction(npc)
 		end)
-		print("✅ [DarrelLogic] Successfully connected to Darrel's ProximityPrompt!")
 	end)
 end
 
 local function setupNPC()
 	local folder = Workspace:WaitForChild(NPC_FOLDER, math.huge)
-
-	-- Connect if Darrel is already there
 	local existingNPC = folder:FindFirstChild(TARGET_NPC)
-	if existingNPC then
-		attachPrompt(existingNPC)
-	end
+	if existingNPC then attachPrompt(existingNPC) end
 
-	-- Connect if Darrel spawns later
 	folder.ChildAdded:Connect(function(child)
-		if child.Name == TARGET_NPC then
-			print("🌒 [DarrelLogic] Darrel spawned dynamically. Connecting...")
-			attachPrompt(child)
-		end
+		if child.Name == TARGET_NPC then attachPrompt(child) end
 	end)
 end
 
-print("⏳ [DarrelLogic] Script started. Waiting for Darrel...")
 setupNPC()
