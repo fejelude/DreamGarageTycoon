@@ -3,7 +3,7 @@
 -- Location: ServerScriptService > ReceiptRouter
 -- Dependencies: MarketplaceService, DataStoreService, Players, Workspace, ServerStorage, ReplicatedStorage, HttpService
 -- Public API: N/A
--- Networking: Listens to ProcessReceipt. Fires 'NotifyGiftReceived' to clients when gifted.
+-- Networking: Listens to ProcessReceipt. Fires 'NotifyGiftReceived' to clients when gifted. Alerts Darrel on Uncommon Robux purchases.
 -- Security: Verifies target doesn't already own the item before granting to prevent wasted Robux via exploits.
 -- Performance: Uses caching and pcalls for DataStore resilience.
 -- Notes: Updated to support UNCOMMON, RARE, and EPIC SHOP tier purchases and rerolls.
@@ -309,6 +309,14 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 				if invokeOk and giveResult == true then
 					purchaseSuccess = true
+
+					-- 📣 NEW: TELL DARREL A ROBUX PURCHASE HAPPENED
+					local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
+					local feedbackRemote = ShopRemotes and ShopRemotes:FindFirstChild("DarrelPurchaseFeedback")
+					if feedbackRemote then
+						-- The "true" marks this as a Robux purchase for special dialogue
+						feedbackRemote:FireClient(targetPlayer, carName, true) 
+					end
 				end
 			end
 		else
