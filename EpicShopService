@@ -3,7 +3,7 @@
 -- Location: ServerScriptService > EpicShopService
 -- Dependencies: ReplicatedStorage.CarStats, ServerStorage.TycoonAdminAPI
 -- Public API: None (Event/Bindable driven)
--- Networking: OpenEpicShop, EpicShopUpdate, GetEpicShopState, BuyEpicCar
+-- Networking: OpenEpicShop, EpicShopUpdate, GetEpicShopState, BuyEpicCar, RayWPurchaseFeedback
 -- Security: Server authority on cash, strict 1-stock limits, debounce locks, and pool validation.
 -- Performance: Deterministic global rotation (no heavy per-player RNG loops). O(1) weight resolution.
 -- Notes: Fully isolated from Common/Uncommon/Rare shops to prevent DataStore and timer overlaps.
@@ -54,6 +54,8 @@ local RemoteOpen = getRemote("OpenEpicShop", "RemoteEvent")
 local RemoteUpdate = getRemote("EpicShopUpdate", "RemoteEvent")          
 local FuncGetState = getRemote("GetEpicShopState", "RemoteFunction")     
 local FuncBuyCar = getRemote("BuyEpicCar", "RemoteFunction")        
+
+local MAX_INTERACTION_DISTANCE = 20 -- Max studs from RayW to interact/buy
 
 -- =========================
 -- BINDABLES (ISOLATED)
@@ -293,6 +295,23 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 	if typeof(carName) ~= "string" then return false, "Invalid Car" end
 	if not player or not player.Parent then return false, "Player missing" end
 
+	-- 🛡️ SECURITY: PROXIMITY CHECK (PREVENT REMOTE EXPLOIT BUYING)
+	local char = player.Character
+	if not char or not char.PrimaryPart then return false, "Character missing" end
+
+	local npcs = workspace:FindFirstChild("NPCS")
+	local rayw = npcs and npcs:FindFirstChild("RayW")
+	local raywRoot = rayw and rayw:FindFirstChild("HumanoidRootPart")
+
+	if not raywRoot then return false, "NPC missing" end
+
+	local distance = (char.PrimaryPart.Position - raywRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then
+		warn(string.format("🛡️ [Security] %s attempted to BUY from %d studs away.", player.Name, math.floor(distance)))
+		return false, "Too far away!"
+	end
+	-- 🛡️ END SECURITY CHECK
+
 	-- SECURITY: Ensure the car requested is actually part of the Epic pool
 	if not CAR_WEIGHTS[carName] and not ALWAYS_STOCK[carName] then
 		return false, "Invalid Epic Car"
@@ -345,6 +364,10 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 
 		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
+
+		-- 📣 NEW: TELL RAYW'S CLIENT SCRIPT ABOUT THE PURCHASE
+		local feedbackRemote = getRemote("RayWPurchaseFeedback", "RemoteEvent")
+		feedbackRemote:FireClient(player, carName)
 
 		task.spawn(function()
 			safeInvoke(TycoonAdminAPI, 2, "MarkDirty", player)
