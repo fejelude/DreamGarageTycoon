@@ -3,7 +3,7 @@
 -- Location: ServerScriptService > RareShopService
 -- Dependencies: ReplicatedStorage.CarStats, ServerStorage.TycoonAdminAPI
 -- Public API: None (Event/Bindable driven)
--- Networking: OpenRareShop, RareShopUpdate, GetRareShopState, BuyRareCar
+-- Networking: OpenRareShop, RareShopUpdate, GetRareShopState, BuyRareCar, JacobPurchaseFeedback
 -- Security: Server authority on cash, strict 1-stock limits, debounce locks, and pool validation.
 -- Performance: Deterministic global rotation (no heavy per-player RNG loops). O(1) weight resolution.
 -- Notes: Fully isolated from Common/Uncommon shops to prevent DataStore and timer overlaps.
@@ -54,6 +54,8 @@ local RemoteOpen = getRemote("OpenRareShop", "RemoteEvent")
 local RemoteUpdate = getRemote("RareShopUpdate", "RemoteEvent")          
 local FuncGetState = getRemote("GetRareShopState", "RemoteFunction")     
 local FuncBuyCar = getRemote("BuyRareCar", "RemoteFunction")        
+
+local MAX_INTERACTION_DISTANCE = 20 -- Max studs from Jacob to interact/buy
 
 -- =========================
 -- BINDABLES (ISOLATED)
@@ -293,6 +295,23 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 	if typeof(carName) ~= "string" then return false, "Invalid Car" end
 	if not player or not player.Parent then return false, "Player missing" end
 
+	-- 🛡️ SECURITY: PROXIMITY CHECK (PREVENT REMOTE EXPLOIT BUYING)
+	local char = player.Character
+	if not char or not char.PrimaryPart then return false, "Character missing" end
+
+	local npcs = workspace:FindFirstChild("NPCS")
+	local jacob = npcs and npcs:FindFirstChild("Jacob")
+	local jacobRoot = jacob and jacob:FindFirstChild("HumanoidRootPart")
+
+	if not jacobRoot then return false, "NPC missing" end
+
+	local distance = (char.PrimaryPart.Position - jacobRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then
+		warn(string.format("🛡️ [Security] %s attempted to BUY from %d studs away.", player.Name, math.floor(distance)))
+		return false, "Too far away!"
+	end
+	-- 🛡️ END SECURITY CHECK
+
 	-- SECURITY: Ensure the car requested is actually part of the Rare pool
 	if not CAR_WEIGHTS[carName] and not ALWAYS_STOCK[carName] then
 		return false, "Invalid Rare Car"
@@ -345,6 +364,10 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 
 		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
+
+		-- 📣 NEW: TELL JACOB'S CLIENT SCRIPT ABOUT THE PURCHASE
+		local feedbackRemote = getRemote("JacobPurchaseFeedback", "RemoteEvent")
+		feedbackRemote:FireClient(player, carName)
 
 		task.spawn(function()
 			safeInvoke(TycoonAdminAPI, 2, "MarkDirty", player)
