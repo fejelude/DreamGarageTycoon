@@ -3,7 +3,7 @@
 -- Location: ServerScriptService > UncommonShopService
 -- Dependencies: ReplicatedStorage.CarStats, ServerStorage.TycoonAdminAPI, ServerStorage.CarTools
 -- Public API: None (Event/Bindable driven)
--- Networking: OpenUncommonShop, UncommonShopUpdate, GetUncommonShopState, BuyUncommonCar
+-- Networking: OpenUncommonShop, UncommonShopUpdate, GetUncommonShopState, BuyUncommonCar, DarrelPurchaseFeedback
 -- Security: Server authority on cash, strict 1-stock limits, debounce locks, strict NPC proximity checks, and startup validation.
 -- Performance: O(1) lookups for shop state. Caches generated seed tables.
 
@@ -415,6 +415,10 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 
 		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
+
+		-- 📣 NEW: TELL DARREL'S CLIENT SCRIPT ABOUT THE PURCHASE
+		local feedbackRemote = getRemote("DarrelPurchaseFeedback", "RemoteEvent")
+		feedbackRemote:FireClient(player, carName)
 
 		task.spawn(function()
 			safeInvoke(TycoonAdminAPI, 2, "MarkDirty", player)
