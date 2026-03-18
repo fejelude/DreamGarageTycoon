@@ -478,26 +478,26 @@ local function startInteraction(npcModel)
 	end
 end
 
+local ProximityPromptService = game:GetService("ProximityPromptService")
+
 local function setupATM()
-	local folder = Workspace:WaitForChild(NPC_FOLDER)
-	local npc = folder:WaitForChild(TARGET_NPC, 10)
-
-	if npc then
-		local prompt = npc:FindFirstChild(PROMPT_NAME, true) 
-		local retries = 0
-		while not prompt and retries < 10 do
-			task.wait(0.5)
-			prompt = npc:FindFirstChild(PROMPT_NAME, true)
-			retries = retries + 1
-		end
-
-		if prompt then
-			print("✅ ATM Ready.")
-			prompt.Triggered:Connect(function()
+	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
+		if triggerPlayer == player and prompt.Name == PROMPT_NAME then
+			-- Find NPC model climbing up from the prompt
+			local current = prompt
+			local npc = nil
+			while current and current.Parent ~= Workspace do
+				if current.Name == TARGET_NPC then
+					npc = current
+					break
+				end
+				current = current.Parent
+			end
+			if npc then
 				startInteraction(npc)
-			end)
+			end
 		end
-	end
+	end)
 end
 
 setupATM()

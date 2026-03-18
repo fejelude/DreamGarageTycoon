@@ -357,19 +357,21 @@ local function setupPad(padObject)
 	validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
 
 	placePrompt.Triggered:Connect(function(player)
-		if processingTracks[player.UserId] then return end
-		processingTracks[player.UserId] = true
+		local userId = player.UserId
+		if processingTracks[userId] then return end
+		processingTracks[userId] = true
 		AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
 		task.wait(CONSTANTS.RETRY_DELAY)
-		processingTracks[player.UserId] = nil
+		processingTracks[userId] = nil
 	end)
 
 	pickupPrompt.Triggered:Connect(function(player)
-		if processingTracks[player.UserId] then return end
-		processingTracks[player.UserId] = true
+		local userId = player.UserId
+		if processingTracks[userId] then return end
+		processingTracks[userId] = true
 		AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
 		task.wait(CONSTANTS.RETRY_DELAY)
-		processingTracks[player.UserId] = nil
+		processingTracks[userId] = nil
 	end)
 end
 

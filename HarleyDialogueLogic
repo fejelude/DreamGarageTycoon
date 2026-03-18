@@ -422,34 +422,17 @@ local function startInteraction(npcModel)
 	end
 end
 
+local ProximityPromptService = game:GetService("ProximityPromptService")
+
 local function setupNPC()
-	local folder = Workspace:WaitForChild(NPC_FOLDER)
-	local npc = folder:WaitForChild(TARGET_NPC, 10)
-
-	if npc then
-		-- ✅ UPDATED: Enforces looking directly inside the HumanoidRootPart for the prompt
-		local hrp = npc:WaitForChild("HumanoidRootPart", 5)
-		if not hrp then
-			warn("❌ [HarleyDebug] Missing HumanoidRootPart in Harley!")
-			return
-		end
-
-		local prompt = hrp:FindFirstChild(PROMPT_NAME) 
-		local retries = 0
-		while not prompt and retries < 10 do
-			task.wait(0.5)
-			prompt = hrp:FindFirstChild(PROMPT_NAME)
-			retries = retries + 1
-		end
-
-		if prompt then
-			prompt.Triggered:Connect(function()
+	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
+		if triggerPlayer == player and prompt.Name == PROMPT_NAME then
+			local npc = prompt.Parent and prompt.Parent.Parent
+			if npc and npc.Name == TARGET_NPC then
 				startInteraction(npc)
-			end)
-		else
-			warn("❌ [HarleyDebug] Could not find TalkPrompt inside Harley's HumanoidRootPart!")
+			end
 		end
-	end
+	end)
 end
 
 setupNPC()
