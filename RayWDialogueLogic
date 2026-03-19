@@ -401,24 +401,16 @@ end)
 -- ============================================================================
 -- 🚀 DYNAMIC NPC SETUP
 -- ============================================================================
-local function attachPrompt(npc)
-	task.spawn(function()
-		local hrp = npc:WaitForChild("HumanoidRootPart", math.huge)
-		local prompt = hrp:WaitForChild(PROMPT_NAME, math.huge)
-
-		prompt.Triggered:Connect(function()
-			startInteraction(npc)
-		end)
-	end)
-end
+local ProximityPromptService = game:GetService("ProximityPromptService")
 
 local function setupNPC()
-	local folder = Workspace:WaitForChild(NPC_FOLDER, math.huge)
-	local existingNPC = folder:FindFirstChild(TARGET_NPC)
-	if existingNPC then attachPrompt(existingNPC) end
-
-	folder.ChildAdded:Connect(function(child)
-		if child.Name == TARGET_NPC then attachPrompt(child) end
+	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
+		if triggerPlayer == player and prompt.Name == PROMPT_NAME then
+			local npc = prompt.Parent and prompt.Parent.Parent
+			if npc and npc.Name == TARGET_NPC then
+				startInteraction(npc)
+			end
+		end
 	end)
 end
 
