@@ -10,6 +10,7 @@ local CollectionService = game:GetService("CollectionService")
 
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 local BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats"))
+local initializedPlayers = {}
 
 -- ============================================================================
 -- 🎨 CONFIGURATION (THE "NORMAL" LOOK)
@@ -154,6 +155,9 @@ end
 
 -- 🔄 PLAYER MONITOR
 local function SetupPlayer(player)
+	if initializedPlayers[player] then return end
+	initializedPlayers[player] = true
+
 	task.spawn(function()
 		local plotName = player:GetAttribute("OccupiedPlot")
 		while not plotName do
@@ -176,9 +180,6 @@ end
 
 Players.PlayerAdded:Connect(SetupPlayer)
 for _, p in pairs(Players:GetPlayers()) do SetupPlayer(p) end
-
--- 🚑 EMERGENCY CLEANUP
-for _, p in pairs(Players:GetPlayers()) do SetupPlayer(p) end
 -- Purpose: Visual Handler. Paints Silver/Gold/Diamond/Rainbow.
 -- Runs on: Server
 -- Location: ServerScriptService
@@ -193,6 +194,7 @@ for _, p in pairs(Players:GetPlayers()) do SetupPlayer(p) end
 
 -- 🧹 CLEANUP: Revert skin to default when player leaves
 Players.PlayerRemoving:Connect(function(player)
+	initializedPlayers[player] = nil
 	local plotName = player:GetAttribute("OccupiedPlot")
 	if plotName then
 		local plot = TycoonFolder:FindFirstChild(plotName)

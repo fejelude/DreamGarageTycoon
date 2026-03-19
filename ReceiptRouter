@@ -176,6 +176,39 @@ local function markPurchaseProcessed(purchaseKey)
 	return true
 end
 
+local function playerHasReceiptGrant(targetPlayer, purchaseKey)
+	if not targetPlayer or not purchaseKey then return false end
+
+	local containers = {
+		targetPlayer:FindFirstChild("Backpack"),
+		targetPlayer:FindFirstChild("StarterGear"),
+		targetPlayer.Character,
+	}
+
+	for _, container in ipairs(containers) do
+		if container then
+			for _, child in ipairs(container:GetChildren()) do
+				if child:IsA("Tool") and child:GetAttribute("ReceiptPurchaseKey") == purchaseKey then
+					return true
+				end
+			end
+		end
+	end
+
+	local plotName = targetPlayer:GetAttribute("OccupiedPlot")
+	local plot = plotName and TycoonFolder:FindFirstChild(plotName)
+	local placedCars = plot and plot:FindFirstChild("PlacedCars")
+	if placedCars then
+		for _, child in ipairs(placedCars:GetChildren()) do
+			if child:GetAttribute("ReceiptPurchaseKey") == purchaseKey then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
 -- ============================================================================
 -- 🧾 MAIN RECEIPT PROCESSOR
 -- ============================================================================
@@ -188,10 +221,10 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	local targetPlayer = buyerPlayer
 	local isGift = false
 
-	if _G.GetGiftReceiver then
-		local receiverId = _G.GetGiftReceiver(buyerId)
-		if receiverId then
-			local receiver = Players:GetPlayerByUserId(receiverId)
+	if _G.ConsumeGiftIntent then
+		local intent = _G.ConsumeGiftIntent(buyerId, receiptInfo.ProductId)
+		if intent and intent.ReceiverUserId then
+			local receiver = Players:GetPlayerByUserId(intent.ReceiverUserId)
 			if receiver then
 				targetPlayer = receiver
 				isGift = true
@@ -242,13 +275,13 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	elseif pid == SHOP_REROLL_ID then
 		if ShopRerollFunc then
-			ShopRerollFunc:Invoke(targetPlayer) 
+			ShopRerollFunc:Invoke(targetPlayer, purchaseKey)
 			purchaseSuccess = true
 		end
 
 	elseif pid == UNCOMMON_SHOP_REROLL_ID then
 		if UncommonShopRerollFunc then
-			UncommonShopRerollFunc:Invoke(targetPlayer)
+			UncommonShopRerollFunc:Invoke(targetPlayer, purchaseKey)
 			purchaseSuccess = true
 		else
 			warn("⚠️ UncommonShopRerollFunction missing!")
@@ -256,7 +289,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	elseif pid == RARE_SHOP_REROLL_ID then
 		if RareShopRerollFunc then
-			RareShopRerollFunc:Invoke(targetPlayer)
+			RareShopRerollFunc:Invoke(targetPlayer, purchaseKey)
 			purchaseSuccess = true
 		else
 			warn("⚠️ RareShopRerollFunction missing!")
@@ -265,7 +298,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		-- ✅ NEW: EPIC REROLL LOGIC
 	elseif pid == EPIC_SHOP_REROLL_ID then
 		if EpicShopRerollFunc then
-			EpicShopRerollFunc:Invoke(targetPlayer)
+			EpicShopRerollFunc:Invoke(targetPlayer, purchaseKey)
 			purchaseSuccess = true
 		else
 			warn("⚠️ EpicShopRerollFunction missing!")
@@ -277,13 +310,16 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
 		local tool = CarTools and (CarTools:FindFirstChild(carName) or CarTools:FindFirstChild(carName.." Item"))
 
-		if tool then
+		if playerHasReceiptGrant(targetPlayer, purchaseKey) then
+			purchaseSuccess = true
+		elseif tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 			if TycoonAdminAPI then
 				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
 					IssuedByServer = true,
 					IssuedAt = os.time(),
-					ToolId = tool.Name
+					ToolId = tool.Name,
+					ReceiptPurchaseKey = purchaseKey,
 				})
 
 				if invokeOk and giveResult == true then
@@ -298,13 +334,16 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
 		local tool = CarTools and (CarTools:FindFirstChild(carName) or CarTools:FindFirstChild(carName.." Item"))
 
-		if tool then
+		if playerHasReceiptGrant(targetPlayer, purchaseKey) then
+			purchaseSuccess = true
+		elseif tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 			if TycoonAdminAPI then
 				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
 					IssuedByServer = true,
 					IssuedAt = os.time(),
-					ToolId = tool.Name
+					ToolId = tool.Name,
+					ReceiptPurchaseKey = purchaseKey,
 				})
 
 				if invokeOk and giveResult == true then
@@ -329,13 +368,16 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
 		local tool = CarTools and (CarTools:FindFirstChild(carName) or CarTools:FindFirstChild(carName.." Item"))
 
-		if tool then
+		if playerHasReceiptGrant(targetPlayer, purchaseKey) then
+			purchaseSuccess = true
+		elseif tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 			if TycoonAdminAPI then
 				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
 					IssuedByServer = true,
 					IssuedAt = os.time(),
-					ToolId = tool.Name
+					ToolId = tool.Name,
+					ReceiptPurchaseKey = purchaseKey,
 				})
 
 				if invokeOk and giveResult == true then
@@ -359,13 +401,16 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
 		local tool = CarTools and (CarTools:FindFirstChild(carName) or CarTools:FindFirstChild(carName.." Item"))
 
-		if tool then
+		if playerHasReceiptGrant(targetPlayer, purchaseKey) then
+			purchaseSuccess = true
+		elseif tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 			if TycoonAdminAPI then
 				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
 					IssuedByServer = true,
 					IssuedAt = os.time(),
-					ToolId = tool.Name
+					ToolId = tool.Name,
+					ReceiptPurchaseKey = purchaseKey,
 				})
 
 				if invokeOk and giveResult == true then
@@ -390,8 +435,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		if not decodeSuccess then ownedTable = {} end
 
 		if table.find(ownedTable, skinFound) then
-			warn("🛡️ Security: Blocked purchase! " .. targetPlayer.Name .. " already owns the " .. skinFound .. " pad.")
-			return Enum.ProductPurchaseDecision.NotProcessedYet 
+			purchaseSuccess = true
 		else
 			table.insert(ownedTable, skinFound)
 			targetPlayer:SetAttribute("OwnedBaseSkins", HttpService:JSONEncode(ownedTable))
