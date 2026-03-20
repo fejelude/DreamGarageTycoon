@@ -25,18 +25,19 @@ if not SetIntentEvent then
 end
 
 -- 🗄️ STORAGE: { [BuyerUserId] = ReceiverUserId }
+-- 🗄️ STORAGE: { [BuyerUserId] = { ReceiverId, ProductId } }
 local pendingGifts = {}
 
 -- 📡 LISTEN FOR INTENT
-SetIntentEvent.OnServerEvent:Connect(function(buyer, receiverUserId)
+SetIntentEvent.OnServerEvent:Connect(function(buyer, receiverUserId, productId)
 	-- Security: Validate Input Type
-	if typeof(receiverUserId) == "number" then
+	if typeof(receiverUserId) == "number" and typeof(productId) == "number" then
 		-- Optional: Check if receiver actually exists in game (if you only want to gift present players)
 		-- For now, we allow offline gifting intent if your system supports it.
-		print("🎁 Gift Intent Set: " .. buyer.Name .. " wants to gift UserID: " .. receiverUserId)
-		pendingGifts[buyer.UserId] = receiverUserId
+		print("🎁 Gift Intent Set: " .. buyer.Name .. " wants to gift UserID: " .. receiverUserId .. " product: " .. productId)
+		pendingGifts[buyer.UserId] = {ReceiverId = receiverUserId, ProductId = productId}
 	else
-		warn("⚠️ Invalid Gift Intent from " .. buyer.Name .. ": ReceiverID is not a number.")
+		warn("⚠️ Invalid Gift Intent from " .. buyer.Name .. ": Target or Product is invalid.")
 	end
 end)
 
@@ -47,16 +48,20 @@ end)
 
 -- 🔒 EXPOSE DATA TO RECEIPT ROUTER
 -- We use _G so ReceiptRouter can read this table without a circular dependency
-_G.GetGiftReceiver = function(buyerUserId)
-	local receiverId = pendingGifts[buyerUserId]
+_G.ConsumeGiftIntent = function(buyerUserId, receiptProductId)
+	local intent = pendingGifts[buyerUserId]
 
-	-- Important: Clear the intent immediately after reading so next purchase isn't accidental
-	if receiverId then
+	if intent and intent.ProductId == receiptProductId then
+		local receiverId = intent.ReceiverId
 		pendingGifts[buyerUserId] = nil 
-		print("✅ _G.GetGiftReceiver: Retrieved & Cleared intent for Buyer " .. buyerUserId)
+		print("✅ _G.ConsumeGiftIntent: Retrieved & Cleared intent for Buyer " .. buyerUserId)
+		return receiverId
+	elseif intent then
+		print("⚠️ _G.ConsumeGiftIntent: Product ID mismatch or another product bought. Clearing intent for Buyer " .. buyerUserId)
+		pendingGifts[buyerUserId] = nil
 	end
 
-	return receiverId
+	return nil
 end
 
 print("🟢 GiftIntentHandler: Loaded & Ready")
