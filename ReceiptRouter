@@ -188,8 +188,9 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	local targetPlayer = buyerPlayer
 	local isGift = false
 
-	if _G.GetGiftReceiver then
-		local receiverId = _G.GetGiftReceiver(buyerId)
+	local pid = receiptInfo.ProductId
+	if _G.ConsumeGiftIntent then
+		local receiverId = _G.ConsumeGiftIntent(buyerId, pid)
 		if receiverId then
 			local receiver = Players:GetPlayerByUserId(receiverId)
 			if receiver then
@@ -209,8 +210,16 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 
-	local pid = receiptInfo.ProductId
 	local purchaseSuccess = false 
+
+	-- Check if receipt was already applied during this session
+	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if TycoonAdminAPI then
+		local invokeOk, hasApplied = safeInvoke(TycoonAdminAPI, 2, "HasReceiptApplied", targetPlayer, purchaseKey)
+		if invokeOk and hasApplied == true then
+			return Enum.ProductPurchaseDecision.PurchaseGranted
+		end
+	end
 
 	local skinFound = nil
 	if BaseSkinStats then
@@ -283,7 +292,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
 					IssuedByServer = true,
 					IssuedAt = os.time(),
-					ToolId = tool.Name
+					ToolId = tool.Name,
+					ReceiptPurchaseKey = purchaseKey
 				})
 
 				if invokeOk and giveResult == true then
@@ -304,7 +314,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
 					IssuedByServer = true,
 					IssuedAt = os.time(),
-					ToolId = tool.Name
+					ToolId = tool.Name,
+					ReceiptPurchaseKey = purchaseKey
 				})
 
 				if invokeOk and giveResult == true then
@@ -335,7 +346,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
 					IssuedByServer = true,
 					IssuedAt = os.time(),
-					ToolId = tool.Name
+					ToolId = tool.Name,
+					ReceiptPurchaseKey = purchaseKey
 				})
 
 				if invokeOk and giveResult == true then
@@ -365,7 +377,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
 					IssuedByServer = true,
 					IssuedAt = os.time(),
-					ToolId = tool.Name
+					ToolId = tool.Name,
+					ReceiptPurchaseKey = purchaseKey
 				})
 
 				if invokeOk and giveResult == true then
@@ -409,11 +422,16 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	end
 
 	if purchaseSuccess then
+		if TycoonAdminAPI then
+			safeInvoke(TycoonAdminAPI, 2, "MarkReceiptApplied", targetPlayer, purchaseKey)
+		end
+
 		if not markPurchaseProcessed(purchaseKey) then
+			-- It failed to save to the global purchase history, but it is stored in session data.
+			-- So next time it comes in, HasReceiptApplied will catch it.
 			return Enum.ProductPurchaseDecision.NotProcessedYet
 		end
 
-		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 		if TycoonAdminAPI then
 			task.spawn(function()
 				safeInvoke(TycoonAdminAPI, 2, "MarkDirty", targetPlayer)

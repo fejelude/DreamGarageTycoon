@@ -363,15 +363,19 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 			return false, "System Error: Admin API Missing"
 		end
 
+		-- Charge Wallet and Update Stock FIRST
+		wallet.Value -= carData.Price
+		session.Purchased[carName] = bought + 1
+
 		local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", player, realToolName)
 		if not invokeOk then
 			warn("⚠️ [RareShop] TycoonAdminAPI grant failed for", player.Name)
+			-- Rollback
+			wallet.Value += carData.Price
+			session.Purchased[carName] = bought
 			return false, "System Error: Inventory Grant Failed"
 		end
 
-		wallet.Value -= carData.Price
-
-		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
 
 		local feedbackRemote = getRemote("JacobPurchaseFeedback", "RemoteEvent")

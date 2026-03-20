@@ -61,8 +61,9 @@ end
 
 local function markDirty(player)
 	local session = SessionData[player]
-	if session and not session.IsDirty then 
-		session.IsDirty = true 
+	if session then
+		session.SaveVersion += 1
+		player:SetAttribute("SaveVersion", session.SaveVersion)
 	end
 end
 
@@ -338,6 +339,27 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	elseif action == "MarkDirty" and player then
 		markDirty(player)
 		return true
+	elseif action == "HasReceiptApplied" and player then
+		local receiptKey = ...
+		local session = SessionData[player]
+		if session and session.AppliedReceipts then
+			for _, key in ipairs(session.AppliedReceipts) do
+				if key == receiptKey then return true end
+			end
+		end
+		return false
+	elseif action == "MarkReceiptApplied" and player then
+		local receiptKey = ...
+		local session = SessionData[player]
+		if session then
+			session.AppliedReceipts = session.AppliedReceipts or {}
+			table.insert(session.AppliedReceipts, receiptKey)
+			if #session.AppliedReceipts > 50 then
+				table.remove(session.AppliedReceipts, 1)
+			end
+			markDirty(player)
+		end
+		return true
 	end
 	return false
 end
@@ -365,9 +387,10 @@ local function save(player, isClosing)
 	end
 
 	if not isClosing and (os.time() - session.LastSave < MIN_SAVE_INTERVAL) then return end
-	if not session.IsDirty and not isClosing then return end
+	if session.SavedVersion >= session.SaveVersion and not isClosing then return end
 
 	session.IsSaving = true -- 🔒 LOCK
+	local currentSaveVersion = session.SaveVersion
 
 	local function executeSave()
 		print("💾 Saving data for " .. player.Name .. "...")
@@ -520,6 +543,10 @@ local function save(player, isClosing)
 					oldData.EquippedSkin = currentEquippedSkin
 					oldData.HighestUnlockedPad = currentUnlockedPad
 
+					if session.AppliedReceipts then
+						oldData.AppliedReceipts = session.AppliedReceipts
+					end
+
 					oldData.LastUpdated = os.time()
 					oldData.DataVersion = "V38_Fixed"
 
@@ -536,11 +563,16 @@ local function save(player, isClosing)
 	local ok, err = pcall(executeSave)
 	if not ok then
 		warn("❌ Save Failed " .. player.Name .. ": " .. tostring(err))
-	elseif isClosing then
-		print("✅ Saved: " .. player.Name)
+	else
+		if isClosing then
+			print("✅ Saved: " .. player.Name)
+		end
+		if session.SavedVersion < currentSaveVersion then
+			session.SavedVersion = currentSaveVersion
+			player:SetAttribute("SavedVersion", session.SavedVersion)
+		end
 	end
 
-	session.IsDirty = false
 	session.LastSave = os.time()
 
 	-- [[ SHOP CLEANUP ]]
@@ -562,19 +594,21 @@ local function save(player, isClosing)
 	session.IsSaving = false 
 
 	local syncEvent = game.ServerStorage:FindFirstChild("TycoonSaveCompleted")
-	if syncEvent then syncEvent:Fire(player.Name) end
-
-	player:SetAttribute("DataSaved", true)
+	if syncEvent then syncEvent:Fire(player.Name, currentSaveVersion) end
 end
 
 local function InitializePlayer(player)
 	SessionData[player] = { 
 		LastSave = os.time(), 
-		IsDirty = false, 
+		SaveVersion = 0,
+		SavedVersion = 0,
 		DataLoaded = false, 
 		ExplicitClear = false, 
-		IsSaving = false        
+		IsSaving = false,
+		AppliedReceipts = {}
 	}
+	player:SetAttribute("SaveVersion", 0)
+	player:SetAttribute("SavedVersion", 0)
 
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
 	local cash = Instance.new("IntValue"); cash.Name = "Cash"; cash.Parent = ls
@@ -597,7 +631,7 @@ local function InitializePlayer(player)
 	data = data or { 
 		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1, 
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {}, EpicShopPurchases = {}, 
-		OwnedBaseSkins = {"Default"}, EquippedSkin = "Default" 
+		OwnedBaseSkins = {"Default"}, EquippedSkin = "Default", AppliedReceipts = {}
 	}
 
 	data.Inventory = data.Inventory or {}
@@ -608,6 +642,8 @@ local function InitializePlayer(player)
 	data.EpicShopPurchases = data.EpicShopPurchases or {} -- 🟠 EPIC DATA DEFAULT
 	data.OwnedBaseSkins = data.OwnedBaseSkins or {"Default"}
 	data.EquippedSkin = data.EquippedSkin or "Default"
+	data.AppliedReceipts = data.AppliedReceipts or {}
+	SessionData[player].AppliedReceipts = data.AppliedReceipts
 
 	cash.Value = data.Bank or 0
 	wallet.Value = data.Wallet or 0
@@ -716,7 +752,7 @@ Players.PlayerRemoving:Connect(function(player) save(player, true); SessionData[
 task.spawn(function() while true do task.wait(10); local now = os.time()
 		for _, player in pairs(Players:GetPlayers()) do
 			local session = SessionData[player]
-			if session and session.DataLoaded and session.IsDirty and (now - session.LastSave >= AUTOSAVE_INTERVAL) then
+			if session and session.DataLoaded and session.SavedVersion < session.SaveVersion and (now - session.LastSave >= AUTOSAVE_INTERVAL) then
 				task.spawn(function() save(player, false) end)
 			end
 		end

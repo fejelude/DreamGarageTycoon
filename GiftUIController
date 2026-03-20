@@ -352,7 +352,7 @@ local function UpdateSlots()
 						currentTargetName = target.Name
 						SetIndicator("Processing...", Color3.fromRGB(255, 255, 100))
 
-						SetIntentEvent:FireServer(target.UserId)
+						SetIntentEvent:FireServer(target.UserId, currentProductId)
 						MarketplaceService:PromptProductPurchase(player, currentProductId)
 					end)
 				elseif btnConnections[i] then
