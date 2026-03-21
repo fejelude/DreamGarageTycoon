@@ -27,8 +27,34 @@ mainFrame.Visible = true
 gui.Enabled = false 
 
 -- Confirmation UI
-local confirmGui = PlayerGui:WaitForChild("Confirmation", 5)
-local confirmMain = confirmGui and confirmGui:WaitForChild("MainFrame")
+local function resolveGuiButton(target)
+	if not target then return nil end
+	if target:IsA("GuiButton") then return target end
+	for _, descendant in ipairs(target:GetDescendants()) do
+		if descendant:IsA("GuiButton") then
+			return descendant
+		end
+	end
+	return nil
+end
+
+local function resolveConfirmationUi()
+	local confirmationGui = PlayerGui:FindFirstChild("Confirmation")
+	if not confirmationGui then
+		confirmationGui = PlayerGui:WaitForChild("Confirmation", 5)
+	end
+
+	if not confirmationGui then
+		return nil, nil
+	end
+
+	local confirmationMain = confirmationGui:FindFirstChild("MainFrame")
+	if not confirmationMain then
+		confirmationMain = confirmationGui:WaitForChild("MainFrame", 5)
+	end
+
+	return confirmationGui, confirmationMain
+end
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
@@ -179,13 +205,14 @@ local function toggleNamedGuiObjects(shouldHide, objectName)
 end
 
 local function toggleOtherGuis(shouldHide)
+	local confirmationGui = resolveConfirmationUi()
 	if shouldHide then
 		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
 		for _, otherGui in pairs(PlayerGui:GetChildren()) do
 			if otherGui:IsA("ScreenGui") 
 				and otherGui ~= gui 
-				and otherGui ~= confirmGui
+				and otherGui ~= confirmationGui
 				and otherGui.Name ~= "UI_NPC_Monk3yDAngelo-Cars"
 				and otherGui.Enabled == true 
 				and otherGui.Name ~= "Balance Indicator" then
@@ -221,8 +248,9 @@ local function closeShopUI(forceDialogueClose)
 	isProcessingPurchase = false
 	activeCarFocus = nil
 
-	if confirmGui then
-		confirmGui.Enabled = false
+	local confirmationGui = resolveConfirmationUi()
+	if confirmationGui then
+		confirmationGui.Enabled = false
 	end
 
 	mainFrame.Visible = true
@@ -251,6 +279,7 @@ end
 -- ============================================================================
 local confirmConnections = {}
 local function PromptConfirmation(text, callback)
+	local confirmGui, confirmMain = resolveConfirmationUi()
 	if not confirmGui or not confirmMain then
 		callback(true)
 		return
@@ -261,13 +290,16 @@ local function PromptConfirmation(text, callback)
 	end
 	confirmConnections = {}
 
-	local infoLabel = confirmMain:FindFirstChild("Information")
-	local btnYes = confirmMain:FindFirstChild("Yes")
-	local btnNo = confirmMain:FindFirstChild("No")
+	local infoLabel = confirmMain:FindFirstChild("Information", true)
+	local btnYes = resolveGuiButton(confirmMain:FindFirstChild("Yes", true))
+	local btnNo = resolveGuiButton(confirmMain:FindFirstChild("No", true))
 
 	if infoLabel then infoLabel.Text = text end
 
 	confirmGui.Enabled = true
+	if confirmMain:IsA("GuiObject") then
+		confirmMain.Visible = true
+	end
 
 	local function closeConfirm()
 		confirmGui.Enabled = false
@@ -399,8 +431,10 @@ end
 -- ============================================================================
 local function AttemptSacrifice(carName, ingredient)
 	if isProcessingPurchase then return end
+	if not currentState or not currentState.CraftProgress then return end
 
 	local recipe = RECIPES[carName]
+	if not recipe then return end
 	local requiredAmount = recipe[ingredient]
 	local progress = currentState.CraftProgress[carName] or {}
 	local currentAmount = progress[ingredient] or 0
@@ -414,14 +448,14 @@ local function AttemptSacrifice(carName, ingredient)
 	local costText = ""
 	if ingredient == "Cash" then
 		amountToSacrifice = requiredAmount - currentAmount
-		costText = "$" .. FormatCommas(amountToSacrifice) .. " cash"
+		costText = "$" .. FormatCommas(amountToSacrifice) .. " cash for " .. carName
 	else
-		costText = "1 " .. ingredient
+		costText = "1 " .. ingredient .. " car for " .. carName
 	end
 
 	updateDialogue("ConfirmSacrifice")
 
-	PromptConfirmation("Are you sure you want to sacrifice " .. costText .. "?", function(confirmed)
+	PromptConfirmation("Sacrifice " .. costText .. "?", function(confirmed)
 		if not confirmed then 
 			updateDialogue("CancelSacrifice")
 			return 
