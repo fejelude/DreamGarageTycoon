@@ -331,11 +331,31 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		markDirty(player)
 		print("⚠️ FORCE WIPE INITIATED FOR: " .. player.Name)
 		return true
-	elseif action == "GiveTool" and player then
+		elseif action == "GiveTool" and player then
 		local toolName, customAttributes = ...
 		giveTool(player, toolName, customAttributes)
 		return true
+	elseif action == "RemoveTool" and player then
+		local targetToolId = ...
+        if not targetToolId then return false end
+
+        local function removeAll(container)
+            if not container then return end
+            for _, child in ipairs(container:GetChildren()) do
+                if child:IsA("Tool") and (child.Name == targetToolId or child.Name == targetToolId.." Item" or child:GetAttribute("ToolId") == targetToolId or child:GetAttribute("ToolId") == targetToolId.." Item") then
+                    child:Destroy()
+                end
+            end
+        end
+
+        removeAll(player:FindFirstChild("Backpack"))
+        removeAll(player:FindFirstChild("StarterGear"))
+        if player.Character then removeAll(player.Character) end
+
+        markDirty(player)
+        return true
 	elseif action == "MarkDirty" and player then
+
 		markDirty(player)
 		return true
 	end
@@ -460,6 +480,13 @@ local function save(player, isClosing)
 			currentEpicShopData = epicShopBindable:Invoke("Get", player) or {}
 		end
 
+		-- [[ 🟡 LEGENDARY SHOP SYNC ]]
+		local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
+		local currentLegendaryShopData = {}
+		if legendaryShopBindable then
+			currentLegendaryShopData = legendaryShopBindable:Invoke("Get", player) or {}
+		end
+
 		for attempt = 1, MAX_RETRIES do
 			local updateSuccess, updateResult = pcall(function()
 				return PlayerDataStore:UpdateAsync("User_V27_" .. player.UserId, function(oldData)
@@ -514,7 +541,8 @@ local function save(player, isClosing)
 					oldData.ShopPurchases = currentShopData
 					oldData.UncommonShopPurchases = currentUncommonShopData
 					oldData.RareShopPurchases = currentRareShopData 
-					oldData.EpicShopPurchases = currentEpicShopData -- 🟠 EPIC SAVE INJECTED
+					oldData.EpicShopPurchases = currentEpicShopData
+					oldData.LegendaryShopPurchases = currentLegendaryShopData
 
 					oldData.OwnedBaseSkins = currentOwnedSkins
 					oldData.EquippedSkin = currentEquippedSkin
@@ -557,6 +585,10 @@ local function save(player, isClosing)
 		-- 🟠 EPIC CLEANUP
 		local epicShopBindable = ServerStorage:FindFirstChild("EpicShopPersistenceFunction")
 		if epicShopBindable then epicShopBindable:Invoke("Close", player) end
+
+		-- 🟡 LEGENDARY CLEANUP
+		local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
+		if legendaryShopBindable then legendaryShopBindable:Invoke("Close", player) end
 	end
 
 	session.IsSaving = false 
@@ -596,7 +628,7 @@ local function InitializePlayer(player)
 	-- ✅ INITIALIZE DEFAULT DATA
 	data = data or { 
 		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1, 
-		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {}, EpicShopPurchases = {}, 
+		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {}, EpicShopPurchases = {}, LegendaryShopPurchases = {},
 		OwnedBaseSkins = {"Default"}, EquippedSkin = "Default" 
 	}
 
@@ -605,7 +637,8 @@ local function InitializePlayer(player)
 	data.ShopPurchases = data.ShopPurchases or {}
 	data.UncommonShopPurchases = data.UncommonShopPurchases or {} 
 	data.RareShopPurchases = data.RareShopPurchases or {} 
-	data.EpicShopPurchases = data.EpicShopPurchases or {} -- 🟠 EPIC DATA DEFAULT
+	data.EpicShopPurchases = data.EpicShopPurchases or {}
+	data.LegendaryShopPurchases = data.LegendaryShopPurchases or {}
 	data.OwnedBaseSkins = data.OwnedBaseSkins or {"Default"}
 	data.EquippedSkin = data.EquippedSkin or "Default"
 
@@ -635,6 +668,12 @@ local function InitializePlayer(player)
 	local epicShopBindable = ServerStorage:FindFirstChild("EpicShopPersistenceFunction")
 	if epicShopBindable then
 		epicShopBindable:Invoke("Load", player, data.EpicShopPurchases)
+	end
+
+	-- [[ 🟡 LEGENDARY SHOP RESTORE ]]
+	local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
+	if legendaryShopBindable then
+		legendaryShopBindable:Invoke("Load", player, data.LegendaryShopPurchases)
 	end
 
 	-- ✅ APPLY ATTRIBUTES
