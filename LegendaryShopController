@@ -5,8 +5,8 @@
 -- Public API: None (Event-driven)
 -- Networking: Listens to OpenLegendaryShop, LegendaryShopUpdate. Invokes GetLegendaryShopState, CraftLegendaryCar, SacrificeLegendaryIngredient.
 -- Security: UI debounces to prevent spam. Server acts as absolute authority for stock, funds, and car ownership.
--- Performance: Safe recursive UI lookups executed only during UI state changes; zero per-frame loops.
--- Notes: Implements recursive searches for nested Craft buttons inside ScrollingFrames.
+-- Performance: Direct pathing to nested Craft buttons for O(1) lookups; zero per-frame loops.
+-- Notes: Updated to explicitly target SacrificeItems > Confirmation > Craft.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -75,7 +75,6 @@ local FuncSacrifice = Remotes:WaitForChild("SacrificeLegendaryIngredient")
 -- DIALOGUE EVENT
 local DialogueEvent
 task.spawn(function()
-	-- Wait for the dialogue script to create the bindable
 	local dialogueLogicScript = player:WaitForChild("PlayerScripts"):WaitForChild("LegendaryAngeloDialogueLogic", 10)
 	if dialogueLogicScript then
 		DialogueEvent = dialogueLogicScript:WaitForChild("UpdateLegendaryAngeloDialogue", 10)
@@ -158,7 +157,7 @@ local function toggleOtherGuis(shouldHide)
 			if otherGui:IsA("ScreenGui") 
 				and otherGui ~= gui 
 				and otherGui ~= confirmGui
-				and otherGui.Name ~= "UI_NPC_Monk3yDAngelo-Cars" -- Don't hide dialogue UI!
+				and otherGui.Name ~= "UI_NPC_Monk3yDAngelo-Cars"
 				and otherGui.Enabled == true 
 				and otherGui.Name ~= "Balance Indicator" then
 
@@ -198,7 +197,6 @@ end
 local confirmConnections = {}
 local function PromptConfirmation(text, callback)
 	if not confirmGui or not confirmMain then
-		-- Fallback if UI is missing
 		callback(true)
 		return
 	end
@@ -242,7 +240,6 @@ end
 -- ============================================================================
 -- 🧠 RENDER LOGIC
 -- ============================================================================
-
 local function UpdateCraftingUI(carName)
 	local craftingUIName = carName .. "Crafting"
 	local craftGui = gui:FindFirstChild(craftingUIName)
@@ -302,8 +299,18 @@ local function UpdateCraftingUI(carName)
 		end
 	end
 
-	-- Fix: Use recursive search `true` parameter so it finds the nested button
-	local mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
+	-- UPDATED: Explicitly target SacrificeItems > Confirmation > Craft
+	local mainCraftBtn = nil
+	local confirmFrame = sacrificeItems:FindFirstChild("Confirmation")
+	if confirmFrame then
+		mainCraftBtn = confirmFrame:FindFirstChild("Craft") or confirmFrame:FindFirstChild("CraftButton")
+	end
+
+	-- Fallback if not found inside Confirmation
+	if not mainCraftBtn then
+		mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
+	end
+
 	if mainCraftBtn then
 		if isCrafting then
 			mainCraftBtn.Visible = false
@@ -316,7 +323,6 @@ end
 local function UpdateDisplay()
 	if not currentState then return end
 
-	-- Update Main Selection UI
 	local scrollFrame = mainFrame:FindFirstChild("ScrollingFrame")
 	if scrollFrame then
 		for _, carName in ipairs(SHOP_CARS) do
@@ -328,7 +334,6 @@ local function UpdateDisplay()
 		end
 	end
 
-	-- Update specific crafting UI if open
 	if activeCarFocus then
 		UpdateCraftingUI(activeCarFocus)
 	end
@@ -337,7 +342,6 @@ end
 -- ============================================================================
 -- 🛒 SACRIFICE / CRAFT LOGIC
 -- ============================================================================
-
 local function AttemptSacrifice(carName, ingredient)
 	if isProcessingPurchase then return end
 
@@ -389,11 +393,9 @@ local function AttemptSacrifice(carName, ingredient)
 				end
 			end
 
-			-- Force refresh state
 			currentState = FuncGetState:InvokeServer()
 			UpdateDisplay()
 
-			-- Check if all are now complete
 			local allComplete = true
 			for ing, req in pairs(recipe) do
 				if ing ~= "TargetCar" and ing ~= "CraftTime" then
@@ -437,7 +439,6 @@ local function AttemptCraft(carName)
 				showFeedback(msg, FEEDBACK_COLORS.FailCash)
 			end
 
-			-- Force refresh state
 			currentState = FuncGetState:InvokeServer()
 			UpdateDisplay()
 		end)
@@ -472,8 +473,22 @@ local function OpenCraftingMenu(carName)
 				end)
 			end
 
-			-- Fix: Added true parameter for recursive search here as well
-			local mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
+			local sacrificeItems = carFrame:FindFirstChild("SacrificeItems")
+
+			-- UPDATED: Explicitly target SacrificeItems > Confirmation > Craft
+			local mainCraftBtn = nil
+			if sacrificeItems then
+				local confirmFrame = sacrificeItems:FindFirstChild("Confirmation")
+				if confirmFrame then
+					mainCraftBtn = confirmFrame:FindFirstChild("Craft") or confirmFrame:FindFirstChild("CraftButton")
+				end
+			end
+
+			-- Fallback if not found inside Confirmation
+			if not mainCraftBtn then
+				mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
+			end
+
 			if mainCraftBtn then
 				if not mainCraftBtn:GetAttribute("Connected") then
 					mainCraftBtn:SetAttribute("Connected", true)
@@ -483,7 +498,6 @@ local function OpenCraftingMenu(carName)
 				end
 			end
 
-			local sacrificeItems = carFrame:FindFirstChild("SacrificeItems")
 			if sacrificeItems then
 				for ingredient, _ in pairs(RECIPES[carName]) do
 					if ingredient == "TargetCar" then continue end
@@ -520,13 +534,11 @@ local function init()
 		gui.Enabled = false 
 		activeCarFocus = nil
 
-		-- Hide all submenus
 		for _, carName in ipairs(SHOP_CARS) do
 			local craftGui = gui:FindFirstChild(carName .. "Crafting")
 			if craftGui then craftGui.Visible = false end
 		end
 
-		-- Try to hide the interaction dialogue as well if closed via this menu
 		local dialogueUI = PlayerGui:FindFirstChild("UI_NPC_Monk3yDAngelo-Cars")
 		if dialogueUI then dialogueUI.Enabled = false end
 	end)
@@ -554,7 +566,6 @@ local function init()
 		mainFrame.Visible = true
 		activeCarFocus = nil
 
-		-- Hide all submenus
 		for _, carName in ipairs(SHOP_CARS) do
 			local craftGui = gui:FindFirstChild(carName .. "Crafting")
 			if craftGui then craftGui.Visible = false end
