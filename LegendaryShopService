@@ -3,7 +3,7 @@
 -- Location: ServerScriptService > LegendaryShopService
 -- Dependencies: ReplicatedStorage.CarStats, ServerStorage.TycoonAdminAPI, TycoonDataHandler
 -- Public API: None (Event/Bindable driven)
--- Networking: OpenLegendaryShop, LegendaryShopUpdate, GetLegendaryShopState, CraftLegendaryCar, SacrificeLegendaryIngredient
+-- Networking: ShopRemotes.LegendaryShop.{RequestOpenShop, OpenShopUI, LegendaryShopUpdate, GetLegendaryShopState, CraftLegendaryCar, SacrificeLegendaryIngredient}
 -- Security: Server authority on cash, exact inventory checks, exact timer tracking.
 -- Notes: Uses exact timer duration (Yamura=12h, LaRossa=48h) and exact ingredient requirement list.
 
@@ -53,21 +53,29 @@ if not Remotes then
 	Remotes.Parent = ReplicatedStorage
 end
 
+local LegendaryRemotes = Remotes:FindFirstChild("LegendaryShop")
+if not LegendaryRemotes then
+	LegendaryRemotes = Instance.new("Folder")
+	LegendaryRemotes.Name = "LegendaryShop"
+	LegendaryRemotes.Parent = Remotes
+end
+
 local function getRemote(name, className)
-	local r = Remotes:FindFirstChild(name)
+	local r = LegendaryRemotes:FindFirstChild(name)
 	if not r then
 		r = Instance.new(className)
 		r.Name = name
-		r.Parent = Remotes
+		r.Parent = LegendaryRemotes
 	end
 	return r
 end
 
-local RemoteOpen = getRemote("OpenLegendaryShop", "RemoteEvent")         
-local RemoteUpdate = getRemote("LegendaryShopUpdate", "RemoteEvent")          
-local FuncGetState = getRemote("GetLegendaryShopState", "RemoteFunction")      
-local FuncCraftCar = getRemote("CraftLegendaryCar", "RemoteFunction")         
-local FuncSacrifice = getRemote("SacrificeLegendaryIngredient", "RemoteFunction") 
+local RemoteRequestOpen = getRemote("RequestOpenShop", "RemoteEvent")
+local RemoteOpen = getRemote("OpenShopUI", "RemoteEvent")
+local RemoteUpdate = getRemote("LegendaryShopUpdate", "RemoteEvent")
+local FuncGetState = getRemote("GetLegendaryShopState", "RemoteFunction")
+local FuncCraftCar = getRemote("CraftLegendaryCar", "RemoteFunction")
+local FuncSacrifice = getRemote("SacrificeLegendaryIngredient", "RemoteFunction")
 
 -- =========================
 -- BINDABLES (ISOLATED)
@@ -195,7 +203,7 @@ FuncGetState.OnServerInvoke = function(player)
 	return buildStatePayload(session)
 end
 
-RemoteOpen.OnServerEvent:Connect(function(player)
+RemoteRequestOpen.OnServerEvent:Connect(function(player)
 	local char = player.Character
 	if not char or not char.PrimaryPart then return end
 

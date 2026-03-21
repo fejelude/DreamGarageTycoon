@@ -3,7 +3,7 @@
 -- Location: StarterPlayerScripts.LegendaryShopController
 -- Dependencies: ReplicatedStorage.CarStats, ReplicatedStorage.ShopFrontendKit
 -- Public API: None (Event-driven)
--- Networking: Listens to OpenLegendaryShop, LegendaryShopUpdate. Invokes GetLegendaryShopState, CraftLegendaryCar, SacrificeLegendaryIngredient.
+-- Networking: Listens to ShopRemotes.LegendaryShop.OpenShopUI and LegendaryShopUpdate. Invokes GetLegendaryShopState, CraftLegendaryCar, SacrificeLegendaryIngredient.
 -- Security: UI debounces to prevent spam. Server acts as absolute authority for stock, funds, and car ownership.
 -- Performance: Direct pathing to nested Craft buttons for O(1) lookups; zero per-frame loops. Recursive FindFirstChild used cautiously.
 -- Notes: Updated to explicitly target SacrificeItems > Confirmation > Craft. Recursive search fixes dialogue BindableEvent discovery. Race conditions prevented in toggleOtherGuis.
@@ -66,11 +66,12 @@ local FEEDBACK_COLORS = {
 
 -- 📡 REMOTES (ISOLATED FOR LEGENDARY)
 local Remotes = ReplicatedStorage:WaitForChild("ShopRemotes")
-local RemoteOpen = Remotes:WaitForChild("OpenLegendaryShop")
-local RemoteUpdate = Remotes:WaitForChild("LegendaryShopUpdate")
-local FuncGetState = Remotes:WaitForChild("GetLegendaryShopState")
-local FuncCraftCar = Remotes:WaitForChild("CraftLegendaryCar")
-local FuncSacrifice = Remotes:WaitForChild("SacrificeLegendaryIngredient")
+local LegendaryRemotes = Remotes:WaitForChild("LegendaryShop")
+local RemoteOpen = LegendaryRemotes:WaitForChild("OpenShopUI")
+local RemoteUpdate = LegendaryRemotes:WaitForChild("LegendaryShopUpdate")
+local FuncGetState = LegendaryRemotes:WaitForChild("GetLegendaryShopState")
+local FuncCraftCar = LegendaryRemotes:WaitForChild("CraftLegendaryCar")
+local FuncSacrifice = LegendaryRemotes:WaitForChild("SacrificeLegendaryIngredient")
 
 -- DIALOGUE EVENT
 local DialogueEvent

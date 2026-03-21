@@ -3,7 +3,7 @@
 -- Location: StarterPlayerScripts.LegendaryAngeloDialogueLogic
 -- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
 -- Public API: UpdateLegendaryAngeloDialogue (BindableEvent)
--- Networking: Fires ShopRemotes.OpenLegendaryShop (Client -> Server)
+-- Networking: Fires ShopRemotes.LegendaryShop.RequestOpenShop (Client -> Server)
 -- Security: Validates local character state before locking movement. Uses debounces to prevent spam.
 -- Performance: Safely manages nested task threads and event cleanup. Recursive search handles nested buttons efficiently.
 -- Notes: Wrapping task.cancel in pcall to prevent unhandled exceptions breaking cleanup. Fixed GUI race condition.
@@ -76,7 +76,8 @@ local hiddenObjects = {}
 local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
 
 -- Remotes
-local RemoteOpen = ReplicatedStorage:WaitForChild("ShopRemotes"):WaitForChild("OpenLegendaryShop")
+local LegendaryRemotes = ReplicatedStorage:WaitForChild("ShopRemotes"):WaitForChild("LegendaryShop")
+local RemoteOpen = LegendaryRemotes:WaitForChild("RequestOpenShop")
 
 -- Bindable Event for External Dialogue Updates
 local UpdateDialogueEvent = script:FindFirstChild("UpdateLegendaryAngeloDialogue")
@@ -268,6 +269,43 @@ local function stopInteraction()
 	end
 end
 
+local function releaseInteractionForShop()
+	if not isInteracting then return end
+
+	if currentDialogueJob then
+		pcall(task.cancel, currentDialogueJob)
+		currentDialogueJob = nil
+	end
+
+	clearConnections()
+	setButtonsState(false)
+	setFocusMode(false)
+
+	camera.CameraType = Enum.CameraType.Custom
+	if controls then controls:Enable() end
+
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+
+		if hrp then hrp.Anchored = false end
+		if humanoid then
+			humanoid.WalkSpeed = 16
+			humanoid.JumpPower = 50
+		end
+	end
+
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if myGui then
+		myGui.Enabled = false
+		local container = myGui:FindFirstChild(CONTAINER_ID, true)
+		if container then container.Visible = false end
+	end
+
+	isInteracting = false
+	isLeaving = false
+end
+
 local function animateButton(btn)
 	if not btn:GetAttribute("OriginalSizeX") then
 		btn:SetAttribute("OriginalSizeX", btn.Size.X.Scale)
@@ -424,6 +462,7 @@ local function startInteraction(npcModel)
 
 			typewrite(dialogueLabel, CRAFT_OPEN_MESSAGE, function()
 				if isInteracting and isOpeningShop then
+					releaseInteractionForShop()
 					RemoteOpen:FireServer()
 				end
 			end)
