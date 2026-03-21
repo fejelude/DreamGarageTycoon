@@ -10,12 +10,8 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local MarketplaceService = game:GetService("MarketplaceService")
-local SoundService = game:GetService("SoundService")
-local Debris = game:GetService("Debris")
 local Lighting = game:GetService("Lighting")
 local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
@@ -56,7 +52,6 @@ local function resolveConfirmationUi()
 	return confirmationGui, confirmationMain
 end
 
-local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 
 -- ⚙️ CONFIGURATION
@@ -141,12 +136,10 @@ end
 
 -- 🛡️ STATE
 local currentState = nil
-local purchaseDebounce = {} 
 local isProcessingPurchase = false 
 local hiddenGuis = {} 
 local hiddenObjects = {} 
 local currentBlur = nil 
-local feedbackTween = nil 
 local activeCarFocus = nil
 local isShopOpen = false
 
@@ -179,7 +172,7 @@ local function setBlur(enable)
 			local t = TweenService:Create(currentBlur, TweenInfo.new(0.5), {Size = 0})
 			t:Play()
 			t.Completed:Connect(function()
-				if currentBlur then currentBlur:Destroy() currentBlur = nil end
+				if currentBlur then currentBlur:Destroy(); currentBlur = nil end
 			end)
 		end
 	end
@@ -243,10 +236,18 @@ local function setFocusMode(active)
 	end
 end
 
+local confirmConnections = {}
+
 local function closeShopUI(forceDialogueClose)
 	isShopOpen = false
 	isProcessingPurchase = false
 	activeCarFocus = nil
+
+	-- Forcefully clean up any active confirmation dialog connections
+	for _, conn in ipairs(confirmConnections) do
+		if conn then conn:Disconnect() end
+	end
+	confirmConnections = {}
 
 	local confirmationGui = resolveConfirmationUi()
 	if confirmationGui then
@@ -322,7 +323,6 @@ end
 -- ============================================================================
 -- 🧠 CONFIRMATION LOGIC
 -- ============================================================================
-local confirmConnections = {}
 local function PromptConfirmation(text, callback)
 	local confirmGui, confirmMain = resolveConfirmationUi()
 	if not confirmGui or not confirmMain then
@@ -331,7 +331,7 @@ local function PromptConfirmation(text, callback)
 	end
 
 	for _, conn in ipairs(confirmConnections) do
-		conn:Disconnect()
+		if conn then conn:Disconnect() end
 	end
 	confirmConnections = {}
 
@@ -353,7 +353,7 @@ local function PromptConfirmation(text, callback)
 	local function closeConfirm()
 		confirmGui.Enabled = false
 		for _, conn in ipairs(confirmConnections) do
-			conn:Disconnect()
+			if conn then conn:Disconnect() end
 		end
 		confirmConnections = {}
 	end
@@ -605,15 +605,27 @@ local function OpenCraftingMenu(carName)
 		if carFrame then
 			local exitBtn = carFrame:FindFirstChild("ExitButton") or carFrame:FindFirstChild("CloseButton")
 			if exitBtn then
-				if exitBtn:GetAttribute("Connected") then return end
-				exitBtn:SetAttribute("Connected", true)
+				if not exitBtn:GetAttribute("Connected") then
+					exitBtn:SetAttribute("Connected", true)
 
-				Kit.Tween:SetupButton(exitBtn, function()
-					activeCarFocus = nil
-					craftGui.Visible = false
-					mainFrame.Visible = true
-					updateDialogue("MenuOpen")
-				end)
+					Kit.Tween:SetupButton(exitBtn, function()
+						activeCarFocus = nil
+						craftGui.Visible = false
+						mainFrame.Visible = true
+
+						-- Cleanup confirmation if player backs out of a car's specific menu
+						for _, conn in ipairs(confirmConnections) do
+							if conn then conn:Disconnect() end
+						end
+						confirmConnections = {}
+						local confirmationGui = resolveConfirmationUi()
+						if confirmationGui then
+							confirmationGui.Enabled = false
+						end
+
+						updateDialogue("MenuOpen")
+					end)
+				end
 			end
 
 			local sacrificeItems = carFrame:FindFirstChild("SacrificeItems")
