@@ -4,9 +4,6 @@
 -- Dependencies: ReplicatedStorage.CarStats, ReplicatedStorage.ShopFrontendKit
 -- Public API: None (Event-driven)
 -- Networking: Listens to ShopRemotes.LegendaryShop.OpenShopUI and LegendaryShopUpdate. Invokes GetLegendaryShopState, CraftLegendaryCar, SacrificeLegendaryIngredient.
--- Security: UI debounces to prevent spam. Server acts as absolute authority for stock, funds, and car ownership.
--- Performance: Direct pathing to nested Craft buttons for O(1) lookups; zero per-frame loops. Recursive FindFirstChild used cautiously.
--- Notes: Updated to explicitly target SacrificeItems > Confirmation > Craft. Recursive search fixes dialogue BindableEvent discovery. Race conditions prevented in toggleOtherGuis.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -23,8 +20,8 @@ local PlayerGui = player:WaitForChild("PlayerGui")
 -- 🛑 IMMEDIATE HIDE
 local gui = PlayerGui:WaitForChild("LegendaryCarsAngeloUi")
 local mainFrame = gui:WaitForChild("Mainframe")
-mainFrame.Visible = true 
-gui.Enabled = false 
+mainFrame.Visible = true
+gui.Enabled = false
 
 -- Confirmation UI
 local function resolveGuiButton(target)
@@ -35,6 +32,36 @@ local function resolveGuiButton(target)
 			return descendant
 		end
 	end
+	return nil
+end
+
+local function resolveNamedConfirmationButton(root, exactName, aliases)
+	if not root then
+		return nil
+	end
+
+	local direct = resolveGuiButton(root:FindFirstChild(exactName, true))
+	if direct then
+		return direct
+	end
+
+	local lowered = {}
+	table.insert(lowered, string.lower(exactName))
+	for _, alias in ipairs(aliases or {}) do
+		table.insert(lowered, string.lower(alias))
+	end
+
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if descendant:IsA("GuiButton") then
+			local buttonName = string.lower(descendant.Name)
+			for _, key in ipairs(lowered) do
+				if buttonName == key or string.find(buttonName, key, 1, true) then
+					return descendant
+				end
+			end
+		end
+	end
+
 	return nil
 end
 
@@ -60,7 +87,7 @@ local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 
 -- ⚙️ CONFIGURATION
-local SHOP_CARS = {"LaRossa", "Yamura"} -- Maps to internal names ("La Rossa" and "Yamura") but UI uses "LaRossa"
+local SHOP_CARS = {"LaRossa", "Yamura"}
 local RECIPES = {
 	["LaRossa"] = {
 		TargetCar = "La Rossa",
@@ -80,14 +107,14 @@ local RECIPES = {
 	}
 }
 
-local BLUR_SIZE = 24 
+local BLUR_SIZE = 24
 
 -- 🎨 FEEDBACK CONFIGURATION
 local FEEDBACK_COLORS = {
-	Success = Color3.fromRGB(80, 200, 120),   
-	FailRobux = Color3.fromRGB(255, 95, 95),  
-	FailCash = Color3.fromRGB(255, 170, 60),  
-	TooFast = Color3.fromRGB(255, 200, 50)    
+	Success = Color3.fromRGB(80, 200, 120),
+	FailRobux = Color3.fromRGB(255, 95, 95),
+	FailCash = Color3.fromRGB(255, 170, 60),
+	TooFast = Color3.fromRGB(255, 200, 50)
 }
 
 -- 📡 REMOTES (ISOLATED FOR LEGENDARY)
@@ -105,7 +132,6 @@ task.spawn(function()
 	local playerScripts = player:WaitForChild("PlayerScripts")
 	local dialogueLogicScript = playerScripts:FindFirstChild("LegendaryAngeloDialogueLogic", true)
 	if not dialogueLogicScript then
-		-- Fallback to waiting a bit in case it hasn't loaded
 		task.wait(2)
 		dialogueLogicScript = playerScripts:FindFirstChild("LegendaryAngeloDialogueLogic", true)
 	end
@@ -141,17 +167,18 @@ end
 
 -- 🛡️ STATE
 local currentState = nil
-local purchaseDebounce = {} 
-local isProcessingPurchase = false 
-local hiddenGuis = {} 
-local hiddenObjects = {} 
-local currentBlur = nil 
-local feedbackTween = nil 
+local purchaseDebounce = {}
+local isProcessingPurchase = false
+local hiddenGuis = {}
+local hiddenObjects = {}
+local currentBlur = nil
+local feedbackTween = nil
 local activeCarFocus = nil
 local isShopOpen = false
 local shopSessionId = 0
 local shopViewVersion = 0
 local confirmationVersion = 0
+local confirmationRestoreState = nil
 
 -- 🛑 UI REFERENCES
 local function getUI()
@@ -182,7 +209,10 @@ local function setBlur(enable)
 			local t = TweenService:Create(currentBlur, TweenInfo.new(0.5), {Size = 0})
 			t:Play()
 			t.Completed:Connect(function()
-				if currentBlur then currentBlur:Destroy() currentBlur = nil end
+				if currentBlur then
+					currentBlur:Destroy()
+					currentBlur = nil
+				end
 			end)
 		end
 	end
@@ -213,11 +243,11 @@ local function toggleOtherGuis(shouldHide)
 		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
 		for _, otherGui in pairs(PlayerGui:GetChildren()) do
-			if otherGui:IsA("ScreenGui") 
-				and otherGui ~= gui 
+			if otherGui:IsA("ScreenGui")
+				and otherGui ~= gui
 				and otherGui ~= confirmationGui
 				and otherGui.Name ~= "UI_NPC_Monk3yDAngelo-Cars"
-				and otherGui.Enabled == true 
+				and otherGui.Enabled == true
 				and otherGui.Name ~= "Balance Indicator" then
 
 				otherGui.Enabled = false
@@ -255,6 +285,48 @@ local function hideAllCraftingMenus()
 	end
 end
 
+local function captureShopViewState()
+	local state = {
+		mainFrameVisible = mainFrame.Visible,
+		craftingVisible = {}
+	}
+
+	for _, carName in ipairs(SHOP_CARS) do
+		local craftGui = gui:FindFirstChild(carName .. "Crafting")
+		state.craftingVisible[carName] = craftGui and craftGui.Visible or false
+	end
+
+	return state
+end
+
+local function restoreShopViewState(state)
+	hideAllCraftingMenus()
+
+	if not state then
+		if activeCarFocus then
+			mainFrame.Visible = false
+			local craftGui = gui:FindFirstChild(activeCarFocus .. "Crafting")
+			if craftGui then
+				craftGui.Visible = true
+			else
+				mainFrame.Visible = true
+			end
+		else
+			mainFrame.Visible = true
+		end
+		return
+	end
+
+	mainFrame.Visible = state.mainFrameVisible == true
+
+	for carName, wasVisible in pairs(state.craftingVisible) do
+		local craftGui = gui:FindFirstChild(carName .. "Crafting")
+		if craftGui then
+			craftGui.Visible = wasVisible == true
+		end
+	end
+end
+
 local function isActiveShopSession(sessionId)
 	return sessionId ~= nil and sessionId == shopSessionId and isShopOpen and gui.Enabled
 end
@@ -273,6 +345,7 @@ local function closeShopUI(forceDialogueClose)
 	isShopOpen = false
 	isProcessingPurchase = false
 	activeCarFocus = nil
+	confirmationRestoreState = nil
 
 	dismissConfirmation()
 
@@ -341,11 +414,105 @@ end
 -- 🧠 CONFIRMATION LOGIC
 -- ============================================================================
 local confirmConnections = {}
+
 local function clearConfirmationConnections()
 	for _, conn in ipairs(confirmConnections) do
-		conn:Disconnect()
+		if conn then
+			conn:Disconnect()
+		end
 	end
 	confirmConnections = {}
+end
+
+local function addConfirmationConnection(conn)
+	if conn then
+		table.insert(confirmConnections, conn)
+	end
+end
+
+local function prepareConfirmationButton(button)
+	if not button then
+		return nil
+	end
+
+	button.Visible = true
+	button.Active = true
+	button.Selectable = true
+	button.AutoButtonColor = true
+
+	pcall(function()
+		button.Interactable = true
+	end)
+
+	return button
+end
+
+local function playConfirmationOpenTween(confirmMain)
+	if not confirmMain or not confirmMain:IsA("GuiObject") then
+		return
+	end
+
+	if not confirmMain:GetAttribute("BasePosStored") then
+		confirmMain:SetAttribute("BasePosStored", true)
+		confirmMain:SetAttribute("BasePosXScale", confirmMain.Position.X.Scale)
+		confirmMain:SetAttribute("BasePosXOffset", confirmMain.Position.X.Offset)
+		confirmMain:SetAttribute("BasePosYScale", confirmMain.Position.Y.Scale)
+		confirmMain:SetAttribute("BasePosYOffset", confirmMain.Position.Y.Offset)
+	end
+
+	local basePosition = UDim2.new(
+		confirmMain:GetAttribute("BasePosXScale"),
+		confirmMain:GetAttribute("BasePosXOffset"),
+		confirmMain:GetAttribute("BasePosYScale"),
+		confirmMain:GetAttribute("BasePosYOffset")
+	)
+
+	confirmMain.Position = UDim2.new(
+		basePosition.X.Scale,
+		basePosition.X.Offset,
+		basePosition.Y.Scale,
+		basePosition.Y.Offset + 18
+	)
+
+	TweenService:Create(
+		confirmMain,
+		TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Position = basePosition }
+	):Play()
+end
+
+local function beginConfirmationView()
+	if not confirmationRestoreState then
+		confirmationRestoreState = captureShopViewState()
+	end
+
+	mainFrame.Visible = false
+	hideAllCraftingMenus()
+end
+
+local function endConfirmationView()
+	restoreShopViewState(confirmationRestoreState)
+	confirmationRestoreState = nil
+end
+
+local function bindConfirmationButton(button, callback)
+	button = prepareConfirmationButton(button)
+	if not button then
+		return
+	end
+
+	local fired = false
+	local function handlePress()
+		if fired then
+			return
+		end
+		fired = true
+		callback()
+	end
+
+	addConfirmationConnection(button.Activated:Connect(handlePress))
+	addConfirmationConnection(button.MouseButton1Click:Connect(handlePress))
+	addConfirmationConnection(button.TouchTap:Connect(handlePress))
 end
 
 dismissConfirmation = function()
@@ -353,18 +520,22 @@ dismissConfirmation = function()
 	clearConfirmationConnections()
 
 	local confirmGui, confirmMain = resolveConfirmationUi()
-	if confirmGui then
-		confirmGui.Enabled = false
-	end
 
 	if confirmMain and confirmMain:IsA("GuiObject") then
 		confirmMain.Visible = false
 	end
+
+	if confirmGui then
+		confirmGui.Enabled = false
+	end
+
+	endConfirmationView()
 end
 
 local function PromptConfirmation(sessionId, text, callback)
 	local confirmGui, confirmMain = resolveConfirmationUi()
 	if not confirmGui or not confirmMain then
+		warn("LegendaryShopController: Confirmation UI or MainFrame is missing.")
 		if isActiveShopSession(sessionId) then
 			callback(true)
 		end
@@ -377,46 +548,66 @@ local function PromptConfirmation(sessionId, text, callback)
 	clearConfirmationConnections()
 
 	local infoLabel = confirmMain:FindFirstChild("Information", true)
-	local btnYes = resolveGuiButton(confirmMain:FindFirstChild("Yes", true))
-	local btnNo = resolveGuiButton(confirmMain:FindFirstChild("No", true))
+	local btnYes = resolveNamedConfirmationButton(confirmMain, "Yes", {"Confirm", "Accept", "Okay", "Ok"})
+	local btnNo = resolveNamedConfirmationButton(confirmMain, "No", {"Cancel", "Decline", "Back", "Close"})
+
+	if not btnYes then
+		warn("LegendaryShopController: YES confirmation button was not found.")
+	end
+	if not btnNo then
+		warn("LegendaryShopController: NO confirmation button was not found.")
+	end
 
 	if infoLabel then
-		infoLabel.RichText = true
-		infoLabel.TextWrapped = true
-		infoLabel.Text = text
+		pcall(function()
+			infoLabel.RichText = true
+			infoLabel.TextWrapped = true
+			infoLabel.Text = text
+		end)
 	end
+
+	beginConfirmationView()
 
 	confirmGui.Enabled = true
 	if confirmMain:IsA("GuiObject") then
 		confirmMain.Visible = true
+		confirmMain.Active = true
 	end
 
-	local function closeConfirm()
+	pcall(function()
+		if confirmGui:IsA("ScreenGui") then
+			confirmGui.DisplayOrder = math.max(confirmGui.DisplayOrder, gui.DisplayOrder + 10)
+		end
+	end)
+
+	playConfirmationOpenTween(confirmMain)
+
+	local function finishChoice(confirmed)
 		if myConfirmationVersion ~= confirmationVersion then
 			return
 		end
+
 		clearConfirmationConnections()
+
+		if confirmMain:IsA("GuiObject") then
+			confirmMain.Visible = false
+		end
 		confirmGui.Enabled = false
-		confirmMain.Visible = false
+
+		endConfirmationView()
+
+		if isActiveShopSession(sessionId) then
+			callback(confirmed)
+		end
 	end
 
-	if btnYes then
-		table.insert(confirmConnections, btnYes.MouseButton1Click:Connect(function()
-			closeConfirm()
-			if isActiveShopSession(sessionId) and myConfirmationVersion == confirmationVersion then
-				callback(true)
-			end
-		end))
-	end
+	bindConfirmationButton(btnYes, function()
+		finishChoice(true)
+	end)
 
-	if btnNo then
-		table.insert(confirmConnections, btnNo.MouseButton1Click:Connect(function()
-			closeConfirm()
-			if isActiveShopSession(sessionId) and myConfirmationVersion == confirmationVersion then
-				callback(false)
-			end
-		end))
-	end
+	bindConfirmationButton(btnNo, function()
+		finishChoice(false)
+	end)
 end
 
 -- ============================================================================
@@ -481,14 +672,12 @@ local function UpdateCraftingUI(carName)
 		end
 	end
 
-	-- UPDATED: Explicitly target SacrificeItems > Confirmation > Craft
 	local mainCraftBtn = nil
 	local confirmFrame = sacrificeItems:FindFirstChild("Confirmation")
 	if confirmFrame then
 		mainCraftBtn = confirmFrame:FindFirstChild("Craft") or confirmFrame:FindFirstChild("CraftButton")
 	end
 
-	-- Fallback if not found inside Confirmation
 	if not mainCraftBtn then
 		mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
 	end
@@ -535,9 +724,9 @@ local function AttemptSacrifice(carName, ingredient)
 	local progress = currentState.CraftProgress[carName] or {}
 	local currentAmount = progress[ingredient] or 0
 
-	if currentAmount >= requiredAmount then 
+	if currentAmount >= requiredAmount then
 		updateDialogue("AlreadyDone")
-		return 
+		return
 	end
 
 	local amountToSacrifice = 1
@@ -555,11 +744,11 @@ local function AttemptSacrifice(carName, ingredient)
 	local requestViewVersion = shopViewVersion
 
 	PromptConfirmation(requestSessionId, buildSacrificeConfirmationText(sacrificeText, displayCarName), function(confirmed)
-		if not confirmed then 
+		if not confirmed then
 			if isActiveShopSession(requestSessionId) and requestViewVersion == shopViewVersion then
 				updateDialogue("CancelSacrifice")
 			end
-			return 
+			return
 		end
 
 		if not isActiveShopSession(requestSessionId) or requestViewVersion ~= shopViewVersion then return end
@@ -600,9 +789,13 @@ local function AttemptSacrifice(carName, ingredient)
 			for ing, req in pairs(recipe) do
 				if ing ~= "TargetCar" and ing ~= "CraftTime" then
 					local p = currentState.CraftProgress[carName] and currentState.CraftProgress[carName][ing] or 0
-					if p < req then allComplete = false break end
+					if p < req then
+						allComplete = false
+						break
+					end
 				end
 			end
+
 			if allComplete and success and requestViewVersion == shopViewVersion and activeCarFocus == carName then
 				updateDialogue("AllComplete")
 			end
@@ -713,7 +906,6 @@ local function OpenCraftingMenu(carName)
 
 			local sacrificeItems = carFrame:FindFirstChild("SacrificeItems")
 
-			-- UPDATED: Explicitly target SacrificeItems > Confirmation > Craft
 			local mainCraftBtn = nil
 			if sacrificeItems then
 				local confirmFrame = sacrificeItems:FindFirstChild("Confirmation")
@@ -722,7 +914,6 @@ local function OpenCraftingMenu(carName)
 				end
 			end
 
-			-- Fallback if not found inside Confirmation
 			if not mainCraftBtn then
 				mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
 			end
@@ -770,9 +961,9 @@ end
 local function init()
 	local gui, mainFrame, scrollFrame, closeBtn = getUI()
 
-	gui.Enabled = false 
+	gui.Enabled = false
 
-	Kit.Tween:SetupButton(closeBtn, function() 
+	Kit.Tween:SetupButton(closeBtn, function()
 		closeShopUI(true)
 	end)
 
@@ -799,12 +990,13 @@ local function init()
 
 		local sessionId = beginShopSession()
 		isShopOpen = true
-		setFocusMode(true) 
+		setFocusMode(true)
 		Kit.Sound:Play("Open")
-		gui.Enabled = true 
+		gui.Enabled = true
 		mainFrame.Visible = true
 		activeCarFocus = nil
 		isProcessingPurchase = false
+		confirmationRestoreState = nil
 
 		hideAllCraftingMenus()
 
@@ -832,4 +1024,9 @@ player.CharacterAdded:Connect(function()
 	closeShopUI(true)
 end)
 
-if player.Character then init() else player.CharacterAdded:Wait(); init() end
+if player.Character then
+	init()
+else
+	player.CharacterAdded:Wait()
+	init()
+end
