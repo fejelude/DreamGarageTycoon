@@ -274,6 +274,51 @@ local function FormatCommas(num)
 	return tostring(num):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
 end
 
+local function escapeRichText(text)
+	text = tostring(text)
+	text = text:gsub("&", "&amp;")
+	text = text:gsub("<", "&lt;")
+	text = text:gsub(">", "&gt;")
+	text = text:gsub("\"", "&quot;")
+	return text
+end
+
+local CONFIRMATION_COLORS = {
+	Sacrifice = "#ff5757",
+	Target = "#63b3ff",
+	Accent = "#f4efe6"
+}
+
+local function buildSacrificeConfirmationText(sacrificeText, targetCarName)
+	local safeSacrifice = escapeRichText(sacrificeText)
+	local safeTarget = escapeRichText(targetCarName)
+	return string.format(
+		"<font color='%s'>Do you want to sacrifice </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>%s</font></b><font color='%s'>?</font>",
+		CONFIRMATION_COLORS.Accent,
+		CONFIRMATION_COLORS.Sacrifice,
+		safeSacrifice,
+		CONFIRMATION_COLORS.Accent,
+		CONFIRMATION_COLORS.Target,
+		safeTarget,
+		CONFIRMATION_COLORS.Accent
+	)
+end
+
+local function buildCraftConfirmationText(targetCarName, hoursText)
+	local safeTarget = escapeRichText(targetCarName)
+	local safeHours = escapeRichText(hoursText)
+	return string.format(
+		"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
+		CONFIRMATION_COLORS.Accent,
+		CONFIRMATION_COLORS.Target,
+		safeTarget,
+		CONFIRMATION_COLORS.Accent,
+		CONFIRMATION_COLORS.Sacrifice,
+		safeHours,
+		CONFIRMATION_COLORS.Accent
+	)
+end
+
 -- ============================================================================
 -- 🧠 CONFIRMATION LOGIC
 -- ============================================================================
@@ -294,7 +339,11 @@ local function PromptConfirmation(text, callback)
 	local btnYes = resolveGuiButton(confirmMain:FindFirstChild("Yes", true))
 	local btnNo = resolveGuiButton(confirmMain:FindFirstChild("No", true))
 
-	if infoLabel then infoLabel.Text = text end
+	if infoLabel then
+		infoLabel.RichText = true
+		infoLabel.TextWrapped = true
+		infoLabel.Text = text
+	end
 
 	confirmGui.Enabled = true
 	if confirmMain:IsA("GuiObject") then
@@ -445,17 +494,18 @@ local function AttemptSacrifice(carName, ingredient)
 	end
 
 	local amountToSacrifice = 1
-	local costText = ""
+	local sacrificeText = ""
+	local displayCarName = recipe.TargetCar or carName
 	if ingredient == "Cash" then
 		amountToSacrifice = requiredAmount - currentAmount
-		costText = "$" .. FormatCommas(amountToSacrifice) .. " cash for " .. carName
+		sacrificeText = "$" .. FormatCommas(amountToSacrifice)
 	else
-		costText = "1 " .. ingredient .. " car for " .. carName
+		sacrificeText = amountToSacrifice .. " " .. ingredient
 	end
 
 	updateDialogue("ConfirmSacrifice")
 
-	PromptConfirmation("Sacrifice " .. costText .. "?", function(confirmed)
+	PromptConfirmation(buildSacrificeConfirmationText(sacrificeText, displayCarName), function(confirmed)
 		if not confirmed then 
 			updateDialogue("CancelSacrifice")
 			return 
@@ -507,7 +557,11 @@ local function AttemptCraft(carName)
 		return
 	end
 
-	PromptConfirmation("Are you sure you want to start crafting " .. carName .. "? This will take " .. (carName == "Yamura" and "12" or "48") .. " hours.", function(confirmed)
+	local recipe = RECIPES[carName]
+	local displayCarName = recipe and recipe.TargetCar or carName
+	local craftHours = (carName == "Yamura" and "12" or "48")
+
+	PromptConfirmation(buildCraftConfirmationText(displayCarName, craftHours), function(confirmed)
 		if not confirmed then return end
 
 		if isProcessingPurchase then return end
