@@ -618,8 +618,6 @@ local function init()
 		local realState = FuncGetState:InvokeServer()
 		currentState = realState
 		UpdateDisplay()
-
-		updateDialogue("MenuOpen")
 	end)
 
 	RemoteUpdate.OnClientEvent:Connect(function(newState)
