@@ -1,0 +1,579 @@
+-- Purpose: Controls the UI, display, and client-side interactions for the Legendary Car Shop.
+-- Runs on: Client
+-- Location: StarterPlayerScripts > LegendaryShopController
+-- Dependencies: ReplicatedStorage.CarStats, ReplicatedStorage.ShopFrontendKit
+-- Public API: None (Event-driven)
+-- Networking: Listens to OpenLegendaryShop, LegendaryShopUpdate. Invokes GetLegendaryShopState, CraftLegendaryCar, SacrificeLegendaryIngredient.
+-- Security: UI debounces to prevent spam. Server acts as absolute authority for stock, funds, and car ownership.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
+local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local PlayerGui = player:WaitForChild("PlayerGui")
+
+-- 🛑 IMMEDIATE HIDE
+local gui = PlayerGui:WaitForChild("LegendaryCarsAngeloUi")
+local mainFrame = gui:WaitForChild("Mainframe")
+mainFrame.Visible = true
+gui.Enabled = false
+
+-- Confirmation UI
+local confirmGui = PlayerGui:WaitForChild("Confirmation", 5)
+local confirmMain = confirmGui and confirmGui:WaitForChild("MainFrame")
+
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
+
+-- ⚙️ CONFIGURATION
+local SHOP_CARS = {"LaRossa", "Yamura"} -- Maps to internal names ("La Rossa" and "Yamura") but UI uses "LaRossa"
+local RECIPES = {
+	["LaRossa"] = {
+		TargetCar = "La Rossa",
+		Cash = 150000000,
+		Riva = 7,
+		Kingston = 3,
+		Velocity = 4,
+		Vortex = 2
+	},
+	["Yamura"] = {
+		TargetCar = "Yamura",
+		Cash = 90000000,
+		Riva = 5,
+		Kingston = 3,
+		Velocity = 2,
+		Vortex = 1
+	}
+}
+
+local BLUR_SIZE = 24
+
+-- 🎨 FEEDBACK CONFIGURATION
+local FEEDBACK_COLORS = {
+	Success = Color3.fromRGB(80, 200, 120),
+	FailRobux = Color3.fromRGB(255, 95, 95),
+	FailCash = Color3.fromRGB(255, 170, 60),
+	TooFast = Color3.fromRGB(255, 200, 50)
+}
+
+-- 📡 REMOTES (ISOLATED FOR LEGENDARY)
+local Remotes = ReplicatedStorage:WaitForChild("ShopRemotes")
+local RemoteOpen = Remotes:WaitForChild("OpenLegendaryShop")
+local RemoteUpdate = Remotes:WaitForChild("LegendaryShopUpdate")
+local FuncGetState = Remotes:WaitForChild("GetLegendaryShopState")
+local FuncCraftCar = Remotes:WaitForChild("CraftLegendaryCar")
+local FuncSacrifice = Remotes:WaitForChild("SacrificeLegendaryIngredient")
+
+-- DIALOGUE EVENT
+local DialogueEvent
+task.spawn(function()
+    -- Wait for the dialogue script to create the bindable
+    local dialogueLogicScript = player:WaitForChild("PlayerScripts"):WaitForChild("LegendaryAngeloDialogueLogic", 10)
+    if dialogueLogicScript then
+        DialogueEvent = dialogueLogicScript:WaitForChild("UpdateLegendaryAngeloDialogue", 10)
+    end
+end)
+
+local function updateDialogue(action, info)
+    if DialogueEvent then
+        DialogueEvent:Fire(action, info)
+    end
+end
+
+-- 🛡️ STATE
+local currentState = nil
+local purchaseDebounce = {}
+local isProcessingPurchase = false
+local hiddenGuis = {}
+local hiddenObjects = {}
+local currentBlur = nil
+local feedbackTween = nil
+local activeCarFocus = nil
+
+-- 🛑 UI REFERENCES
+local function getUI()
+	return gui, mainFrame, mainFrame:WaitForChild("ScrollingFrame"), mainFrame:WaitForChild("ExitButton")
+end
+
+-- ============================================================================
+-- 👁️ FEEDBACK LOGIC
+-- ============================================================================
+local function showFeedback(text, color)
+    Kit.Toast:Show(text, color)
+end
+
+-- ============================================================================
+-- 👁️ FOCUS MODE (BLUR + HIDE UI)
+-- ============================================================================
+local function setBlur(enable)
+	if enable then
+		if not currentBlur then
+			currentBlur = Instance.new("BlurEffect")
+			currentBlur.Size = 0
+			currentBlur.Parent = Lighting
+			currentBlur.Name = "LegendaryShopBlur"
+		end
+		TweenService:Create(currentBlur, TweenInfo.new(0.5), {Size = BLUR_SIZE}):Play()
+	else
+		if currentBlur then
+			local t = TweenService:Create(currentBlur, TweenInfo.new(0.5), {Size = 0})
+			t:Play()
+			t.Completed:Connect(function()
+				if currentBlur then currentBlur:Destroy() currentBlur = nil end
+			end)
+		end
+	end
+end
+
+local function toggleNamedGuiObjects(shouldHide, objectName)
+	if shouldHide then
+		for _, obj in pairs(PlayerGui:GetDescendants()) do
+			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
+				obj.Visible = false
+				table.insert(hiddenObjects, obj)
+			end
+		end
+	else
+		for _, obj in pairs(hiddenObjects) do
+			if obj and obj.Parent and obj:IsA("GuiObject") then
+				obj.Visible = true
+			end
+		end
+		hiddenObjects = {}
+	end
+end
+
+local function toggleOtherGuis(shouldHide)
+	if shouldHide then
+		hiddenGuis = {}
+		for _, otherGui in pairs(PlayerGui:GetChildren()) do
+			if otherGui:IsA("ScreenGui")
+				and otherGui ~= gui
+                and otherGui ~= confirmGui
+                and otherGui.Name ~= "UI_NPC_Monk3yDAngelo-Cars" -- Don't hide dialogue UI!
+				and otherGui.Enabled == true
+				and otherGui.Name ~= "Balance Indicator" then
+
+				otherGui.Enabled = false
+				table.insert(hiddenGuis, otherGui)
+			end
+		end
+	else
+		for _, otherGui in pairs(hiddenGuis) do
+			if otherGui and otherGui.Parent then
+				otherGui.Enabled = true
+			end
+		end
+		hiddenGuis = {}
+	end
+end
+
+local function setFocusMode(active)
+	setBlur(active)
+	toggleOtherGuis(active)
+	toggleNamedGuiObjects(active, "FriendBoost")
+
+	local char = player.Character
+	if char and char:FindFirstChild("Humanoid") then
+		char.Humanoid.WalkSpeed = active and 0 or 16
+		char.Humanoid.JumpPower = active and 0 or 50
+	end
+end
+
+local function FormatCommas(num)
+    return tostring(num):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
+end
+
+-- ============================================================================
+-- 🧠 CONFIRMATION LOGIC
+-- ============================================================================
+local confirmConnections = {}
+local function PromptConfirmation(text, callback)
+    if not confirmGui or not confirmMain then
+        -- Fallback if UI is missing
+        callback(true)
+        return
+    end
+
+    for _, conn in ipairs(confirmConnections) do
+        conn:Disconnect()
+    end
+    confirmConnections = {}
+
+    local infoLabel = confirmMain:FindFirstChild("Information")
+    local btnYes = confirmMain:FindFirstChild("Yes")
+    local btnNo = confirmMain:FindFirstChild("No")
+
+    if infoLabel then infoLabel.Text = text end
+
+    confirmGui.Enabled = true
+
+    local function closeConfirm()
+        confirmGui.Enabled = false
+        for _, conn in ipairs(confirmConnections) do
+            conn:Disconnect()
+        end
+        confirmConnections = {}
+    end
+
+    if btnYes then
+        table.insert(confirmConnections, btnYes.MouseButton1Click:Connect(function()
+            closeConfirm()
+            callback(true)
+        end))
+    end
+
+    if btnNo then
+        table.insert(confirmConnections, btnNo.MouseButton1Click:Connect(function()
+            closeConfirm()
+            callback(false)
+        end))
+    end
+end
+
+-- ============================================================================
+-- 🧠 RENDER LOGIC
+-- ============================================================================
+
+local function UpdateCraftingUI(carName)
+    local craftingUIName = carName .. "Crafting"
+    local craftGui = gui:FindFirstChild(craftingUIName)
+    if not craftGui then return end
+
+    local carFrame = craftGui:FindFirstChild(carName)
+    if not carFrame then return end
+
+    local sacrificeItems = carFrame:FindFirstChild("SacrificeItems")
+    if not sacrificeItems then return end
+
+    local recipe = RECIPES[carName]
+    if not recipe then return end
+
+    local progress = currentState.CraftProgress[carName] or {}
+    local isCrafting = currentState.ActiveCrafts[carName] ~= nil
+
+    local allComplete = true
+
+    for ingredient, requiredAmount in pairs(recipe) do
+        if ingredient == "TargetCar" then continue end
+
+        local reqFrame = sacrificeItems:FindFirstChild(ingredient)
+        if reqFrame then
+            local details = reqFrame:FindFirstChild("Details")
+            local infoLabel = details and details:FindFirstChild("Information")
+            local sacBtn = reqFrame:FindFirstChild("SacrificeButton")
+            local doneBtn = reqFrame:FindFirstChild("SacrificeDoneButton")
+
+            if not doneBtn then
+                for _, child in pairs(reqFrame.Parent:GetChildren()) do
+                    if child.Name == "SacrificeDoneButton" and child:GetAttribute("Ingredient") == ingredient then
+                        doneBtn = child
+                    end
+                end
+            end
+
+            local currentAmount = progress[ingredient] or 0
+            local isDone = currentAmount >= requiredAmount
+
+            if infoLabel then
+                if ingredient == "Cash" then
+                    infoLabel.Text = isDone and "Complete" or ("$" .. FormatCommas(currentAmount) .. " / $" .. FormatCommas(requiredAmount))
+                else
+                    infoLabel.Text = isDone and "Complete" or (currentAmount .. " / " .. requiredAmount)
+                end
+            end
+
+            if isDone then
+                if sacBtn then sacBtn.Visible = false end
+                if doneBtn then doneBtn.Visible = true end
+            else
+                if sacBtn then sacBtn.Visible = true end
+                if doneBtn then doneBtn.Visible = false end
+                allComplete = false
+            end
+        end
+    end
+
+    -- Update main Craft button in the crafting UI if it exists
+    local mainCraftBtn = carFrame:FindFirstChild("CraftButton") or carFrame:FindFirstChild("Craft")
+    if mainCraftBtn then
+        if isCrafting then
+            mainCraftBtn.Visible = false
+        else
+            mainCraftBtn.Visible = allComplete
+        end
+    end
+end
+
+local function UpdateDisplay()
+	if not currentState then return end
+
+    -- Update Main Selection UI
+    local scrollFrame = mainFrame:FindFirstChild("ScrollingFrame")
+    if scrollFrame then
+        for _, carName in ipairs(SHOP_CARS) do
+            local card = scrollFrame:FindFirstChild(carName)
+            if card then
+                local buttonsFrame = card:FindFirstChild("Buttons")
+                local craftBtn = buttonsFrame and buttonsFrame:FindFirstChild("Craft")
+            end
+        end
+    end
+
+    -- Update specific crafting UI if open
+    if activeCarFocus then
+        UpdateCraftingUI(activeCarFocus)
+    end
+end
+
+-- ============================================================================
+-- 🛒 SACRIFICE / CRAFT LOGIC
+-- ============================================================================
+
+local function AttemptSacrifice(carName, ingredient)
+    if isProcessingPurchase then return end
+
+    local recipe = RECIPES[carName]
+    local requiredAmount = recipe[ingredient]
+    local progress = currentState.CraftProgress[carName] or {}
+    local currentAmount = progress[ingredient] or 0
+
+    if currentAmount >= requiredAmount then
+        updateDialogue("AlreadyDone")
+        return
+    end
+
+    local amountToSacrifice = 1
+    local costText = ""
+    if ingredient == "Cash" then
+        amountToSacrifice = requiredAmount - currentAmount
+        costText = "$" .. FormatCommas(amountToSacrifice) .. " cash"
+    else
+        costText = "1 " .. ingredient
+    end
+
+    updateDialogue("ConfirmSacrifice")
+
+    PromptConfirmation("Are you sure you want to sacrifice " .. costText .. "?", function(confirmed)
+        if not confirmed then
+            updateDialogue("CancelSacrifice")
+            return
+        end
+
+        if isProcessingPurchase then return end
+        isProcessingPurchase = true
+
+        Kit.Sound:Play("Click")
+
+        task.spawn(function()
+            local success, msg = FuncSacrifice:InvokeServer(carName, ingredient)
+            isProcessingPurchase = false
+
+            if success then
+                Kit.Sound:Play("BuySuccess")
+                showFeedback("Sacrifice Successful", FEEDBACK_COLORS.Success)
+                updateDialogue("SacrificeSuccess")
+            else
+                Kit.Sound:Play("BuyFail")
+                showFeedback(msg, FEEDBACK_COLORS.FailCash)
+                if msg == "Insufficient Cash (Withdraw from ATM)" or msg == "You don't own the required car (" .. ingredient .. ")!" then
+                    updateDialogue("NotEnough")
+                end
+            end
+
+            -- Force refresh state
+            currentState = FuncGetState:InvokeServer()
+            UpdateDisplay()
+
+            -- Check if all are now complete
+            local allComplete = true
+            for ing, req in pairs(recipe) do
+                if ing ~= "TargetCar" and ing ~= "CraftTime" then
+                    local p = currentState.CraftProgress[carName] and currentState.CraftProgress[carName][ing] or 0
+                    if p < req then allComplete = false break end
+                end
+            end
+            if allComplete and success then
+                updateDialogue("AllComplete")
+            end
+        end)
+    end)
+end
+
+local function AttemptCraft(carName)
+    if isProcessingPurchase then return end
+
+    if currentState.CompletedCrafts[carName] then
+        updateDialogue("AlreadyCrafted")
+        return
+    end
+
+    PromptConfirmation("Are you sure you want to start crafting " .. carName .. "? This will take " .. (carName == "Yamura" and "12" or "48") .. " hours.", function(confirmed)
+        if not confirmed then return end
+
+        if isProcessingPurchase then return end
+        isProcessingPurchase = true
+
+        Kit.Sound:Play("Click")
+
+        task.spawn(function()
+            local success, msg = FuncCraftCar:InvokeServer(carName)
+            isProcessingPurchase = false
+
+            if success then
+                Kit.Sound:Play("BuySuccess")
+                showFeedback("Crafting Started!", FEEDBACK_COLORS.Success)
+                updateDialogue("CraftStarted")
+            else
+                Kit.Sound:Play("BuyFail")
+                showFeedback(msg, FEEDBACK_COLORS.FailCash)
+            end
+
+            -- Force refresh state
+            currentState = FuncGetState:InvokeServer()
+            UpdateDisplay()
+        end)
+    end)
+end
+
+local function OpenCraftingMenu(carName)
+    activeCarFocus = carName
+    mainFrame.Visible = false
+
+    local craftingUIName = carName .. "Crafting"
+    local craftGui = gui:FindFirstChild(craftingUIName)
+
+    updateDialogue("SelectCar", carName)
+
+    if craftGui then
+        craftGui.Visible = true
+        UpdateCraftingUI(carName)
+
+        local carFrame = craftGui:FindFirstChild(carName)
+        if carFrame then
+            local exitBtn = carFrame:FindFirstChild("ExitButton") or carFrame:FindFirstChild("CloseButton")
+            if exitBtn then
+                if exitBtn:GetAttribute("Connected") then return end
+                exitBtn:SetAttribute("Connected", true)
+
+                Kit.Tween:SetupButton(exitBtn, function()
+                    activeCarFocus = nil
+                    craftGui.Visible = false
+                    mainFrame.Visible = true
+                    updateDialogue("MenuOpen")
+                end)
+            end
+
+            local mainCraftBtn = carFrame:FindFirstChild("CraftButton") or carFrame:FindFirstChild("Craft")
+            if mainCraftBtn then
+                if not mainCraftBtn:GetAttribute("Connected") then
+                    mainCraftBtn:SetAttribute("Connected", true)
+                    Kit.Tween:SetupButton(mainCraftBtn, function()
+                        if mainCraftBtn.Visible and mainCraftBtn.Active then AttemptCraft(carName) end
+                    end)
+                end
+            end
+
+            local sacrificeItems = carFrame:FindFirstChild("SacrificeItems")
+            if sacrificeItems then
+                for ingredient, _ in pairs(RECIPES[carName]) do
+                    if ingredient == "TargetCar" then continue end
+                    local reqFrame = sacrificeItems:FindFirstChild(ingredient)
+                    if reqFrame then
+                        local sacBtn = reqFrame:FindFirstChild("SacrificeButton")
+                        if sacBtn then
+                            if not sacBtn:GetAttribute("Connected") then
+                                sacBtn:SetAttribute("Connected", true)
+                                Kit.Tween:SetupButton(sacBtn, function()
+                                    if sacBtn.Visible and sacBtn.Active then AttemptSacrifice(carName, ingredient) end
+                                end)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    else
+        warn("⚠️ Crafting UI not found for " .. carName)
+    end
+end
+
+-- ============================================================================
+-- 🚀 INIT & EVENTS
+-- ============================================================================
+local function init()
+	local gui, mainFrame, scrollFrame, closeBtn = getUI()
+
+	gui.Enabled = false
+
+	Kit.Tween:SetupButton(closeBtn, function()
+		setFocusMode(false)
+		gui.Enabled = false
+        activeCarFocus = nil
+
+        -- Hide all submenus
+        for _, carName in ipairs(SHOP_CARS) do
+            local craftGui = gui:FindFirstChild(carName .. "Crafting")
+            if craftGui then craftGui.Visible = false end
+        end
+
+        -- Try to hide the interaction dialogue as well if closed via this menu
+        local dialogueUI = playerGui:FindFirstChild("UI_NPC_Monk3yDAngelo-Cars")
+        if dialogueUI then dialogueUI.Enabled = false end
+	end)
+
+	if scrollFrame then
+		for _, carName in ipairs(SHOP_CARS) do
+			local card = scrollFrame:WaitForChild(carName, 5)
+			if card then
+				local buttonsFrame = card:FindFirstChild("Buttons")
+				local craftBtn = buttonsFrame and buttonsFrame:FindFirstChild("Craft")
+
+				if craftBtn then
+					Kit.Tween:SetupButton(craftBtn, function()
+						OpenCraftingMenu(carName)
+					end)
+				end
+			end
+		end
+	end
+
+	RemoteOpen.OnClientEvent:Connect(function()
+		setFocusMode(true)
+		Kit.Sound:Play("Open")
+		gui.Enabled = true
+        mainFrame.Visible = true
+        activeCarFocus = nil
+
+        -- Hide all submenus
+        for _, carName in ipairs(SHOP_CARS) do
+            local craftGui = gui:FindFirstChild(carName .. "Crafting")
+            if craftGui then craftGui.Visible = false end
+        end
+
+		currentState = {CraftProgress = {}, ActiveCrafts = {}, CompletedCrafts = {}}
+		UpdateDisplay()
+
+		local realState = FuncGetState:InvokeServer()
+		currentState = realState
+		UpdateDisplay()
+
+        updateDialogue("MenuOpen")
+	end)
+
+	RemoteUpdate.OnClientEvent:Connect(function(newState)
+        if newState.Reason == "Complete" then
+            updateDialogue("CraftComplete")
+        end
+		currentState = newState
+		UpdateDisplay()
+	end)
+end
+
+if player.Character then init() else player.CharacterAdded:Wait(); init() end

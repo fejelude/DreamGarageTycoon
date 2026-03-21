@@ -1,0 +1,513 @@
+-- Purpose: Handles Camera, Dialogue Logic, and UI for Monk3yDAngelo-Cars NPC with RootPart-locked interaction.
+-- Runs on: Client
+-- Location: StarterPlayerScripts
+-- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
+-- Public API: UpdateLegendaryAngeloDialogue (BindableEvent)
+-- Networking: None (Client-side dialogue only)
+-- Security: Validates local character state before locking movement.
+
+local TweenService = game:GetService("TweenService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local SoundService = game:GetService("SoundService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+local playerGui = player:WaitForChild("PlayerGui")
+
+print("🐛 [LegendaryAngeloDebug] Script Initializing...")
+
+-- ============================================================================
+-- 🎨 COLOR CONFIGURATION
+-- ============================================================================
+local USER_COLOR = "#55AAFF"    -- Blue (Player Name Default)
+local ANGELO_COLOR = "#FFD700"  -- Gold (Angelo)
+local GREEN_COLOR = "#55FF7F"   -- Green (Exit Message)
+
+-- ============================================================================
+-- 🆔 UNIQUE IDENTIFIERS
+-- ============================================================================
+local GUI_ID = "UI_NPC_Monk3yDAngelo-Cars"
+local CONTAINER_ID = "Frame_Angelo_Container"
+local TEXT_ID = "Text_Angelo_Dialogue"
+
+-- BUTTON NAMES
+local BTN_CRAFT_ID = "Btn_Angelo_Craft"
+local BTN_LEAVE_ID = "Btn_Angelo_Leave"
+local ALL_BUTTON_IDS = {BTN_CRAFT_ID, BTN_LEAVE_ID}
+
+-- 📍 NPC CONFIGURATION
+local TARGET_NPC = "Monk3yDAngelo-Cars"
+local CAMERA_PART = "CameraAimPart"
+local PROMPT_NAME = "Talkprompt"
+
+-- 🎥 SETTINGS
+local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TYPEWRITER_SPEED = 0.02
+local LEAVE_DELAY = 1.5
+
+-- 🔊 SOUNDS
+local TYPING_SOUND_ID = "rbxassetid://4676738150"
+local HOVER_SOUND_ID = "rbxassetid://6895079853"
+local CLICK_SOUND_ID = "rbxassetid://9083627113"
+
+-- ✨ ANIMATION SETTINGS
+local HOVER_SCALE = 1.1
+local CLICK_SCALE = 0.9
+local ANIM_SPEED = 0.1
+
+-- ============================================================================
+-- 🛠️ STATE VARIABLES
+-- ============================================================================
+local isInteracting = false
+local isLeaving = false
+local currentDialogueJob = nil
+local buttonConnections = {}
+local buttonHoverConnections = {}
+local hiddenGuis = {}
+local hiddenObjects = {}
+local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
+
+-- Remotes
+local RemoteOpen = ReplicatedStorage:WaitForChild("ShopRemotes"):WaitForChild("OpenLegendaryShop")
+
+-- Bindable Event for External Dialogue Updates
+local UpdateDialogueEvent = script:FindFirstChild("UpdateLegendaryAngeloDialogue")
+if not UpdateDialogueEvent then
+    UpdateDialogueEvent = Instance.new("BindableEvent")
+    UpdateDialogueEvent.Name = "UpdateLegendaryAngeloDialogue"
+    UpdateDialogueEvent.Parent = script
+end
+
+-- ============================================================================
+-- 🔒 FORCE HIDE UI ON LOAD
+-- ============================================================================
+task.spawn(function()
+	local myGui = playerGui:WaitForChild(GUI_ID, 10)
+	if myGui then
+		myGui.Enabled = false
+		local container = myGui:FindFirstChild(CONTAINER_ID, true)
+		if container then container.Visible = false end
+	end
+end)
+
+-- ============================================================================
+-- 🎬 INTERACTION FUNCTIONS
+-- ============================================================================
+
+local function setButtonsState(isActive)
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if not myGui then return end
+
+	for _, btnID in ipairs(ALL_BUTTON_IDS) do
+		local btn = myGui:FindFirstChild(btnID, true)
+		if btn then
+			btn.Visible = isActive
+			btn.Active = isActive
+		end
+	end
+end
+
+local function clearConnections()
+	for _, conn in pairs(buttonConnections) do
+		if conn then conn:Disconnect() end
+	end
+	buttonConnections = {}
+
+	for _, conn in pairs(buttonHoverConnections) do
+		if conn then conn:Disconnect() end
+	end
+	buttonHoverConnections = {}
+end
+
+local function toggleNamedGuiObjects(shouldHide, objectName)
+	if shouldHide then
+		for _, obj in pairs(playerGui:GetDescendants()) do
+			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
+				obj.Visible = false
+				table.insert(hiddenObjects, obj)
+			end
+		end
+	else
+		for _, obj in pairs(hiddenObjects) do
+			if obj and obj.Parent and obj:IsA("GuiObject") then
+				obj.Visible = true
+			end
+		end
+		hiddenObjects = {}
+	end
+end
+
+local function toggleOtherGuis(shouldHide)
+	if shouldHide then
+		hiddenGuis = {}
+		for _, otherGui in pairs(playerGui:GetChildren()) do
+			if otherGui:IsA("ScreenGui")
+				and otherGui.Name ~= GUI_ID
+                and otherGui.Name ~= "LegendaryCarsAngeloUi" -- Allow the actual crafting UI to show
+                and otherGui.Name ~= "Confirmation" -- Allow confirmations
+				and otherGui.Enabled == true
+				and otherGui.Name ~= "Balance Indicator" then
+
+				otherGui.Enabled = false
+				table.insert(hiddenGuis, otherGui)
+			end
+		end
+	else
+		for _, otherGui in pairs(hiddenGuis) do
+			if otherGui and otherGui.Parent then
+				otherGui.Enabled = true
+			end
+		end
+		hiddenGuis = {}
+	end
+end
+
+local function setFocusMode(active)
+	toggleOtherGuis(active)
+	toggleNamedGuiObjects(active, "FriendBoost")
+end
+
+local function playSound(id, vol)
+	local s = Instance.new("Sound")
+	s.SoundId = id
+	s.Volume = vol or 0.5
+	s.Parent = SoundService
+	s:Play()
+	game.Debris:AddItem(s, 1)
+end
+
+local function getCleanTextLength(str)
+	local cleanStr = string.gsub(str, "<[^>]+>", "")
+	return utf8.len(cleanStr) or #cleanStr
+end
+
+local function typewrite(label, text, onComplete)
+	if not label then return end
+	label.RichText = true
+
+	if currentDialogueJob then
+		task.cancel(currentDialogueJob)
+		currentDialogueJob = nil
+	end
+
+	label.Text = text
+	label.MaxVisibleGraphemes = 0
+
+	local len = getCleanTextLength(text)
+
+	currentDialogueJob = task.spawn(function()
+		for i = 1, len do
+			if not isInteracting and not isLeaving then break end
+			label.MaxVisibleGraphemes = i
+			if i % 3 == 0 then
+				local s = Instance.new("Sound", SoundService)
+				s.SoundId = TYPING_SOUND_ID
+				s.Volume = 0.1
+				s.PlayOnRemove = true
+				s:Destroy()
+			end
+			task.wait(TYPEWRITER_SPEED)
+		end
+		label.MaxVisibleGraphemes = -1
+
+		currentDialogueJob = nil
+
+		if onComplete and isInteracting then
+			task.spawn(onComplete)
+		end
+	end)
+end
+
+local function stopInteraction()
+	if not isInteracting and not isLeaving then return end
+
+	isInteracting = false
+	isLeaving = false
+
+	if currentDialogueJob then task.cancel(currentDialogueJob) end
+	clearConnections()
+	setFocusMode(false)
+
+	camera.CameraType = Enum.CameraType.Custom
+	if controls then controls:Enable() end
+
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+
+		if hrp then hrp.Anchored = false end
+		if humanoid then humanoid.WalkSpeed = 16 end
+	end
+
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if myGui then
+		myGui.Enabled = false
+		local container = myGui:FindFirstChild(CONTAINER_ID, true)
+		if container then container.Visible = false end
+	end
+
+    -- Tell the crafting controller we closed out entirely if it was open
+    local craftGui = playerGui:FindFirstChild("LegendaryCarsAngeloUi")
+    if craftGui and craftGui.Enabled then
+        craftGui.Enabled = false
+    end
+end
+
+local function animateButton(btn)
+	if not btn:GetAttribute("OriginalSizeX") then
+		btn:SetAttribute("OriginalSizeX", btn.Size.X.Scale)
+		btn:SetAttribute("OriginalSizeXO", btn.Size.X.Offset)
+		btn:SetAttribute("OriginalSizeY", btn.Size.Y.Scale)
+		btn:SetAttribute("OriginalSizeYO", btn.Size.Y.Offset)
+	end
+
+	local origX = btn:GetAttribute("OriginalSizeX")
+	local origXO = btn:GetAttribute("OriginalSizeXO")
+	local origY = btn:GetAttribute("OriginalSizeY")
+	local origYO = btn:GetAttribute("OriginalSizeYO")
+
+	local normalSize = UDim2.new(origX, origXO, origY, origYO)
+	local hoverSize = UDim2.new(origX * HOVER_SCALE, origXO * HOVER_SCALE, origY * HOVER_SCALE, origYO * HOVER_SCALE)
+	local clickSize = UDim2.new(origX * CLICK_SCALE, origXO * CLICK_SCALE, origY * CLICK_SCALE, origYO * CLICK_SCALE)
+
+	if not UserInputService.TouchEnabled then
+		local connEnter = btn.MouseEnter:Connect(function()
+			playSound(HOVER_SOUND_ID, 0.5)
+			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = hoverSize}):Play()
+		end)
+
+		local connLeave = btn.MouseLeave:Connect(function()
+			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = normalSize}):Play()
+		end)
+
+		table.insert(buttonHoverConnections, connEnter)
+		table.insert(buttonHoverConnections, connLeave)
+	end
+
+	local connDown = btn.MouseButton1Down:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.05), {Size = clickSize}):Play()
+	end)
+
+	local connUp = btn.MouseButton1Up:Connect(function()
+		local target = (not UserInputService.TouchEnabled) and hoverSize or normalSize
+		TweenService:Create(btn, TweenInfo.new(ANIM_SPEED, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = target}):Play()
+	end)
+
+	table.insert(buttonHoverConnections, connDown)
+	table.insert(buttonHoverConnections, connUp)
+end
+
+local GREETING_DIALOGUES = {
+    "Welcome to the inner circle, ",
+    "Looking to craft something extraordinary, ",
+    "The legendary cars await, ",
+    "I've been expecting you, "
+}
+
+local function startInteraction(npcModel)
+	if isInteracting or isLeaving then return end
+
+	isInteracting = true
+	clearConnections()
+
+	local camPart = npcModel:FindFirstChild(CAMERA_PART)
+	if not camPart then
+		warn("❌ [LegendaryAngeloDebug] Error: Missing '"..CAMERA_PART.."'")
+		isInteracting = false
+		return
+	end
+
+	if controls then controls:Disable() end
+	setFocusMode(true)
+
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+
+		if humanoid then humanoid.WalkSpeed = 0 end
+		if hrp then
+			hrp.Velocity = Vector3.zero
+			hrp.Anchored = true
+		end
+	end
+
+	camera.CameraType = Enum.CameraType.Scriptable
+	TweenService:Create(camera, TWEEN_INFO, {CFrame = camPart.CFrame}):Play()
+
+	local myGui = playerGui:WaitForChild(GUI_ID, 5)
+	if not myGui then warn("❌ [LegendaryAngeloDebug] Missing GUI") stopInteraction() return end
+
+	myGui.Enabled = true
+	local container = myGui:FindFirstChild(CONTAINER_ID, true)
+	if not container then warn("❌ [LegendaryAngeloDebug] Missing Frame") stopInteraction() return end
+
+	container.Visible = true
+	setButtonsState(false)
+
+	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
+	if dialogueLabel then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+
+        local randomGreeting = GREETING_DIALOGUES[math.random(1, #GREETING_DIALOGUES)]
+		local greeting = randomGreeting .. coloredName .. "."
+
+		typewrite(dialogueLabel, greeting, function()
+			setButtonsState(true)
+		end)
+
+		local function connectBtn(btnName, func)
+			local btn = myGui:FindFirstChild(btnName, true)
+			if btn and btn:IsA("GuiButton") then
+				animateButton(btn)
+
+				local conn = btn.MouseButton1Click:Connect(function()
+					playSound(CLICK_SOUND_ID, 0.5)
+					func()
+				end)
+				table.insert(buttonConnections, conn)
+			else
+				warn("⚠️ [LegendaryAngeloDebug] Warning: Could not find button '" .. btnName .. "' in UI.")
+			end
+		end
+
+		connectBtn(BTN_LEAVE_ID, function()
+			if isLeaving then return end
+			isLeaving = true
+			clearConnections()
+			setButtonsState(false)
+
+			if dialogueLabel then
+				local coloredRedName = "<font color='" .. ANGELO_COLOR .. "'>@" .. player.Name .. "</font>"
+				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Return when you are ready, </font>" .. coloredRedName .. "!"
+
+				typewrite(dialogueLabel, goodbyeMsg)
+			end
+			task.wait(LEAVE_DELAY)
+			stopInteraction()
+		end)
+
+		connectBtn(BTN_CRAFT_ID, function()
+            -- Don't stop interaction, just hide buttons and open the remote shop UI
+			setButtonsState(false)
+            RemoteOpen:FireServer()
+
+            local craftOpenMsg = "Select a chassis. We require great sacrifices to build these."
+            typewrite(dialogueLabel, craftOpenMsg)
+		end)
+	else
+		warn("❌ [LegendaryAngeloDebug] ERROR: Could not find TextLabel named '"..TEXT_ID.."' inside Container!")
+		setButtonsState(true)
+	end
+end
+
+local ProximityPromptService = game:GetService("ProximityPromptService")
+
+local function setupNPC()
+	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
+		if triggerPlayer == player and prompt.Name == PROMPT_NAME then
+			local npc = prompt.Parent and prompt.Parent.Parent
+			if npc and npc.Name == TARGET_NPC then
+				startInteraction(npc)
+			end
+		end
+	end)
+end
+
+UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo)
+    if not isInteracting or isLeaving then return end
+
+    local myGui = playerGui:FindFirstChild(GUI_ID)
+    if not myGui then return end
+    local container = myGui:FindFirstChild(CONTAINER_ID, true)
+    if not container then return end
+    local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
+    if not dialogueLabel then return end
+
+    local msg = "..."
+
+    if actionType == "MenuOpen" then
+        local msgs = {
+            "Select a chassis. We require great sacrifices to build these.",
+            "Take your pick. Both are engineering marvels.",
+            "What do you have your eye on?"
+        }
+        msg = msgs[math.random(1, #msgs)]
+    elseif actionType == "SelectCar" then
+        local msgs = {
+            "Ah, the " .. extraInfo .. ". A beautiful choice.",
+            "The " .. extraInfo .. "? You have good taste.",
+            "Excellent selection. Let's look at what is required."
+        }
+        msg = msgs[math.random(1, #msgs)]
+    elseif actionType == "ConfirmSacrifice" then
+        local msgs = {
+            "Are you certain? There is no going back once given.",
+            "Ready to let go of this piece?",
+            "Confirm the sacrifice. It is necessary."
+        }
+        msg = msgs[math.random(1, #msgs)]
+    elseif actionType == "CancelSacrifice" then
+        local msgs = {
+            "Cold feet? I understand.",
+            "Take your time. This isn't a decision to be rushed.",
+            "Perhaps later, then."
+        }
+        msg = msgs[math.random(1, #msgs)]
+    elseif actionType == "NotEnough" then
+        local msgs = {
+            "You don't have enough to offer for that.",
+            "You are missing the required materials.",
+            "Come back when you actually have what we need."
+        }
+        msg = msgs[math.random(1, #msgs)]
+    elseif actionType == "SacrificeSuccess" then
+        local msgs = {
+            "It is done. The material has been integrated.",
+            "An excellent contribution.",
+            "One step closer to the masterpiece."
+        }
+        msg = msgs[math.random(1, #msgs)]
+    elseif actionType == "AlreadyDone" then
+        local msgs = {
+            "We already have enough of that.",
+            "That requirement is already fulfilled.",
+            "Save it. We don't need any more of those."
+        }
+        msg = msgs[math.random(1, #msgs)]
+    elseif actionType == "AllComplete" then
+        local msgs = {
+            "All requirements met. Are you ready to begin construction?",
+            "Everything is here. We can start the build whenever you are ready.",
+            "The sacrifices are complete. Give the word to start."
+        }
+        msg = msgs[math.random(1, #msgs)]
+    elseif actionType == "CraftStarted" then
+        local msgs = {
+            "Construction has begun. It will be ready in time.",
+            "The process has started. Return when the timer completes.",
+            "We are building it now. This takes precision, so be patient."
+        }
+        msg = msgs[math.random(1, #msgs)]
+    elseif actionType == "AlreadyCrafted" then
+        local msgs = {
+            "You already have one of these. We don't make duplicates.",
+            "We already built that for you.",
+            "Look in your garage. You already own it."
+        }
+        msg = msgs[math.random(1, #msgs)]
+    elseif actionType == "CraftComplete" then
+        local msgs = {
+            "It is finished. A true work of art.",
+            "The build is complete. Enjoy your new ride.",
+            "Construction is done. It's all yours."
+        }
+        msg = msgs[math.random(1, #msgs)]
+    end
+
+    typewrite(dialogueLabel, msg)
+end)
+
+setupNPC()
