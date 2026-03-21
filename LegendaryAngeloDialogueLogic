@@ -44,7 +44,7 @@ local ALL_BUTTON_IDS = {BTN_CRAFT_ID, BTN_INQUIRY_ID, BTN_LEAVE_ID}
 -- 📍 NPC CONFIGURATION
 local TARGET_NPC = "Monk3yDAngelo-Cars"
 local CAMERA_PART = "CameraAimPart"
-local PROMPT_NAME = "Talkprompt" 
+local PROMPT_NAME = "TalkPrompt"
 
 -- 🎥 SETTINGS
 local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -66,6 +66,7 @@ local ANIM_SPEED = 0.1
 -- ============================================================================
 local isInteracting = false
 local isLeaving = false
+local isOpeningShop = false
 local currentDialogueJob = nil 
 local buttonConnections = {} 
 local buttonHoverConnections = {} 
@@ -229,6 +230,7 @@ local function stopInteraction()
 
 	isInteracting = false
 	isLeaving = false
+	isOpeningShop = false
 
 	if currentDialogueJob then task.cancel(currentDialogueJob) end
 	clearConnections() 
@@ -314,6 +316,7 @@ local function startInteraction(npcModel)
 	if isInteracting or isLeaving then return end
 
 	isInteracting = true
+	isOpeningShop = false
 	clearConnections() 
 
 	local camPart = npcModel:FindFirstChild(CAMERA_PART)
@@ -408,6 +411,8 @@ local function startInteraction(npcModel)
 
 		-- CRAFT LOGIC: Opens the shop
 		connectBtn(BTN_CRAFT_ID, function()
+			if isOpeningShop then return end
+			isOpeningShop = true
 			setButtonsState(false)
 			RemoteOpen:FireServer()
 
@@ -422,10 +427,26 @@ end
 
 local ProximityPromptService = game:GetService("ProximityPromptService")
 
+local function isLegendaryPrompt(prompt)
+	if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+	return string.lower(prompt.Name) == string.lower(PROMPT_NAME)
+end
+
+local function findLegendaryNPCFromPrompt(prompt)
+	local current = prompt and prompt.Parent
+	while current do
+		if current:IsA("Model") and current.Name == TARGET_NPC then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
 local function setupNPC()
 	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
-		if triggerPlayer == player and prompt.Name == PROMPT_NAME then
-			local npc = prompt.Parent and prompt.Parent.Parent
+		if triggerPlayer == player and isLegendaryPrompt(prompt) then
+			local npc = findLegendaryNPCFromPrompt(prompt)
 			if npc and npc.Name == TARGET_NPC then
 				startInteraction(npc)
 			end
@@ -434,6 +455,11 @@ local function setupNPC()
 end
 
 UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo)
+	if actionType == "ForceClose" then
+		stopInteraction()
+		return
+	end
+
 	if not isInteracting or isLeaving then return end
 
 	local myGui = playerGui:FindFirstChild(GUI_ID)
@@ -528,3 +554,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo)
 end)
 
 setupNPC()
+
+player.CharacterAdded:Connect(function()
+	stopInteraction()
+end)
