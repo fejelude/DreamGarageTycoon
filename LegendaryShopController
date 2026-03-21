@@ -149,6 +149,9 @@ local currentBlur = nil
 local feedbackTween = nil 
 local activeCarFocus = nil
 local isShopOpen = false
+local shopSessionId = 0
+local shopViewVersion = 0
+local confirmationVersion = 0
 
 -- 🛑 UI REFERENCES
 local function getUI()
@@ -243,25 +246,40 @@ local function setFocusMode(active)
 	end
 end
 
-local function closeShopUI(forceDialogueClose)
-	isShopOpen = false
-	isProcessingPurchase = false
-	activeCarFocus = nil
-
-	local confirmationGui = resolveConfirmationUi()
-	if confirmationGui then
-		confirmationGui.Enabled = false
-	end
-
-	mainFrame.Visible = true
-	gui.Enabled = false
-
+local function hideAllCraftingMenus()
 	for _, carName in ipairs(SHOP_CARS) do
 		local craftGui = gui:FindFirstChild(carName .. "Crafting")
 		if craftGui then
 			craftGui.Visible = false
 		end
 	end
+end
+
+local function isActiveShopSession(sessionId)
+	return sessionId ~= nil and sessionId == shopSessionId and isShopOpen and gui.Enabled
+end
+
+local function beginShopSession()
+	shopSessionId += 1
+	shopViewVersion += 1
+	confirmationVersion += 1
+	return shopSessionId
+end
+
+local dismissConfirmation
+
+local function closeShopUI(forceDialogueClose)
+	beginShopSession()
+	isShopOpen = false
+	isProcessingPurchase = false
+	activeCarFocus = nil
+
+	dismissConfirmation()
+
+	mainFrame.Visible = true
+	gui.Enabled = false
+
+	hideAllCraftingMenus()
 
 	setFocusMode(false)
 
@@ -323,17 +341,40 @@ end
 -- 🧠 CONFIRMATION LOGIC
 -- ============================================================================
 local confirmConnections = {}
-local function PromptConfirmation(text, callback)
-	local confirmGui, confirmMain = resolveConfirmationUi()
-	if not confirmGui or not confirmMain then
-		callback(true)
-		return
-	end
-
+local function clearConfirmationConnections()
 	for _, conn in ipairs(confirmConnections) do
 		conn:Disconnect()
 	end
 	confirmConnections = {}
+end
+
+dismissConfirmation = function()
+	confirmationVersion += 1
+	clearConfirmationConnections()
+
+	local confirmGui, confirmMain = resolveConfirmationUi()
+	if confirmGui then
+		confirmGui.Enabled = false
+	end
+
+	if confirmMain and confirmMain:IsA("GuiObject") then
+		confirmMain.Visible = false
+	end
+end
+
+local function PromptConfirmation(sessionId, text, callback)
+	local confirmGui, confirmMain = resolveConfirmationUi()
+	if not confirmGui or not confirmMain then
+		if isActiveShopSession(sessionId) then
+			callback(true)
+		end
+		return
+	end
+
+	confirmationVersion += 1
+	local myConfirmationVersion = confirmationVersion
+
+	clearConfirmationConnections()
 
 	local infoLabel = confirmMain:FindFirstChild("Information", true)
 	local btnYes = resolveGuiButton(confirmMain:FindFirstChild("Yes", true))
@@ -351,24 +392,29 @@ local function PromptConfirmation(text, callback)
 	end
 
 	local function closeConfirm()
-		confirmGui.Enabled = false
-		for _, conn in ipairs(confirmConnections) do
-			conn:Disconnect()
+		if myConfirmationVersion ~= confirmationVersion then
+			return
 		end
-		confirmConnections = {}
+		clearConfirmationConnections()
+		confirmGui.Enabled = false
+		confirmMain.Visible = false
 	end
 
 	if btnYes then
 		table.insert(confirmConnections, btnYes.MouseButton1Click:Connect(function()
 			closeConfirm()
-			callback(true)
+			if isActiveShopSession(sessionId) and myConfirmationVersion == confirmationVersion then
+				callback(true)
+			end
 		end))
 	end
 
 	if btnNo then
 		table.insert(confirmConnections, btnNo.MouseButton1Click:Connect(function()
 			closeConfirm()
-			callback(false)
+			if isActiveShopSession(sessionId) and myConfirmationVersion == confirmationVersion then
+				callback(false)
+			end
 		end))
 	end
 end
@@ -481,6 +527,7 @@ end
 local function AttemptSacrifice(carName, ingredient)
 	if isProcessingPurchase then return end
 	if not currentState or not currentState.CraftProgress then return end
+	if not isShopOpen or activeCarFocus ~= carName then return end
 
 	local recipe = RECIPES[carName]
 	if not recipe then return end
@@ -504,13 +551,18 @@ local function AttemptSacrifice(carName, ingredient)
 	end
 
 	updateDialogue("ConfirmSacrifice")
+	local requestSessionId = shopSessionId
+	local requestViewVersion = shopViewVersion
 
-	PromptConfirmation(buildSacrificeConfirmationText(sacrificeText, displayCarName), function(confirmed)
+	PromptConfirmation(requestSessionId, buildSacrificeConfirmationText(sacrificeText, displayCarName), function(confirmed)
 		if not confirmed then 
-			updateDialogue("CancelSacrifice")
+			if isActiveShopSession(requestSessionId) and requestViewVersion == shopViewVersion then
+				updateDialogue("CancelSacrifice")
+			end
 			return 
 		end
 
+		if not isActiveShopSession(requestSessionId) or requestViewVersion ~= shopViewVersion then return end
 		if isProcessingPurchase then return end
 		isProcessingPurchase = true
 
@@ -518,16 +570,25 @@ local function AttemptSacrifice(carName, ingredient)
 
 		task.spawn(function()
 			local success, msg = FuncSacrifice:InvokeServer(carName, ingredient)
-			isProcessingPurchase = false
+			if requestSessionId == shopSessionId then
+				isProcessingPurchase = false
+			end
+
+			if not isActiveShopSession(requestSessionId) then
+				return
+			end
 
 			if success then
 				Kit.Sound:Play("BuySuccess")
 				showFeedback("Sacrifice Successful", FEEDBACK_COLORS.Success)
-				updateDialogue("SacrificeSuccess")
+				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
+					updateDialogue("SacrificeSuccess")
+				end
 			else
 				Kit.Sound:Play("BuyFail")
 				showFeedback(msg, FEEDBACK_COLORS.FailCash)
-				if msg == "Insufficient Cash (Withdraw from ATM)" or msg == "You don't own the required car (" .. ingredient .. ")!" then
+				if requestViewVersion == shopViewVersion and activeCarFocus == carName
+					and (msg == "Insufficient Cash (Withdraw from ATM)" or msg == "You don't own the required car (" .. ingredient .. ")!") then
 					updateDialogue("NotEnough")
 				end
 			end
@@ -542,7 +603,7 @@ local function AttemptSacrifice(carName, ingredient)
 					if p < req then allComplete = false break end
 				end
 			end
-			if allComplete and success then
+			if allComplete and success and requestViewVersion == shopViewVersion and activeCarFocus == carName then
 				updateDialogue("AllComplete")
 			end
 		end)
@@ -551,6 +612,8 @@ end
 
 local function AttemptCraft(carName)
 	if isProcessingPurchase then return end
+	if not isShopOpen or activeCarFocus ~= carName then return end
+	if not currentState or not currentState.CompletedCrafts then return end
 
 	if currentState.CompletedCrafts[carName] then
 		updateDialogue("AlreadyCrafted")
@@ -560,10 +623,13 @@ local function AttemptCraft(carName)
 	local recipe = RECIPES[carName]
 	local displayCarName = recipe and recipe.TargetCar or carName
 	local craftHours = (carName == "Yamura" and "12" or "48")
+	local requestSessionId = shopSessionId
+	local requestViewVersion = shopViewVersion
 
-	PromptConfirmation(buildCraftConfirmationText(displayCarName, craftHours), function(confirmed)
+	PromptConfirmation(requestSessionId, buildCraftConfirmationText(displayCarName, craftHours), function(confirmed)
 		if not confirmed then return end
 
+		if not isActiveShopSession(requestSessionId) or requestViewVersion ~= shopViewVersion then return end
 		if isProcessingPurchase then return end
 		isProcessingPurchase = true
 
@@ -571,12 +637,20 @@ local function AttemptCraft(carName)
 
 		task.spawn(function()
 			local success, msg = FuncCraftCar:InvokeServer(carName)
-			isProcessingPurchase = false
+			if requestSessionId == shopSessionId then
+				isProcessingPurchase = false
+			end
+
+			if not isActiveShopSession(requestSessionId) then
+				return
+			end
 
 			if success then
 				Kit.Sound:Play("BuySuccess")
 				showFeedback("Crafting Started!", FEEDBACK_COLORS.Success)
-				updateDialogue("CraftStarted")
+				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
+					updateDialogue("CraftStarted")
+				end
 			else
 				Kit.Sound:Play("BuyFail")
 				showFeedback(msg, FEEDBACK_COLORS.FailCash)
@@ -588,12 +662,34 @@ local function AttemptCraft(carName)
 	end)
 end
 
+local function showMainMenu()
+	if not isShopOpen then return end
+
+	shopViewVersion += 1
+	isProcessingPurchase = false
+	activeCarFocus = nil
+
+	dismissConfirmation()
+
+	hideAllCraftingMenus()
+	mainFrame.Visible = true
+	updateDialogue("MenuOpen")
+	UpdateDisplay()
+end
+
 local function OpenCraftingMenu(carName)
+	if not isShopOpen then return end
+
+	shopViewVersion += 1
+	isProcessingPurchase = false
 	activeCarFocus = carName
 	mainFrame.Visible = false
 
 	local craftingUIName = carName .. "Crafting"
 	local craftGui = gui:FindFirstChild(craftingUIName)
+
+	dismissConfirmation()
+	hideAllCraftingMenus()
 
 	updateDialogue("SelectCar", carName)
 
@@ -605,15 +701,14 @@ local function OpenCraftingMenu(carName)
 		if carFrame then
 			local exitBtn = carFrame:FindFirstChild("ExitButton") or carFrame:FindFirstChild("CloseButton")
 			if exitBtn then
-				if exitBtn:GetAttribute("Connected") then return end
-				exitBtn:SetAttribute("Connected", true)
-
-				Kit.Tween:SetupButton(exitBtn, function()
-					activeCarFocus = nil
-					craftGui.Visible = false
-					mainFrame.Visible = true
-					updateDialogue("MenuOpen")
-				end)
+				if not exitBtn:GetAttribute("Connected") then
+					exitBtn:SetAttribute("Connected", true)
+					Kit.Tween:SetupButton(exitBtn, function()
+						if activeCarFocus == carName and isShopOpen then
+							showMainMenu()
+						end
+					end)
+				end
 			end
 
 			local sacrificeItems = carFrame:FindFirstChild("SacrificeItems")
@@ -636,7 +731,9 @@ local function OpenCraftingMenu(carName)
 				if not mainCraftBtn:GetAttribute("Connected") then
 					mainCraftBtn:SetAttribute("Connected", true)
 					Kit.Tween:SetupButton(mainCraftBtn, function()
-						if mainCraftBtn.Visible and mainCraftBtn.Active then AttemptCraft(carName) end
+						if mainCraftBtn.Visible and mainCraftBtn.Active and activeCarFocus == carName and isShopOpen then
+							AttemptCraft(carName)
+						end
 					end)
 				end
 			end
@@ -651,7 +748,9 @@ local function OpenCraftingMenu(carName)
 							if not sacBtn:GetAttribute("Connected") then
 								sacBtn:SetAttribute("Connected", true)
 								Kit.Tween:SetupButton(sacBtn, function()
-									if sacBtn.Visible and sacBtn.Active then AttemptSacrifice(carName, ingredient) end
+									if sacBtn.Visible and sacBtn.Active and activeCarFocus == carName and isShopOpen then
+										AttemptSacrifice(carName, ingredient)
+									end
 								end)
 							end
 						end
@@ -661,6 +760,7 @@ local function OpenCraftingMenu(carName)
 		end
 	else
 		warn("⚠️ Crafting UI not found for " .. carName)
+		showMainMenu()
 	end
 end
 
@@ -697,22 +797,24 @@ local function init()
 			return
 		end
 
+		local sessionId = beginShopSession()
 		isShopOpen = true
 		setFocusMode(true) 
 		Kit.Sound:Play("Open")
 		gui.Enabled = true 
 		mainFrame.Visible = true
 		activeCarFocus = nil
+		isProcessingPurchase = false
 
-		for _, carName in ipairs(SHOP_CARS) do
-			local craftGui = gui:FindFirstChild(carName .. "Crafting")
-			if craftGui then craftGui.Visible = false end
-		end
+		hideAllCraftingMenus()
 
 		currentState = {CraftProgress = {}, ActiveCrafts = {}, CompletedCrafts = {}}
 		UpdateDisplay()
 
 		local realState = FuncGetState:InvokeServer()
+		if not isActiveShopSession(sessionId) then
+			return
+		end
 		currentState = realState
 		UpdateDisplay()
 	end)

@@ -50,6 +50,7 @@ local PROMPT_NAME = "TalkPrompt"
 local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TYPEWRITER_SPEED = 0.02
 local LEAVE_DELAY = 1.5 
+local SHOP_OPEN_DELAY_SECONDS = 2.0 -- Easy-to-edit delay between the opening dialogue and the shop UI opening.
 
 -- 🔊 SOUNDS
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
@@ -69,6 +70,8 @@ local isInteracting = false
 local isLeaving = false
 local isOpeningShop = false
 local currentDialogueJob = nil 
+local pendingShopOpenTask = nil
+local interactionGeneration = 0
 local buttonConnections = {} 
 local buttonHoverConnections = {} 
 local hiddenGuis = {}
@@ -232,6 +235,7 @@ end
 local function stopInteraction()
 	if not isInteracting and not isLeaving then return end
 
+	interactionGeneration += 1
 	isInteracting = false
 	isLeaving = false
 	isOpeningShop = false
@@ -239,6 +243,11 @@ local function stopInteraction()
 	if currentDialogueJob then
 		pcall(task.cancel, currentDialogueJob)
 		currentDialogueJob = nil
+	end
+
+	if pendingShopOpenTask then
+		pcall(task.cancel, pendingShopOpenTask)
+		pendingShopOpenTask = nil
 	end
 
 	clearConnections() 
@@ -272,9 +281,16 @@ end
 local function releaseInteractionForShop()
 	if not isInteracting then return end
 
+	interactionGeneration += 1
+
 	if currentDialogueJob then
 		pcall(task.cancel, currentDialogueJob)
 		currentDialogueJob = nil
+	end
+
+	if pendingShopOpenTask then
+		pcall(task.cancel, pendingShopOpenTask)
+		pendingShopOpenTask = nil
 	end
 
 	clearConnections()
@@ -360,6 +376,7 @@ local GREETING_DIALOGUES = {
 local function startInteraction(npcModel)
 	if isInteracting or isLeaving then return end
 
+	interactionGeneration += 1
 	isInteracting = true
 	isOpeningShop = false
 	clearConnections() 
@@ -459,12 +476,22 @@ local function startInteraction(npcModel)
 			if isOpeningShop then return end
 			isOpeningShop = true
 			setButtonsState(false)
+			local openGeneration = interactionGeneration
 
 			typewrite(dialogueLabel, CRAFT_OPEN_MESSAGE, function()
-				if isInteracting and isOpeningShop then
+				if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
+
+				if pendingShopOpenTask then
+					pcall(task.cancel, pendingShopOpenTask)
+				end
+
+				pendingShopOpenTask = task.spawn(function()
+					task.wait(SHOP_OPEN_DELAY_SECONDS)
+					if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
+
 					releaseInteractionForShop()
 					RemoteOpen:FireServer()
-				end
+				end)
 			end)
 		end)
 	else

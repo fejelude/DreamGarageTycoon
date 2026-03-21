@@ -37,6 +37,7 @@ local RECIPES = {
 }
 
 local MAX_INTERACTION_DISTANCE = 20 -- Max studs from NPC to interact
+local OPEN_REQUEST_COOLDOWN_SECONDS = 1
 
 -- =========================
 -- MODULES
@@ -92,6 +93,7 @@ end
 -- =========================
 local PlayerSessions = {}        
 local InteractionLocks = {}        
+local LastOpenRequestAt = {}
 
 -- =========================
 -- TIMEOUT UTILITY
@@ -192,6 +194,7 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 	elseif action == "Close" then
 		PlayerSessions[uid] = nil
 		InteractionLocks[uid] = nil
+		LastOpenRequestAt[uid] = nil
 	end
 end
 
@@ -204,6 +207,12 @@ FuncGetState.OnServerInvoke = function(player)
 end
 
 RemoteRequestOpen.OnServerEvent:Connect(function(player)
+	local now = os.clock()
+	local lastOpenAt = LastOpenRequestAt[player.UserId]
+	if lastOpenAt and (now - lastOpenAt) < OPEN_REQUEST_COOLDOWN_SECONDS then
+		return
+	end
+
 	local char = player.Character
 	if not char or not char.PrimaryPart then return end
 
@@ -216,6 +225,7 @@ RemoteRequestOpen.OnServerEvent:Connect(function(player)
 
 	local distance = (char.PrimaryPart.Position - angeloRoot.Position).Magnitude
 	if distance <= MAX_INTERACTION_DISTANCE then
+		LastOpenRequestAt[player.UserId] = now
 		local session = getSession(player)
 		pushUpdate(player, session, "Open")
 		RemoteOpen:FireClient(player)
@@ -435,4 +445,11 @@ task.spawn(function()
 			end
 		end
 	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	local uid = player.UserId
+	PlayerSessions[uid] = nil
+	InteractionLocks[uid] = nil
+	LastOpenRequestAt[uid] = nil
 end)
