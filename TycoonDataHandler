@@ -331,29 +331,29 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		markDirty(player)
 		print("⚠️ FORCE WIPE INITIATED FOR: " .. player.Name)
 		return true
-		elseif action == "GiveTool" and player then
+	elseif action == "GiveTool" and player then
 		local toolName, customAttributes = ...
 		giveTool(player, toolName, customAttributes)
 		return true
 	elseif action == "RemoveTool" and player then
 		local targetToolId = ...
-        if not targetToolId then return false end
+		if not targetToolId then return false end
 
-        local function removeAll(container)
-            if not container then return end
-            for _, child in ipairs(container:GetChildren()) do
-                if child:IsA("Tool") and (child.Name == targetToolId or child.Name == targetToolId.." Item" or child:GetAttribute("ToolId") == targetToolId or child:GetAttribute("ToolId") == targetToolId.." Item") then
-                    child:Destroy()
-                end
-            end
-        end
+		local function removeAll(container)
+			if not container then return end
+			for _, child in ipairs(container:GetChildren()) do
+				if child:IsA("Tool") and (child.Name == targetToolId or child.Name == targetToolId.." Item" or child:GetAttribute("ToolId") == targetToolId or child:GetAttribute("ToolId") == targetToolId.." Item") then
+					child:Destroy()
+				end
+			end
+		end
 
-        removeAll(player:FindFirstChild("Backpack"))
-        removeAll(player:FindFirstChild("StarterGear"))
-        if player.Character then removeAll(player.Character) end
+		removeAll(player:FindFirstChild("Backpack"))
+		removeAll(player:FindFirstChild("StarterGear"))
+		if player.Character then removeAll(player.Character) end
 
-        markDirty(player)
-        return true
+		markDirty(player)
+		return true
 	elseif action == "MarkDirty" and player then
 
 		markDirty(player)
