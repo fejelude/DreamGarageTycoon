@@ -243,7 +243,6 @@ local function closeShopUI(forceDialogueClose)
 	isProcessingPurchase = false
 	activeCarFocus = nil
 
-	-- Forcefully clean up any active confirmation dialog connections
 	for _, conn in ipairs(confirmConnections) do
 		if conn then conn:Disconnect() end
 	end
@@ -461,13 +460,7 @@ local function UpdateDisplay()
 
 	local scrollFrame = mainFrame:FindFirstChild("ScrollingFrame")
 	if scrollFrame then
-		for _, carName in ipairs(SHOP_CARS) do
-			local card = scrollFrame:FindFirstChild(carName)
-			if card then
-				local buttonsFrame = card:FindFirstChild("Buttons")
-				local craftBtn = buttonsFrame and buttonsFrame:FindFirstChild("Craft")
-			end
-		end
+		-- Removed craftBtn loop because it wasn't interacting properly
 	end
 
 	if activeCarFocus then
@@ -613,15 +606,12 @@ local function OpenCraftingMenu(carName)
 						craftGui.Visible = false
 						mainFrame.Visible = true
 
-						-- Cleanup confirmation if player backs out of a car's specific menu
 						for _, conn in ipairs(confirmConnections) do
 							if conn then conn:Disconnect() end
 						end
 						confirmConnections = {}
 						local confirmationGui = resolveConfirmationUi()
-						if confirmationGui then
-							confirmationGui.Enabled = false
-						end
+						if confirmationGui then confirmationGui.Enabled = false end
 
 						updateDialogue("MenuOpen")
 					end)
