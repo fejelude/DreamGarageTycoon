@@ -87,6 +87,25 @@ local function updateDialogue(action, info)
 	end
 end
 
+local function forceCloseDialogue()
+	if not DialogueEvent then
+		local playerScripts = player:FindFirstChild("PlayerScripts")
+		local dialogueLogicScript = playerScripts and playerScripts:FindFirstChild("LegendaryAngeloDialogueLogic")
+		if dialogueLogicScript then
+			DialogueEvent = dialogueLogicScript:FindFirstChild("UpdateLegendaryAngeloDialogue")
+		end
+	end
+
+	if DialogueEvent then
+		DialogueEvent:Fire("ForceClose")
+	else
+		local dialogueUI = PlayerGui:FindFirstChild("UI_NPC_Monk3yDAngelo-Cars")
+		if dialogueUI then
+			dialogueUI.Enabled = false
+		end
+	end
+end
+
 -- 🛡️ STATE
 local currentState = nil
 local purchaseDebounce = {} 
@@ -96,6 +115,7 @@ local hiddenObjects = {}
 local currentBlur = nil 
 local feedbackTween = nil 
 local activeCarFocus = nil
+local isShopOpen = false
 
 -- 🛑 UI REFERENCES
 local function getUI()
@@ -184,6 +204,32 @@ local function setFocusMode(active)
 	if char and char:FindFirstChild("Humanoid") then
 		char.Humanoid.WalkSpeed = active and 0 or 16
 		char.Humanoid.JumpPower = active and 0 or 50
+	end
+end
+
+local function closeShopUI(forceDialogueClose)
+	isShopOpen = false
+	isProcessingPurchase = false
+	activeCarFocus = nil
+
+	if confirmGui then
+		confirmGui.Enabled = false
+	end
+
+	mainFrame.Visible = true
+	gui.Enabled = false
+
+	for _, carName in ipairs(SHOP_CARS) do
+		local craftGui = gui:FindFirstChild(carName .. "Crafting")
+		if craftGui then
+			craftGui.Visible = false
+		end
+	end
+
+	setFocusMode(false)
+
+	if forceDialogueClose then
+		forceCloseDialogue()
 	end
 end
 
@@ -530,17 +576,7 @@ local function init()
 	gui.Enabled = false 
 
 	Kit.Tween:SetupButton(closeBtn, function() 
-		setFocusMode(false) 
-		gui.Enabled = false 
-		activeCarFocus = nil
-
-		for _, carName in ipairs(SHOP_CARS) do
-			local craftGui = gui:FindFirstChild(carName .. "Crafting")
-			if craftGui then craftGui.Visible = false end
-		end
-
-		local dialogueUI = PlayerGui:FindFirstChild("UI_NPC_Monk3yDAngelo-Cars")
-		if dialogueUI then dialogueUI.Enabled = false end
+		closeShopUI(true)
 	end)
 
 	if scrollFrame then
@@ -560,6 +596,11 @@ local function init()
 	end
 
 	RemoteOpen.OnClientEvent:Connect(function()
+		if isShopOpen or gui.Enabled then
+			return
+		end
+
+		isShopOpen = true
 		setFocusMode(true) 
 		Kit.Sound:Play("Open")
 		gui.Enabled = true 
@@ -589,5 +630,9 @@ local function init()
 		UpdateDisplay()
 	end)
 end
+
+player.CharacterAdded:Connect(function()
+	closeShopUI(true)
+end)
 
 if player.Character then init() else player.CharacterAdded:Wait(); init() end
