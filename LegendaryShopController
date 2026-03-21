@@ -5,8 +5,8 @@
 -- Public API: None (Event-driven)
 -- Networking: Listens to OpenLegendaryShop, LegendaryShopUpdate. Invokes GetLegendaryShopState, CraftLegendaryCar, SacrificeLegendaryIngredient.
 -- Security: UI debounces to prevent spam. Server acts as absolute authority for stock, funds, and car ownership.
--- Performance: Direct pathing to nested Craft buttons for O(1) lookups; zero per-frame loops.
--- Notes: Updated to explicitly target SacrificeItems > Confirmation > Craft.
+-- Performance: Direct pathing to nested Craft buttons for O(1) lookups; zero per-frame loops. Recursive FindFirstChild used cautiously.
+-- Notes: Updated to explicitly target SacrificeItems > Confirmation > Craft. Recursive search fixes dialogue BindableEvent discovery. Race conditions prevented in toggleOtherGuis.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -75,7 +75,13 @@ local FuncSacrifice = Remotes:WaitForChild("SacrificeLegendaryIngredient")
 -- DIALOGUE EVENT
 local DialogueEvent
 task.spawn(function()
-	local dialogueLogicScript = player:WaitForChild("PlayerScripts"):WaitForChild("LegendaryAngeloDialogueLogic", 10)
+	local playerScripts = player:WaitForChild("PlayerScripts")
+	local dialogueLogicScript = playerScripts:FindFirstChild("LegendaryAngeloDialogueLogic", true)
+	if not dialogueLogicScript then
+		-- Fallback to waiting a bit in case it hasn't loaded
+		task.wait(2)
+		dialogueLogicScript = playerScripts:FindFirstChild("LegendaryAngeloDialogueLogic", true)
+	end
 	if dialogueLogicScript then
 		DialogueEvent = dialogueLogicScript:WaitForChild("UpdateLegendaryAngeloDialogue", 10)
 	end
@@ -90,7 +96,7 @@ end
 local function forceCloseDialogue()
 	if not DialogueEvent then
 		local playerScripts = player:FindFirstChild("PlayerScripts")
-		local dialogueLogicScript = playerScripts and playerScripts:FindFirstChild("LegendaryAngeloDialogueLogic")
+		local dialogueLogicScript = playerScripts and playerScripts:FindFirstChild("LegendaryAngeloDialogueLogic", true)
 		if dialogueLogicScript then
 			DialogueEvent = dialogueLogicScript:FindFirstChild("UpdateLegendaryAngeloDialogue")
 		end
@@ -154,6 +160,7 @@ end
 
 local function toggleNamedGuiObjects(shouldHide, objectName)
 	if shouldHide then
+		if #hiddenObjects > 0 then return end
 		for _, obj in pairs(PlayerGui:GetDescendants()) do
 			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
 				obj.Visible = false
@@ -172,6 +179,7 @@ end
 
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
+		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
 		for _, otherGui in pairs(PlayerGui:GetChildren()) do
 			if otherGui:IsA("ScreenGui") 

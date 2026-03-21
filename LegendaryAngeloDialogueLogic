@@ -1,12 +1,12 @@
 -- Purpose: Handles Camera, Dialogue Logic, and UI for Legendary Monk3yDAngelo-Cars NPC, including Inquiry and Crafting.
 -- Runs on: Client
--- Location: StarterPlayerScripts
+-- Location: StarterPlayerScripts.LegendaryAngeloDialogueLogic
 -- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
 -- Public API: UpdateLegendaryAngeloDialogue (BindableEvent)
 -- Networking: Fires ShopRemotes.OpenLegendaryShop (Client -> Server)
 -- Security: Validates local character state before locking movement. Uses debounces to prevent spam.
 -- Performance: Safely manages nested task threads and event cleanup. Recursive search handles nested buttons efficiently.
--- Notes: Includes the Inquiry button to explain the legendary sacrifice mechanics.
+-- Notes: Wrapping task.cancel in pcall to prevent unhandled exceptions breaking cleanup. Fixed GUI race condition.
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
@@ -129,6 +129,7 @@ end
 
 local function toggleNamedGuiObjects(shouldHide, objectName)
 	if shouldHide then
+		if #hiddenObjects > 0 then return end
 		for _, obj in pairs(playerGui:GetDescendants()) do
 			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
 				obj.Visible = false
@@ -147,6 +148,7 @@ end
 
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
+		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
 		for _, otherGui in pairs(playerGui:GetChildren()) do
 			if otherGui:IsA("ScreenGui")
@@ -194,7 +196,7 @@ local function typewrite(label, text, onComplete)
 	label.RichText = true
 
 	if currentDialogueJob then 
-		task.cancel(currentDialogueJob) 
+		pcall(task.cancel, currentDialogueJob)
 		currentDialogueJob = nil 
 	end
 
@@ -233,7 +235,11 @@ local function stopInteraction()
 	isLeaving = false
 	isOpeningShop = false
 
-	if currentDialogueJob then task.cancel(currentDialogueJob) end
+	if currentDialogueJob then
+		pcall(task.cancel, currentDialogueJob)
+		currentDialogueJob = nil
+	end
+
 	clearConnections() 
 	setFocusMode(false)
 
