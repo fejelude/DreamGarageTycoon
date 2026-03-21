@@ -148,6 +148,7 @@ end
 
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
+		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
 		for _, otherGui in pairs(PlayerGui:GetChildren()) do
 			if otherGui:IsA("ScreenGui") 

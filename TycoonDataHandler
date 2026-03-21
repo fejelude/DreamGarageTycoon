@@ -339,18 +339,38 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		local targetToolId = ...
 		if not targetToolId then return false end
 
-		local function removeAll(container)
+		-- Find the IssuedId of exactly one tool to remove
+		local targetIssuedId = nil
+		local function findTargetId(container)
 			if not container then return end
 			for _, child in ipairs(container:GetChildren()) do
 				if child:IsA("Tool") and (child.Name == targetToolId or child.Name == targetToolId.." Item" or child:GetAttribute("ToolId") == targetToolId or child:GetAttribute("ToolId") == targetToolId.." Item") then
+					targetIssuedId = child:GetAttribute("IssuedId")
+					if targetIssuedId then return true end
+				end
+			end
+			return false
+		end
+
+		findTargetId(player:FindFirstChild("Backpack"))
+		if not targetIssuedId then findTargetId(player:FindFirstChild("StarterGear")) end
+		if not targetIssuedId and player.Character then findTargetId(player.Character) end
+
+		if not targetIssuedId then return false end -- No valid tool to remove found
+
+		-- Remove only tools with this exact IssuedId from all containers
+		local function removeByIssuedId(container)
+			if not container then return end
+			for _, child in ipairs(container:GetChildren()) do
+				if child:IsA("Tool") and child:GetAttribute("IssuedId") == targetIssuedId then
 					child:Destroy()
 				end
 			end
 		end
 
-		removeAll(player:FindFirstChild("Backpack"))
-		removeAll(player:FindFirstChild("StarterGear"))
-		if player.Character then removeAll(player.Character) end
+		removeByIssuedId(player:FindFirstChild("Backpack"))
+		removeByIssuedId(player:FindFirstChild("StarterGear"))
+		if player.Character then removeByIssuedId(player.Character) end
 
 		markDirty(player)
 		return true
