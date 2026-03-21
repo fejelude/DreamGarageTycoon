@@ -62,6 +62,9 @@ local HOVER_SCALE = 1.1
 local CLICK_SCALE = 0.9 
 local ANIM_SPEED = 0.1
 
+-- ⏱️ TIMING CONFIGURATION
+local SHOP_OPEN_DELAY = 2 -- Configurable delay before shop opens after clicking Craft
+
 -- ============================================================================
 -- 🛠️ STATE VARIABLES
 -- ============================================================================
@@ -389,11 +392,11 @@ local function startInteraction(npcModel)
 	TweenService:Create(camera, TWEEN_INFO, {CFrame = camPart.CFrame}):Play()
 
 	local myGui = playerGui:WaitForChild(GUI_ID, 5)
-	if not myGui then warn("❌ [LegendaryAngeloDebug] Missing GUI") stopInteraction() return end
+	if not myGui then warn("❌ [LegendaryAngeloDebug] Missing GUI"); stopInteraction() return end
 
 	myGui.Enabled = true
 	local container = myGui:FindFirstChild(CONTAINER_ID, true) 
-	if not container then warn("❌ [LegendaryAngeloDebug] Missing Frame") stopInteraction() return end
+	if not container then warn("❌ [LegendaryAngeloDebug] Missing Frame"); stopInteraction() return end
 
 	container.Visible = true
 	setButtonsState(false)
@@ -445,7 +448,6 @@ local function startInteraction(npcModel)
 			setButtonsState(false)
 
 			if dialogueLabel then
-				local coloredAngelo = "<font color='" .. ANGELO_COLOR .. "'>Angelo</font>"
 				local loreText = "To forge a Legendary vehicle, you must offer sacrifices. \nBring me specific cars and rare materials, and I will build you a masterpiece."
 
 				typewrite(dialogueLabel, loreText, function()
@@ -462,8 +464,13 @@ local function startInteraction(npcModel)
 
 			typewrite(dialogueLabel, CRAFT_OPEN_MESSAGE, function()
 				if isInteracting and isOpeningShop then
-					releaseInteractionForShop()
-					RemoteOpen:FireServer()
+					task.spawn(function()
+						task.wait(SHOP_OPEN_DELAY)
+						if isInteracting and isOpeningShop then
+							releaseInteractionForShop()
+							RemoteOpen:FireServer()
+						end
+					end)
 				end
 			end)
 		end)
@@ -491,9 +498,17 @@ local function findLegendaryNPCFromPrompt(prompt)
 	return nil
 end
 
+local function isShopAlreadyOpen()
+	local craftGui = playerGui:FindFirstChild("LegendaryCarsAngeloUi")
+	return craftGui and (craftGui.Enabled or (craftGui:FindFirstChild("Mainframe") and craftGui.Mainframe.Visible))
+end
+
 local function setupNPC()
 	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
 		if triggerPlayer == player and isLegendaryPrompt(prompt) then
+			if isInteracting or isOpeningShop or isShopAlreadyOpen() then
+				return -- Prevent opening if already interacting or shop is active
+			end
 			local npc = findLegendaryNPCFromPrompt(prompt)
 			if npc and npc.Name == TARGET_NPC then
 				startInteraction(npc)
