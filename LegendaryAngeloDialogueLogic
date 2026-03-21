@@ -55,6 +55,7 @@ local LEAVE_DELAY = 1.5
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
 local HOVER_SOUND_ID = "rbxassetid://6895079853" 
 local CLICK_SOUND_ID = "rbxassetid://9083627113" 
+local CRAFT_OPEN_MESSAGE = "Select a chassis. We require great sacrifices to build these."
 
 -- ✨ ANIMATION SETTINGS
 local HOVER_SCALE = 1.1 
@@ -414,10 +415,12 @@ local function startInteraction(npcModel)
 			if isOpeningShop then return end
 			isOpeningShop = true
 			setButtonsState(false)
-			RemoteOpen:FireServer()
 
-			local craftOpenMsg = "Select a chassis. We require great sacrifices to build these."
-			typewrite(dialogueLabel, craftOpenMsg)
+			typewrite(dialogueLabel, CRAFT_OPEN_MESSAGE, function()
+				if isInteracting and isOpeningShop then
+					RemoteOpen:FireServer()
+				end
+			end)
 		end)
 	else
 		warn("❌ [LegendaryAngeloDebug] ERROR: Could not find TextLabel named '"..TEXT_ID.."' inside Container!")
@@ -473,7 +476,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo)
 
 	if actionType == "MenuOpen" then
 		local msgs = {
-			"Select a chassis. We require great sacrifices to build these.",
+			CRAFT_OPEN_MESSAGE,
 			"Take your pick. Both are engineering marvels.",
 			"What do you have your eye on?"
 		}
