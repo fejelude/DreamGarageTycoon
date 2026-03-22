@@ -19,7 +19,7 @@ local Controls = PlayerModule:GetControls()
 
 -- ⚙️ SETTINGS
 local SPEED_NORMAL = 100
-local SPEED_BOOST = 150
+local SPEED_BOOST = 500
 local SMOOTHNESS = 0.2
 local BANK_ANGLE = 15
 
@@ -63,7 +63,7 @@ humanoid.PlatformStand = true
 
 noclipConnection = RunService.Stepped:Connect(function()
 	if not character then return end
-	
+
 	-- Strict Noclip: Disable collision on all parts
 	for _, part in pairs(character:GetDescendants()) do
 		if part:IsA("BasePart") and part.CanCollide == true then
@@ -92,11 +92,11 @@ function stopFlying()
 	if humanoid and humanoid.Parent then
 		humanoid.PlatformStand = false
 	end
-	
+
 	-- 4. Restore Collisions (The Fix)
 	-- Only restore parts we actually touched, plus the RootPart for safety
 	if rootPart then rootPart.CanCollide = true end
-	
+
 	for part, _ in pairs(affectedParts) do
 		if part and part.Parent then -- Check if part still exists
 			part.CanCollide = true
