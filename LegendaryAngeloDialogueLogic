@@ -529,20 +529,33 @@ local function setupNPC()
 	end)
 end
 
-UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo)
+UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	if actionType == "ForceClose" then
 		stopInteraction()
+		if callbackEvent then callbackEvent:Fire() end
 		return
 	end
 
-	if not isInteracting or isLeaving then return end
+	if not isInteracting or isLeaving then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
 
 	local myGui = playerGui:FindFirstChild(GUI_ID)
-	if not myGui then return end
+	if not myGui then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
 	local container = myGui:FindFirstChild(CONTAINER_ID, true)
-	if not container then return end
+	if not container then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
 	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
-	if not dialogueLabel then return end
+	if not dialogueLabel then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
 
 	local msg = "..."
 
@@ -555,8 +568,8 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo)
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "SelectCar" then
 		local msgs = {
-			"Ah, the " .. extraInfo .. ". A beautiful choice.",
-			"The " .. extraInfo .. "? You have good taste.",
+			"Ah, the <font color='#00E5FF'>" .. extraInfo .. "</font>. A beautiful choice.",
+			"The <font color='#00E5FF'>" .. extraInfo .. "</font>? You have good taste.",
 			"Excellent selection. Let's look at what is required."
 		}
 		msg = msgs[math.random(1, #msgs)]
@@ -576,16 +589,16 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo)
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "NotEnough" then
 		local msgs = {
-			"You don't have enough to offer for that.",
-			"You are missing the required materials.",
-			"Come back when you actually have what we need."
+			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> in your garage.",
+			"My scanners show you're missing the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. Come back when you actually have it.",
+			"You are short on resources. I need the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> to proceed."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "SacrificeSuccess" then
 		local msgs = {
-			"It is done. The material has been integrated.",
-			"An excellent contribution.",
-			"One step closer to the masterpiece."
+			"It is done. The <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> has been successfully integrated.",
+			"Sacrifice accepted. The chassis grows stronger.",
+			"Excellent. We are one step closer to the masterpiece."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyDone" then
@@ -597,16 +610,13 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo)
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AllComplete" then
 		local msgs = {
-			"All requirements met. Are you ready to begin construction?",
-			"Everything is here. We can start the build whenever you are ready.",
-			"The sacrifices are complete. Give the word to start."
+			"The <font color='#50C878'>sacrifices are complete</font>. The forge is primed. Are you ready?",
+			"Every piece is in place. Give the word, and I will begin the build."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CraftStarted" then
 		local msgs = {
-			"Construction has begun. It will be ready in time.",
-			"The process has started. Return when the timer completes.",
-			"We are building it now. This takes precision, so be patient."
+			"The ritual has begun. Locking down the garage. Return when the timer completes."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyCrafted" then
@@ -618,14 +628,23 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo)
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CraftComplete" then
 		local msgs = {
-			"It is finished. A true work of art.",
-			"The build is complete. Enjoy your new ride.",
-			"Construction is done. It's all yours."
+			"It is finished. The <font color='#B652FF'><b>" .. (extraInfo and extraInfo.carName or "car") .. "</b></font> is a true work of art. The keys are in your garage."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "AlreadyCrafting" then
+		local msgs = {
+			"Patience. We are already forging the <font color='#B652FF'><b>" .. extraInfo.carName .. "</b></font> right now. It will be ready in <font color='#FF4C4C'><b>" .. extraInfo.timeStr .. "</b></font>.",
+			"The forge is currently occupied with the <font color='#B652FF'><b>" .. extraInfo.carName .. "</b></font>. Check back in <font color='#FF4C4C'><b>" .. extraInfo.timeStr .. "</b></font>.",
+			"You can't rush perfection. The <font color='#B652FF'><b>" .. extraInfo.carName .. "</b></font> needs <font color='#FF4C4C'><b>" .. extraInfo.timeStr .. "</b></font> more time."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	end
 
-	typewrite(dialogueLabel, msg)
+	typewrite(dialogueLabel, msg, function()
+		if callbackEvent then
+			callbackEvent:Fire()
+		end
+	end)
 end)
 
 setupNPC()
