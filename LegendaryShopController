@@ -447,6 +447,59 @@ local function prepareConfirmationButton(button)
 	return button
 end
 
+local function applyConfirmationButtonFeedback(button)
+	button = prepareConfirmationButton(button)
+	if not button then
+		return nil
+	end
+
+	local tweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local originalBackground = button.BackgroundColor3
+	local originalImage = button:IsA("ImageButton") and button.ImageColor3 or nil
+
+	local function tweenVisual(isDimmed)
+		local goals = {}
+
+		if button.BackgroundTransparency < 1 then
+			local h, s, v = originalBackground:ToHSV()
+			goals.BackgroundColor3 = isDimmed
+				and Color3.fromHSV(h, s, math.clamp(v * 0.75, 0, 1))
+				or originalBackground
+		end
+
+		if originalImage then
+			local h, s, v = originalImage:ToHSV()
+			goals.ImageColor3 = isDimmed
+				and Color3.fromHSV(h, s, math.clamp(v * 0.75, 0, 1))
+				or originalImage
+		end
+
+		if next(goals) then
+			TweenService:Create(button, tweenInfo, goals):Play()
+		end
+	end
+
+	addConfirmationConnection(button.MouseEnter:Connect(function()
+		Kit.Sound:Play("Hover")
+		tweenVisual(true)
+	end))
+	addConfirmationConnection(button.MouseLeave:Connect(function()
+		tweenVisual(false)
+	end))
+	addConfirmationConnection(button.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			tweenVisual(true)
+		end
+	end))
+	addConfirmationConnection(button.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			tweenVisual(false)
+		end
+	end))
+
+	return button
+end
+
 local function playConfirmationOpenTween(confirmMain)
 	if not confirmMain or not confirmMain:IsA("GuiObject") then
 		return
@@ -496,7 +549,7 @@ local function endConfirmationView()
 end
 
 local function bindConfirmationButton(button, callback)
-	button = prepareConfirmationButton(button)
+	button = applyConfirmationButtonFeedback(button)
 	if not button then
 		return
 	end

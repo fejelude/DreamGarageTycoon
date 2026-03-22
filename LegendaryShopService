@@ -1,7 +1,7 @@
 -- Purpose: Handles Legendary Car Shop logic. Strictly crafting system, persistent timers, sacrifice mechanics.
 -- Runs on: Server
 -- Location: ServerScriptService > LegendaryShopService
--- Dependencies: ReplicatedStorage.CarStats, ServerStorage.TycoonAdminAPI, TycoonDataHandler
+-- Dependencies: ReplicatedStorage.CarStats, ServerStorage.LegendaryCraftingInventoryFunction, TycoonDataHandler
 -- Public API: None (Event/Bindable driven)
 -- Networking: ShopRemotes.LegendaryShop.{RequestOpenShop, OpenShopUI, LegendaryShopUpdate, GetLegendaryShopState, CraftLegendaryCar, SacrificeLegendaryIngredient}
 -- Security: Server authority on cash, exact inventory checks, exact timer tracking.
@@ -88,12 +88,27 @@ if not PersistenceBindable then
 	PersistenceBindable.Parent = ServerStorage
 end
 
+local LegendaryInventoryBindable = ServerStorage:FindFirstChild("LegendaryCraftingInventoryFunction")
+if not LegendaryInventoryBindable then
+	LegendaryInventoryBindable = Instance.new("BindableFunction")
+	LegendaryInventoryBindable.Name = "LegendaryCraftingInventoryFunction"
+	LegendaryInventoryBindable.Parent = ServerStorage
+end
+
 -- =========================
 -- STATE
 -- =========================
 local PlayerSessions = {}        
 local InteractionLocks = {}        
 local LastOpenRequestAt = {}
+
+local function getIngredientDisplayName(ingredient)
+	return tostring(ingredient)
+end
+
+local function getMissingIngredientMessage(ingredient)
+	return "You don't own the required car (" .. getIngredientDisplayName(ingredient) .. ")!"
+end
 
 -- =========================
 -- TIMEOUT UTILITY
@@ -283,30 +298,20 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 			session.CraftProgress[carName][ingredient] = requiredAmount
 		else
 			-- Process Car Sacrifice
-			local foundTool = false
-
-			local function checkContainer(container)
-				if not container then return end
-				for _, child in ipairs(container:GetChildren()) do
-					if child:IsA("Tool") and (child.Name == ingredient or child.Name == ingredient.." Item" or child:GetAttribute("ToolId") == ingredient or child:GetAttribute("ToolId") == ingredient.." Item") then
-						return true
-					end
-				end
-				return false
+			local hasInventoryOk, ownsRequiredIngredient = safeInvoke(LegendaryInventoryBindable, 2, "HasTool", player, ingredient, 1)
+			if not hasInventoryOk then
+				return false, "System error checking inventory."
+			end
+			if not ownsRequiredIngredient then
+				return false, getMissingIngredientMessage(ingredient)
 			end
 
-			foundTool = checkContainer(player:FindFirstChild("Backpack"))
-			if not foundTool then foundTool = checkContainer(player:FindFirstChild("StarterGear")) end
-			if not foundTool and player.Character then foundTool = checkContainer(player.Character) end
-
-			if not foundTool then return false, "You don't own the required car (" .. ingredient .. ")!" end
-
-			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-			if TycoonAdminAPI then
-				local rmOk = safeInvoke(TycoonAdminAPI, 2, "RemoveTool", player, ingredient)
-				if not rmOk then return false, "System error removing car." end
-			else
-				return false, "System Admin API offline."
+			local removeInventoryOk, removedOk, removedCount = safeInvoke(LegendaryInventoryBindable, 2, "RemoveTool", player, ingredient, 1)
+			if not removeInventoryOk then
+				return false, "System error removing car."
+			end
+			if not removedOk or (removedCount or 0) < 1 then
+				return false, getMissingIngredientMessage(ingredient)
 			end
 
 			session.CraftProgress[carName][ingredient] = currentAmount + 1
@@ -314,10 +319,7 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 
 		pushUpdate(player, session, "Sacrifice")
 
-		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-		if TycoonAdminAPI then
-			safeInvoke(TycoonAdminAPI, 2, "MarkDirty", player)
-		end
+		safeInvoke(LegendaryInventoryBindable, 2, "MarkDirty", player)
 
 		return true, "Success"
 	end)
@@ -381,10 +383,7 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 
 		pushUpdate(player, session, "Craft")
 
-		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-		if TycoonAdminAPI then
-			safeInvoke(TycoonAdminAPI, 2, "MarkDirty", player)
-		end
+		safeInvoke(LegendaryInventoryBindable, 2, "MarkDirty", player)
 
 		return true, "Success"
 	end)
@@ -420,28 +419,22 @@ task.spawn(function()
 					local recipe = RECIPES[carName]
 					local realToolName = recipe.TargetCar
 
-					local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-					if TycoonAdminAPI then
-						local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", player, realToolName)
-						if invokeOk then
-							print("✅ [LegendaryShop] Granted " .. realToolName .. " to " .. player.Name)
-							dirty = true
-						else
-							warn("⚠️ [LegendaryShop] Failed to grant " .. realToolName .. " to " .. player.Name)
-							-- Revert state to try again later
-							session.ActiveCrafts[carName] = endTime
-							session.CompletedCrafts[carName] = nil
-						end
+					local invokeOk, giveResult = safeInvoke(LegendaryInventoryBindable, 3, "GiveTool", player, realToolName)
+					if invokeOk and giveResult ~= false then
+						print("✅ [LegendaryShop] Granted " .. realToolName .. " to " .. player.Name)
+						dirty = true
+					else
+						warn("⚠️ [LegendaryShop] Failed to grant " .. realToolName .. " to " .. player.Name)
+						-- Revert state to try again later
+						session.ActiveCrafts[carName] = endTime
+						session.CompletedCrafts[carName] = nil
 					end
 				end
 			end
 
 			if dirty then
 				pushUpdate(player, session, "Complete")
-				local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-				if TycoonAdminAPI then
-					safeInvoke(TycoonAdminAPI, 2, "MarkDirty", player)
-				end
+				safeInvoke(LegendaryInventoryBindable, 2, "MarkDirty", player)
 			end
 		end
 	end
