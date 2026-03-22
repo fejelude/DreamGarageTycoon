@@ -737,7 +737,7 @@ local function UpdateCraftingUI(carName)
 
 	if mainCraftBtn then
 		if isCrafting then
-			mainCraftBtn.Visible = false
+					mainCraftBtn.Visible = true -- Always show so player can click it and see the timer
 		else
 			mainCraftBtn.Visible = allComplete
 		end
@@ -810,6 +810,14 @@ local function AttemptSacrifice(carName, ingredient)
 
 		Kit.Sound:Play("Click")
 
+		local callback = Instance.new("BindableEvent")
+		callback.Event:Connect(function()
+			mainFrame.Visible = true
+			callback:Destroy()
+		end)
+
+		mainFrame.Visible = false
+
 		task.spawn(function()
 			local success, msg = FuncSacrifice:InvokeServer(carName, ingredient)
 			if requestSessionId == shopSessionId then
@@ -817,22 +825,8 @@ local function AttemptSacrifice(carName, ingredient)
 			end
 
 			if not isActiveShopSession(requestSessionId) then
+				mainFrame.Visible = true
 				return
-			end
-
-			if success then
-				Kit.Sound:Play("BuySuccess")
-				showFeedback("Sacrifice Successful", FEEDBACK_COLORS.Success)
-				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
-					updateDialogue("SacrificeSuccess")
-				end
-			else
-				Kit.Sound:Play("BuyFail")
-				showFeedback(msg, FEEDBACK_COLORS.FailCash)
-				if requestViewVersion == shopViewVersion and activeCarFocus == carName
-					and (msg == "Insufficient Cash (Withdraw from ATM)" or msg == "You don't own the required car (" .. ingredient .. ")!") then
-					updateDialogue("NotEnough")
-				end
 			end
 
 			currentState = FuncGetState:InvokeServer()
@@ -849,8 +843,30 @@ local function AttemptSacrifice(carName, ingredient)
 				end
 			end
 
-			if allComplete and success and requestViewVersion == shopViewVersion and activeCarFocus == carName then
-				updateDialogue("AllComplete")
+			if success then
+				Kit.Sound:Play("BuySuccess")
+				showFeedback("Sacrifice Successful", FEEDBACK_COLORS.Success)
+				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
+					if allComplete then
+						updateDialogue("AllComplete", {carName = displayCarName, itemName = ingredient}, callback)
+					else
+						updateDialogue("SacrificeSuccess", {carName = displayCarName, itemName = ingredient}, callback)
+					end
+				else
+					mainFrame.Visible = true
+				end
+			else
+				Kit.Sound:Play("BuyFail")
+				showFeedback(msg, FEEDBACK_COLORS.FailCash)
+				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
+					if (msg == "Insufficient Cash (Withdraw from ATM)" or msg == "You don't own the required car (" .. ingredient .. ")!") then
+						updateDialogue("NotEnough", {carName = displayCarName, itemName = ingredient}, callback)
+					else
+						mainFrame.Visible = true
+					end
+				else
+					mainFrame.Visible = true
+				end
 			end
 		end)
 	end)
@@ -861,13 +877,35 @@ local function AttemptCraft(carName)
 	if not isShopOpen or activeCarFocus ~= carName then return end
 	if not currentState or not currentState.CompletedCrafts then return end
 
+	local recipe = RECIPES[carName]
+	local displayCarName = recipe and recipe.TargetCar or carName
+
+	if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
+		local timestamp = currentState.ActiveCrafts[carName]
+		local delta = timestamp - os.time()
+		if delta < 0 then delta = 0 end
+
+		local hours = math.floor(delta / 3600)
+		local mins = math.floor((delta % 3600) / 60)
+		local secs = math.floor(delta % 60)
+		local timeStr = string.format("%02d:%02d:%02d", hours, mins, secs)
+
+		local callback = Instance.new("BindableEvent")
+		callback.Event:Connect(function()
+			mainFrame.Visible = true
+			callback:Destroy()
+		end)
+
+		mainFrame.Visible = false
+		updateDialogue("AlreadyCrafting", {carName = displayCarName, timeStr = timeStr}, callback)
+		return
+	end
+
 	if currentState.CompletedCrafts[carName] then
 		updateDialogue("AlreadyCrafted")
 		return
 	end
 
-	local recipe = RECIPES[carName]
-	local displayCarName = recipe and recipe.TargetCar or carName
 	local craftHours = (carName == "Yamura" and "12" or "48")
 	local requestSessionId = shopSessionId
 	local requestViewVersion = shopViewVersion
@@ -881,6 +919,14 @@ local function AttemptCraft(carName)
 
 		Kit.Sound:Play("Click")
 
+		local callback = Instance.new("BindableEvent")
+		callback.Event:Connect(function()
+			mainFrame.Visible = true
+			callback:Destroy()
+		end)
+
+		mainFrame.Visible = false
+
 		task.spawn(function()
 			local success, msg = FuncCraftCar:InvokeServer(carName)
 			if requestSessionId == shopSessionId then
@@ -888,22 +934,26 @@ local function AttemptCraft(carName)
 			end
 
 			if not isActiveShopSession(requestSessionId) then
+				mainFrame.Visible = true
 				return
 			end
+
+			currentState = FuncGetState:InvokeServer()
+			UpdateDisplay()
 
 			if success then
 				Kit.Sound:Play("BuySuccess")
 				showFeedback("Crafting Started!", FEEDBACK_COLORS.Success)
 				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
-					updateDialogue("CraftStarted")
+					updateDialogue("CraftStarted", {carName = displayCarName}, callback)
+				else
+					mainFrame.Visible = true
 				end
 			else
 				Kit.Sound:Play("BuyFail")
 				showFeedback(msg, FEEDBACK_COLORS.FailCash)
+				mainFrame.Visible = true
 			end
-
-			currentState = FuncGetState:InvokeServer()
-			UpdateDisplay()
 		end)
 	end)
 end
@@ -1066,7 +1116,21 @@ local function init()
 
 	RemoteUpdate.OnClientEvent:Connect(function(newState)
 		if newState.Reason == "Complete" then
-			updateDialogue("CraftComplete")
+			if currentState and currentState.CompletedCrafts and newState.CompletedCrafts then
+				local newCar = nil
+				for carName, _ in pairs(newState.CompletedCrafts) do
+					if not currentState.CompletedCrafts[carName] then
+						newCar = carName
+						break
+					end
+				end
+				if newCar then
+					local displayCarName = RECIPES[newCar] and RECIPES[newCar].TargetCar or newCar
+					updateDialogue("CraftComplete", {carName = displayCarName})
+				end
+			else
+				updateDialogue("CraftComplete")
+			end
 		end
 		currentState = newState
 		UpdateDisplay()
