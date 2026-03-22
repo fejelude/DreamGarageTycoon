@@ -2,7 +2,7 @@
 -- Runs on: Server
 -- Location: ServerScriptService > TycoonDataHandler
 -- Dependencies: Players, ServerStorage, DataStoreService, Workspace, ReplicatedStorage, HttpService, CarStats, BaseSkinStats
--- Public API: TycoonAdminAPI (BindableFunction)
+-- Public API: TycoonAdminAPI (BindableFunction), LegendaryCraftingInventoryFunction (BindableFunction)
 -- Networking: TycoonAdminLog (RemoteEvent), ShopRemotes (via Bindable)
 -- Security: Server-authoritative tool validation, anti-wipe protection, fixed StarterGear duplication exploit.
 -- Performance: Batched saving, lock-based pad restoration to prevent race conditions.
@@ -313,6 +313,71 @@ local function RestoreLayout(player, plot, layoutData)
 	end
 end
 
+local function toolMatchesId(tool, targetToolId)
+	return tool
+		and tool:IsA("Tool")
+		and (
+			tool.Name == targetToolId
+			or tool.Name == targetToolId.." Item"
+			or tool:GetAttribute("ToolId") == targetToolId
+			or tool:GetAttribute("ToolId") == targetToolId.." Item"
+		)
+end
+
+local function countMatchingTools(player, targetToolId)
+	if not player or not targetToolId then
+		return 0
+	end
+
+	local total = 0
+	local function scan(container)
+		if not container then return end
+		for _, child in ipairs(container:GetChildren()) do
+			if toolMatchesId(child, targetToolId) then
+				total += 1
+			end
+		end
+	end
+
+	scan(player:FindFirstChild("Backpack"))
+	scan(player:FindFirstChild("StarterGear"))
+	if player.Character then
+		scan(player.Character)
+	end
+
+	return total
+end
+
+local function removeMatchingTools(player, targetToolId, requestedAmount)
+	if not player or not targetToolId then
+		return 0
+	end
+
+	requestedAmount = math.max(1, tonumber(requestedAmount) or 1)
+	local removedCount = 0
+
+	local function removeFromContainer(container)
+		if not container or removedCount >= requestedAmount then return end
+		for _, child in ipairs(container:GetChildren()) do
+			if removedCount >= requestedAmount then
+				break
+			end
+			if toolMatchesId(child, targetToolId) then
+				child:Destroy()
+				removedCount += 1
+			end
+		end
+	end
+
+	removeFromContainer(player:FindFirstChild("Backpack"))
+	removeFromContainer(player:FindFirstChild("StarterGear"))
+	if player.Character then
+		removeFromContainer(player.Character)
+	end
+
+	return removedCount
+end
+
 -- ----------------------------------------------------------------------------
 -- 🔄 ADMIN API (BindableFunction)
 -- ----------------------------------------------------------------------------
@@ -336,29 +401,68 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		giveTool(player, toolName, customAttributes)
 		return true
 	elseif action == "RemoveTool" and player then
-		local targetToolId = ...
+		local targetToolId, requestedAmount = ...
 		if not targetToolId then return false end
+		local removedCount = removeMatchingTools(player, targetToolId, requestedAmount)
 
-		local function removeAll(container)
-			if not container then return end
-			for _, child in ipairs(container:GetChildren()) do
-				if child:IsA("Tool") and (child.Name == targetToolId or child.Name == targetToolId.." Item" or child:GetAttribute("ToolId") == targetToolId or child:GetAttribute("ToolId") == targetToolId.." Item") then
-					child:Destroy()
-				end
-			end
+		if removedCount < math.max(1, tonumber(requestedAmount) or 1) then
+			return false, removedCount
 		end
 
-		removeAll(player:FindFirstChild("Backpack"))
-		removeAll(player:FindFirstChild("StarterGear"))
-		if player.Character then removeAll(player.Character) end
-
 		markDirty(player)
-		return true
+		return true, removedCount
 	elseif action == "MarkDirty" and player then
 
 		markDirty(player)
 		return true
 	end
+	return false
+end
+
+local LegendaryCraftingInventoryAPI = ServerStorage:FindFirstChild("LegendaryCraftingInventoryFunction")
+if not LegendaryCraftingInventoryAPI then
+	LegendaryCraftingInventoryAPI = Instance.new("BindableFunction")
+	LegendaryCraftingInventoryAPI.Name = "LegendaryCraftingInventoryFunction"
+	LegendaryCraftingInventoryAPI.Parent = ServerStorage
+end
+
+LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
+	if not player then
+		return false
+	end
+
+	if action == "HasTool" then
+		local targetToolId, requiredAmount = ...
+		if not targetToolId then
+			return false, 0
+		end
+
+		requiredAmount = math.max(1, tonumber(requiredAmount) or 1)
+		local ownedCount = countMatchingTools(player, targetToolId)
+		return ownedCount >= requiredAmount, ownedCount
+	elseif action == "RemoveTool" then
+		local targetToolId, requestedAmount = ...
+		if not targetToolId then
+			return false, 0
+		end
+
+		requestedAmount = math.max(1, tonumber(requestedAmount) or 1)
+		local removedCount = removeMatchingTools(player, targetToolId, requestedAmount)
+		if removedCount < requestedAmount then
+			return false, removedCount
+		end
+
+		markDirty(player)
+		return true, removedCount
+	elseif action == "GiveTool" then
+		local toolName, customAttributes = ...
+		giveTool(player, toolName, customAttributes)
+		return true
+	elseif action == "MarkDirty" then
+		markDirty(player)
+		return true
+	end
+
 	return false
 end
 
