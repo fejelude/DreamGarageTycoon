@@ -590,15 +590,19 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	elseif actionType == "NotEnough" then
 		local msgs = {
 			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> in your garage.",
-			"My scanners show you're missing the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. Come back when you actually have it.",
-			"You are short on resources. I need the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> to proceed."
+			"Dude, you dont even have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. Come back when you actually have it.",
+			"You are short on resources. I need the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> to proceed.",
+			"I don't work for free. Bring me the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> first."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "SacrificeSuccess" then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"It is done. The <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> has been successfully integrated.",
-			"Sacrifice accepted. The chassis grows stronger.",
-			"Excellent. We are one step closer to the masterpiece."
+			"The <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> has been stripped for parts. You still have <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more sacrifices to go.",
+			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more requirements and we can begin.",
+			"Alright " .. coloredName .. " thanks for the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. We are getting closer, just <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more to go.",
+			"Good. The chassis grows stronger. <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more pieces needed.",
+			"Another piece of the puzzle. Just <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more to go before the forge is ready."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyDone" then
@@ -610,32 +614,42 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AllComplete" then
 		local msgs = {
-			"The <font color='#50C878'>sacrifices are complete</font>. The forge is primed. Are you ready?",
-			"Every piece is in place. Give the word, and I will begin the build."
+			"That was the last one! The <font color='#50C878'>sacrifices are complete</font>. Ready to go?",
+			"Every piece is finally in place. Click confirm, and I will begin the build.",
+			"We have everything we need. Nice.",
+			"All requirements met. The <font color='#00E5FF'>" .. extraInfo.carName .. "</font> is ready to be born. Tell me when to start crafting... when you're ready."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CraftStarted" then
 		local msgs = {
-			"The ritual has begun. Locking down the garage. Return when the timer completes."
+			"Alright im working on making your <font color='#B652FF'>" .. extraInfo.carName .. "</font> be back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"Crafting underway homie, The <font color='#B652FF'>" .. extraInfo.carName .. "</font> will be ready soon."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyCrafted" then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"You already have one of these. We don't make duplicates.",
-			"We already built that for you.",
-			"Look in your garage. You already own it."
+			"It is finished. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. extraInfo.carName .. "</font> its already there on your inventory, a " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. extraInfo.carName .. "</font> is done. A flawless execution. it's already there in your inventory.."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CraftComplete" then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"It is finished. The <font color='#B652FF'><b>" .. (extraInfo and extraInfo.carName or "car") .. "</b></font> is a true work of art. The keys are in your garage."
+			"It is finished. The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> its already there on your inventory, a " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is done. A flawless execution. it's already there in your inventory.."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyCrafting" then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"Patience. We are already forging the <font color='#B652FF'><b>" .. extraInfo.carName .. "</b></font> right now. It will be ready in <font color='#FF4C4C'><b>" .. extraInfo.timeStr .. "</b></font>.",
-			"The forge is currently occupied with the <font color='#B652FF'><b>" .. extraInfo.carName .. "</b></font>. Check back in <font color='#FF4C4C'><b>" .. extraInfo.timeStr .. "</b></font>.",
-			"You can't rush perfection. The <font color='#B652FF'><b>" .. extraInfo.carName .. "</b></font> needs <font color='#FF4C4C'><b>" .. extraInfo.timeStr .. "</b></font> more time."
+			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. extraInfo.carName .. "</font>. Check back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. extraInfo.carName .. "</font> needs <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> more time, come back later alright?",
+			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> before the build is complete."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	end

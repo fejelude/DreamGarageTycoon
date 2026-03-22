@@ -140,9 +140,9 @@ task.spawn(function()
 	end
 end)
 
-local function updateDialogue(action, info)
+local function updateDialogue(action, info, callback)
 	if DialogueEvent then
-		DialogueEvent:Fire(action, info)
+		DialogueEvent:Fire(action, info, callback)
 	end
 end
 
@@ -707,10 +707,11 @@ local function UpdateCraftingUI(carName)
 			local isDone = currentAmount >= requiredAmount
 
 			if infoLabel then
+				infoLabel.RichText = true
 				if ingredient == "Cash" then
-					infoLabel.Text = isDone and "Complete" or ("$" .. FormatCommas(currentAmount) .. " / $" .. FormatCommas(requiredAmount))
+					infoLabel.Text = isDone and ("<font color='#50C878'>$" .. FormatCommas(requiredAmount) .. " / $" .. FormatCommas(requiredAmount) .. "</font>") or ("$" .. FormatCommas(currentAmount) .. " / $" .. FormatCommas(requiredAmount))
 				else
-					infoLabel.Text = isDone and "Complete" or (currentAmount .. " / " .. requiredAmount)
+					infoLabel.Text = isDone and ("<font color='#50C878'>" .. requiredAmount .. " / " .. requiredAmount .. "</font>") or (currentAmount .. " / " .. requiredAmount)
 				end
 			end
 
@@ -833,12 +834,14 @@ local function AttemptSacrifice(carName, ingredient)
 			UpdateDisplay()
 
 			local allComplete = true
+			local itemsLeft = 0
 			for ing, req in pairs(recipe) do
 				if ing ~= "TargetCar" and ing ~= "CraftTime" then
 					local p = currentState.CraftProgress[carName] and currentState.CraftProgress[carName][ing] or 0
 					if p < req then
 						allComplete = false
-						break
+						local diff = req - p
+						itemsLeft = itemsLeft + diff
 					end
 				end
 			end
@@ -850,7 +853,7 @@ local function AttemptSacrifice(carName, ingredient)
 					if allComplete then
 						updateDialogue("AllComplete", {carName = displayCarName, itemName = ingredient}, callback)
 					else
-						updateDialogue("SacrificeSuccess", {carName = displayCarName, itemName = ingredient}, callback)
+						updateDialogue("SacrificeSuccess", {carName = displayCarName, itemName = ingredient, itemsLeft = itemsLeft}, callback)
 					end
 				else
 					mainFrame.Visible = true
@@ -902,7 +905,14 @@ local function AttemptCraft(carName)
 	end
 
 	if currentState.CompletedCrafts[carName] then
-		updateDialogue("AlreadyCrafted")
+		local callback = Instance.new("BindableEvent")
+		callback.Event:Connect(function()
+			mainFrame.Visible = true
+			callback:Destroy()
+		end)
+
+		mainFrame.Visible = false
+		updateDialogue("AlreadyCrafted", {carName = displayCarName}, callback)
 		return
 	end
 
@@ -945,7 +955,19 @@ local function AttemptCraft(carName)
 				Kit.Sound:Play("BuySuccess")
 				showFeedback("Crafting Started!", FEEDBACK_COLORS.Success)
 				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
-					updateDialogue("CraftStarted", {carName = displayCarName}, callback)
+					local timeStr = "..."
+					if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
+						local timestamp = currentState.ActiveCrafts[carName]
+						local delta = timestamp - os.time()
+						if delta < 0 then delta = 0 end
+
+						local hours = math.floor(delta / 3600)
+						local mins = math.floor((delta % 3600) / 60)
+						local secs = math.floor(delta % 60)
+						timeStr = string.format("%02d:%02d:%02d", hours, mins, secs)
+					end
+
+					updateDialogue("CraftStarted", {carName = displayCarName, timeStr = timeStr}, callback)
 				else
 					mainFrame.Visible = true
 				end
