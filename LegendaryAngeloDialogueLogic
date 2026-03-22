@@ -2,12 +2,8 @@
 -- Runs on: Client
 -- Location: StarterPlayerScripts.LegendaryAngeloDialogueLogic
 -- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
--- Public API: UpdateLegendaryAngeloDialogue (BindableEvent)
+-- Public API: UpdateLegendaryAngeloDialogue (BindableEvent), AngeloShopSpeak (BindableEvent)
 -- Networking: Fires ShopRemotes.LegendaryShop.RequestOpenShop (Client -> Server)
--- Security: Validates local character state before locking movement. Uses debounces to prevent spam.
--- Performance: Safely manages nested task threads and event cleanup. Recursive search handles nested buttons efficiently.
--- Notes: FIX - Added isShopModeActive to allow dialogue to display after shop opens (releaseInteractionForShop
---        sets isInteracting = false, which previously caused all shop events to bail out immediately).
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
@@ -25,70 +21,58 @@ print("🐛 [LegendaryAngeloDebug] Script Initializing...")
 -- ============================================================================
 -- 🎨 COLOR CONFIGURATION
 -- ============================================================================
-local USER_COLOR   = "#55AAFF"  -- Blue  (Player Name)
-local ANGELO_COLOR = "#FFD700"  -- Gold  (Angelo)
-local GREEN_COLOR  = "#55FF7F"  -- Green (Exit Message)
+local USER_COLOR = "#55AAFF"
+local ANGELO_COLOR = "#FFD700"
+local GREEN_COLOR = "#55FF7F"
 
 -- ============================================================================
 -- 🆔 UNIQUE IDENTIFIERS
 -- ============================================================================
-local GUI_ID       = "UI_NPC_Monk3yDAngelo-Cars"
+local GUI_ID = "UI_NPC_Monk3yDAngelo-Cars"
 local CONTAINER_ID = "Frame_Angelo_Container"
-local TEXT_ID      = "Text_Angelo_Dialogue"
+local TEXT_ID = "Text_Angelo_Dialogue"
 
-local BTN_CRAFT_ID   = "Btn_Angelo_Craft"
+local BTN_CRAFT_ID = "Btn_Angelo_Craft"
 local BTN_INQUIRY_ID = "Btn_Angelo_Inquiry"
-local BTN_LEAVE_ID   = "Btn_Angelo_Leave"
+local BTN_LEAVE_ID = "Btn_Angelo_Leave"
 local ALL_BUTTON_IDS = {BTN_CRAFT_ID, BTN_INQUIRY_ID, BTN_LEAVE_ID}
 
--- 📍 NPC CONFIGURATION
-local TARGET_NPC  = "Monk3yDAngelo-Cars"
+local TARGET_NPC = "Monk3yDAngelo-Cars"
 local CAMERA_PART = "CameraAimPart"
 local PROMPT_NAME = "TalkPrompt"
 
--- 🎥 SETTINGS
-local TWEEN_INFO              = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-local TYPEWRITER_SPEED        = 0.02
-local LEAVE_DELAY             = 1.5
+local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TYPEWRITER_SPEED = 0.02
+local LEAVE_DELAY = 1.5
 local SHOP_OPEN_DELAY_SECONDS = 2.0
 
--- 🔊 SOUNDS
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
-local HOVER_SOUND_ID  = "rbxassetid://6895079853"
-local CLICK_SOUND_ID  = "rbxassetid://9083627113"
+local HOVER_SOUND_ID = "rbxassetid://6895079853"
+local CLICK_SOUND_ID = "rbxassetid://9083627113"
 local CRAFT_OPEN_MESSAGE = "Select a chassis. We require great sacrifices to build these."
 
--- ✨ ANIMATION SETTINGS
 local HOVER_SCALE = 1.1
 local CLICK_SCALE = 0.9
-local ANIM_SPEED  = 0.1
+local ANIM_SPEED = 0.1
 
 -- ============================================================================
 -- 🛠️ STATE VARIABLES
 -- ============================================================================
-local isInteracting    = false
-local isLeaving        = false
-local isOpeningShop    = false
-
--- [FIX] isShopModeActive: stays true after releaseInteractionForShop() so that
--- shop-driven dialogue events (SacrificeSuccess, NotEnough, AlreadyCrafting, etc.)
--- can still display the NPC speech bubble even though isInteracting = false.
-local isShopModeActive = false
-
-local currentDialogueJob   = nil
-local pendingShopOpenTask  = nil
+local isInteracting = false
+local isLeaving = false
+local isOpeningShop = false
+local currentDialogueJob = nil
+local pendingShopOpenTask = nil
 local interactionGeneration = 0
-local buttonConnections    = {}
+local buttonConnections = {}
 local buttonHoverConnections = {}
-local hiddenGuis   = {}
+local hiddenGuis = {}
 local hiddenObjects = {}
 local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
 
--- Remotes
 local LegendaryRemotes = ReplicatedStorage:WaitForChild("ShopRemotes"):WaitForChild("LegendaryShop")
 local RemoteOpen = LegendaryRemotes:WaitForChild("RequestOpenShop")
 
--- Bindable Event for External Dialogue Updates
 local UpdateDialogueEvent = script:FindFirstChild("UpdateLegendaryAngeloDialogue")
 if not UpdateDialogueEvent then
 	UpdateDialogueEvent = Instance.new("BindableEvent")
@@ -119,7 +103,7 @@ local function setButtonsState(isActive)
 		local btn = myGui:FindFirstChild(btnID, true)
 		if btn then
 			btn.Visible = isActive
-			btn.Active  = isActive
+			btn.Active = isActive
 		end
 	end
 end
@@ -165,7 +149,6 @@ local function toggleOtherGuis(shouldHide)
 				and otherGui.Name ~= "Confirmation"
 				and otherGui.Enabled == true
 				and otherGui.Name ~= "Balance Indicator" then
-
 				otherGui.Enabled = false
 				table.insert(hiddenGuis, otherGui)
 			end
@@ -199,11 +182,6 @@ local function getCleanTextLength(str)
 	return utf8.len(cleanStr) or #cleanStr
 end
 
--- ============================================================================
--- ✍️ TYPEWRITER
--- [FIX] Added isShopModeActive to the break guard so shop-mode dialogue
--- doesn't immediately cancel itself (isInteracting is false during shop).
--- ============================================================================
 local function typewrite(label, text, onComplete)
 	if not label then return end
 	label.RichText = true
@@ -220,8 +198,7 @@ local function typewrite(label, text, onComplete)
 
 	currentDialogueJob = task.spawn(function()
 		for i = 1, len do
-			-- [FIX] Also allow typewriter to run when isShopModeActive
-			if not isInteracting and not isLeaving and not isShopModeActive then break end
+			if not isInteracting and not isLeaving then break end
 			label.MaxVisibleGraphemes = i
 			if i % 3 == 0 then
 				local s = Instance.new("Sound", SoundService)
@@ -235,25 +212,19 @@ local function typewrite(label, text, onComplete)
 		label.MaxVisibleGraphemes = -1
 		currentDialogueJob = nil
 
-		-- [FIX] Allow callback during shop mode too (not just isInteracting)
-		if onComplete and (isInteracting or isShopModeActive) then
+		if onComplete and isInteracting then
 			task.spawn(onComplete)
 		end
 	end)
 end
 
--- ============================================================================
--- 🛑 STOP INTERACTION (Full reset - called on leave, character death, ForceClose)
--- [FIX] Clears isShopModeActive so the next session starts clean.
--- ============================================================================
 local function stopInteraction()
-	if not isInteracting and not isLeaving and not isShopModeActive then return end
+	if not isInteracting and not isLeaving then return end
 
 	interactionGeneration += 1
-	isInteracting    = false
-	isLeaving        = false
-	isOpeningShop    = false
-	isShopModeActive = false  -- [FIX] Clear shop mode on full stop
+	isInteracting = false
+	isLeaving = false
+	isOpeningShop = false
 
 	if currentDialogueJob then
 		pcall(task.cancel, currentDialogueJob)
@@ -271,10 +242,10 @@ local function stopInteraction()
 	if controls then controls:Enable() end
 
 	if player.Character then
-		local hrp      = player.Character:FindFirstChild("HumanoidRootPart")
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		local humanoid = player.Character:FindFirstChild("Humanoid")
-		if hrp      then hrp.Anchored      = false end
-		if humanoid then humanoid.WalkSpeed = 16   end
+		if hrp then hrp.Anchored = false end
+		if humanoid then humanoid.WalkSpeed = 16 end
 	end
 
 	local myGui = playerGui:FindFirstChild(GUI_ID)
@@ -290,11 +261,6 @@ local function stopInteraction()
 	end
 end
 
--- ============================================================================
--- 🔓 RELEASE FOR SHOP (Partial reset - keeps player locked while shop is open)
--- [FIX] Sets isShopModeActive = true so the event handler knows to keep
--- displaying dialogue even though isInteracting is now false.
--- ============================================================================
 local function releaseInteractionForShop()
 	if not isInteracting then return end
 
@@ -317,12 +283,12 @@ local function releaseInteractionForShop()
 	if controls then controls:Enable() end
 
 	if player.Character then
-		local hrp      = player.Character:FindFirstChild("HumanoidRootPart")
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		local humanoid = player.Character:FindFirstChild("Humanoid")
 		if hrp then hrp.Anchored = false end
 		if humanoid then
-			humanoid.WalkSpeed  = 16
-			humanoid.JumpPower  = 50
+			humanoid.WalkSpeed = 16
+			humanoid.JumpPower = 50
 		end
 	end
 
@@ -333,30 +299,26 @@ local function releaseInteractionForShop()
 		if container then container.Visible = false end
 	end
 
-	isInteracting    = false
-	isLeaving        = false
-	isShopModeActive = true  -- [FIX] Shop is now driving dialogue; stay active
+	isInteracting = false
+	isLeaving = false
 end
 
--- ============================================================================
--- 🎞️ BUTTON ANIMATIONS
--- ============================================================================
 local function animateButton(btn)
 	if not btn:GetAttribute("OriginalSizeX") then
-		btn:SetAttribute("OriginalSizeX",  btn.Size.X.Scale)
+		btn:SetAttribute("OriginalSizeX", btn.Size.X.Scale)
 		btn:SetAttribute("OriginalSizeXO", btn.Size.X.Offset)
-		btn:SetAttribute("OriginalSizeY",  btn.Size.Y.Scale)
+		btn:SetAttribute("OriginalSizeY", btn.Size.Y.Scale)
 		btn:SetAttribute("OriginalSizeYO", btn.Size.Y.Offset)
 	end
 
-	local origX  = btn:GetAttribute("OriginalSizeX")
+	local origX = btn:GetAttribute("OriginalSizeX")
 	local origXO = btn:GetAttribute("OriginalSizeXO")
-	local origY  = btn:GetAttribute("OriginalSizeY")
+	local origY = btn:GetAttribute("OriginalSizeY")
 	local origYO = btn:GetAttribute("OriginalSizeYO")
 
 	local normalSize = UDim2.new(origX, origXO, origY, origYO)
-	local hoverSize  = UDim2.new(origX * HOVER_SCALE, origXO * HOVER_SCALE, origY * HOVER_SCALE, origYO * HOVER_SCALE)
-	local clickSize  = UDim2.new(origX * CLICK_SCALE, origXO * CLICK_SCALE, origY * CLICK_SCALE, origYO * CLICK_SCALE)
+	local hoverSize = UDim2.new(origX * HOVER_SCALE, origXO * HOVER_SCALE, origY * HOVER_SCALE, origYO * HOVER_SCALE)
+	local clickSize = UDim2.new(origX * CLICK_SCALE, origXO * CLICK_SCALE, origY * CLICK_SCALE, origYO * CLICK_SCALE)
 
 	if not UserInputService.TouchEnabled then
 		local connEnter = btn.MouseEnter:Connect(function()
@@ -381,9 +343,6 @@ local function animateButton(btn)
 	table.insert(buttonHoverConnections, connUp)
 end
 
--- ============================================================================
--- 💬 GREETING
--- ============================================================================
 local GREETING_DIALOGUES = {
 	"Welcome to the inner circle, ",
 	"Looking to craft something extraordinary, ",
@@ -391,16 +350,12 @@ local GREETING_DIALOGUES = {
 	"I've been expecting you, "
 }
 
--- ============================================================================
--- 🚀 START INTERACTION (Proximity Prompt triggered)
--- ============================================================================
 local function startInteraction(npcModel)
 	if isInteracting or isLeaving then return end
 
 	interactionGeneration += 1
-	isInteracting    = true
-	isShopModeActive = false  -- Always start clean
-	isOpeningShop    = false
+	isInteracting = true
+	isOpeningShop = false
 	clearConnections()
 
 	local camPart = npcModel:FindFirstChild(CAMERA_PART)
@@ -414,12 +369,12 @@ local function startInteraction(npcModel)
 	setFocusMode(true)
 
 	if player.Character then
-		local hrp      = player.Character:FindFirstChild("HumanoidRootPart")
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		local humanoid = player.Character:FindFirstChild("Humanoid")
 		if humanoid then humanoid.WalkSpeed = 0 end
 		if hrp then
-			hrp.Velocity  = Vector3.zero
-			hrp.Anchored  = true
+			hrp.Velocity = Vector3.zero
+			hrp.Anchored = true
 		end
 	end
 
@@ -427,28 +382,20 @@ local function startInteraction(npcModel)
 	TweenService:Create(camera, TWEEN_INFO, {CFrame = camPart.CFrame}):Play()
 
 	local myGui = playerGui:WaitForChild(GUI_ID, 5)
-	if not myGui then
-		warn("❌ [LegendaryAngeloDebug] Missing GUI")
-		stopInteraction()
-		return
-	end
+	if not myGui then warn("❌ [LegendaryAngeloDebug] Missing GUI") stopInteraction() return end
 
 	myGui.Enabled = true
 	local container = myGui:FindFirstChild(CONTAINER_ID, true)
-	if not container then
-		warn("❌ [LegendaryAngeloDebug] Missing Frame")
-		stopInteraction()
-		return
-	end
+	if not container then warn("❌ [LegendaryAngeloDebug] Missing Frame") stopInteraction() return end
 
 	container.Visible = true
 	setButtonsState(false)
 
 	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
 	if dialogueLabel then
-		local coloredName    = "<font color='" .. USER_COLOR    .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local randomGreeting = GREETING_DIALOGUES[math.random(1, #GREETING_DIALOGUES)]
-		local greeting       = randomGreeting .. coloredName .. "."
+		local greeting = randomGreeting .. coloredName .. "."
 
 		typewrite(dialogueLabel, greeting, function()
 			setButtonsState(true)
@@ -464,29 +411,28 @@ local function startInteraction(npcModel)
 				end)
 				table.insert(buttonConnections, conn)
 			else
-				warn("⚠️ [LegendaryAngeloDebug] Could not find button '" .. btnName .. "'")
+				warn("⚠️ [LegendaryAngeloDebug] Warning: Could not find button '" .. btnName .. "' in UI.")
 			end
 		end
 
-		-- LEAVE
 		connectBtn(BTN_LEAVE_ID, function()
 			if isLeaving then return end
 			isLeaving = true
 			clearConnections()
 			setButtonsState(false)
 			if dialogueLabel then
-				local coloredAngelo = "<font color='" .. ANGELO_COLOR .. "'>@" .. player.Name .. "</font>"
-				local goodbyeMsg    = "<font color='" .. GREEN_COLOR  .. "'>Return when you are ready, </font>" .. coloredAngelo .. "!"
+				local coloredRedName = "<font color='" .. ANGELO_COLOR .. "'>@" .. player.Name .. "</font>"
+				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Return when you are ready, </font>" .. coloredRedName .. "!"
 				typewrite(dialogueLabel, goodbyeMsg)
 			end
 			task.wait(LEAVE_DELAY)
 			stopInteraction()
 		end)
 
-		-- INQUIRY
 		connectBtn(BTN_INQUIRY_ID, function()
 			setButtonsState(false)
 			if dialogueLabel then
+				local coloredAngelo = "<font color='" .. ANGELO_COLOR .. "'>Angelo</font>"
 				local loreText = "To forge a Legendary vehicle, you must offer sacrifices. \nBring me specific cars and rare materials, and I will build you a masterpiece."
 				typewrite(dialogueLabel, loreText, function()
 					setButtonsState(true)
@@ -494,7 +440,6 @@ local function startInteraction(npcModel)
 			end
 		end)
 
-		-- CRAFT (open shop)
 		connectBtn(BTN_CRAFT_ID, function()
 			if isOpeningShop then return end
 			isOpeningShop = true
@@ -504,7 +449,9 @@ local function startInteraction(npcModel)
 			typewrite(dialogueLabel, CRAFT_OPEN_MESSAGE, function()
 				if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
 
-				if pendingShopOpenTask then pcall(task.cancel, pendingShopOpenTask) end
+				if pendingShopOpenTask then
+					pcall(task.cancel, pendingShopOpenTask)
+				end
 
 				pendingShopOpenTask = task.spawn(function()
 					task.wait(SHOP_OPEN_DELAY_SECONDS)
@@ -515,98 +462,39 @@ local function startInteraction(npcModel)
 			end)
 		end)
 	else
-		warn("❌ [LegendaryAngeloDebug] Could not find TextLabel '" .. TEXT_ID .. "'")
+		warn("❌ [LegendaryAngeloDebug] ERROR: Could not find TextLabel named '" .. TEXT_ID .. "' inside Container!")
 		setButtonsState(true)
 	end
 end
 
 -- ============================================================================
--- 📡 SHOP DIALOGUE EVENT HANDLER
---
--- [FIX SUMMARY]
--- Root cause: after releaseInteractionForShop(), isInteracting = false.
--- The old guard `if not isInteracting or isLeaving` caused EVERY shop event
--- (SacrificeSuccess, NotEnough, AlreadyCrafting, CraftComplete, etc.) to
--- immediately fire the callback without ever showing dialogue.
---
--- Fix:
---   1. Guard now only bails when BOTH isInteracting=false AND isShopModeActive=false.
---   2. In shop mode the NPC GUI is temporarily re-shown for the typewriter.
---   3. After typewriter completes in shop mode, NPC GUI is hidden again before
---      the callback fires (which restores mainFrame in the shop controller).
+-- 📡 UpdateDialogueEvent — original handler, untouched.
+-- Only handles ForceClose now since all shop events route through AngeloShopSpeak.
 -- ============================================================================
 UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
-
-	-- ── ForceClose: hard stop regardless of mode ──────────────────────────
 	if actionType == "ForceClose" then
 		stopInteraction()
 		if callbackEvent then callbackEvent:Fire() end
 		return
 	end
 
-	-- ── [FIX] Guard: skip if neither interacting nor in shop mode ─────────
-	if not isInteracting and not isShopModeActive then
+	if not isInteracting or isLeaving then
 		if callbackEvent then callbackEvent:Fire() end
 		return
 	end
 
-	-- ── Skip if mid-leave animation ────────────────────────────────────────
-	if isLeaving then
-		if callbackEvent then callbackEvent:Fire() end
-		return
-	end
-
-	-- ── Resolve NPC GUI ────────────────────────────────────────────────────
 	local myGui = playerGui:FindFirstChild(GUI_ID)
-	if not myGui then
-		if callbackEvent then callbackEvent:Fire() end
-		return
-	end
+	if not myGui then if callbackEvent then callbackEvent:Fire() end return end
 	local container = myGui:FindFirstChild(CONTAINER_ID, true)
-	if not container then
-		if callbackEvent then callbackEvent:Fire() end
-		return
-	end
+	if not container then if callbackEvent then callbackEvent:Fire() end return end
 	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
-	if not dialogueLabel then
-		if callbackEvent then callbackEvent:Fire() end
-		return
-	end
+	if not dialogueLabel then if callbackEvent then callbackEvent:Fire() end return end
 
-	-- ── [FIX] Shop mode: temporarily re-show NPC speech bubble ────────────
-	if isShopModeActive and not isInteracting then
-		myGui.Enabled     = true
-		container.Visible = true
-		setButtonsState(false)
-	end
-
-	-- ── [FIX] After typewriter: hide NPC GUI before restoring shop frame ──
-	-- This wrapper fires AFTER the typewriter animation finishes.
-	local function onDialogueComplete()
-		if isShopModeActive then
-			myGui.Enabled     = false
-			container.Visible = false
-		end
-		if callbackEvent then
-			callbackEvent:Fire()
-		end
-	end
-
-	-- ======================================================================
-	-- 💬 MASTER DIALOGUE MATRIX
-	-- ======================================================================
 	local msg = "..."
-	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 
-	-- ── Menu & Navigation ──────────────────────────────────────────────────
 	if actionType == "MenuOpen" then
-		local msgs = {
-			CRAFT_OPEN_MESSAGE,
-			"Take your pick. Both are engineering marvels.",
-			"What do you have your eye on?"
-		}
+		local msgs = {CRAFT_OPEN_MESSAGE, "Take your pick. Both are engineering marvels.", "What do you have your eye on?"}
 		msg = msgs[math.random(1, #msgs)]
-
 	elseif actionType == "SelectCar" then
 		local msgs = {
 			"Ah, the <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font>. A beautiful choice.",
@@ -614,113 +502,78 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 			"Excellent selection. Let's look at what is required."
 		}
 		msg = msgs[math.random(1, #msgs)]
-
-	-- ── Sacrifice flow ─────────────────────────────────────────────────────
 	elseif actionType == "ConfirmSacrifice" then
-		local msgs = {
-			"Are you certain? There is no going back once given.",
-			"Ready to let go of this piece?",
-			"Confirm the sacrifice. It is necessary."
-		}
+		local msgs = {"Are you certain? There is no going back once given.", "Ready to let go of this piece?", "Confirm the sacrifice. It is necessary."}
 		msg = msgs[math.random(1, #msgs)]
-
 	elseif actionType == "CancelSacrifice" then
-		local msgs = {
-			"Cold feet? I understand.",
-			"Take your time. This isn't a decision to be rushed.",
-			"Perhaps later, then."
-		}
+		local msgs = {"Cold feet? I understand.", "Take your time. This isn't a decision to be rushed.", "Perhaps later, then."}
 		msg = msgs[math.random(1, #msgs)]
-
-	elseif actionType == "AlreadyDone" then
-		local msgs = {
-			"We already have enough of that.",
-			"That requirement is already fulfilled.",
-			"Save it. We don't need any more of those."
-		}
-		msg = msgs[math.random(1, #msgs)]
-
-	-- 🔴 Missing item ────────────────────────────────────────────────────────
 	elseif actionType == "NotEnough" then
-		local itemName = extraInfo and extraInfo.itemName or "that"
 		local msgs = {
-			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. itemName .. "</font> in your garage.",
-			"Dude, you dont even have the <font color='#00E5FF'>" .. itemName .. "</font>. Come back when you actually have it.",
-			"You are short on resources. I need the <font color='#00E5FF'>" .. itemName .. "</font> to proceed.",
-			"I don't work for free. Bring me the <font color='#00E5FF'>" .. itemName .. "</font> first."
+			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> in your garage.",
+			"Dude, you dont even have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. Come back when you actually have it.",
+			"You are short on resources. I need the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> to proceed.",
+			"I don't work for free. Bring me the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> first."
 		}
 		msg = msgs[math.random(1, #msgs)]
-
-	-- 🟡 Sacrifice success (more still needed) ───────────────────────────────
 	elseif actionType == "SacrificeSuccess" then
-		local itemName  = extraInfo and extraInfo.itemName  or "that"
-		local itemsLeft = extraInfo and extraInfo.itemsLeft or "?"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"The <font color='#00E5FF'>" .. itemName .. "</font> has been stripped for parts. You still have <font color='#FFD700'>" .. itemsLeft .. "</font> more sacrifices to go.",
-			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. itemsLeft .. "</font> more requirements and we can begin.",
-			"Alright " .. coloredName .. " thanks for the <font color='#00E5FF'>" .. itemName .. "</font>. We are getting closer, just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go.",
-			"Good. The chassis grows stronger. <font color='#FFD700'>" .. itemsLeft .. "</font> more pieces needed.",
-			"Another piece of the puzzle. Just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go before the forge is ready."
+			"The <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> has been stripped for parts. You still have <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more sacrifices to go.",
+			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more requirements and we can begin.",
+			"Alright " .. coloredName .. " thanks for the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. We are getting closer, just <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more to go.",
+			"Good. The chassis grows stronger. <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more pieces needed.",
+			"Another piece of the puzzle. Just <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more to go before the forge is ready."
 		}
 		msg = msgs[math.random(1, #msgs)]
-
-	-- 🟢 Final sacrifice (all requirements met) ──────────────────────────────
+	elseif actionType == "AlreadyDone" then
+		local msgs = {"We already have enough of that.", "That requirement is already fulfilled.", "Save it. We don't need any more of those."}
+		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AllComplete" then
-		local carName = extraInfo and extraInfo.carName or "the car"
 		local msgs = {
 			"That was the last one! The <font color='#50C878'>sacrifices are complete</font>. Ready to go?",
 			"Every piece is finally in place. Click confirm, and I will begin the build.",
 			"We have everything we need. Nice.",
-			"All requirements met. The <font color='#00E5FF'>" .. carName .. "</font> is ready to be born. Tell me when to start crafting... when you're ready."
+			"All requirements met. The <font color='#00E5FF'>" .. extraInfo.carName .. "</font> is ready to be born. Tell me when to start crafting... when you're ready."
 		}
 		msg = msgs[math.random(1, #msgs)]
-
-	-- 🔥 Craft just started ───────────────────────────────────────────────────
 	elseif actionType == "CraftStarted" then
-		local carName = extraInfo and extraInfo.carName or "your car"
-		local timeStr = extraInfo and extraInfo.timeStr or "some time"
 		local msgs = {
-			"Alright im working on making your <font color='#B652FF'>" .. carName .. "</font> be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"Crafting underway homie. The <font color='#B652FF'>" .. carName .. "</font> will be ready soon, check back in <font color='#FF4C4C'>" .. timeStr .. "</font>."
+			"Alright im working on making your <font color='#B652FF'>" .. extraInfo.carName .. "</font> be back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"Crafting underway homie, The <font color='#B652FF'>" .. extraInfo.carName .. "</font> will be ready soon."
 		}
 		msg = msgs[math.random(1, #msgs)]
-
-	-- ⏳ Craft already in progress ────────────────────────────────────────────
-	elseif actionType == "AlreadyCrafting" then
-		local carName = extraInfo and extraInfo.carName or "your car"
-		local timeStr = extraInfo and extraInfo.timeStr or "some time"
-		local msgs = {
-			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. carName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. carName .. "</font>. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. carName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more time, come back later alright?",
-			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete."
-		}
-		msg = msgs[math.random(1, #msgs)]
-
-	-- 🟣 Car already crafted (already in inventory) ───────────────────────────
 	elseif actionType == "AlreadyCrafted" then
-		local carName = extraInfo and extraInfo.carName or "your car"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"It is finished. The <font color='#B652FF'>" .. carName .. "</font> is a true work of art. It should be in your inventory already.",
-			"The <font color='#B652FF'>" .. carName .. "</font> is already there in your inventory, " .. coloredName .. ".",
-			"Construction of the <font color='#B652FF'>" .. carName .. "</font> is done. A flawless execution. It's already there in your inventory."
+			"It is finished. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. extraInfo.carName .. "</font> its already there on your inventory, a " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. extraInfo.carName .. "</font> is done. A flawless execution. it's already there in your inventory.."
 		}
 		msg = msgs[math.random(1, #msgs)]
-
-	-- 🟣 Craft just completed (server push notification) ──────────────────────
 	elseif actionType == "CraftComplete" then
-		local carName = (extraInfo and extraInfo.carName) or "your car"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"It is finished. The <font color='#B652FF'>" .. carName .. "</font> is a true work of art. It should be in your inventory already.",
-			"The <font color='#B652FF'>" .. carName .. "</font> is already there in your inventory, " .. coloredName .. ".",
-			"Construction of the <font color='#B652FF'>" .. carName .. "</font> is done. A flawless execution. It's already there in your inventory."
+			"It is finished. The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> its already there on your inventory, a " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is done. A flawless execution. it's already there in your inventory.."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "AlreadyCrafting" then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local msgs = {
+			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. extraInfo.carName .. "</font>. Check back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. extraInfo.carName .. "</font> needs <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> more time, come back later alright?",
+			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> before the build is complete."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	end
 
-	-- ── Display ────────────────────────────────────────────────────────────
-	typewrite(dialogueLabel, msg, onDialogueComplete)
+	typewrite(dialogueLabel, msg, function()
+		if callbackEvent then callbackEvent:Fire() end
+	end)
 end)
 
 -- ============================================================================
@@ -736,9 +589,7 @@ end
 local function findLegendaryNPCFromPrompt(prompt)
 	local current = prompt and prompt.Parent
 	while current do
-		if current:IsA("Model") and current.Name == TARGET_NPC then
-			return current
-		end
+		if current:IsA("Model") and current.Name == TARGET_NPC then return current end
 		current = current.Parent
 	end
 	return nil
@@ -759,4 +610,205 @@ setupNPC()
 
 player.CharacterAdded:Connect(function()
 	stopInteraction()
+end)
+
+-- ============================================================================
+-- 🛒 AngeloShopSpeak — NEW dedicated BindableEvent for all shop-driven dialogue.
+--
+-- ROOT CAUSE OF THE BUG:
+--   After the player clicks "Craft" in the NPC menu, releaseInteractionForShop()
+--   is called. That sets isInteracting = false.
+--   The existing UpdateDialogueEvent handler checks:
+--       if not isInteracting or isLeaving then ... return end
+--   So every shop event (SacrificeSuccess, NotEnough, AlreadyCrafting, etc.)
+--   immediately bailed and the callback fired without Angelo ever speaking.
+--
+-- THE FIX:
+--   A brand new BindableEvent that the shop controller fires instead of
+--   updateDialogue for all post-shop-open events. It has its own typewriter
+--   that does NOT check isInteracting at all. It:
+--     1. Shows the NPC speech bubble
+--     2. Types the dialogue with full animation
+--     3. Hides the speech bubble
+--     4. Fires the callback (which restores mainFrame in the shop controller)
+-- ============================================================================
+local AngeloShopSpeak = Instance.new("BindableEvent")
+AngeloShopSpeak.Name = "AngeloShopSpeak"
+AngeloShopSpeak.Parent = script
+
+local activeShopTypeJob = nil
+
+local function shopTypewrite(label, text, onComplete)
+	if not label then
+		if onComplete then task.spawn(onComplete) end
+		return
+	end
+
+	if activeShopTypeJob then
+		pcall(task.cancel, activeShopTypeJob)
+		activeShopTypeJob = nil
+	end
+
+	label.RichText = true
+	label.Text = text
+	label.MaxVisibleGraphemes = 0
+
+	local len = getCleanTextLength(text)
+
+	activeShopTypeJob = task.spawn(function()
+		for i = 1, len do
+			label.MaxVisibleGraphemes = i
+			if i % 3 == 0 then
+				local s = Instance.new("Sound", SoundService)
+				s.SoundId = TYPING_SOUND_ID
+				s.Volume = 0.1
+				s.PlayOnRemove = true
+				s:Destroy()
+			end
+			task.wait(TYPEWRITER_SPEED)
+		end
+		label.MaxVisibleGraphemes = -1
+		activeShopTypeJob = nil
+		if onComplete then
+			task.spawn(onComplete)
+		end
+	end)
+end
+
+AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if not myGui then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
+	local container = myGui:FindFirstChild(CONTAINER_ID, true)
+	if not container then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
+	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
+	if not dialogueLabel then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
+
+	-- Show the NPC speech bubble while Angelo talks
+	myGui.Enabled = true
+	container.Visible = true
+
+	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+	local msg = "..."
+
+	if actionType == "MenuOpen" then
+		local msgs = {CRAFT_OPEN_MESSAGE, "Take your pick. Both are engineering marvels.", "What do you have your eye on?"}
+		msg = msgs[math.random(1, #msgs)]
+
+	elseif actionType == "SelectCar" then
+		local display = type(extraInfo) == "string" and extraInfo or (extraInfo and extraInfo.carName or "that car")
+		local msgs = {
+			"Ah, the <font color='#00E5FF'>" .. display .. "</font>. A beautiful choice.",
+			"The <font color='#00E5FF'>" .. display .. "</font>? You have good taste.",
+			"Excellent selection. Let's look at what is required."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+	elseif actionType == "ConfirmSacrifice" then
+		local msgs = {"Are you certain? There is no going back once given.", "Ready to let go of this piece?", "Confirm the sacrifice. It is necessary."}
+		msg = msgs[math.random(1, #msgs)]
+
+	elseif actionType == "CancelSacrifice" then
+		local msgs = {"Cold feet? I understand.", "Take your time. This isn't a decision to be rushed.", "Perhaps later, then."}
+		msg = msgs[math.random(1, #msgs)]
+
+	elseif actionType == "AlreadyDone" then
+		local msgs = {"We already have enough of that.", "That requirement is already fulfilled.", "Save it. We don't need any more of those."}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🔴 Missing item / insufficient cash
+	elseif actionType == "NotEnough" then
+		local itemName = extraInfo and extraInfo.itemName or "that"
+		local msgs = {
+			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. itemName .. "</font> in your garage.",
+			"Dude, you dont even have the <font color='#00E5FF'>" .. itemName .. "</font>. Come back when you actually have it.",
+			"You are short on resources. I need the <font color='#00E5FF'>" .. itemName .. "</font> to proceed.",
+			"I don't work for free. Bring me the <font color='#00E5FF'>" .. itemName .. "</font> first."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🟡 Sacrifice accepted, more still needed
+	elseif actionType == "SacrificeSuccess" then
+		local itemName  = extraInfo and extraInfo.itemName  or "that"
+		local itemsLeft = extraInfo and extraInfo.itemsLeft or "?"
+		local msgs = {
+			"The <font color='#00E5FF'>" .. itemName .. "</font> has been stripped for parts. You still have <font color='#FFD700'>" .. itemsLeft .. "</font> more sacrifices to go.",
+			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. itemsLeft .. "</font> more requirements and we can begin.",
+			"Alright " .. coloredName .. " thanks for the <font color='#00E5FF'>" .. itemName .. "</font>. We are getting closer, just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go.",
+			"Good. The chassis grows stronger. <font color='#FFD700'>" .. itemsLeft .. "</font> more pieces needed.",
+			"Another piece of the puzzle. Just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go before the forge is ready."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🟢 All sacrifices complete — ready to craft
+	elseif actionType == "AllComplete" then
+		local carName = extraInfo and extraInfo.carName or "the car"
+		local msgs = {
+			"That was the last one! The <font color='#50C878'>sacrifices are complete</font>. Ready to go?",
+			"Every piece is finally in place. Click confirm, and I will begin the build.",
+			"We have everything we need. Nice.",
+			"All requirements met. The <font color='#00E5FF'>" .. carName .. "</font> is ready to be born. Tell me when to start crafting... when you're ready."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🔥 Craft just started
+	elseif actionType == "CraftStarted" then
+		local carName = extraInfo and extraInfo.carName or "your car"
+		local timeStr = extraInfo and extraInfo.timeStr or "some time"
+		local msgs = {
+			"Alright im working on making your <font color='#B652FF'>" .. carName .. "</font>, be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"Crafting underway homie. The <font color='#B652FF'>" .. carName .. "</font> will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- ⏳ Craft already running — Craft button clicked while build is active
+	elseif actionType == "AlreadyCrafting" then
+		local carName = extraInfo and extraInfo.carName or "your car"
+		local timeStr = extraInfo and extraInfo.timeStr or "some time"
+		local msgs = {
+			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. carName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. carName .. "</font>. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. carName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more time, come back later alright?",
+			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🟣 Car already crafted and in inventory
+	elseif actionType == "AlreadyCrafted" then
+		local carName = extraInfo and extraInfo.carName or "your car"
+		local msgs = {
+			"It is finished. The <font color='#B652FF'>" .. carName .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. carName .. "</font> its already there on your inventory, " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. carName .. "</font> is done. A flawless execution. it's already there in your inventory."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🟣 Craft completed (pushed by server timer while player is online)
+	elseif actionType == "CraftComplete" then
+		local carName = (extraInfo and extraInfo.carName) or "your car"
+		local msgs = {
+			"It is finished. The <font color='#B652FF'>" .. carName .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. carName .. "</font> its already there on your inventory, " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. carName .. "</font> is done. A flawless execution. it's already there in your inventory."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	end
+
+	-- Type the message, then hide the bubble and restore the shop frame
+	shopTypewrite(dialogueLabel, msg, function()
+		myGui.Enabled = false
+		container.Visible = false
+		if callbackEvent then
+			callbackEvent:Fire()
+		end
+	end)
 end)
