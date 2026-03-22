@@ -779,7 +779,14 @@ local function AttemptSacrifice(carName, ingredient)
 	local currentAmount = progress[ingredient] or 0
 
 	if currentAmount >= requiredAmount then
-		updateDialogue("AlreadyDone")
+		local callback = Instance.new("BindableEvent")
+		callback.Event:Connect(function()
+			mainFrame.Visible = true
+			callback:Destroy()
+		end)
+
+		mainFrame.Visible = false
+		updateDialogue("AlreadyDone", nil, callback)
 		return
 	end
 
@@ -1148,10 +1155,22 @@ local function init()
 				end
 				if newCar then
 					local displayCarName = RECIPES[newCar] and RECIPES[newCar].TargetCar or newCar
-					updateDialogue("CraftComplete", {carName = displayCarName})
+					local callback = Instance.new("BindableEvent")
+					callback.Event:Connect(function()
+						mainFrame.Visible = true
+						callback:Destroy()
+					end)
+					mainFrame.Visible = false
+					updateDialogue("CraftComplete", {carName = displayCarName}, callback)
 				end
 			else
-				updateDialogue("CraftComplete")
+				local callback = Instance.new("BindableEvent")
+				callback.Event:Connect(function()
+					mainFrame.Visible = true
+					callback:Destroy()
+				end)
+				mainFrame.Visible = false
+				updateDialogue("CraftComplete", nil, callback)
 			end
 		end
 		currentState = newState
