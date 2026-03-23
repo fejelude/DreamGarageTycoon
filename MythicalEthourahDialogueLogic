@@ -1,0 +1,815 @@
+-- Purpose: Handles Camera, Dialogue Logic, and UI for Legendary Monk3yDAngelo-Cars NPC, including Inquiry and Crafting.
+-- Purpose: Handles Camera, Dialogue Logic, and UI for Mythical ethourah NPC, including Inquiry and Crafting.
+-- Runs on: Client
+-- Location: StarterPlayerScripts.MythicalEthourahDialogueLogic
+-- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
+-- Public API: UpdateMythicalEthourahDialogue (BindableEvent), EthourahShopSpeak (BindableEvent)
+-- Networking: Fires ShopRemotes.MythicalShop.RequestOpenShop (Client -> Server)
+
+local TweenService = game:GetService("TweenService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local SoundService = game:GetService("SoundService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+local playerGui = player:WaitForChild("PlayerGui")
+
+print("🐛 [MythicalEthourahDebug] Script Initializing...")
+
+-- ============================================================================
+-- 🎨 COLOR CONFIGURATION
+-- ============================================================================
+local USER_COLOR = "#55AAFF"
+local ETHOURAH_COLOR = "#FFD700"
+local GREEN_COLOR = "#55FF7F"
+
+-- ============================================================================
+-- 🆔 UNIQUE IDENTIFIERS
+-- ============================================================================
+local GUI_ID = "UI_NPC_ethourah"
+local CONTAINER_ID = "Frame_Ethourah_Container"
+local TEXT_ID = "Text_Ethourah_Dialogue"
+
+local BTN_CRAFT_ID = "Btn_Ethourah_Craft"
+local BTN_INQUIRY_ID = "Btn_Ethourah_Inquiry"
+local BTN_LEAVE_ID = "Btn_Ethourah_Leave"
+local ALL_BUTTON_IDS = {BTN_CRAFT_ID, BTN_INQUIRY_ID, BTN_LEAVE_ID}
+
+local TARGET_NPC = "ethourah"
+local CAMERA_PART = "CameraAimPart"
+local PROMPT_NAME = "TalkPrompt"
+
+local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TYPEWRITER_SPEED = 0.02
+local LEAVE_DELAY = 1.5
+local SHOP_OPEN_DELAY_SECONDS = 2.0
+
+local TYPING_SOUND_ID = "rbxassetid://4676738150"
+local HOVER_SOUND_ID = "rbxassetid://6895079853"
+local CLICK_SOUND_ID = "rbxassetid://9083627113"
+local CRAFT_OPEN_MESSAGE = "Select a chassis. We require great sacrifices to build these."
+
+local HOVER_SCALE = 1.1
+local CLICK_SCALE = 0.9
+local ANIM_SPEED = 0.1
+
+-- ============================================================================
+-- 🛠️ STATE VARIABLES
+-- ============================================================================
+local isInteracting = false
+local isLeaving = false
+local isOpeningShop = false
+local currentDialogueJob = nil
+local pendingShopOpenTask = nil
+local interactionGeneration = 0
+local buttonConnections = {}
+local buttonHoverConnections = {}
+local hiddenGuis = {}
+local hiddenObjects = {}
+local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
+
+local MythicalRemotes = ReplicatedStorage:WaitForChild("ShopRemotes"):WaitForChild("MythicalShop")
+local RemoteOpen = MythicalRemotes:WaitForChild("RequestOpenShop")
+
+local UpdateDialogueEvent = script:FindFirstChild("UpdateMythicalEthourahDialogue")
+if not UpdateDialogueEvent then
+	UpdateDialogueEvent = Instance.new("BindableEvent")
+	UpdateDialogueEvent.Name = "UpdateMythicalEthourahDialogue"
+	UpdateDialogueEvent.Parent = script
+end
+
+-- ============================================================================
+-- 🔒 FORCE HIDE UI ON LOAD
+-- ============================================================================
+task.spawn(function()
+	local myGui = playerGui:WaitForChild(GUI_ID, 10)
+	if myGui then
+		myGui.Enabled = false
+		local container = myGui:FindFirstChild(CONTAINER_ID, true)
+		if container then container.Visible = false end
+	end
+end)
+
+-- ============================================================================
+-- 🎬 INTERACTION FUNCTIONS
+-- ============================================================================
+
+local function setButtonsState(isActive)
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if not myGui then return end
+	for _, btnID in ipairs(ALL_BUTTON_IDS) do
+		local btn = myGui:FindFirstChild(btnID, true)
+		if btn then
+			btn.Visible = isActive
+			btn.Active = isActive
+		end
+	end
+end
+
+local function clearConnections()
+	for _, conn in pairs(buttonConnections) do
+		if conn then conn:Disconnect() end
+	end
+	buttonConnections = {}
+	for _, conn in pairs(buttonHoverConnections) do
+		if conn then conn:Disconnect() end
+	end
+	buttonHoverConnections = {}
+end
+
+local function toggleNamedGuiObjects(shouldHide, objectName)
+	if shouldHide then
+		if #hiddenObjects > 0 then return end
+		for _, obj in pairs(playerGui:GetDescendants()) do
+			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
+				obj.Visible = false
+				table.insert(hiddenObjects, obj)
+			end
+		end
+	else
+		for _, obj in pairs(hiddenObjects) do
+			if obj and obj.Parent and obj:IsA("GuiObject") then
+				obj.Visible = true
+			end
+		end
+		hiddenObjects = {}
+	end
+end
+
+local function toggleOtherGuis(shouldHide)
+	if shouldHide then
+		if #hiddenGuis > 0 then return end
+		hiddenGuis = {}
+		for _, otherGui in pairs(playerGui:GetChildren()) do
+			if otherGui:IsA("ScreenGui")
+				and otherGui.Name ~= GUI_ID
+				and otherGui.Name ~= "MythicalCarsEthourahUi"
+				and otherGui.Name ~= "Confirmation"
+				and otherGui.Enabled == true
+				and otherGui.Name ~= "Balance Indicator" then
+				otherGui.Enabled = false
+				table.insert(hiddenGuis, otherGui)
+			end
+		end
+	else
+		for _, otherGui in pairs(hiddenGuis) do
+			if otherGui and otherGui.Parent then
+				otherGui.Enabled = true
+			end
+		end
+		hiddenGuis = {}
+	end
+end
+
+local function setFocusMode(active)
+	toggleOtherGuis(active)
+	toggleNamedGuiObjects(active, "FriendBoost")
+end
+
+local function playSound(id, vol)
+	local s = Instance.new("Sound")
+	s.SoundId = id
+	s.Volume = vol or 0.5
+	s.Parent = SoundService
+	s:Play()
+	game.Debris:AddItem(s, 1)
+end
+
+local function getCleanTextLength(str)
+	local cleanStr = string.gsub(str, "<[^>]+>", "")
+	return utf8.len(cleanStr) or #cleanStr
+end
+
+local function typewrite(label, text, onComplete)
+	if not label then return end
+	label.RichText = true
+
+	if currentDialogueJob then
+		pcall(task.cancel, currentDialogueJob)
+		currentDialogueJob = nil
+	end
+
+	label.Text = text
+	label.MaxVisibleGraphemes = 0
+
+	local len = getCleanTextLength(text)
+
+	currentDialogueJob = task.spawn(function()
+		for i = 1, len do
+			if not isInteracting and not isLeaving then break end
+			label.MaxVisibleGraphemes = i
+			if i % 3 == 0 then
+				local s = Instance.new("Sound", SoundService)
+				s.SoundId = TYPING_SOUND_ID
+				s.Volume = 0.1
+				s.PlayOnRemove = true
+				s:Destroy()
+			end
+			task.wait(TYPEWRITER_SPEED)
+		end
+		label.MaxVisibleGraphemes = -1
+		currentDialogueJob = nil
+
+		if onComplete and isInteracting then
+			task.spawn(onComplete)
+		end
+	end)
+end
+
+local function stopInteraction()
+	if not isInteracting and not isLeaving then return end
+
+	interactionGeneration += 1
+	isInteracting = false
+	isLeaving = false
+	isOpeningShop = false
+
+	if currentDialogueJob then
+		pcall(task.cancel, currentDialogueJob)
+		currentDialogueJob = nil
+	end
+	if pendingShopOpenTask then
+		pcall(task.cancel, pendingShopOpenTask)
+		pendingShopOpenTask = nil
+	end
+
+	clearConnections()
+	setFocusMode(false)
+
+	camera.CameraType = Enum.CameraType.Custom
+	if controls then controls:Enable() end
+
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+		if hrp then hrp.Anchored = false end
+		if humanoid then humanoid.WalkSpeed = 16 end
+	end
+
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if myGui then
+		myGui.Enabled = false
+		local container = myGui:FindFirstChild(CONTAINER_ID, true)
+		if container then container.Visible = false end
+	end
+
+	local craftGui = playerGui:FindFirstChild("MythicalCarsEthourahUi")
+	if craftGui and craftGui.Enabled then
+		craftGui.Enabled = false
+	end
+end
+
+local function releaseInteractionForShop()
+	if not isInteracting then return end
+
+	interactionGeneration += 1
+
+	if currentDialogueJob then
+		pcall(task.cancel, currentDialogueJob)
+		currentDialogueJob = nil
+	end
+	if pendingShopOpenTask then
+		pcall(task.cancel, pendingShopOpenTask)
+		pendingShopOpenTask = nil
+	end
+
+	clearConnections()
+	setButtonsState(false)
+	setFocusMode(false)
+
+	camera.CameraType = Enum.CameraType.Custom
+	if controls then controls:Enable() end
+
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+		if hrp then hrp.Anchored = false end
+		if humanoid then
+			humanoid.WalkSpeed = 16
+			humanoid.JumpPower = 50
+		end
+	end
+
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if myGui then
+		myGui.Enabled = false
+		local container = myGui:FindFirstChild(CONTAINER_ID, true)
+		if container then container.Visible = false end
+	end
+
+	isInteracting = false
+	isLeaving = false
+end
+
+local function animateButton(btn)
+	if not btn:GetAttribute("OriginalSizeX") then
+		btn:SetAttribute("OriginalSizeX", btn.Size.X.Scale)
+		btn:SetAttribute("OriginalSizeXO", btn.Size.X.Offset)
+		btn:SetAttribute("OriginalSizeY", btn.Size.Y.Scale)
+		btn:SetAttribute("OriginalSizeYO", btn.Size.Y.Offset)
+	end
+
+	local origX = btn:GetAttribute("OriginalSizeX")
+	local origXO = btn:GetAttribute("OriginalSizeXO")
+	local origY = btn:GetAttribute("OriginalSizeY")
+	local origYO = btn:GetAttribute("OriginalSizeYO")
+
+	local normalSize = UDim2.new(origX, origXO, origY, origYO)
+	local hoverSize = UDim2.new(origX * HOVER_SCALE, origXO * HOVER_SCALE, origY * HOVER_SCALE, origYO * HOVER_SCALE)
+	local clickSize = UDim2.new(origX * CLICK_SCALE, origXO * CLICK_SCALE, origY * CLICK_SCALE, origYO * CLICK_SCALE)
+
+	if not UserInputService.TouchEnabled then
+		local connEnter = btn.MouseEnter:Connect(function()
+			playSound(HOVER_SOUND_ID, 0.5)
+			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = hoverSize}):Play()
+		end)
+		local connLeave = btn.MouseLeave:Connect(function()
+			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = normalSize}):Play()
+		end)
+		table.insert(buttonHoverConnections, connEnter)
+		table.insert(buttonHoverConnections, connLeave)
+	end
+
+	local connDown = btn.MouseButton1Down:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.05), {Size = clickSize}):Play()
+	end)
+	local connUp = btn.MouseButton1Up:Connect(function()
+		local target = (not UserInputService.TouchEnabled) and hoverSize or normalSize
+		TweenService:Create(btn, TweenInfo.new(ANIM_SPEED, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = target}):Play()
+	end)
+	table.insert(buttonHoverConnections, connDown)
+	table.insert(buttonHoverConnections, connUp)
+end
+
+local GREETING_DIALOGUES = {
+	"Welcome to the inner circle, ",
+	"Looking to craft something extraordinary, ",
+	"The mythic cars await, ",
+	"I've been expecting you, "
+}
+
+local function startInteraction(npcModel)
+	if isInteracting or isLeaving then return end
+
+	interactionGeneration += 1
+	isInteracting = true
+	isOpeningShop = false
+	clearConnections()
+
+	local camPart = npcModel:FindFirstChild(CAMERA_PART)
+	if not camPart then
+		warn("❌ [MythicalEthourahDebug] Error: Missing '" .. CAMERA_PART .. "'")
+		isInteracting = false
+		return
+	end
+
+	if controls then controls:Disable() end
+	setFocusMode(true)
+
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+		if humanoid then humanoid.WalkSpeed = 0 end
+		if hrp then
+			hrp.Velocity = Vector3.zero
+			hrp.Anchored = true
+		end
+	end
+
+	camera.CameraType = Enum.CameraType.Scriptable
+	TweenService:Create(camera, TWEEN_INFO, {CFrame = camPart.CFrame}):Play()
+
+	local myGui = playerGui:WaitForChild(GUI_ID, 5)
+	if not myGui then warn("❌ [MythicalEthourahDebug] Missing GUI") stopInteraction() return end
+
+	myGui.Enabled = true
+	local container = myGui:FindFirstChild(CONTAINER_ID, true)
+	if not container then warn("❌ [MythicalEthourahDebug] Missing Frame") stopInteraction() return end
+
+	container.Visible = true
+	setButtonsState(false)
+
+	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
+	if dialogueLabel then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local randomGreeting = GREETING_DIALOGUES[math.random(1, #GREETING_DIALOGUES)]
+		local greeting = randomGreeting .. coloredName .. "."
+
+		typewrite(dialogueLabel, greeting, function()
+			setButtonsState(true)
+		end)
+
+		local function connectBtn(btnName, func)
+			local btn = myGui:FindFirstChild(btnName, true)
+			if btn and btn:IsA("GuiButton") then
+				animateButton(btn)
+				local conn = btn.MouseButton1Click:Connect(function()
+					playSound(CLICK_SOUND_ID, 0.5)
+					func()
+				end)
+				table.insert(buttonConnections, conn)
+			else
+				warn("⚠️ [MythicalEthourahDebug] Warning: Could not find button '" .. btnName .. "' in UI.")
+			end
+		end
+
+		connectBtn(BTN_LEAVE_ID, function()
+			if isLeaving then return end
+			isLeaving = true
+			clearConnections()
+			setButtonsState(false)
+			if dialogueLabel then
+				local coloredRedName = "<font color='" .. ETHOURAH_COLOR .. "'>@" .. player.Name .. "</font>"
+				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Return when you are ready, </font>" .. coloredRedName .. "!"
+				typewrite(dialogueLabel, goodbyeMsg)
+			end
+			task.wait(LEAVE_DELAY)
+			stopInteraction()
+		end)
+
+		connectBtn(BTN_INQUIRY_ID, function()
+			setButtonsState(false)
+			if dialogueLabel then
+				local coloredEthourah = "<font color='" .. ETHOURAH_COLOR .. "'>Ethourah</font>"
+				local loreText = "To forge a Mythical vehicle, you must offer sacrifices. \nBring me specific cars and rare materials, and I will build you a masterpiece."
+				typewrite(dialogueLabel, loreText, function()
+					setButtonsState(true)
+				end)
+			end
+		end)
+
+		connectBtn(BTN_CRAFT_ID, function()
+			if isOpeningShop then return end
+			isOpeningShop = true
+			setButtonsState(false)
+			local openGeneration = interactionGeneration
+
+			typewrite(dialogueLabel, CRAFT_OPEN_MESSAGE, function()
+				if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
+
+				if pendingShopOpenTask then
+					pcall(task.cancel, pendingShopOpenTask)
+				end
+
+				pendingShopOpenTask = task.spawn(function()
+					task.wait(SHOP_OPEN_DELAY_SECONDS)
+					if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
+					releaseInteractionForShop()
+					RemoteOpen:FireServer()
+				end)
+			end)
+		end)
+	else
+		warn("❌ [MythicalEthourahDebug] ERROR: Could not find TextLabel named '" .. TEXT_ID .. "' inside Container!")
+		setButtonsState(true)
+	end
+end
+
+-- ============================================================================
+-- 📡 UpdateDialogueEvent — original handler, untouched.
+-- Only handles ForceClose now since all shop events route through AngeloShopSpeak.
+-- ============================================================================
+UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
+	if actionType == "ForceClose" then
+		stopInteraction()
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
+
+	if not isInteracting or isLeaving then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
+
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if not myGui then if callbackEvent then callbackEvent:Fire() end return end
+	local container = myGui:FindFirstChild(CONTAINER_ID, true)
+	if not container then if callbackEvent then callbackEvent:Fire() end return end
+	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
+	if not dialogueLabel then if callbackEvent then callbackEvent:Fire() end return end
+
+	local msg = "..."
+
+	if actionType == "MenuOpen" then
+		local msgs = {CRAFT_OPEN_MESSAGE, "Take your pick. Both are engineering marvels.", "What do you have your eye on?"}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "SelectCar" then
+		local msgs = {
+			"Ah, the <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font>. A beautiful choice.",
+			"The <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font>? You have good taste.",
+			"Excellent selection. Let's look at what is required."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "ConfirmSacrifice" then
+		local msgs = {"Are you certain? There is no going back once given.", "Ready to let go of this piece?", "Confirm the sacrifice. It is necessary."}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "CancelSacrifice" then
+		local msgs = {"Cold feet? I understand.", "Take your time. This isn't a decision to be rushed.", "Perhaps later, then."}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "NotEnough" then
+		local msgs = {
+			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> in you.",
+			"Dude, you dont even have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. Come back when you actually have it.",
+			"You are short on resources. I need the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> to proceed.",
+			"I don't work for free. Bring me the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> first."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "SacrificeSuccess" then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local msgs = {
+			"The <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> has been stripped for parts. You still have <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more sacrifices to go.",
+			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more requirements and we can begin.",
+			"Alright " .. coloredName .. " thanks for the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. We are getting closer, just <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more to go.",
+			"Good. The chassis grows stronger. <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more pieces needed.",
+			"Another piece of the puzzle. Just <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more to go before the forge is ready."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "AlreadyDone" then
+		local msgs = {"We already have enough of that.", "That requirement is already fulfilled.", "Save it. We don't need any more of those."}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "AllComplete" then
+		local msgs = {
+			"That was the last one! The <font color='#50C878'>sacrifices are complete</font>. Ready to go?",
+			"Every piece is finally in place. Click confirm, and I will begin the build.",
+			"We have everything we need. Nice.",
+			"All requirements met. The <font color='#00E5FF'>" .. extraInfo.carName .. "</font> is ready to be born. Tell me when to start crafting... when you're ready."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "CraftStarted" then
+		local msgs = {
+			"Alright im working on making your <font color='#B652FF'>" .. extraInfo.carName .. "</font> be back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"Crafting underway homie, The <font color='#B652FF'>" .. extraInfo.carName .. "</font> will be ready soon."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "AlreadyCrafted" then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local msgs = {
+			"It is finished. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. extraInfo.carName .. "</font> its already there on your inventory, a " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. extraInfo.carName .. "</font> is done. A flawless execution. it's already there in your inventory.."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "CraftComplete" then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local msgs = {
+			"It is finished. The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> its already there on your inventory, a " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is done. A flawless execution. it's already there in your inventory.."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	elseif actionType == "AlreadyCrafting" then
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local msgs = {
+			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. extraInfo.carName .. "</font>. Check back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. extraInfo.carName .. "</font> needs <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> more time, come back later alright?",
+			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> before the build is complete."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	end
+
+	typewrite(dialogueLabel, msg, function()
+		if callbackEvent then callbackEvent:Fire() end
+	end)
+end)
+
+-- ============================================================================
+-- 🔌 PROXIMITY PROMPT SETUP
+-- ============================================================================
+local ProximityPromptService = game:GetService("ProximityPromptService")
+
+local function isLegendaryPrompt(prompt)
+	if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+	return string.lower(prompt.Name) == string.lower(PROMPT_NAME)
+end
+
+local function findLegendaryNPCFromPrompt(prompt)
+	local current = prompt and prompt.Parent
+	while current do
+		if current:IsA("Model") and current.Name == TARGET_NPC then return current end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function setupNPC()
+	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
+		if triggerPlayer == player and isLegendaryPrompt(prompt) then
+			local npc = findLegendaryNPCFromPrompt(prompt)
+			if npc and npc.Name == TARGET_NPC then
+				startInteraction(npc)
+			end
+		end
+	end)
+end
+
+setupNPC()
+
+player.CharacterAdded:Connect(function()
+	stopInteraction()
+end)
+
+-- ============================================================================
+-- 🛒 EthourahShopSpeak — NEW dedicated BindableEvent for all shop-driven dialogue.
+--
+-- ROOT CAUSE OF THE BUG:
+--   After the player clicks "Craft" in the NPC menu, releaseInteractionForShop()
+--   is called. That sets isInteracting = false.
+--   The existing UpdateDialogueEvent handler checks:
+--       if not isInteracting or isLeaving then ... return end
+--   So every shop event (SacrificeSuccess, NotEnough, AlreadyCrafting, etc.)
+--   immediately bailed and the callback fired without Ethourah ever speaking.
+--
+-- THE FIX:
+--   A brand new BindableEvent that the shop controller fires instead of
+--   updateDialogue for all post-shop-open events. It has its own typewriter
+--   that does NOT check isInteracting at all. It:
+--     1. Shows the NPC speech bubble
+--     2. Types the dialogue with full animation
+--     3. Hides the speech bubble
+--     4. Fires the callback (which restores mainFrame in the shop controller)
+-- ============================================================================
+local EthourahShopSpeak = Instance.new("BindableEvent")
+EthourahShopSpeak.Name = "EthourahShopSpeak"
+EthourahShopSpeak.Parent = script
+
+local activeShopTypeJob = nil
+
+local function shopTypewrite(label, text, onComplete)
+	if not label then
+		if onComplete then task.spawn(onComplete) end
+		return
+	end
+
+	if activeShopTypeJob then
+		pcall(task.cancel, activeShopTypeJob)
+		activeShopTypeJob = nil
+	end
+
+	label.RichText = true
+	label.Text = text
+	label.MaxVisibleGraphemes = 0
+
+	local len = getCleanTextLength(text)
+
+	activeShopTypeJob = task.spawn(function()
+		for i = 1, len do
+			label.MaxVisibleGraphemes = i
+			if i % 3 == 0 then
+				local s = Instance.new("Sound", SoundService)
+				s.SoundId = TYPING_SOUND_ID
+				s.Volume = 0.1
+				s.PlayOnRemove = true
+				s:Destroy()
+			end
+			task.wait(TYPEWRITER_SPEED)
+		end
+		label.MaxVisibleGraphemes = -1
+		activeShopTypeJob = nil
+		if onComplete then
+			task.spawn(onComplete)
+		end
+	end)
+end
+
+EthourahShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if not myGui then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
+	local container = myGui:FindFirstChild(CONTAINER_ID, true)
+	if not container then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
+	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
+	if not dialogueLabel then
+		if callbackEvent then callbackEvent:Fire() end
+		return
+	end
+
+	-- Show the NPC speech bubble while Ethourah talks
+	myGui.Enabled = true
+	container.Visible = true
+
+	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+	local msg = "..."
+
+	if actionType == "MenuOpen" then
+		local msgs = {CRAFT_OPEN_MESSAGE, "Take your pick. Both are engineering marvels.", "What do you have your eye on?"}
+		msg = msgs[math.random(1, #msgs)]
+
+	elseif actionType == "SelectCar" then
+		local display = type(extraInfo) == "string" and extraInfo or (extraInfo and extraInfo.carName or "that car")
+		local msgs = {
+			"Ah, the <font color='#00E5FF'>" .. display .. "</font>. A beautiful choice.",
+			"The <font color='#00E5FF'>" .. display .. "</font>? You have good taste.",
+			"Excellent selection. Let's look at what is required."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+	elseif actionType == "ConfirmSacrifice" then
+		local msgs = {"Are you certain? There is no going back once given.", "Ready to let go of this piece?", "Confirm the sacrifice. It is necessary."}
+		msg = msgs[math.random(1, #msgs)]
+
+	elseif actionType == "CancelSacrifice" then
+		local msgs = {"Cold feet? I understand.", "Take your time. This isn't a decision to be rushed.", "Perhaps later, then."}
+		msg = msgs[math.random(1, #msgs)]
+
+	elseif actionType == "AlreadyDone" then
+		local msgs = {"We already have enough of that.", "That requirement is already fulfilled.", "Save it. We don't need any more of those."}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🔴 Missing item / insufficient cash
+	elseif actionType == "NotEnough" then
+		local itemName = extraInfo and extraInfo.itemName or "that"
+		local msgs = {
+			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. itemName .. "</font> in youf.",
+			"Dude, you dont even have the <font color='#00E5FF'>" .. itemName .. "</font>. Come back when you actually have it.",
+			"You are short on resources. I need the <font color='#00E5FF'>" .. itemName .. "</font> to proceed.",
+			"I don't work for free. Bring me the <font color='#00E5FF'>" .. itemName .. "</font> first."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🟡 Sacrifice accepted, more still needed
+	elseif actionType == "SacrificeSuccess" then
+		local itemName  = extraInfo and extraInfo.itemName  or "that"
+		local itemsLeft = extraInfo and extraInfo.itemsLeft or "?"
+		local msgs = {
+			"The <font color='#00E5FF'>" .. itemName .. "</font> has been stripped for parts. You still have <font color='#FFD700'>" .. itemsLeft .. "</font> more sacrifices to go.",
+			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. itemsLeft .. "</font> more requirements and we can begin.",
+			"Alright " .. coloredName .. " thanks for the <font color='#00E5FF'>" .. itemName .. "</font>. We are getting closer, just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go.",
+			"Good. The chassis grows stronger. <font color='#FFD700'>" .. itemsLeft .. "</font> more pieces needed.",
+			"Another piece of the puzzle. Just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go before the forge is ready."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🟢 All sacrifices complete — ready to craft
+	elseif actionType == "AllComplete" then
+		local carName = extraInfo and extraInfo.carName or "the car"
+		local msgs = {
+			"That was the last one! The <font color='#50C878'>sacrifices are complete</font>. Ready to go?",
+			"Every piece is finally in place. Click confirm, and I will begin the build.",
+			"We have everything we need. Nice.",
+			"All requirements met. The <font color='#00E5FF'>" .. carName .. "</font> is ready to be born. Tell me when to start crafting... when you're ready."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🔥 Craft just started
+	elseif actionType == "CraftStarted" then
+		local carName = extraInfo and extraInfo.carName or "your car"
+		local timeStr = extraInfo and extraInfo.timeStr or "some time"
+		local msgs = {
+			"Alright im working on making your <font color='#B652FF'>" .. carName .. "</font>, be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"Crafting underway homie. The <font color='#B652FF'>" .. carName .. "</font> will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- ⏳ Craft already running — Craft button clicked while build is active
+	elseif actionType == "AlreadyCrafting" then
+		local carName = extraInfo and extraInfo.carName or "your car"
+		local timeStr = extraInfo and extraInfo.timeStr or "some time"
+		local msgs = {
+			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. carName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. carName .. "</font>. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. carName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more time, come back later alright?",
+			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🟣 Car already crafted and in inventory
+	elseif actionType == "AlreadyCrafted" then
+		local carName = extraInfo and extraInfo.carName or "your car"
+		local msgs = {
+			"It is finished. The <font color='#B652FF'>" .. carName .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. carName .. "</font> its already there on your inventory, " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. carName .. "</font> is done. A flawless execution. it's already there in your inventory."
+		}
+		msg = msgs[math.random(1, #msgs)]
+
+		-- 🟣 Craft completed (pushed by server timer while player is online)
+	elseif actionType == "CraftComplete" then
+		local carName = (extraInfo and extraInfo.carName) or "your car"
+		local msgs = {
+			"It is finished. The <font color='#B652FF'>" .. carName .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. carName .. "</font> its already there on your inventory, " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. carName .. "</font> is done. A flawless execution. it's already there in your inventory."
+		}
+		msg = msgs[math.random(1, #msgs)]
+	end
+
+	-- Type the message, then hide the bubble and restore the shop frame
+	shopTypewrite(dialogueLabel, msg, function()
+		myGui.Enabled = false
+		container.Visible = false
+		if callbackEvent then
+			callbackEvent:Fire()
+		end
+	end)
+end)
