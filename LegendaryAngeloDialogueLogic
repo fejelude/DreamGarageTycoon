@@ -510,7 +510,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "NotEnough" then
 		local msgs = {
-			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> in your garage.",
+			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> in you.",
 			"Dude, you dont even have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. Come back when you actually have it.",
 			"You are short on resources. I need the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> to proceed.",
 			"I don't work for free. Bring me the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> first."
@@ -728,7 +728,7 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	elseif actionType == "NotEnough" then
 		local itemName = extraInfo and extraInfo.itemName or "that"
 		local msgs = {
-			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. itemName .. "</font> in your garage.",
+			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. itemName .. "</font> in youf.",
 			"Dude, you dont even have the <font color='#00E5FF'>" .. itemName .. "</font>. Come back when you actually have it.",
 			"You are short on resources. I need the <font color='#00E5FF'>" .. itemName .. "</font> to proceed.",
 			"I don't work for free. Bring me the <font color='#00E5FF'>" .. itemName .. "</font> first."
@@ -812,3 +812,4 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		end
 	end)
 end)
+
