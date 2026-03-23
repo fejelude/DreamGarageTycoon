@@ -1,13 +1,22 @@
 -- Purpose: Controls the UI, display, and client-side interactions for the Legendary Car Shop.
 -- Runs on: Client
 -- Location: StarterPlayerScripts.LegendaryShopController
+--
+-- FIXES (v2):
+--   • angeloSpeak now hides ALL shop frames (mainFrame + crafting) before showing the
+--     NPC speech bubble — eliminates UI stacking/overlay.
+--   • Added a job-ID generation counter so stale onDone callbacks from cancelled
+--     typewriter jobs can never fire and corrupt UI state.
+--   • getNpcUI / hideNpcUI helpers eliminate repeated FindFirstChild chains.
+--   • cancelAngeloSpeak now correctly invalidates any in-flight job.
+--   • Minor: cleaned up redundant pcall patterns and added inline comments.
 
-local Players          = game:GetService("Players")
+local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local SoundService     = game:GetService("SoundService")
-local Lighting         = game:GetService("Lighting")
-local TweenService     = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
+local SoundService      = game:GetService("SoundService")
+local Lighting          = game:GetService("Lighting")
+local TweenService      = game:GetService("TweenService")
+local UserInputService  = game:GetService("UserInputService")
 
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
@@ -21,14 +30,18 @@ local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local Kit      = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 
 -- ============================================================================
--- ⚙️ CONFIG
+-- ⚙️  CONFIG
 -- ============================================================================
-local SHOP_CARS = {"LaRossa", "Yamura"}
+local SHOP_CARS = { "LaRossa", "Yamura" }
 local RECIPES   = {
-	["LaRossa"] = { TargetCar="La Rossa", Cash=150000000, Riva=7, Kingston=3, Velocity=4, Vortex=2 },
-	["Yamura"]  = { TargetCar="Yamura",   Cash=90000000,  Riva=5, Kingston=3, Velocity=2, Vortex=1 }
+	["LaRossa"] = { TargetCar = "La Rossa", Cash = 150000000, Riva = 7, Kingston = 3, Velocity = 4, Vortex = 2 },
+	["Yamura"]  = { TargetCar = "Yamura",   Cash = 90000000,  Riva = 5, Kingston = 3, Velocity = 2, Vortex = 1 },
 }
 local BLUR_SIZE = 24
+
+-- How long (seconds) the completed dialogue stays on screen before the
+-- next UI frame opens. Raise this if players can't finish reading.
+local POST_SPEAK_DELAY = 2.5   -- ← adjust this value freely
 
 local FEEDBACK_COLORS = {
 	Success   = Color3.fromRGB(80,  200, 120),
@@ -37,7 +50,7 @@ local FEEDBACK_COLORS = {
 }
 
 -- ============================================================================
--- 📡 REMOTES
+-- 📡  REMOTES
 -- ============================================================================
 local Remotes          = ReplicatedStorage:WaitForChild("ShopRemotes")
 local LegendaryRemotes = Remotes:WaitForChild("LegendaryShop")
@@ -47,7 +60,7 @@ local FuncGetState     = LegendaryRemotes:WaitForChild("GetLegendaryShopState")
 local FuncCraftCar     = LegendaryRemotes:WaitForChild("CraftLegendaryCar")
 local FuncSacrifice    = LegendaryRemotes:WaitForChild("SacrificeLegendaryIngredient")
 
--- Only used to fire ForceClose at the original dialogue script
+-- Used only to fire ForceClose at the original dialogue script
 local DialogueEvent = nil
 task.spawn(function()
 	local ps = player:WaitForChild("PlayerScripts")
@@ -66,7 +79,7 @@ local function forceCloseDialogue()
 end
 
 -- ============================================================================
--- 🛡️ STATE
+-- 🛡️  STATE
 -- ============================================================================
 local currentState           = nil
 local isProcessingPurchase   = false
@@ -81,7 +94,7 @@ local confirmationVersion    = 0
 local confirmationRestoreState = nil
 
 -- ============================================================================
--- 🔧 SMALL HELPERS
+-- 🔧  SMALL HELPERS
 -- ============================================================================
 local USER_COLOR = "#55AAFF"
 
@@ -99,22 +112,26 @@ end
 
 local function escapeRichText(text)
 	text = tostring(text)
-	return text:gsub("&","&amp;"):gsub("<","&lt;"):gsub(">","&gt;"):gsub("\"","&quot;")
+	return text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;")
 end
 
 -- ============================================================================
--- 💬 ANGELO SPEAK  ← THE FIX
+-- 💬  ANGELO SPEAK  — v2 (stacking / stale-callback fix)
 --
--- Self-contained typewriter in the controller.
--- Does NOT check isInteracting — it works whenever the shop is open.
---
--- Flow:
---   1. Hide mainFrame (shop UI)
---   2. Show NPC speech bubble
---   3. Typewrite the message
---   4. Hide NPC speech bubble
---   5. If onDone provided  → call it (caller restores whatever UI it needs)
---      If no onDone        → restore mainFrame automatically
+-- Design:
+--   • hideAllShopFrames()    — called at the START of every speak; ensures no
+--                              crafting frame or mainFrame is visible while the
+--                              NPC speech bubble is on screen. This is the
+--                              primary fix for the overlay/stacking bug.
+--   • angeloJobId counter   — every new speak increments the counter and
+--                              captures a local copy. The typewriter coroutine
+--                              checks its copy against the global after every
+--                              character; if they differ the job was superseded
+--                              and it exits without calling onDone. This
+--                              prevents stale callbacks from restoring the
+--                              wrong frame after cancellation.
+--   • getNpcUI / hideNpcUI  — thin helpers; avoid repeated FindFirstChild
+--                              chains scattered across functions.
 -- ============================================================================
 local NPC_GUI_ID       = "UI_NPC_Monk3yDAngelo-Cars"
 local NPC_CONTAINER_ID = "Frame_Angelo_Container"
@@ -122,7 +139,33 @@ local NPC_TEXT_ID      = "Text_Angelo_Dialogue"
 local TYPING_SOUND_ID  = "rbxassetid://4676738150"
 local TYPEWRITER_SPEED = 0.02
 
-local activeAngeloJob  = nil
+local activeAngeloJob = nil
+local angeloJobId     = 0   -- incremented on every new speak or cancel
+
+-- Returns (npcGui, container, label) — any may be nil if not found
+local function getNpcUI()
+	local npcGui    = PlayerGui:FindFirstChild(NPC_GUI_ID)
+	local container = npcGui and npcGui:FindFirstChild(NPC_CONTAINER_ID, true)
+	local label     = container and container:FindFirstChild(NPC_TEXT_ID, true)
+	return npcGui, container, label
+end
+
+-- Unconditionally hide the speech bubble
+local function hideNpcUI()
+	local npcGui, container = getNpcUI()
+	if npcGui    then npcGui.Enabled    = false end
+	if container then container.Visible = false end
+end
+
+-- FIX: hides every shop-owned frame so the NPC bubble is the sole visible UI.
+-- Previously only mainFrame was hidden, leaving crafting frames visible.
+local function hideAllShopFrames()
+	mainFrame.Visible = false
+	for _, n in ipairs(SHOP_CARS) do
+		local c = gui:FindFirstChild(n .. "Crafting")
+		if c then c.Visible = false end
+	end
+end
 
 local function cleanTextLength(str)
 	local clean = str:gsub("<[^>]+>", "")
@@ -130,24 +173,29 @@ local function cleanTextLength(str)
 end
 
 local function angeloSpeak(msg, onDone)
-	-- Cancel any running typewriter
+	-- Invalidate any previous job before starting a new one
+	angeloJobId += 1
+	local myJobId = angeloJobId
+
+	-- Cancel the running coroutine (best-effort; the ID guard is the true safety)
 	if activeAngeloJob then
 		pcall(task.cancel, activeAngeloJob)
 		activeAngeloJob = nil
 	end
 
-	local npcGui    = PlayerGui:FindFirstChild(NPC_GUI_ID)
-	local container = npcGui and npcGui:FindFirstChild(NPC_CONTAINER_ID, true)
-	local label     = container and container:FindFirstChild(NPC_TEXT_ID, true)
+	local npcGui, container, label = getNpcUI()
 
 	if not label then
-		-- NPC GUI missing: just restore or call onDone
+		-- NPC GUI is missing; restore immediately
+		hideNpcUI()
 		if onDone then task.spawn(onDone) else mainFrame.Visible = true end
 		return
 	end
 
-	-- Hide shop, show speech bubble
-	mainFrame.Visible         = false
+	-- ── Step 1: Hide ALL shop frames before showing the speech bubble ─────
+	hideAllShopFrames()
+
+	-- ── Step 2: Prepare and show the speech bubble from a clean state ─────
 	npcGui.Enabled            = true
 	container.Visible         = true
 	label.RichText            = true
@@ -156,24 +204,44 @@ local function angeloSpeak(msg, onDone)
 
 	local len = cleanTextLength(msg)
 
+	-- ── Step 3: Typewriter coroutine with job-ID guard ────────────────────
 	activeAngeloJob = task.spawn(function()
 		for i = 1, len do
+			-- Bail out if this job has been superseded
+			if angeloJobId ~= myJobId then return end
+
 			label.MaxVisibleGraphemes = i
+
 			if i % 3 == 0 then
 				local s = Instance.new("Sound", SoundService)
-				s.SoundId = TYPING_SOUND_ID; s.Volume = 0.1
-				s.PlayOnRemove = true; s:Destroy()
+				s.SoundId    = TYPING_SOUND_ID
+				s.Volume     = 0.1
+				s.PlayOnRemove = true
+				s:Destroy()
 			end
+
 			task.wait(TYPEWRITER_SPEED)
 		end
+
+		-- Final check after loop completes
+		if angeloJobId ~= myJobId then return end
+
 		label.MaxVisibleGraphemes = -1
 		activeAngeloJob = nil
 
-		-- Hide speech bubble
-		npcGui.Enabled    = false
-		container.Visible = false
+		-- ── Step 4: Hold the completed message so the player can read it ─
+		if POST_SPEAK_DELAY > 0 then
+			task.wait(POST_SPEAK_DELAY)
+		end
 
-		-- Restore UI: caller decides, or mainFrame by default
+		-- Guard again: a new speak or cancelAngeloSpeak may have fired
+		-- during the delay — if so, let that job own the UI.
+		if angeloJobId ~= myJobId then return end
+
+		-- ── Step 5: Hide the speech bubble ───────────────────────────────
+		hideNpcUI()
+
+		-- ── Step 6: Restore UI — caller supplies onDone, else mainFrame ──
 		if onDone then
 			task.spawn(onDone)
 		else
@@ -182,21 +250,19 @@ local function angeloSpeak(msg, onDone)
 	end)
 end
 
+-- Cancel any active speak and ensure the speech bubble is hidden.
+-- Does NOT restore any shop frame — callers are responsible for that.
 local function cancelAngeloSpeak()
+	angeloJobId += 1   -- invalidates the running job's callback
 	if activeAngeloJob then
 		pcall(task.cancel, activeAngeloJob)
 		activeAngeloJob = nil
 	end
-	local npcGui    = PlayerGui:FindFirstChild(NPC_GUI_ID)
-	local container = npcGui and npcGui:FindFirstChild(NPC_CONTAINER_ID, true)
-	if npcGui    then npcGui.Enabled    = false end
-	if container then container.Visible = false end
+	hideNpcUI()
 end
 
 -- ============================================================================
--- 🔎 CLIENT-SIDE ITEM CHECK
--- Lets us skip the confirmation popup if the player clearly doesn't have
--- the ingredient — Angelo tells them immediately instead.
+-- 🔎  CLIENT-SIDE ITEM CHECK
 -- ============================================================================
 local function playerHasIngredient(ingredient, requiredAmount, currentAmount)
 	if ingredient == "Cash" then
@@ -209,8 +275,8 @@ local function playerHasIngredient(ingredient, requiredAmount, currentAmount)
 			for _, tool in ipairs(c:GetChildren()) do
 				if tool:IsA("Tool") then
 					local id = tool:GetAttribute("ToolId") or tool.Name
-					if id == ingredient or id == ingredient.." Item"
-						or tool.Name == ingredient or tool.Name == ingredient.." Item" then
+					if id == ingredient or id == ingredient .. " Item"
+						or tool.Name == ingredient or tool.Name == ingredient .. " Item" then
 						return true
 					end
 				end
@@ -223,9 +289,9 @@ local function playerHasIngredient(ingredient, requiredAmount, currentAmount)
 end
 
 -- ============================================================================
--- 🧠 CONFIRMATION UI  (identical to original)
+-- 🧠  CONFIRMATION UI
 -- ============================================================================
-local CONFIRMATION_COLORS = {Sacrifice="#ff5757", Target="#63b3ff", Accent="#f4efe6"}
+local CONFIRMATION_COLORS = { Sacrifice = "#ff5757", Target = "#63b3ff", Accent = "#f4efe6" }
 local confirmConnections  = {}
 
 local function clearConfirmationConnections()
@@ -250,7 +316,7 @@ local function resolveNamedConfirmationButton(root, exactName, aliases)
 	if not root then return nil end
 	local direct = resolveGuiButton(root:FindFirstChild(exactName, true))
 	if direct then return direct end
-	local lowered = {string.lower(exactName)}
+	local lowered = { string.lower(exactName) }
 	for _, a in ipairs(aliases or {}) do table.insert(lowered, string.lower(a)) end
 	for _, d in ipairs(root:GetDescendants()) do
 		if d:IsA("GuiButton") then
@@ -292,22 +358,24 @@ local function applyConfirmationButtonFeedback(button)
 	local function tv(dim)
 		local g = {}
 		if button.BackgroundTransparency < 1 then
-			local h,s,v = origBg:ToHSV()
-			g.BackgroundColor3 = dim and Color3.fromHSV(h,s,math.clamp(v*.75,0,1)) or origBg
+			local h, s, v = origBg:ToHSV()
+			g.BackgroundColor3 = dim and Color3.fromHSV(h, s, math.clamp(v * .75, 0, 1)) or origBg
 		end
 		if origImg then
-			local h,s,v = origImg:ToHSV()
-			g.ImageColor3 = dim and Color3.fromHSV(h,s,math.clamp(v*.75,0,1)) or origImg
+			local h, s, v = origImg:ToHSV()
+			g.ImageColor3 = dim and Color3.fromHSV(h, s, math.clamp(v * .75, 0, 1)) or origImg
 		end
-		if next(g) then TweenService:Create(button,ti,g):Play() end
+		if next(g) then TweenService:Create(button, ti, g):Play() end
 	end
 	addConfirmationConnection(button.MouseEnter:Connect(function() Kit.Sound:Play("Hover"); tv(true) end))
 	addConfirmationConnection(button.MouseLeave:Connect(function() tv(false) end))
 	addConfirmationConnection(button.InputBegan:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then tv(true) end
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then tv(true) end
 	end))
 	addConfirmationConnection(button.InputEnded:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then tv(false) end
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then tv(false) end
 	end))
 	return button
 end
@@ -315,31 +383,31 @@ end
 local function playConfirmationOpenTween(cMain)
 	if not cMain or not cMain:IsA("GuiObject") then return end
 	if not cMain:GetAttribute("BasePosStored") then
-		cMain:SetAttribute("BasePosStored", true)
+		cMain:SetAttribute("BasePosStored",  true)
 		cMain:SetAttribute("BasePosXScale",  cMain.Position.X.Scale)
 		cMain:SetAttribute("BasePosXOffset", cMain.Position.X.Offset)
 		cMain:SetAttribute("BasePosYScale",  cMain.Position.Y.Scale)
 		cMain:SetAttribute("BasePosYOffset", cMain.Position.Y.Offset)
 	end
 	local bp = UDim2.new(
-		cMain:GetAttribute("BasePosXScale"), cMain:GetAttribute("BasePosXOffset"),
-		cMain:GetAttribute("BasePosYScale"), cMain:GetAttribute("BasePosYOffset")
+		cMain:GetAttribute("BasePosXScale"),  cMain:GetAttribute("BasePosXOffset"),
+		cMain:GetAttribute("BasePosYScale"),  cMain:GetAttribute("BasePosYOffset")
 	)
 	cMain.Position = UDim2.new(bp.X.Scale, bp.X.Offset, bp.Y.Scale, bp.Y.Offset + 18)
-	TweenService:Create(cMain, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position=bp}):Play()
+	TweenService:Create(cMain, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Position = bp }):Play()
 end
 
 local function hideAllCraftingMenus()
 	for _, n in ipairs(SHOP_CARS) do
-		local c = gui:FindFirstChild(n.."Crafting")
+		local c = gui:FindFirstChild(n .. "Crafting")
 		if c then c.Visible = false end
 	end
 end
 
 local function captureShopViewState()
-	local s = {mainFrameVisible = mainFrame.Visible, craftingVisible = {}}
+	local s = { mainFrameVisible = mainFrame.Visible, craftingVisible = {} }
 	for _, n in ipairs(SHOP_CARS) do
-		local c = gui:FindFirstChild(n.."Crafting")
+		local c = gui:FindFirstChild(n .. "Crafting")
 		s.craftingVisible[n] = c and c.Visible or false
 	end
 	return s
@@ -350,7 +418,7 @@ local function restoreShopViewState(state)
 	if not state then
 		if activeCarFocus then
 			mainFrame.Visible = false
-			local c = gui:FindFirstChild(activeCarFocus.."Crafting")
+			local c = gui:FindFirstChild(activeCarFocus .. "Crafting")
 			if c then c.Visible = true else mainFrame.Visible = true end
 		else
 			mainFrame.Visible = true
@@ -359,7 +427,7 @@ local function restoreShopViewState(state)
 	end
 	mainFrame.Visible = state.mainFrameVisible == true
 	for n, v in pairs(state.craftingVisible) do
-		local c = gui:FindFirstChild(n.."Crafting")
+		local c = gui:FindFirstChild(n .. "Crafting")
 		if c then c.Visible = v == true end
 	end
 end
@@ -419,10 +487,10 @@ local function PromptConfirmation(sessionId, text, callback)
 	local myVersion = confirmationVersion
 	clearConfirmationConnections()
 	local infoLabel = cMain:FindFirstChild("Information", true)
-	local btnYes    = resolveNamedConfirmationButton(cMain, "Yes",  {"Confirm","Accept","Okay","Ok"})
-	local btnNo     = resolveNamedConfirmationButton(cMain, "No",   {"Cancel","Decline","Back","Close"})
+	local btnYes    = resolveNamedConfirmationButton(cMain, "Yes",  { "Confirm", "Accept", "Okay", "Ok" })
+	local btnNo     = resolveNamedConfirmationButton(cMain, "No",   { "Cancel", "Decline", "Back", "Close" })
 	if infoLabel then
-		pcall(function() infoLabel.RichText=true; infoLabel.TextWrapped=true; infoLabel.Text=text end)
+		pcall(function() infoLabel.RichText = true; infoLabel.TextWrapped = true; infoLabel.Text = text end)
 	end
 	beginConfirmationView()
 	cGui.Enabled = true
@@ -446,20 +514,24 @@ local function PromptConfirmation(sessionId, text, callback)
 end
 
 -- ============================================================================
--- 🎨 FOCUS MODE  (identical to original)
+-- 🎨  FOCUS MODE
 -- ============================================================================
 local function setBlur(enable)
 	if enable then
 		if not currentBlur then
-			currentBlur = Instance.new("BlurEffect")
-			currentBlur.Size=0; currentBlur.Parent=Lighting; currentBlur.Name="LegendaryShopBlur"
+			currentBlur        = Instance.new("BlurEffect")
+			currentBlur.Size   = 0
+			currentBlur.Parent = Lighting
+			currentBlur.Name   = "LegendaryShopBlur"
 		end
-		TweenService:Create(currentBlur, TweenInfo.new(0.5), {Size=BLUR_SIZE}):Play()
+		TweenService:Create(currentBlur, TweenInfo.new(0.5), { Size = BLUR_SIZE }):Play()
 	else
 		if currentBlur then
-			local t = TweenService:Create(currentBlur, TweenInfo.new(0.5), {Size=0})
+			local t = TweenService:Create(currentBlur, TweenInfo.new(0.5), { Size = 0 })
 			t:Play()
-			t.Completed:Connect(function() if currentBlur then currentBlur:Destroy(); currentBlur=nil end end)
+			t.Completed:Connect(function()
+				if currentBlur then currentBlur:Destroy(); currentBlur = nil end
+			end)
 		end
 	end
 end
@@ -469,7 +541,8 @@ local function toggleNamedGuiObjects(shouldHide, objectName)
 		if #hiddenObjects > 0 then return end
 		for _, obj in pairs(PlayerGui:GetDescendants()) do
 			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
-				obj.Visible = false; table.insert(hiddenObjects, obj)
+				obj.Visible = false
+				table.insert(hiddenObjects, obj)
 			end
 		end
 	else
@@ -487,9 +560,11 @@ local function toggleOtherGuis(shouldHide)
 		hiddenGuis = {}
 		for _, g2 in pairs(PlayerGui:GetChildren()) do
 			if g2:IsA("ScreenGui") and g2 ~= gui and g2 ~= cGui
-				and g2.Name ~= NPC_GUI_ID and g2.Enabled == true
+				and g2.Name ~= NPC_GUI_ID
+				and g2.Enabled == true
 				and g2.Name ~= "Balance Indicator" then
-				g2.Enabled = false; table.insert(hiddenGuis, g2)
+				g2.Enabled = false
+				table.insert(hiddenGuis, g2)
 			end
 		end
 	else
@@ -517,11 +592,11 @@ local function closeShopUI(forceDialogueClose)
 	isProcessingPurchase  = false
 	activeCarFocus        = nil
 	confirmationRestoreState = nil
-	cancelAngeloSpeak()
+	cancelAngeloSpeak()         -- cancels job + hides bubble; no restore needed here
 	dismissConfirmation()
+	hideAllCraftingMenus()
 	mainFrame.Visible = true
 	gui.Enabled       = false
-	hideAllCraftingMenus()
 	setFocusMode(false)
 	if forceDialogueClose then forceCloseDialogue() end
 end
@@ -531,10 +606,10 @@ local function showFeedback(text, color)
 end
 
 -- ============================================================================
--- 🖥️ CRAFTING UI RENDER
+-- 🖥️  CRAFTING UI RENDER
 -- ============================================================================
 local function UpdateCraftingUI(carName)
-	local craftGui = gui:FindFirstChild(carName.."Crafting")
+	local craftGui = gui:FindFirstChild(carName .. "Crafting")
 	if not craftGui then return end
 	local carFrame = craftGui:FindFirstChild(carName)
 	if not carFrame then return end
@@ -543,21 +618,22 @@ local function UpdateCraftingUI(carName)
 	local recipe = RECIPES[carName]
 	if not recipe then return end
 
-	local progress    = currentState.CraftProgress[carName] or {}
-	local isCrafting  = currentState.ActiveCrafts[carName] ~= nil
+	local progress   = currentState.CraftProgress[carName] or {}
+	local isCrafting = currentState.ActiveCrafts[carName] ~= nil
 	local allComplete = true
 
 	for ingredient, requiredAmount in pairs(recipe) do
 		if ingredient == "TargetCar" then continue end
 		local reqFrame = sacrificeItems:FindFirstChild(ingredient)
 		if reqFrame then
-			local details    = reqFrame:FindFirstChild("Details")
-			local infoLabel  = details and details:FindFirstChild("Information")
-			local sacBtn     = reqFrame:FindFirstChild("SacrificeButton")
-			local doneBtn    = reqFrame:FindFirstChild("SacrificeDoneButton")
+			local details   = reqFrame:FindFirstChild("Details")
+			local infoLabel = details and details:FindFirstChild("Information")
+			local sacBtn    = reqFrame:FindFirstChild("SacrificeButton")
+			local doneBtn   = reqFrame:FindFirstChild("SacrificeDoneButton")
 			if not doneBtn then
 				for _, child in pairs(reqFrame.Parent:GetChildren()) do
-					if child.Name == "SacrificeDoneButton" and child:GetAttribute("Ingredient") == ingredient then
+					if child.Name == "SacrificeDoneButton"
+						and child:GetAttribute("Ingredient") == ingredient then
 						doneBtn = child
 					end
 				end
@@ -568,12 +644,12 @@ local function UpdateCraftingUI(carName)
 				infoLabel.RichText = true
 				if ingredient == "Cash" then
 					infoLabel.Text = isDone
-						and ("<font color='#50C878'>$"..FormatCommas(requiredAmount).." / $"..FormatCommas(requiredAmount).."</font>")
-						or  ("$"..FormatCommas(current).." / $"..FormatCommas(requiredAmount))
+						and ("<font color='#50C878'>$" .. FormatCommas(requiredAmount) .. " / $" .. FormatCommas(requiredAmount) .. "</font>")
+						or  ("$" .. FormatCommas(current) .. " / $" .. FormatCommas(requiredAmount))
 				else
 					infoLabel.Text = isDone
-						and ("<font color='#50C878'>"..requiredAmount.." / "..requiredAmount.."</font>")
-						or  (current.." / "..requiredAmount)
+						and ("<font color='#50C878'>" .. requiredAmount .. " / " .. requiredAmount .. "</font>")
+						or  (current .. " / " .. requiredAmount)
 				end
 			end
 			if isDone then
@@ -596,7 +672,6 @@ local function UpdateCraftingUI(carName)
 		mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
 	end
 	if mainCraftBtn then
-		-- Always visible: crafting = show timer msg, complete = show craft btn
 		mainCraftBtn.Visible = isCrafting and true or allComplete
 	end
 end
@@ -607,7 +682,7 @@ local function UpdateDisplay()
 end
 
 -- ============================================================================
--- 🛒 SACRIFICE
+-- 🛒  SACRIFICE
 -- ============================================================================
 local function AttemptSacrifice(carName, ingredient)
 	if isProcessingPurchase then return end
@@ -621,42 +696,42 @@ local function AttemptSacrifice(carName, ingredient)
 	local progress       = currentState.CraftProgress[carName] or {}
 	local currentAmount  = progress[ingredient] or 0
 	local displayName    = getDisplayCarName(carName)
-	local coloredName    = "<font color='"..USER_COLOR.."'>@"..player.Name.."</font>"
+	local coloredName    = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 
 	-- Already satisfied
 	if currentAmount >= requiredAmount then
 		angeloSpeak(pickRandom({
 			"We already have enough of that.",
 			"That requirement is already fulfilled.",
-			"Save it. We don't need any more of those."
+			"Save it. We don't need any more of those.",
 		}))
 		return
 	end
 
-	-- ── No item: skip confirmation, Angelo speaks immediately ─────────────
+	-- No item: skip confirmation, Angelo speaks immediately
 	if not playerHasIngredient(ingredient, requiredAmount, currentAmount) then
 		local itemLabel = ingredient == "Cash"
-			and ("$"..FormatCommas(requiredAmount - currentAmount).." cash")
+			and ("$" .. FormatCommas(requiredAmount - currentAmount) .. " cash")
 			or ingredient
 		angeloSpeak(pickRandom({
-			"Don't waste my time. You don't have the <font color='#00E5FF'>"..itemLabel.."</font> in your garage.",
-			"Dude, you dont even have the <font color='#00E5FF'>"..itemLabel.."</font>. Come back when you actually have it.",
-			"You are short on resources. I need the <font color='#00E5FF'>"..itemLabel.."</font> to proceed.",
-			"I don't work for free. Bring me the <font color='#00E5FF'>"..itemLabel.."</font> first."
+			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. itemLabel .. "</font> in your garage.",
+			"Dude, you dont even have the <font color='#00E5FF'>" .. itemLabel .. "</font>. Come back when you actually have it.",
+			"You are short on resources. I need the <font color='#00E5FF'>" .. itemLabel .. "</font> to proceed.",
+			"I don't work for free. Bring me the <font color='#00E5FF'>" .. itemLabel .. "</font> first.",
 		}))
 		return
 	end
 
-	-- ── Has item: confirm then sacrifice ─────────────────────────────────
+	-- Has item: confirm then sacrifice
 	local sacrificeText = ingredient == "Cash"
-		and ("$"..FormatCommas(requiredAmount - currentAmount))
-		or  ("1 "..ingredient)
+		and ("$" .. FormatCommas(requiredAmount - currentAmount))
+		or  ("1 " .. ingredient)
 
-	local CONF_COLORS = {Sacrifice="#ff5757", Target="#63b3ff", Accent="#f4efe6"}
 	local confirmText = string.format(
 		"<font color='%s'>Do you want to sacrifice </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>%s</font></b><font color='%s'>?</font>",
-		CONF_COLORS.Accent, CONF_COLORS.Sacrifice, escapeRichText(sacrificeText),
-		CONF_COLORS.Accent, CONF_COLORS.Target, escapeRichText(displayName), CONF_COLORS.Accent
+		CONFIRMATION_COLORS.Accent,    CONFIRMATION_COLORS.Sacrifice, escapeRichText(sacrificeText),
+		CONFIRMATION_COLORS.Accent,    CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
+		CONFIRMATION_COLORS.Accent
 	)
 
 	local requestSessionId   = shopSessionId
@@ -683,11 +758,23 @@ local function AttemptSacrifice(carName, ingredient)
 			local itemsLeft   = 0
 			for ing, req in pairs(recipe) do
 				if ing ~= "TargetCar" and ing ~= "CraftTime" then
-					local p = (currentState.CraftProgress[carName] and currentState.CraftProgress[carName][ing]) or 0
+					local p = (currentState.CraftProgress[carName]
+						and currentState.CraftProgress[carName][ing]) or 0
 					if p < req then
 						allComplete = false
 						itemsLeft   = itemsLeft + (req - p)
 					end
+				end
+			end
+
+			-- Helper: restores the correct frame after Angelo finishes speaking
+			local craftGui = gui:FindFirstChild(carName .. "Crafting")
+			local function restoreToCraftingFrame()
+				if activeCarFocus == carName and isShopOpen and craftGui then
+					craftGui.Visible  = true
+					mainFrame.Visible = false
+				else
+					mainFrame.Visible = true
 				end
 			end
 
@@ -696,37 +783,20 @@ local function AttemptSacrifice(carName, ingredient)
 				showFeedback("Sacrifice Successful", FEEDBACK_COLORS.Success)
 				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
 					if allComplete then
-						-- After Angelo speaks, show crafting frame (not mainFrame)
-						local craftGui = gui:FindFirstChild(carName.."Crafting")
 						angeloSpeak(pickRandom({
 							"That was the last one! The <font color='#50C878'>sacrifices are complete</font>. Ready to go?",
 							"Every piece is finally in place. Click confirm, and I will begin the build.",
 							"We have everything we need. Nice.",
-							"All requirements met. The <font color='#00E5FF'>"..displayName.."</font> is ready to be born. Tell me when to start crafting... when you're ready."
-						}), function()
-							if activeCarFocus == carName and isShopOpen and craftGui then
-								craftGui.Visible  = true
-								mainFrame.Visible = false
-							else
-								mainFrame.Visible = true
-							end
-						end)
+							"All requirements met. The <font color='#00E5FF'>" .. displayName .. "</font> is ready to be born. Tell me when to start crafting... when you're ready.",
+						}), restoreToCraftingFrame)
 					else
-						local craftGui = gui:FindFirstChild(carName.."Crafting")
 						angeloSpeak(pickRandom({
-							"The <font color='#00E5FF'>"..ingredient.."</font> has been stripped for parts. You still have <font color='#FFD700'>"..itemsLeft.."</font> more sacrifices to go.",
-							"Sacrifice accepted. Bring me <font color='#FFD700'>"..itemsLeft.."</font> more requirements and we can begin.",
-							"Alright "..coloredName.." thanks for the <font color='#00E5FF'>"..ingredient.."</font>. We are getting closer, just <font color='#FFD700'>"..itemsLeft.."</font> more to go.",
-							"Good. The chassis grows stronger. <font color='#FFD700'>"..itemsLeft.."</font> more pieces needed.",
-							"Another piece of the puzzle. Just <font color='#FFD700'>"..itemsLeft.."</font> more to go before the forge is ready."
-						}), function()
-							if activeCarFocus == carName and isShopOpen and craftGui then
-								craftGui.Visible  = true
-								mainFrame.Visible = false
-							else
-								mainFrame.Visible = true
-							end
-						end)
+							"The <font color='#00E5FF'>" .. ingredient .. "</font> has been stripped for parts. You still have <font color='#FFD700'>" .. itemsLeft .. "</font> more sacrifices to go.",
+							"Sacrifice accepted. Bring me <font color='#FFD700'>" .. itemsLeft .. "</font> more requirements and we can begin.",
+							"Alright " .. coloredName .. " thanks for the <font color='#00E5FF'>" .. ingredient .. "</font>. We are getting closer, just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go.",
+							"Good. The chassis grows stronger. <font color='#FFD700'>" .. itemsLeft .. "</font> more pieces needed.",
+							"Another piece of the puzzle. Just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go before the forge is ready.",
+						}), restoreToCraftingFrame)
 					end
 				else
 					mainFrame.Visible = true
@@ -734,22 +804,14 @@ local function AttemptSacrifice(carName, ingredient)
 			else
 				Kit.Sound:Play("BuyFail")
 				showFeedback(msg, FEEDBACK_COLORS.FailCash)
-				-- Server rejected (shouldn't normally happen after client check)
-				-- but handle gracefully: show crafting frame again
-				local craftGui = gui:FindFirstChild(carName.."Crafting")
-				if craftGui and activeCarFocus == carName and isShopOpen then
-					craftGui.Visible  = true
-					mainFrame.Visible = false
-				else
-					mainFrame.Visible = true
-				end
+				restoreToCraftingFrame()
 			end
 		end)
 	end)
 end
 
 -- ============================================================================
--- 🔨 CRAFT
+-- 🔨  CRAFT
 -- ============================================================================
 local function AttemptCraft(carName)
 	if isProcessingPurchase then return end
@@ -758,10 +820,10 @@ local function AttemptCraft(carName)
 
 	local recipe      = RECIPES[carName]
 	local displayName = getDisplayCarName(carName)
-	local coloredName = "<font color='"..USER_COLOR.."'>@"..player.Name.."</font>"
-	local craftGui    = gui:FindFirstChild(carName.."Crafting")
+	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+	local craftGui    = gui:FindFirstChild(carName .. "Crafting")
 
-	local function restoreCraftingFrame()
+	local function restoreToCraftingFrame()
 		if activeCarFocus == carName and isShopOpen and craftGui then
 			craftGui.Visible  = true
 			mainFrame.Visible = false
@@ -774,34 +836,34 @@ local function AttemptCraft(carName)
 	if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
 		local delta   = math.max(0, currentState.ActiveCrafts[carName] - os.time())
 		local timeStr = string.format("%02d:%02d:%02d",
-			math.floor(delta/3600), math.floor((delta%3600)/60), math.floor(delta%60))
+			math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
 		angeloSpeak(pickRandom({
-			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>"..displayName.."</font> right now. It will be ready in <font color='#FF4C4C'>"..timeStr.."</font>.",
-			"i am making a car for you at this moment "..coloredName.." i am making <font color='#B652FF'>"..displayName.."</font>. Check back in <font color='#FF4C4C'>"..timeStr.."</font>.",
-			"You cant rush perfection "..coloredName.." The <font color='#B652FF'>"..displayName.."</font> needs <font color='#FF4C4C'>"..timeStr.."</font> more time, come back later alright?",
-			"I am working as fast as I can. Come back in <font color='#FF4C4C'>"..timeStr.."</font>.",
-			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>"..timeStr.."</font> before the build is complete."
-		}), restoreCraftingFrame)
+			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. displayName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. displayName .. "</font>. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. displayName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more time, come back later alright?",
+			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
+		}), restoreToCraftingFrame)
 		return
 	end
 
 	-- Already completed
 	if currentState.CompletedCrafts[carName] then
 		angeloSpeak(pickRandom({
-			"It is finished. The <font color='#B652FF'>"..displayName.."</font> is a true work of art. It should be in your inventory already.",
-			"The <font color='#B652FF'>"..displayName.."</font> is already there in your inventory, "..coloredName..".",
-			"Construction of the <font color='#B652FF'>"..displayName.."</font> is done. A flawless execution. It's already there in your inventory."
-		}), restoreCraftingFrame)
+			"It is finished. The <font color='#B652FF'>" .. displayName .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. displayName .. "</font> is already there in your inventory, " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. displayName .. "</font> is done. A flawless execution. It's already there in your inventory.",
+		}), restoreToCraftingFrame)
 		return
 	end
 
 	-- Start craft
 	local craftHours = (carName == "Yamura" and "12" or "48")
-	local CONF_COLORS = {Sacrifice="#ff5757", Target="#63b3ff", Accent="#f4efe6"}
 	local confirmText = string.format(
 		"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
-		CONF_COLORS.Accent, CONF_COLORS.Target, escapeRichText(displayName),
-		CONF_COLORS.Accent, CONF_COLORS.Sacrifice, escapeRichText(craftHours), CONF_COLORS.Accent
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
+		CONFIRMATION_COLORS.Accent
 	)
 
 	local requestSessionId   = shopSessionId
@@ -831,27 +893,26 @@ local function AttemptCraft(carName)
 					if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
 						local delta = math.max(0, currentState.ActiveCrafts[carName] - os.time())
 						timeStr = string.format("%02d:%02d:%02d",
-							math.floor(delta/3600), math.floor((delta%3600)/60), math.floor(delta%60))
+							math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
 					end
-					-- After Angelo speaks craft started, show crafting frame again
 					angeloSpeak(pickRandom({
-						"Alright im working on making your <font color='#B652FF'>"..displayName.."</font>, be back in <font color='#FF4C4C'>"..timeStr.."</font>.",
-						"Crafting underway homie. The <font color='#B652FF'>"..displayName.."</font> will be ready in <font color='#FF4C4C'>"..timeStr.."</font>."
-					}), restoreCraftingFrame)
+						"Alright im working on making your <font color='#B652FF'>" .. displayName .. "</font>, be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+						"Crafting underway homie. The <font color='#B652FF'>" .. displayName .. "</font> will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+					}), restoreToCraftingFrame)
 				else
 					mainFrame.Visible = true
 				end
 			else
 				Kit.Sound:Play("BuyFail")
 				showFeedback(msg, FEEDBACK_COLORS.FailCash)
-				restoreCraftingFrame()
+				restoreToCraftingFrame()
 			end
 		end)
 	end)
 end
 
 -- ============================================================================
--- 🏠 MENU NAVIGATION
+-- 🏠  MENU NAVIGATION
 -- ============================================================================
 local function showMainMenu()
 	if not isShopOpen then return end
@@ -870,12 +931,12 @@ local function OpenCraftingMenu(carName)
 	isProcessingPurchase  = false
 	activeCarFocus        = carName
 
-	local craftGui = gui:FindFirstChild(carName.."Crafting")
+	local craftGui = gui:FindFirstChild(carName .. "Crafting")
 	dismissConfirmation()
 	hideAllCraftingMenus()
 	mainFrame.Visible = false
 
-	-- Wire up buttons (no UI changes yet, Angelo speaks first)
+	-- Wire up buttons once (guarded by the "Connected" attribute)
 	if craftGui then
 		UpdateCraftingUI(carName)
 		local carFrame = craftGui:FindFirstChild(carName)
@@ -900,7 +961,8 @@ local function OpenCraftingMenu(carName)
 			if mainCraftBtn and not mainCraftBtn:GetAttribute("Connected") then
 				mainCraftBtn:SetAttribute("Connected", true)
 				Kit.Tween:SetupButton(mainCraftBtn, function()
-					if mainCraftBtn.Visible and mainCraftBtn.Active and activeCarFocus == carName and isShopOpen then
+					if mainCraftBtn.Visible and mainCraftBtn.Active
+						and activeCarFocus == carName and isShopOpen then
 						AttemptCraft(carName)
 					end
 				end)
@@ -915,7 +977,8 @@ local function OpenCraftingMenu(carName)
 						if sacBtn and not sacBtn:GetAttribute("Connected") then
 							sacBtn:SetAttribute("Connected", true)
 							Kit.Tween:SetupButton(sacBtn, function()
-								if sacBtn.Visible and sacBtn.Active and activeCarFocus == carName and isShopOpen then
+								if sacBtn.Visible and sacBtn.Active
+									and activeCarFocus == carName and isShopOpen then
 									AttemptSacrifice(carName, ingredient)
 								end
 							end)
@@ -926,14 +989,13 @@ local function OpenCraftingMenu(carName)
 		end
 	end
 
-	-- Angelo speaks the car selection, then crafting menu appears
+	-- Angelo speaks first; crafting menu only appears after he finishes
 	local displayName = getDisplayCarName(carName)
 	angeloSpeak(pickRandom({
-		"Ah, the <font color='#00E5FF'>"..displayName.."</font>. A beautiful choice.",
-		"The <font color='#00E5FF'>"..displayName.."</font>? You have good taste.",
-		"Excellent selection. Let's look at what is required."
+		"Ah, the <font color='#00E5FF'>" .. displayName .. "</font>. A beautiful choice.",
+		"The <font color='#00E5FF'>" .. displayName .. "</font>? You have good taste.",
+		"Excellent selection. Let's look at what is required.",
 	}), function()
-		-- After Angelo finishes, show the crafting frame
 		if activeCarFocus == carName and isShopOpen and craftGui then
 			craftGui.Visible  = true
 			mainFrame.Visible = false
@@ -944,12 +1006,13 @@ local function OpenCraftingMenu(carName)
 end
 
 -- ============================================================================
--- 🚀 INIT & EVENTS
+-- 🚀  INIT & EVENTS
 -- ============================================================================
 local function init()
-	local _gui, _mainFrame, scrollFrame, closeBtn = gui, mainFrame,
-	mainFrame:WaitForChild("ScrollingFrame"), mainFrame:WaitForChild("ExitButton")
 	gui.Enabled = false
+
+	local scrollFrame = mainFrame:WaitForChild("ScrollingFrame")
+	local closeBtn    = mainFrame:WaitForChild("ExitButton")
 
 	Kit.Tween:SetupButton(closeBtn, function()
 		closeShopUI(true)
@@ -960,7 +1023,7 @@ local function init()
 			local card = scrollFrame:WaitForChild(carName, 5)
 			if card then
 				local buttonsFrame = card:FindFirstChild("Buttons")
-				local craftBtn = buttonsFrame and buttonsFrame:FindFirstChild("Craft")
+				local craftBtn     = buttonsFrame and buttonsFrame:FindFirstChild("Craft")
 				if craftBtn then
 					Kit.Tween:SetupButton(craftBtn, function()
 						OpenCraftingMenu(carName)
@@ -982,7 +1045,7 @@ local function init()
 		isProcessingPurchase = false
 		confirmationRestoreState = nil
 		hideAllCraftingMenus()
-		currentState = {CraftProgress={}, ActiveCrafts={}, CompletedCrafts={}}
+		currentState = { CraftProgress = {}, ActiveCrafts = {}, CompletedCrafts = {} }
 		UpdateDisplay()
 		local realState = FuncGetState:InvokeServer()
 		if not isActiveShopSession(sessionId) then return end
@@ -992,7 +1055,7 @@ local function init()
 
 	RemoteUpdate.OnClientEvent:Connect(function(newState)
 		if newState.Reason == "Complete" then
-			local coloredName = "<font color='"..USER_COLOR.."'>@"..player.Name.."</font>"
+			local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 			local carName
 			if currentState and currentState.CompletedCrafts and newState.CompletedCrafts then
 				for n, _ in pairs(newState.CompletedCrafts) do
@@ -1001,9 +1064,9 @@ local function init()
 			end
 			local dName = carName and getDisplayCarName(carName) or "your car"
 			angeloSpeak(pickRandom({
-				"It is finished. The <font color='#B652FF'>"..dName.."</font> is a true work of art. It should be in your inventory already.",
-				"The <font color='#B652FF'>"..dName.."</font> is already there in your inventory, "..coloredName..".",
-				"Construction of the <font color='#B652FF'>"..dName.."</font> is done. A flawless execution. It's already there in your inventory."
+				"It is finished. The <font color='#B652FF'>" .. dName .. "</font> is a true work of art. It should be in your inventory already.",
+				"The <font color='#B652FF'>" .. dName .. "</font> is already there in your inventory, " .. coloredName .. ".",
+				"Construction of the <font color='#B652FF'>" .. dName .. "</font> is done. A flawless execution. It's already there in your inventory.",
 			}))
 		end
 		currentState = newState
