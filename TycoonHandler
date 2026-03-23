@@ -114,13 +114,15 @@ Players.PlayerRemoving:Connect(function(player)
 			local listener
 			local waitStart = os.clock()
 
-			-- 1. Check if ALREADY saved (Attribute Check)
-			if player:GetAttribute("DataSaved") then
+			local targetSaveVersion = player:GetAttribute("SaveVersion") or 0
+
+			-- 1. Check if the CURRENT dirty version is already saved
+			if (player:GetAttribute("SavedVersion") or 0) >= targetSaveVersion then
 				didSave = true
 			else
 				-- 2. Listen for TycoonDataHandler to fire "TycoonSaveCompleted"
-				listener = SaveEvent.Event:Connect(function(savedName)
-					if savedName == player.Name then
+				listener = SaveEvent.Event:Connect(function(savedUserId, completedVersion)
+					if savedUserId == player.UserId and (completedVersion or 0) >= targetSaveVersion then
 						didSave = true
 					end
 				end)
@@ -129,7 +131,9 @@ Players.PlayerRemoving:Connect(function(player)
 			-- WAIT LOOP: Wait until Saved OR Timeout (8 Seconds Failsafe)
 			repeat 
 				task.wait(0.1)
-				if player:GetAttribute("DataSaved") then didSave = true end
+				if (player:GetAttribute("SavedVersion") or 0) >= targetSaveVersion then
+					didSave = true
+				end
 			until didSave or (os.clock() - waitStart > 8)
 
 			if listener then listener:Disconnect() end

@@ -5,6 +5,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local INTENT_TTL_SECONDS = 300
 
 -- 🛠️ FIX: Auto-Create Remotes to prevent "Deadlock"
 -- (We use FindFirstChild or Instance.new so we don't wait forever)
@@ -24,19 +25,27 @@ if not SetIntentEvent then
 	print("✅ GiftIntentHandler: Created 'SetGiftIntent' RemoteEvent")
 end
 
--- 🗄️ STORAGE: { [BuyerUserId] = ReceiverUserId }
+-- 🗄️ STORAGE: { [BuyerUserId] = { ReceiverUserId, ProductId, RequestId, CreatedAt } }
 local pendingGifts = {}
 
 -- 📡 LISTEN FOR INTENT
-SetIntentEvent.OnServerEvent:Connect(function(buyer, receiverUserId)
+SetIntentEvent.OnServerEvent:Connect(function(buyer, receiverUserId, productId, requestId)
+	if receiverUserId == nil then
+		pendingGifts[buyer.UserId] = nil
+		return
+	end
+
 	-- Security: Validate Input Type
-	if typeof(receiverUserId) == "number" then
-		-- Optional: Check if receiver actually exists in game (if you only want to gift present players)
-		-- For now, we allow offline gifting intent if your system supports it.
-		print("🎁 Gift Intent Set: " .. buyer.Name .. " wants to gift UserID: " .. receiverUserId)
-		pendingGifts[buyer.UserId] = receiverUserId
+	if typeof(receiverUserId) == "number" and typeof(productId) == "number" then
+		print("🎁 Gift Intent Set: " .. buyer.Name .. " wants to gift Product " .. productId .. " to UserID: " .. receiverUserId)
+		pendingGifts[buyer.UserId] = {
+			ReceiverUserId = receiverUserId,
+			ProductId = productId,
+			RequestId = typeof(requestId) == "string" and requestId or nil,
+			CreatedAt = os.time(),
+		}
 	else
-		warn("⚠️ Invalid Gift Intent from " .. buyer.Name .. ": ReceiverID is not a number.")
+		warn("⚠️ Invalid Gift Intent from " .. buyer.Name .. ": receiver/product invalid.")
 	end
 end)
 
@@ -47,16 +56,22 @@ end)
 
 -- 🔒 EXPOSE DATA TO RECEIPT ROUTER
 -- We use _G so ReceiptRouter can read this table without a circular dependency
-_G.GetGiftReceiver = function(buyerUserId)
-	local receiverId = pendingGifts[buyerUserId]
+_G.ConsumeGiftIntent = function(buyerUserId, productId)
+	local intent = pendingGifts[buyerUserId]
+	if not intent then return nil end
 
-	-- Important: Clear the intent immediately after reading so next purchase isn't accidental
-	if receiverId then
-		pendingGifts[buyerUserId] = nil 
-		print("✅ _G.GetGiftReceiver: Retrieved & Cleared intent for Buyer " .. buyerUserId)
+	if (os.time() - (intent.CreatedAt or 0)) > INTENT_TTL_SECONDS then
+		pendingGifts[buyerUserId] = nil
+		return nil
 	end
 
-	return receiverId
+	if intent.ProductId ~= productId then
+		return nil
+	end
+
+	pendingGifts[buyerUserId] = nil
+	print("✅ _G.ConsumeGiftIntent: Retrieved & Cleared matching intent for Buyer " .. buyerUserId)
+	return intent
 end
 
 print("🟢 GiftIntentHandler: Loaded & Ready")

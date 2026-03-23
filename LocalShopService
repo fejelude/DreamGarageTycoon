@@ -68,7 +68,7 @@ end
 -- =========================
 -- STATE
 -- =========================
-local PlayerSessions = {}       -- [userId] = { SeedVersion, LocalSeed, Purchased, Cache }
+local PlayerSessions = {}       -- [userId] = { SeedVersion, LocalSeed, Purchased, AppliedReceipts, Cache }
 local PurchaseLocks = {}        -- [userId] = true/nil
 local LastPurchaseTime = {}     -- [userId] = os.clock()
 
@@ -78,6 +78,17 @@ local function normalizePurchased(raw)
 	for car, count in pairs(raw) do
 		if type(count) == "number" and count > 0 then
 			normalized[car] = math.floor(count)
+		end
+	end
+	return normalized
+end
+
+local function normalizeReceiptKeys(raw)
+	if type(raw) ~= "table" then return {} end
+	local normalized = {}
+	for receiptKey, wasApplied in pairs(raw) do
+		if type(receiptKey) == "string" and wasApplied == true then
+			normalized[receiptKey] = true
 		end
 	end
 	return normalized
@@ -234,6 +245,7 @@ local function getSession(player)
 			SeedVersion = currentGlobalID,
 			LocalSeed = nil,
 			Purchased = {},
+			AppliedReceipts = {},
 			Cache = nil,
 		}
 	end
@@ -245,6 +257,7 @@ local function getSession(player)
 		session.SeedVersion = currentGlobalID
 		session.LocalSeed = nil
 		session.Purchased = {} -- Reset purchases on new rotation
+		session.AppliedReceipts = {}
 		session.Cache = generateStockConfiguration(session.SeedVersion)
 		didReset = true
 	end
@@ -288,6 +301,7 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 		if type(data) == "table" then
 			if data.SeedVersion and data.SeedVersion ~= session.SeedVersion then
 				session.Purchased = {}
+				session.AppliedReceipts = {}
 				session.LocalSeed = nil
 				session.Cache = generateStockConfiguration(session.SeedVersion)
 			else
@@ -296,6 +310,7 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 				else
 					session.Purchased = normalizePurchased(data)
 				end
+				session.AppliedReceipts = normalizeReceiptKeys(data.AppliedReceipts)
 
 				if type(data.LocalSeed) == "number" then
 					session.LocalSeed = data.LocalSeed
@@ -308,6 +323,7 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 			print("✅ [Shop] Loaded purchases for " .. player.Name)
 		elseif didReset then
 			session.Purchased = {}
+			session.AppliedReceipts = {}
 			session.LocalSeed = nil
 			session.Cache = generateStockConfiguration(session.SeedVersion)
 		end
@@ -319,6 +335,7 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 			SeedVersion = session.SeedVersion,
 			LocalSeed = session.LocalSeed,
 			Purchased = session.Purchased,
+			AppliedReceipts = session.AppliedReceipts,
 		}
 
 	elseif action == "Close" then
@@ -382,15 +399,16 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 			return false, "System Error: Admin API Missing"
 		end
 
+		wallet.Value -= carData.Price
+		session.Purchased[carName] = bought + 1
+
 		local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", player, realToolName)
 		if not invokeOk then
+			wallet.Value += carData.Price
+			session.Purchased[carName] = bought
 			warn("⚠️ TycoonAdminAPI grant failed or timed out for", player.Name)
 			return false, "System Error: Inventory Grant Failed"
 		end
-
-		wallet.Value -= carData.Price
-
-		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
 
 		task.spawn(function()
@@ -414,12 +432,18 @@ end
 -- =========================
 -- REROLL
 -- =========================
-function RerollBindable.OnInvoke(player)
+function RerollBindable.OnInvoke(player, purchaseKey)
 	if not player or not player.Parent then return false end
 	local session = getSession(player)
+	if purchaseKey and session.AppliedReceipts[purchaseKey] then
+		return true
+	end
 	session.LocalSeed = math.random(1, 999999999)
 	session.Purchased = {}
 	session.Cache = generateStockConfiguration(session.LocalSeed)
+	if purchaseKey then
+		session.AppliedReceipts[purchaseKey] = true
+	end
 	pushUpdate(player, session, "Reroll")
 	return true
 end

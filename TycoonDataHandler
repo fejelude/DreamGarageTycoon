@@ -61,8 +61,11 @@ end
 
 local function markDirty(player)
 	local session = SessionData[player]
-	if session and not session.IsDirty then 
-		session.IsDirty = true 
+	if session and not session.SuppressDirty and not session.IsDirty then
+		session.IsDirty = true
+		session.SaveVersion = (session.SaveVersion or 0) + 1
+		player:SetAttribute("SaveVersion", session.SaveVersion)
+		player:SetAttribute("DataSaved", false)
 	end
 end
 
@@ -668,12 +671,16 @@ local function save(player, isClosing)
 	local ok, err = pcall(executeSave)
 	if not ok then
 		warn("❌ Save Failed " .. player.Name .. ": " .. tostring(err))
+		session.IsSaving = false
+		player:SetAttribute("DataSaved", false)
+		return
 	elseif isClosing then
 		print("✅ Saved: " .. player.Name)
 	end
 
 	session.IsDirty = false
 	session.LastSave = os.time()
+	session.LastCompletedSaveVersion = session.SaveVersion or 0
 
 	-- [[ SHOP CLEANUP ]]
 	if isClosing then
@@ -698,8 +705,11 @@ local function save(player, isClosing)
 	session.IsSaving = false 
 
 	local syncEvent = game.ServerStorage:FindFirstChild("TycoonSaveCompleted")
-	if syncEvent then syncEvent:Fire(player.Name) end
+	if syncEvent then
+		syncEvent:Fire(player.UserId, session.LastCompletedSaveVersion)
+	end
 
+	player:SetAttribute("SavedVersion", session.LastCompletedSaveVersion)
 	player:SetAttribute("DataSaved", true)
 end
 
@@ -709,19 +719,16 @@ local function InitializePlayer(player)
 		IsDirty = false, 
 		DataLoaded = false, 
 		ExplicitClear = false, 
-		IsSaving = false        
+		IsSaving = false,
+		SaveVersion = 0,
+		LastCompletedSaveVersion = 0,
+		SuppressDirty = true
 	}
 
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
 	local cash = Instance.new("IntValue"); cash.Name = "Cash"; cash.Parent = ls
 	local wallet = Instance.new("IntValue"); wallet.Name = "Wallet"; wallet.Parent = ls
 	local atm = Instance.new("IntValue"); atm.Name = "ATMBalance"; atm.Parent = ls
-
-	local function setDirty() markDirty(player) end
-	cash.Changed:Connect(setDirty); wallet.Changed:Connect(setDirty); atm.Changed:Connect(setDirty)
-
-	local gear = player:WaitForChild("StarterGear", 10)
-	if gear then gear.ChildAdded:Connect(setDirty); gear.ChildRemoved:Connect(setDirty) end
 
 	local key = "User_V27_" .. player.UserId
 	local data
@@ -749,6 +756,10 @@ local function InitializePlayer(player)
 	cash.Value = data.Bank or 0
 	wallet.Value = data.Wallet or 0
 	atm.Value = data.ATMBalance or 0
+
+	player:SetAttribute("SaveVersion", 0)
+	player:SetAttribute("SavedVersion", 0)
+	player:SetAttribute("DataSaved", true)
 
 	-- [[ COMMON SHOP RESTORE ]]
 	local shopBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
@@ -785,10 +796,6 @@ local function InitializePlayer(player)
 	local ownedJson = HttpService:JSONEncode(data.OwnedBaseSkins)
 	player:SetAttribute("OwnedBaseSkins", ownedJson)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
-
-	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(setDirty)
-	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
-	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
 
 	if player:FindFirstChild("Backpack") then player.Backpack:ClearAllChildren() end
 	if player:FindFirstChild("StarterGear") then player.StarterGear:ClearAllChildren() end
@@ -850,6 +857,22 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("OccupiedPlot"):Connect(CheckAndRestorePending)
 	CheckAndRestorePending() 
 
+	local function setDirty() markDirty(player) end
+	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(setDirty)
+	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
+	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
+	cash.Changed:Connect(setDirty)
+	wallet.Changed:Connect(setDirty)
+	atm.Changed:Connect(setDirty)
+
+	local gear = player:WaitForChild("StarterGear", 10)
+	if gear then
+		gear.ChildAdded:Connect(setDirty)
+		gear.ChildRemoved:Connect(setDirty)
+	end
+
+	SessionData[player].SuppressDirty = false
+	SessionData[player].IsDirty = false
 	SessionData[player].DataLoaded = true
 end
 

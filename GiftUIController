@@ -58,6 +58,7 @@ end
 -- 💾 STATE
 local currentProductId = nil
 local currentTargetName = ""
+local currentGiftRequestId = nil
 local isMenuOpen = false 
 local isInitialized = false
 local isInitializing = false
@@ -350,9 +351,10 @@ local function UpdateSlots()
 
 						playSfx(SFX.Click, 0.5, screenGui)
 						currentTargetName = target.Name
+						currentGiftRequestId = HttpService:GenerateGUID(false)
 						SetIndicator("Processing...", Color3.fromRGB(255, 255, 100))
 
-						SetIntentEvent:FireServer(target.UserId)
+						SetIntentEvent:FireServer(target.UserId, currentProductId, currentGiftRequestId)
 						MarketplaceService:PromptProductPurchase(player, currentProductId)
 					end)
 				elseif btnConnections[i] then
@@ -389,6 +391,7 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 			setFocusMode(false)
 		end)
 	else
+		SetIntentEvent:FireServer(nil, currentProductId, currentGiftRequestId)
 		SetIndicator("Purchase Cancelled", Color3.fromRGB(255, 85, 85))
 		playSfx(SFX.Error, 0.6, screenGui)
 	end

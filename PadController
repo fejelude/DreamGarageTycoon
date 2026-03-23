@@ -244,6 +244,9 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 				linkedCarVal.Value = result
 				result:SetAttribute("OwnerUserId", player.UserId)
 				result:SetAttribute("CarGUID", tostring(player.UserId) .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000,9999)))
+				if tool:GetAttribute("ReceiptPurchaseKey") then
+					result:SetAttribute("ReceiptPurchaseKey", tool:GetAttribute("ReceiptPurchaseKey"))
+				end
 
 				-- Update State immediately
 				validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
@@ -308,6 +311,9 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 			clone:SetAttribute("IssuedAt", os.time())
 			clone:SetAttribute("IssuedId", HttpService:GenerateGUID(false))
 			clone:SetAttribute("ToolId", foundTool.Name)
+			if carToRemove:GetAttribute("ReceiptPurchaseKey") then
+				clone:SetAttribute("ReceiptPurchaseKey", carToRemove:GetAttribute("ReceiptPurchaseKey"))
+			end
 			clone.CanBeDropped = false
 		end
 		backpackClone.Parent = player.Backpack
