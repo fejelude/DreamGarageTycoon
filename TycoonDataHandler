@@ -3,10 +3,11 @@
 -- Location: ServerScriptService > TycoonDataHandler
 -- Dependencies: Players, ServerStorage, DataStoreService, Workspace, ReplicatedStorage, HttpService, CarStats, BaseSkinStats
 -- Public API: TycoonAdminAPI (BindableFunction), LegendaryCraftingInventoryFunction (BindableFunction)
+-- Public API: TycoonAdminAPI (BindableFunction), LegendaryCraftingInventoryFunction (BindableFunction), MythicalCraftingInventoryFunction (BindableFunction)
 -- Networking: TycoonAdminLog (RemoteEvent), ShopRemotes (via Bindable)
 -- Security: Server-authoritative tool validation, anti-wipe protection, fixed StarterGear duplication exploit.
 -- Performance: Batched saving, lock-based pad restoration to prevent race conditions.
--- Notes: Updated to support UNCOMMON, RARE, EPIC, and LEGENDARY SHOP Persistence.
+-- Notes: Updated to support UNCOMMON, RARE, EPIC, LEGENDARY, and MYTHICAL SHOP Persistence.
 --
 -- FIX (Legendary Sacrifice Dupe):
 --   Added session.SacrificeOccurred flag. Set to true whenever
@@ -474,6 +475,58 @@ LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 end
 
 -- ----------------------------------------------------------------------------
+-- 🗡️ MYTHICAL CRAFTING INVENTORY API (BindableFunction)
+-- ----------------------------------------------------------------------------
+local MythicalCraftingInventoryAPI = ServerStorage:FindFirstChild("MythicalCraftingInventoryFunction")
+if not MythicalCraftingInventoryAPI then
+	MythicalCraftingInventoryAPI = Instance.new("BindableFunction")
+	MythicalCraftingInventoryAPI.Name = "MythicalCraftingInventoryFunction"
+	MythicalCraftingInventoryAPI.Parent = ServerStorage
+end
+
+MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
+	if not player then return false end
+
+	if action == "HasTool" then
+		local targetToolId, requiredAmount = ...
+		if not targetToolId then return false, 0 end
+		requiredAmount = math.max(1, tonumber(requiredAmount) or 1)
+		local ownedCount = countMatchingTools(player, targetToolId)
+		return ownedCount >= requiredAmount, ownedCount
+
+	elseif action == "RemoveTool" then
+		local targetToolId, requestedAmount = ...
+		if not targetToolId then return false, 0 end
+
+		requestedAmount = math.max(1, tonumber(requestedAmount) or 1)
+		local removedCount = removeMatchingTools(player, targetToolId, requestedAmount)
+
+		if removedCount < requestedAmount then
+			return false, removedCount
+		end
+
+		local session = SessionData[player]
+		if session then
+			session.SacrificeOccurred = true
+		end
+
+		markDirty(player)
+		return true, removedCount
+
+	elseif action == "GiveTool" then
+		local toolName, customAttributes = ...
+		giveTool(player, toolName, customAttributes)
+		return true
+
+	elseif action == "MarkDirty" then
+		markDirty(player)
+		return true
+	end
+
+	return false
+end
+
+-- ----------------------------------------------------------------------------
 -- 💾 SAVING
 -- ----------------------------------------------------------------------------
 local function save(player, isClosing)
@@ -592,6 +645,13 @@ local function save(player, isClosing)
 			currentLegendaryShopData = legendaryShopBindable:Invoke("Get", player) or {}
 		end
 
+		-- [[ 🔴 MYTHICAL SHOP SYNC ]]
+		local mythicalShopBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
+		local currentMythicalShopData = {}
+		if mythicalShopBindable then
+			currentMythicalShopData = mythicalShopBindable:Invoke("Get", player) or {}
+		end
+
 		-- Snapshot the flag before entering UpdateAsync (closure captures it)
 		local sacrificeOccurredThisSession = session.SacrificeOccurred == true
 
@@ -663,6 +723,7 @@ local function save(player, isClosing)
 					oldData.RareShopPurchases = currentRareShopData
 					oldData.EpicShopPurchases = currentEpicShopData
 					oldData.LegendaryShopPurchases = currentLegendaryShopData
+					oldData.MythicalShopPurchases = currentMythicalShopData
 
 					oldData.OwnedBaseSkins = currentOwnedSkins
 					oldData.EquippedSkin = currentEquippedSkin
@@ -707,6 +768,9 @@ local function save(player, isClosing)
 
 		local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
 		if legendaryShopBindable then legendaryShopBindable:Invoke("Close", player) end
+
+		local mythicalShopBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
+		if mythicalShopBindable then mythicalShopBindable:Invoke("Close", player) end
 	end
 
 	session.IsSaving = false
@@ -754,7 +818,7 @@ local function InitializePlayer(player)
 	data = data or {
 		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1,
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
-		EpicShopPurchases = {}, LegendaryShopPurchases = {},
+		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default"
 	}
 
@@ -765,6 +829,7 @@ local function InitializePlayer(player)
 	data.RareShopPurchases      = data.RareShopPurchases      or {}
 	data.EpicShopPurchases      = data.EpicShopPurchases      or {}
 	data.LegendaryShopPurchases = data.LegendaryShopPurchases or {}
+	data.MythicalShopPurchases  = data.MythicalShopPurchases  or {}
 	data.OwnedBaseSkins         = data.OwnedBaseSkins         or { "Default" }
 	data.EquippedSkin           = data.EquippedSkin           or "Default"
 
@@ -794,6 +859,12 @@ local function InitializePlayer(player)
 	local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
 	if legendaryShopBindable then
 		legendaryShopBindable:Invoke("Load", player, data.LegendaryShopPurchases)
+	end
+
+	-- [[ 🔴 MYTHICAL SHOP RESTORE ]]
+	local mythicalShopBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
+	if mythicalShopBindable then
+		mythicalShopBindable:Invoke("Load", player, data.MythicalShopPurchases)
 	end
 
 	-- ✅ APPLY ATTRIBUTES

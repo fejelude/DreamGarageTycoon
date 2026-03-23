@@ -1,0 +1,455 @@
+-- Purpose: Handles Legendary Car Shop logic. Strictly crafting system, persistent timers, sacrifice mechanics.
+-- Purpose: Handles Mythical Car Shop logic. Strictly crafting system, persistent timers, sacrifice mechanics.
+-- Runs on: Server
+-- Location: ServerScriptService > MythicalShopService
+-- Dependencies: ReplicatedStorage.CarStats, ServerStorage.MythicalCraftingInventoryFunction, TycoonDataHandler
+-- Public API: None (Event/Bindable driven)
+-- Networking: ShopRemotes.MythicalShop.{RequestOpenShop, OpenShopUI, MythicalShopUpdate, GetMythicalShopState, CraftMythicalCar, SacrificeMythicalIngredient}
+-- Security: Server authority on cash, exact inventory checks, exact timer tracking.
+-- Notes: Uses exact timer duration (Yamura=12h, LaRossa=48h) and exact ingredient requirement list.
+--
+-- FIX: Removed the Players.PlayerRemoving listener from this script.
+--
+--   ROOT CAUSE OF THE PROGRESS-WIPE BUG:
+--   Both TycoonDataHandler and MythicalShopService connected to PlayerRemoving.
+--   Roblox fires all PlayerRemoving listeners concurrently, so the data handler's
+--   save() would call PersistenceBindable:Invoke("Get", player) at the exact same
+--   moment this script ran PlayerSessions[uid] = nil. getSession() would then find
+--   no session, create a blank one, and return {} — causing the data handler to
+--   faithfully save empty CraftProgress, wiping all sacrifice progress on every leave.
+--
+--   THE FIX:
+--   The "Close" action inside PersistenceBindable.OnInvoke already performs the
+--   same cleanup (PlayerSessions[uid] = nil). The data handler calls "Close" AFTER
+--   calling "Get", guaranteeing the correct order:
+--     1. save() calls "Get"  → returns real session data      ✅
+--     2. save() calls "Close" → session cleaned up             ✅
+--   Removing the competing PlayerRemoving listener lets that contract hold.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage     = game:GetService("ServerStorage")
+local Players           = game:GetService("Players")
+local HttpService       = game:GetService("HttpService")
+
+-- =========================
+-- MYTHICAL CONFIG (END-GAME RARITY)
+-- =========================
+local RECIPES = {
+	["Centurion"] = {
+		TargetCar = "Centurion",
+		Cash      = 199999999,
+		Yamura    = 1,
+		Vortex    = 2,
+		Velocity  = 3,
+		Kingston  = 4,
+		CraftTime = 172800, -- 48 hours
+	},
+}
+
+local MAX_INTERACTION_DISTANCE     = 20
+local OPEN_REQUEST_COOLDOWN_SECONDS = 1
+
+-- =========================
+-- MODULES
+-- =========================
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
+-- =========================
+-- REMOTES (ISOLATED)
+-- =========================
+local Remotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
+if not Remotes then
+	Remotes        = Instance.new("Folder")
+	Remotes.Name   = "ShopRemotes"
+	Remotes.Parent = ReplicatedStorage
+end
+
+local MythicalRemotes = Remotes:FindFirstChild("MythicalShop")
+if not MythicalRemotes then
+	MythicalRemotes        = Instance.new("Folder")
+	MythicalRemotes.Name   = "MythicalShop"
+	MythicalRemotes.Parent = Remotes
+end
+
+local function getRemote(name, className)
+	local r = MythicalRemotes:FindFirstChild(name)
+	if not r then
+		r        = Instance.new(className)
+		r.Name   = name
+		r.Parent = MythicalRemotes
+	end
+	return r
+end
+
+local RemoteRequestOpen = getRemote("RequestOpenShop",             "RemoteEvent")
+local RemoteOpen        = getRemote("OpenShopUI",                  "RemoteEvent")
+local RemoteUpdate      = getRemote("MythicalShopUpdate",          "RemoteEvent")
+local FuncGetState      = getRemote("GetMythicalShopState",        "RemoteFunction")
+local FuncCraftCar      = getRemote("CraftMythicalCar",            "RemoteFunction")
+local FuncSacrifice     = getRemote("SacrificeMythicalIngredient", "RemoteFunction")
+
+-- =========================
+-- BINDABLES
+-- =========================
+local PersistenceBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
+if not PersistenceBindable then
+	PersistenceBindable        = Instance.new("BindableFunction")
+	PersistenceBindable.Name   = "MythicalShopPersistenceFunction"
+	PersistenceBindable.Parent = ServerStorage
+end
+
+local MythicalInventoryBindable = ServerStorage:FindFirstChild("MythicalCraftingInventoryFunction")
+if not MythicalInventoryBindable then
+	MythicalInventoryBindable        = Instance.new("BindableFunction")
+	MythicalInventoryBindable.Name   = "MythicalCraftingInventoryFunction"
+	MythicalInventoryBindable.Parent = ServerStorage
+end
+
+-- =========================
+-- STATE
+-- =========================
+local PlayerSessions    = {}   -- [uid] = { CraftProgress, ActiveCrafts, CompletedCrafts }
+local InteractionLocks  = {}   -- [uid] = true/nil
+local LastOpenRequestAt = {}   -- [uid] = os.clock()
+
+-- =========================
+-- HELPERS
+-- =========================
+local function getIngredientDisplayName(ingredient)
+	return tostring(ingredient)
+end
+
+local function getMissingIngredientMessage(ingredient)
+	return "You don't own the required car (" .. getIngredientDisplayName(ingredient) .. ")!"
+end
+
+-- =========================
+-- TIMEOUT UTILITY
+-- =========================
+local function safeInvoke(bindable, timeout, ...)
+	local args     = table.pack(...)
+	local result   = nil
+	local finished = false
+
+	task.spawn(function()
+		result = table.pack(pcall(function()
+			return bindable:Invoke(table.unpack(args, 1, args.n))
+		end))
+		finished = true
+	end)
+
+	local start = os.clock()
+	while not finished and (os.clock() - start) < timeout do
+		task.wait()
+	end
+
+	if not finished       then return false, "Timeout" end
+	if not result[1]      then return false, result[2] end
+	return true, table.unpack(result, 2, result.n)
+end
+
+-- =========================
+-- SESSION
+-- =========================
+local function getSession(player)
+	local uid = player.UserId
+	if not PlayerSessions[uid] then
+		PlayerSessions[uid] = {
+			CraftProgress  = { ["Centurion"] = {} },
+			ActiveCrafts   = {},
+			CompletedCrafts = {},
+		}
+	end
+	return PlayerSessions[uid]
+end
+
+local function buildStatePayload(session)
+	return {
+		CraftProgress   = session.CraftProgress,
+		ActiveCrafts    = session.ActiveCrafts,
+		CompletedCrafts = session.CompletedCrafts,
+	}
+end
+
+local function pushUpdate(player, session, reason)
+	local payload = buildStatePayload(session)
+	payload.Reason = reason
+	RemoteUpdate:FireClient(player, payload)
+end
+
+-- =========================
+-- DATA HANDLER INTEGRATION
+--
+-- "Close" is the ONLY place sessions are cleaned up. The data handler calls
+-- "Get" then "Close" in that order, so session data is always available when
+-- "Get" runs. Do NOT nil out PlayerSessions anywhere else on player leave.
+-- =========================
+PersistenceBindable.OnInvoke = function(action, player, data)
+	if not player then return end
+	local uid = player.UserId
+
+	if action == "Load" then
+		local session = getSession(player)
+
+		if type(data) == "table" then
+			if type(data.CraftProgress) == "table" then
+				session.CraftProgress = data.CraftProgress
+			end
+			if type(data.ActiveCrafts) == "table" then
+				session.ActiveCrafts = data.ActiveCrafts
+			end
+			if type(data.CompletedCrafts) == "table" then
+				session.CompletedCrafts = data.CompletedCrafts
+			end
+
+			-- Ensure per-car sub-tables always exist
+			session.CraftProgress["Centurion"] = session.CraftProgress["Centurion"] or {}
+
+			print("✅ [MythicalShop] Loaded progress for " .. player.Name)
+		end
+
+	elseif action == "Get" then
+		-- Called by the data handler BEFORE "Close" — session must still be alive here.
+		local session = getSession(player)
+		return {
+			CraftProgress   = session.CraftProgress,
+			ActiveCrafts    = session.ActiveCrafts,
+			CompletedCrafts = session.CompletedCrafts,
+		}
+
+	elseif action == "Close" then
+		-- Called by the data handler AFTER saving. Safe to clean up now.
+		PlayerSessions[uid]    = nil
+		InteractionLocks[uid]  = nil
+		LastOpenRequestAt[uid] = nil
+	end
+end
+
+-- =========================
+-- CLIENT REQUESTS
+-- =========================
+FuncGetState.OnServerInvoke = function(player)
+	local session = getSession(player)
+	return buildStatePayload(session)
+end
+
+RemoteRequestOpen.OnServerEvent:Connect(function(player)
+	local now        = os.clock()
+	local lastOpenAt = LastOpenRequestAt[player.UserId]
+	if lastOpenAt and (now - lastOpenAt) < OPEN_REQUEST_COOLDOWN_SECONDS then return end
+
+	local char = player.Character
+	if not char or not char.PrimaryPart then return end
+
+	local npcs    = workspace:FindFirstChild("NPCS")
+	local ethourah  = npcs and npcs:FindFirstChild("ethourah")
+	if not ethourah then return end
+
+	local ethourahRoot = ethourah:FindFirstChild("HumanoidRootPart")
+	if not ethourahRoot then return end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance <= MAX_INTERACTION_DISTANCE then
+		LastOpenRequestAt[player.UserId] = now
+		local session = getSession(player)
+		pushUpdate(player, session, "Open")
+		RemoteOpen:FireClient(player)
+	else
+		warn(string.format(
+			"🛡️ [Security] %s attempted to open Mythical Shop from %d studs away.",
+			player.Name, math.floor(distance)
+			))
+	end
+end)
+
+FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
+	if typeof(carName) ~= "string" or typeof(ingredient) ~= "string" then
+		return false, "Invalid Request"
+	end
+	if not player or not player.Parent then return false, "Player missing" end
+
+	local char = player.Character
+	if not char or not char.PrimaryPart then return false, "Character missing" end
+
+	local npcs       = workspace:FindFirstChild("NPCS")
+	local ethourah     = npcs and npcs:FindFirstChild("ethourah")
+	local ethourahRoot = ethourah and ethourah:FindFirstChild("HumanoidRootPart")
+	if not ethourahRoot then return false, "NPC missing" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then
+		warn(string.format(
+			"🛡️ [Security] %s attempted to SACRIFICE from %d studs away.",
+			player.Name, math.floor(distance)
+			))
+		return false, "Too far away!"
+	end
+
+	local recipe = RECIPES[carName]
+	if not recipe              then return false, "Invalid Mythical Car" end
+	if not recipe[ingredient]  then return false, "Invalid Ingredient"    end
+
+	local uid = player.UserId
+	if InteractionLocks[uid] then return false, "Transaction in progress" end
+
+	InteractionLocks[uid] = true
+
+	local pOk, logicOk, msg = pcall(function()
+		local session        = getSession(player)
+		local progress       = session.CraftProgress[carName] or {}
+		local requiredAmount = recipe[ingredient]
+		local currentAmount  = progress[ingredient] or 0
+
+		if currentAmount >= requiredAmount   then return false, "Ingredient already complete!" end
+		if session.ActiveCrafts[carName]     then return false, "Craft already in progress!"  end
+
+		if ingredient == "Cash" then
+			local cost   = requiredAmount - currentAmount
+			local ls     = player:FindFirstChild("leaderstats")
+			local wallet = ls and ls:FindFirstChild("Wallet")
+			if not wallet               then return false, "Wallet Not Found" end
+			if wallet.Value < cost      then return false, "Insufficient Cash (Withdraw from ATM)" end
+
+			wallet.Value -= cost
+			session.CraftProgress[carName][ingredient] = requiredAmount
+		else
+			local hasOk, owns = safeInvoke(MythicalInventoryBindable, 2, "HasTool", player, ingredient, 1)
+			if not hasOk  then return false, "System error checking inventory." end
+			if not owns   then return false, getMissingIngredientMessage(ingredient) end
+
+			local removeOk, removedOk, removedCount =
+				safeInvoke(MythicalInventoryBindable, 2, "RemoveTool", player, ingredient, 1)
+			if not removeOk               then return false, "System error removing car."          end
+			if not removedOk or (removedCount or 0) < 1 then
+				return false, getMissingIngredientMessage(ingredient)
+			end
+
+			session.CraftProgress[carName][ingredient] = currentAmount + 1
+		end
+
+		pushUpdate(player, session, "Sacrifice")
+		safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
+
+		return true, "Success"
+	end)
+
+	InteractionLocks[uid] = nil
+
+	if not pOk then
+		warn("Mythical Shop Sacrifice Error:", logicOk)
+		return false, "Internal System Error"
+	end
+
+	return logicOk, msg
+end
+
+FuncCraftCar.OnServerInvoke = function(player, carName)
+	if typeof(carName) ~= "string" then return false, "Invalid Request" end
+	if not player or not player.Parent then return false, "Player missing" end
+
+	local char = player.Character
+	if not char or not char.PrimaryPart then return false, "Character missing" end
+
+	local npcs       = workspace:FindFirstChild("NPCS")
+	local ethourah     = npcs and npcs:FindFirstChild("ethourah")
+	local ethourahRoot = ethourah and ethourah:FindFirstChild("HumanoidRootPart")
+	if not ethourahRoot then return false, "NPC missing" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then
+		warn(string.format(
+			"🛡️ [Security] %s attempted to CRAFT from %d studs away.",
+			player.Name, math.floor(distance)
+			))
+		return false, "Too far away!"
+	end
+
+	local recipe = RECIPES[carName]
+	if not recipe then return false, "Invalid Mythical Car" end
+
+	local uid = player.UserId
+	if InteractionLocks[uid] then return false, "Transaction in progress" end
+
+	InteractionLocks[uid] = true
+
+	local pOk, logicOk, msg = pcall(function()
+		local session = getSession(player)
+
+		if session.ActiveCrafts[carName]   then return false, "Crafting already in progress!" end
+		if session.CompletedCrafts[carName] then return false, "You already crafted this!"    end
+
+		local progress = session.CraftProgress[carName] or {}
+
+		for ingredient, requiredAmount in pairs(recipe) do
+			if ingredient == "TargetCar" or ingredient == "CraftTime" then continue end
+			local currentAmount = progress[ingredient] or 0
+			if currentAmount < requiredAmount then
+				return false, "Missing requirements!"
+			end
+		end
+
+		session.ActiveCrafts[carName] = os.time() + recipe.CraftTime
+
+		pushUpdate(player, session, "Craft")
+		safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
+
+		return true, "Success"
+	end)
+
+	InteractionLocks[uid] = nil
+
+	if not pOk then
+		warn("Mythical Shop Craft Error:", logicOk)
+		return false, "Internal System Error"
+	end
+
+	return logicOk, msg
+end
+
+-- =========================
+-- OFFLINE COMPLETION / TIMER LOOP
+-- =========================
+task.spawn(function()
+	while true do
+		task.wait(5)
+		local now = os.time()
+
+		for uid, session in pairs(PlayerSessions) do
+			local player = Players:GetPlayerByUserId(uid)
+			if not player then continue end
+
+			local dirty = false
+
+			for carName, endTime in pairs(session.ActiveCrafts) do
+				if now >= endTime then
+					session.ActiveCrafts[carName]   = nil
+					session.CompletedCrafts[carName] = true
+
+					local realToolName           = RECIPES[carName].TargetCar
+					local invokeOk, giveResult   =
+						safeInvoke(MythicalInventoryBindable, 3, "GiveTool", player, realToolName)
+
+					if invokeOk and giveResult ~= false then
+						print("✅ [MythicalShop] Granted " .. realToolName .. " to " .. player.Name)
+						dirty = true
+					else
+						warn("⚠️ [MythicalShop] Failed to grant " .. realToolName .. " to " .. player.Name)
+						-- Revert so the loop retries on the next tick
+						session.ActiveCrafts[carName]   = endTime
+						session.CompletedCrafts[carName] = nil
+					end
+				end
+			end
+
+			if dirty then
+				pushUpdate(player, session, "Complete")
+				safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
+			end
+		end
+	end
+end)
+
+-- NOTE: No Players.PlayerRemoving connection here.
+-- Session cleanup is handled exclusively by PersistenceBindable "Close",
+-- which the data handler calls after a successful save. This guarantees
+-- "Get" always sees live session data before the session is torn down.
