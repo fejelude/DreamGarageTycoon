@@ -41,7 +41,7 @@ local BLUR_SIZE = 24
 
 -- How long (seconds) the completed dialogue stays on screen before the
 -- next UI frame opens. Raise this if players can't finish reading.
-local POST_SPEAK_DELAY = 2.5   -- ← adjust this value freely
+local POST_SPEAK_DELAY = 1.2   -- ← adjust this value freely
 
 local FEEDBACK_COLORS = {
 	Success   = Color3.fromRGB(80,  200, 120),
@@ -672,7 +672,9 @@ local function UpdateCraftingUI(carName)
 		mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
 	end
 	if mainCraftBtn then
-		mainCraftBtn.Visible = isCrafting and true or allComplete
+		-- Always visible so players can click it at any time.
+		-- AttemptCraft handles the "not ready yet" response from Angelo.
+		mainCraftBtn.Visible = true
 	end
 end
 
@@ -853,6 +855,67 @@ local function AttemptCraft(carName)
 			"It is finished. The <font color='#B652FF'>" .. displayName .. "</font> is a true work of art. It should be in your inventory already.",
 			"The <font color='#B652FF'>" .. displayName .. "</font> is already there in your inventory, " .. coloredName .. ".",
 			"Construction of the <font color='#B652FF'>" .. displayName .. "</font> is done. A flawless execution. It's already there in your inventory.",
+		}), restoreToCraftingFrame)
+		return
+	end
+
+	-- ── Requirements check ────────────────────────────────────────────────────
+	-- If the player clicks Confirm before all sacrifices are done, Angelo
+	-- tells them exactly what's still missing in rich coloured text.
+	local missingItems  = {}
+	local totalMissing  = 0
+	local progress      = currentState.CraftProgress[carName] or {}
+
+	for ingredient, requiredAmount in pairs(recipe) do
+		if ingredient == "TargetCar" or ingredient == "CraftTime" then continue end
+		local current = progress[ingredient] or 0
+		local left    = requiredAmount - current
+		if left > 0 then
+			if ingredient == "Cash" then
+				table.insert(missingItems,
+					"<font color='#FFD700'>$" .. FormatCommas(left) .. "</font> Cash")
+			else
+				table.insert(missingItems,
+					"<font color='#FF6B6B'>" .. left .. "x</font> <font color='#00E5FF'>"
+						.. ingredient .. "</font>")
+			end
+			totalMissing += left
+		end
+	end
+
+	if #missingItems > 0 then
+		-- Build a compact inline list:  "3x Riva, 2x Kingston, $50,000,000 Cash"
+		local listStr = table.concat(missingItems, "<font color='#AAAAAA'>, </font>")
+
+		angeloSpeak(pickRandom({
+			-- Stern / blunt
+			"<font color='#FF4C4C'>Not yet.</font> You are still missing: "
+				.. listStr
+				.. "<font color='#f4efe6'>. Come back when the tribute is complete.</font>",
+
+			-- Disappointed mentor
+			"<font color='#FFD700'>Seriously?</font> The forge cannot be lit. You still owe me "
+				.. listStr
+				.. "<font color='#f4efe6'>. Don't waste my time until you have it all.</font>",
+
+			-- Cold and professional
+			"<font color='#00E5FF'>Incomplete.</font> The ritual requires "
+				.. listStr
+				.. "<font color='#f4efe6'>. Every piece matters — bring them all before you dare press that button again.</font>",
+
+			-- Slightly theatrical
+			"The <font color='#B652FF'>" .. displayName .. "</font>"
+				.. "<font color='#f4efe6'> is a legend. Legends demand sacrifice. You are short </font>"
+				.. listStr
+				.. "<font color='#f4efe6'>. Return when the debt is paid.</font>",
+
+			-- Direct and dismissive
+			coloredName
+				.. "<font color='#f4efe6'> you are </font><font color='#FF4C4C'>"
+				.. totalMissing .. " sacrifice" .. (totalMissing == 1 and "" or "s")
+				.. "</font><font color='#f4efe6'> short. Still need: </font>"
+				.. listStr
+				.. "<font color='#f4efe6'>.</font>",
 		}), restoreToCraftingFrame)
 		return
 	end
