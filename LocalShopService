@@ -6,16 +6,16 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Players = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
 
 -- =========================
 -- CONFIG
 -- =========================
 local CAR_WEIGHTS = {Delta = 50, Iva = 20, Atom = 15, Windsor = 9, Senator = 5, Riva = 1}
-local ALWAYS_STOCK = {Delta = true, Iva = true}
+local ALWAYS_STOCK = {} -- Disabled: nothing guaranteed, same as other shops
 
 local RESTOCK_INTERVAL = 300
 local PURCHASE_COOLDOWN = 0.5
+local MAX_STOCK = 1 -- Strictly 1 available per restock, same as Uncommon/Rare/Epic
 
 -- =========================
 -- MODULES (require once)
@@ -42,10 +42,10 @@ local function getRemote(name, className)
 	return r
 end
 
-local RemoteOpen = getRemote("OpenLocalShop", "RemoteEvent")         -- client -> server (optional)
-local RemoteUpdate = getRemote("ShopUpdate", "RemoteEvent")          -- server -> client
-local FuncGetState = getRemote("GetShopState", "RemoteFunction")     -- client -> server
-local FuncBuyCar = getRemote("BuyLocalCar", "RemoteFunction")        -- client -> server
+local RemoteOpen = getRemote("OpenLocalShop", "RemoteEvent")
+local RemoteUpdate = getRemote("ShopUpdate", "RemoteEvent")
+local FuncGetState = getRemote("GetShopState", "RemoteFunction")
+local FuncBuyCar = getRemote("BuyLocalCar", "RemoteFunction")
 
 -- =========================
 -- BINDABLES (Server Communication)
@@ -57,7 +57,6 @@ if not RerollBindable then
 	RerollBindable.Parent = ServerStorage
 end
 
--- ✅ NEW: Persistence Interface for TycoonDataHandler
 local PersistenceBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
 if not PersistenceBindable then
 	PersistenceBindable = Instance.new("BindableFunction")
@@ -68,9 +67,9 @@ end
 -- =========================
 -- STATE
 -- =========================
-local PlayerSessions = {}       -- [userId] = { SeedVersion, LocalSeed, Purchased, Cache }
-local PurchaseLocks = {}        -- [userId] = true/nil
-local LastPurchaseTime = {}     -- [userId] = os.clock()
+local PlayerSessions = {}
+local PurchaseLocks = {}
+local LastPurchaseTime = {}
 
 local function normalizePurchased(raw)
 	if type(raw) ~= "table" then return {} end
@@ -84,7 +83,7 @@ local function normalizePurchased(raw)
 end
 
 -- =========================
--- TIMEOUT UTILITY (Upgraded to prevent "massive error" crashes)
+-- TIMEOUT UTILITY
 -- =========================
 local function safeInvoke(bindable, timeout, ...)
 	local args = table.pack(...)
@@ -110,55 +109,10 @@ local function safeInvoke(bindable, timeout, ...)
 end
 
 -- =========================
--- TOOL TAGGING + PERSISTENT ID
--- =========================
-local PERSIST_ID_NAME = "__ShopToolId"
-
-local function setPersistentToolId(tool, toolId)
-	tool:SetAttribute("ToolId", toolId)
-	local marker = tool:FindFirstChild(PERSIST_ID_NAME)
-	if not marker then
-		marker = Instance.new("StringValue")
-		marker.Name = PERSIST_ID_NAME
-		marker.Parent = tool
-	end
-	marker.Value = toolId
-end
-
-local function getPersistentToolId(tool)
-	local marker = tool:FindFirstChild(PERSIST_ID_NAME)
-	if marker and marker:IsA("StringValue") then
-		return marker.Value
-	end
-	return tool:GetAttribute("ToolId")
-end
-
-local function tagIssued(tool, toolId)
-	if not tool then return end
-	tool:SetAttribute("IssuedByServer", true)
-	tool:SetAttribute("IssuedAt", os.time())
-	tool:SetAttribute("IssuedId", HttpService:GenerateGUID(false))
-	tool.CanBeDropped = false
-	setPersistentToolId(tool, toolId)
-end
-
--- =========================
 -- SHOP LOGIC
 -- =========================
 local function getGlobalSeedID()
 	return math.floor(os.time() / RESTOCK_INTERVAL)
-end
-
-local function calculateStockForCar(carName, rng)
-	local weight = CAR_WEIGHTS[carName] or 0
-	local limit = 1
-	if rng:NextInteger(1, 100) <= weight then
-		limit += 1
-		if limit == 2 and rng:NextInteger(1, 100) <= math.ceil(weight * 0.5) then
-			limit += 1
-		end
-	end
-	return limit
 end
 
 local function generateStockConfiguration(seedValue)
@@ -166,49 +120,34 @@ local function generateStockConfiguration(seedValue)
 	local featuredFlags = {}
 	local stockLimits = {}
 
-	for name in pairs(ALWAYS_STOCK) do
-		featuredFlags[name] = true
-		stockLimits[name] = calculateStockForCar(name, rng)
-	end
-
 	local poolKeys = {}
 	local poolWeights = {}
 	local totalWeight = 0
 	for name, weight in pairs(CAR_WEIGHTS) do
-		if not ALWAYS_STOCK[name] then
-			table.insert(poolKeys, name)
-			poolWeights[name] = weight
-			totalWeight += weight
-		end
+		table.insert(poolKeys, name)
+		poolWeights[name] = weight
+		totalWeight += weight
 	end
 
 	if totalWeight <= 0 or #poolKeys == 0 then
 		return { Featured = featuredFlags, Limits = stockLimits }
 	end
 
-	local r = rng:NextInteger(1, 100)
-	local targetCount = (r > 90 and 3) or (r > 55 and 2) or 1
-	local pickedCount = 0
-	local safety = 0
-
-	while pickedCount < targetCount and safety < 50 do
-		safety += 1
-		local roll = rng:NextInteger(1, totalWeight)
-		local current = 0
-		local picked = nil
-		for _, car in ipairs(poolKeys) do
-			current += poolWeights[car]
-			if roll <= current then
-				picked = car
-				break
-			end
+	-- Pick exactly 1 car based on weights, same as Uncommon/Rare/Epic
+	local roll = rng:NextInteger(1, totalWeight)
+	local current = 0
+	local picked = nil
+	for _, car in ipairs(poolKeys) do
+		current += poolWeights[car]
+		if roll <= current then
+			picked = car
+			break
 		end
+	end
 
-		if picked and not featuredFlags[picked] then
-			featuredFlags[picked] = true
-			stockLimits[picked] = calculateStockForCar(picked, rng)
-			pickedCount += 1
-		end
+	if picked then
+		featuredFlags[picked] = true
+		stockLimits[picked] = MAX_STOCK
 	end
 
 	return { Featured = featuredFlags, Limits = stockLimits }
@@ -244,7 +183,7 @@ local function getSession(player)
 	if session.SeedVersion ~= currentGlobalID then
 		session.SeedVersion = currentGlobalID
 		session.LocalSeed = nil
-		session.Purchased = {} -- Reset purchases on new rotation
+		session.Purchased = {}
 		session.Cache = generateStockConfiguration(session.SeedVersion)
 		didReset = true
 	end
@@ -286,7 +225,12 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 	if action == "Load" then
 		local session, didReset = getSession(player)
 		if type(data) == "table" then
-			if data.SeedVersion and data.SeedVersion ~= session.SeedVersion then
+			-- FIX: Removed the `data.SeedVersion and` short-circuit guard.
+			-- Previously, if data.SeedVersion was nil (old save format), the condition
+			-- evaluated to false and fell through to the else block, incorrectly restoring
+			-- stale purchases from a previous rotation into the current one.
+			-- Now nil SeedVersion correctly triggers a reset, same as a mismatched version.
+			if data.SeedVersion ~= session.SeedVersion then
 				session.Purchased = {}
 				session.LocalSeed = nil
 				session.Cache = generateStockConfiguration(session.SeedVersion)
@@ -313,7 +257,6 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 		end
 
 	elseif action == "Get" then
-		-- ✅ FIX: Initialize session if it doesn't exist to prevent Datastore Wipe / Restock Bug
 		local session, _ = getSession(player)
 		return {
 			SeedVersion = session.SeedVersion,
@@ -375,7 +318,7 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		local toolSource = toolsFolder and (toolsFolder:FindFirstChild(carName) or toolsFolder:FindFirstChild(carName .. " Item"))
 		if not toolSource then return false, "System Error: Tool Missing" end
 
-		local realToolName = toolSource.Name 
+		local realToolName = toolSource.Name
 
 		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 		if not TycoonAdminAPI then
@@ -436,8 +379,13 @@ task.spawn(function()
 			lastGlobalID = currentID
 			print("🔄 GLOBAL SHOP ROTATION")
 			for _, player in ipairs(Players:GetPlayers()) do
-				local session, didReset = getSession(player)
-				if didReset then pushUpdate(player, session, "Auto") end
+				-- FIX: Always push the update to all players on rotation, regardless of didReset.
+				-- Previously, if TycoonDataHandler's autosave called getSession() just before
+				-- this loop ran, it would silently reset the session (didReset=true internally)
+				-- and then this loop would see didReset=false and skip pushUpdate entirely,
+				-- leaving clients with a permanently stale UI showing the old (possibly sold-out) car.
+				local session = getSession(player)
+				pushUpdate(player, session, "Auto")
 			end
 		end
 	end
