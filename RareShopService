@@ -1,17 +1,6 @@
-v-- Purpose: Handles Rare Car Shop logic. Strictly 1 car, 1 stock, every 2 hours.
+-- Purpose: Handles Rare Car Shop logic. Strictly 1 car, 1 stock, every 2 hours.
 -- Runs on: Server
 -- Location: ServerScriptService > RareShopService
--- Dependencies: ReplicatedStorage.CarStats, ServerStorage.TycoonAdminAPI
--- Public API: None (Event/Bindable driven)
--- Networking: OpenRareShop, RareShopUpdate, GetRareShopState, BuyRareCar, JacobPurchaseFeedback
--- Security: Server authority on cash, strict 1-stock limits, debounce locks, and pool validation.
--- Performance: Deterministic global rotation (no heavy per-player RNG loops). O(1) weight resolution.
--- Notes: Fully isolated from Common/Uncommon shops to prevent DataStore and timer overlaps.
---
--- FIX: Removed dead top-level JacobFeedback variable.
---      Previously the remote was created at the top but never used — FuncBuyCar called
---      getRemote() again inline, creating a second lookup on every purchase. Now the
---      top-level variable is used directly inside FuncBuyCar.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage     = game:GetService("ServerStorage")
@@ -19,12 +8,12 @@ local Players           = game:GetService("Players")
 local HttpService       = game:GetService("HttpService")
 
 -- =========================
--- RARE CONFIG (EXTREME RARITY)
+-- RARE CONFIG
 -- =========================
 local CAR_WEIGHTS    = { Maverick = 79, Javelin = 15, Stuttgart = 5, Velocity = 1 }
 local ALWAYS_STOCK   = {}
 
-local RESTOCK_INTERVAL        = 7200  -- 2 hours
+local RESTOCK_INTERVAL        = 7200
 local PURCHASE_COOLDOWN       = 1.0
 local MAX_STOCK               = 1
 local MAX_INTERACTION_DISTANCE = 20
@@ -35,7 +24,7 @@ local MAX_INTERACTION_DISTANCE = 20
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 
 -- =========================
--- REMOTES (ISOLATED)
+-- REMOTES
 -- =========================
 local Remotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
 if not Remotes then
@@ -58,10 +47,10 @@ local RemoteOpen    = getRemote("OpenRareShop",          "RemoteEvent")
 local RemoteUpdate  = getRemote("RareShopUpdate",        "RemoteEvent")
 local FuncGetState  = getRemote("GetRareShopState",      "RemoteFunction")
 local FuncBuyCar    = getRemote("BuyRareCar",            "RemoteFunction")
-local JacobFeedback = getRemote("JacobPurchaseFeedback", "RemoteEvent")  -- used in FuncBuyCar below
+local JacobFeedback = getRemote("JacobPurchaseFeedback", "RemoteEvent")
 
 -- =========================
--- BINDABLES (ISOLATED)
+-- BINDABLES
 -- =========================
 local RerollBindable = ServerStorage:FindFirstChild("RareShopRerollFunction")
 if not RerollBindable then
@@ -235,7 +224,10 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 	if action == "Load" then
 		local session, didReset = getSession(player)
 		if type(data) == "table" then
-			if data.SeedVersion and data.SeedVersion ~= session.SeedVersion then
+			-- FIX: Removed the `data.SeedVersion and` short-circuit guard.
+			-- nil SeedVersion (old save format) now correctly triggers a reset
+			-- instead of falling through and restoring stale purchases.
+			if data.SeedVersion ~= session.SeedVersion then
 				session.Purchased = {}
 				session.LocalSeed = nil
 				session.Cache     = generateStockConfiguration(session.SeedVersion)
@@ -376,7 +368,6 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
 
-		-- FIX: use the module-level JacobFeedback reference instead of re-calling getRemote
 		JacobFeedback:FireClient(player, carName)
 
 		task.spawn(function()
@@ -419,8 +410,11 @@ task.spawn(function()
 			lastGlobalID = currentID
 			print("🔄 [RareShop] GLOBAL ROTATION")
 			for _, player in ipairs(Players:GetPlayers()) do
-				local session, didReset = getSession(player)
-				if didReset then pushUpdate(player, session, "Auto") end
+				-- FIX: Always push to all players on rotation, regardless of didReset.
+				-- Autosave calling getSession() before this loop can silently consume
+				-- didReset=true, causing this loop to skip pushUpdate and leave clients stale.
+				local session = getSession(player)
+				pushUpdate(player, session, "Auto")
 			end
 		end
 	end
