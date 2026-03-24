@@ -1,11 +1,6 @@
 -- Purpose: Handles Uncommon Car Shop logic. Strictly 1 car, 1 stock, every 30 minutes. Includes Pre-Flight Validation.
 -- Runs on: Server
 -- Location: ServerScriptService > UncommonShopService
--- Dependencies: ReplicatedStorage.CarStats, ServerStorage.TycoonAdminAPI, ServerStorage.CarTools
--- Public API: None (Event/Bindable driven)
--- Networking: OpenUncommonShop, UncommonShopUpdate, GetUncommonShopState, BuyUncommonCar, DarrelPurchaseFeedback
--- Security: Server authority on cash, strict 1-stock limits, debounce locks, strict NPC proximity checks, and startup validation.
--- Performance: O(1) lookups for shop state. Caches generated seed tables.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
@@ -13,18 +8,18 @@ local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 
 -- =========================
--- UNCOMMON CONFIG (BRUTAL RARITY)
+-- UNCOMMON CONFIG
 -- =========================
 local CAR_WEIGHTS = {Raiju = 50, Ironclad = 28, Vapid = 14, Galadriel = 6, Kingston = 2}
-local ALWAYS_STOCK = {} -- DISABLED: Nothing is guaranteed
+local ALWAYS_STOCK = {}
 
-local RESTOCK_INTERVAL = 1800 -- 30 Minutes (1800 seconds)
-local PURCHASE_COOLDOWN = 1.0 -- Cooldown to prevent spam
-local MAX_STOCK = 1 -- Only 1 available per restock
-local MAX_INTERACTION_DISTANCE = 20 -- Max studs from Darrel to interact/buy
+local RESTOCK_INTERVAL = 1800
+local PURCHASE_COOLDOWN = 1.0
+local MAX_STOCK = 1
+local MAX_INTERACTION_DISTANCE = 20
 
 -- =========================
--- 🚨 PRE-FLIGHT HIERARCHY VALIDATION
+-- PRE-FLIGHT VALIDATION
 -- =========================
 local function validateDependencies()
 	local missing = {}
@@ -34,14 +29,14 @@ local function validateDependencies()
 	if not ServerStorage:FindFirstChild("CarTools") then table.insert(missing, "ServerStorage.CarTools (Folder)") end
 
 	local npcs = workspace:FindFirstChild("NPCS")
-	if not npcs then 
-		table.insert(missing, "workspace.NPCS (Folder)") 
+	if not npcs then
+		table.insert(missing, "workspace.NPCS (Folder)")
 	else
 		if not npcs:FindFirstChild("Darrel") then table.insert(missing, "workspace.NPCS.Darrel (Model)") end
 	end
 
 	if #missing > 0 then
-		warn("⚠️ [UNCOMMON SHOP FATAL ERROR] Missing critical dependencies! The shop will break when players try to buy.")
+		warn("⚠️ [UNCOMMON SHOP FATAL ERROR] Missing critical dependencies!")
 		for _, err in ipairs(missing) do
 			warn("   -> " .. err)
 		end
@@ -50,7 +45,6 @@ local function validateDependencies()
 	end
 end
 
--- Run validation immediately on startup
 validateDependencies()
 
 -- =========================
@@ -59,7 +53,7 @@ validateDependencies()
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 
 -- =========================
--- REMOTES (ISOLATED)
+-- REMOTES
 -- =========================
 local Remotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
 if not Remotes then
@@ -78,13 +72,13 @@ local function getRemote(name, className)
 	return r
 end
 
-local RemoteOpen = getRemote("OpenUncommonShop", "RemoteEvent")         
-local RemoteUpdate = getRemote("UncommonShopUpdate", "RemoteEvent")         
-local FuncGetState = getRemote("GetUncommonShopState", "RemoteFunction")     
-local FuncBuyCar = getRemote("BuyUncommonCar", "RemoteFunction")        
+local RemoteOpen = getRemote("OpenUncommonShop", "RemoteEvent")
+local RemoteUpdate = getRemote("UncommonShopUpdate", "RemoteEvent")
+local FuncGetState = getRemote("GetUncommonShopState", "RemoteFunction")
+local FuncBuyCar = getRemote("BuyUncommonCar", "RemoteFunction")
 
 -- =========================
--- BINDABLES (ISOLATED)
+-- BINDABLES
 -- =========================
 local RerollBindable = ServerStorage:FindFirstChild("UncommonShopRerollFunction")
 if not RerollBindable then
@@ -103,9 +97,9 @@ end
 -- =========================
 -- STATE
 -- =========================
-local PlayerSessions = {}       
-local PurchaseLocks = {}        
-local LastPurchaseTime = {}     
+local PlayerSessions = {}
+local PurchaseLocks = {}
+local LastPurchaseTime = {}
 
 local function normalizePurchased(raw)
 	if type(raw) ~= "table" then return {} end
@@ -145,7 +139,7 @@ local function safeInvoke(bindable, timeout, ...)
 end
 
 -- =========================
--- SHOP LOGIC (STRICT 1 CAR, 1 STOCK)
+-- SHOP LOGIC
 -- =========================
 local function getGlobalSeedID()
 	return math.floor(os.time() / RESTOCK_INTERVAL)
@@ -155,7 +149,6 @@ local function generateStockConfiguration(seedValue)
 	local rng = Random.new(seedValue)
 	local featuredFlags = {}
 	local stockLimits = {}
-
 	local poolKeys = {}
 	local poolWeights = {}
 	local totalWeight = 0
@@ -170,7 +163,6 @@ local function generateStockConfiguration(seedValue)
 		return { Featured = featuredFlags, Limits = stockLimits }
 	end
 
-	-- Pick EXACTLY 1 car based on weights
 	local roll = rng:NextInteger(1, totalWeight)
 	local current = 0
 	local picked = nil
@@ -182,10 +174,9 @@ local function generateStockConfiguration(seedValue)
 		end
 	end
 
-	-- Apply the strict limits
 	if picked then
 		featuredFlags[picked] = true
-		stockLimits[picked] = MAX_STOCK -- Set to exactly 1
+		stockLimits[picked] = MAX_STOCK
 	end
 
 	return { Featured = featuredFlags, Limits = stockLimits }
@@ -221,7 +212,7 @@ local function getSession(player)
 	if session.SeedVersion ~= currentGlobalID then
 		session.SeedVersion = currentGlobalID
 		session.LocalSeed = nil
-		session.Purchased = {} 
+		session.Purchased = {}
 		session.Cache = generateStockConfiguration(session.SeedVersion)
 		didReset = true
 	end
@@ -263,7 +254,10 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 	if action == "Load" then
 		local session, didReset = getSession(player)
 		if type(data) == "table" then
-			if data.SeedVersion and data.SeedVersion ~= session.SeedVersion then
+			-- FIX: Removed the `data.SeedVersion and` short-circuit guard.
+			-- nil SeedVersion (old save format) now correctly triggers a reset
+			-- instead of falling through and restoring stale purchases.
+			if data.SeedVersion ~= session.SeedVersion then
 				session.Purchased = {}
 				session.LocalSeed = nil
 				session.Cache = generateStockConfiguration(session.SeedVersion)
@@ -305,7 +299,7 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 end
 
 -- =========================
--- CLIENT REQUESTS (SECURITY HANDLERS ADDED)
+-- CLIENT REQUESTS
 -- =========================
 FuncGetState.OnServerInvoke = function(player)
 	local session, didReset = getSession(player)
@@ -316,10 +310,8 @@ RemoteOpen.OnServerEvent:Connect(function(player)
 	local char = player.Character
 	if not char or not char.PrimaryPart then return end
 
-	-- 1. Locate Darrel
 	local npcs = workspace:FindFirstChild("NPCS")
 	local darrel = npcs and npcs:FindFirstChild("Darrel")
-
 	if not darrel then
 		warn("⚠️ [Security] Darrel NPC not found in workspace!")
 		return
@@ -328,16 +320,12 @@ RemoteOpen.OnServerEvent:Connect(function(player)
 	local darrelRoot = darrel:FindFirstChild("HumanoidRootPart")
 	if not darrelRoot then return end
 
-	-- 2. Validate Distance (Exploit Prevention to OPEN ui)
 	local distance = (char.PrimaryPart.Position - darrelRoot.Position).Magnitude
-
 	if distance <= MAX_INTERACTION_DISTANCE then
-		-- 3. Authorized: Push the shop state and tell the client UI to open
 		local session = getSession(player)
 		pushUpdate(player, session, "Open")
 		RemoteOpen:FireClient(player)
 	else
-		-- 4. Unauthorized: Player is exploiting remotes
 		warn(string.format("🛡️ [Security] %s attempted to open Uncommon Shop from %d studs away.", player.Name, math.floor(distance)))
 	end
 end)
@@ -346,14 +334,12 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 	if typeof(carName) ~= "string" then return false, "Invalid Car" end
 	if not player or not player.Parent then return false, "Player missing" end
 
-	-- 🛡️ SECURITY: PROXIMITY CHECK (PREVENT REMOTE EXPLOIT BUYING)
 	local char = player.Character
 	if not char or not char.PrimaryPart then return false, "Character missing" end
 
 	local npcs = workspace:FindFirstChild("NPCS")
 	local darrel = npcs and npcs:FindFirstChild("Darrel")
 	local darrelRoot = darrel and darrel:FindFirstChild("HumanoidRootPart")
-
 	if not darrelRoot then return false, "NPC missing" end
 
 	local distance = (char.PrimaryPart.Position - darrelRoot.Position).Magnitude
@@ -361,9 +347,7 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		warn(string.format("🛡️ [Security] %s attempted to BUY from %d studs away.", player.Name, math.floor(distance)))
 		return false, "Too far away!"
 	end
-	-- 🛡️ END SECURITY CHECK
 
-	-- SECURITY: Ensure the car requested is actually part of the Uncommon pool
 	if not CAR_WEIGHTS[carName] and not ALWAYS_STOCK[carName] then
 		return false, "Invalid Uncommon Car"
 	end
@@ -398,7 +382,7 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		local toolSource = toolsFolder and (toolsFolder:FindFirstChild(carName) or toolsFolder:FindFirstChild(carName .. " Item"))
 		if not toolSource then return false, "System Error: Tool Missing" end
 
-		local realToolName = toolSource.Name 
+		local realToolName = toolSource.Name
 
 		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 		if not TycoonAdminAPI then
@@ -412,11 +396,9 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		end
 
 		wallet.Value -= carData.Price
-
 		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
 
-		-- 📣 NEW: TELL DARREL'S CLIENT SCRIPT ABOUT THE PURCHASE
 		local feedbackRemote = getRemote("DarrelPurchaseFeedback", "RemoteEvent")
 		feedbackRemote:FireClient(player, carName)
 
@@ -463,8 +445,11 @@ task.spawn(function()
 			lastGlobalID = currentID
 			print("🔄 [UncommonShop] GLOBAL ROTATION")
 			for _, player in ipairs(Players:GetPlayers()) do
-				local session, didReset = getSession(player)
-				if didReset then pushUpdate(player, session, "Auto") end
+				-- FIX: Always push to all players on rotation, regardless of didReset.
+				-- Autosave calling getSession() before this loop can silently consume
+				-- didReset=true, causing this loop to skip pushUpdate and leave clients stale.
+				local session = getSession(player)
+				pushUpdate(player, session, "Auto")
 			end
 		end
 	end
