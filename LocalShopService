@@ -286,7 +286,7 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 	if action == "Load" then
 		local session, didReset = getSession(player)
 		if type(data) == "table" then
-			if data.SeedVersion and data.SeedVersion ~= session.SeedVersion then
+			if data.SeedVersion ~= session.SeedVersion then
 				session.Purchased = {}
 				session.LocalSeed = nil
 				session.Cache = generateStockConfiguration(session.SeedVersion)
@@ -436,8 +436,8 @@ task.spawn(function()
 			lastGlobalID = currentID
 			print("🔄 GLOBAL SHOP ROTATION")
 			for _, player in ipairs(Players:GetPlayers()) do
-				local session, didReset = getSession(player)
-				if didReset then pushUpdate(player, session, "Auto") end
+				local session = getSession(player)
+				pushUpdate(player, session, "Auto")
 			end
 		end
 	end
