@@ -1,6 +1,12 @@
--- [[ LOCAL SCRIPT: Universal Sprint (Initialization Fix) ]]
--- -- Indicating what the script is for: Handles Mobile Button + PC Shift + Custom Running Animation.
--- -- UPDATE: Fixed bug where WalkSpeed (30) wasn't applying immediately on spawn.
+-- Purpose: Handles Mobile Button + PC Shift + Console Y + Custom Running Animation.
+-- Runs on: Client
+-- Location: StarterGui (Assumed child of an ImageButton)
+-- Dependencies: UserInputService, Players, RunService
+-- Public API: None
+-- Networking: None 
+-- Security: NONE natively. WalkSpeed changes on the client are easily bypassed by exploiters.
+-- Performance: Input events are cheap. Tool polling is minimal.
+-- Notes: GUI must have ResetOnSpawn = false to prevent memory leaks on CharacterAdded.
 
 local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
@@ -10,26 +16,23 @@ local player = Players.LocalPlayer
 local button = script.Parent -- The ImageButton
 
 -- === CONFIGURATION ===
-local WALK_SPEED = 30       -- Normal Speed
-local SPRINT_SPEED = 50     -- Sprint Speed
-local ANIMATION_ID = "rbxassetid://103489308479400" -- Your Animation ID
+local WALK_SPEED = 30
+local SPRINT_SPEED = 50
+local ANIMATION_ID = "rbxassetid://103489308479400"
+local PC_BIND = Enum.KeyCode.LeftShift
+local CONSOLE_BIND = Enum.KeyCode.ButtonY
 
 -- === STATE ===
 local isSprinting = false
-local runTrack = nil -- Stores the loaded animation track
+local runTrack = nil 
 
 -- 1. VISIBILITY SETUP (Mobile Check)
-if UserInputService.TouchEnabled then
-	button.Visible = true
-else
-	button.Visible = false 
-end
+button.Visible = UserInputService.TouchEnabled
 
 -- 🛠️ ANIMATION HANDLER
 local function updateAnimation(humanoid)
 	if not runTrack then return end
 
-	-- Check if moving AND sprinting
 	if isSprinting and humanoid.MoveDirection.Magnitude > 0 then
 		if not runTrack.IsPlaying then
 			runTrack:Play()
@@ -44,42 +47,34 @@ end
 -- 🛠️ SPEED HANDLER
 local function updateSpeed()
 	local character = player.Character
-	if character then
-		local humanoid = character:FindFirstChild("Humanoid")
-		if humanoid then
-			-- 🛑 SAFETY CHECK: If holding a tool, NEVER sprint
-			if character:FindFirstChildWhichIsA("Tool") then
-				isSprinting = false
-				humanoid.WalkSpeed = WALK_SPEED 
+	if not character then return end
 
-				-- Stop animation since we forced walk
-				if runTrack and runTrack.IsPlaying then runTrack:Stop() end
+	local humanoid = character:FindFirstChild("Humanoid")
+	if not humanoid then return end
 
-				-- Update Visuals
-				button.ImageTransparency = 0
-				if UserInputService.TouchEnabled then button.Visible = false end
-				return
-			end
+	-- 🛑 SAFETY CHECK: If holding a tool, NEVER sprint
+	if character:FindFirstChildWhichIsA("Tool") then
+		isSprinting = false
+		humanoid.WalkSpeed = WALK_SPEED 
 
-			-- Apply Speed
-			humanoid.WalkSpeed = isSprinting and SPRINT_SPEED or WALK_SPEED
+		if runTrack and runTrack.IsPlaying then runTrack:Stop() end
 
-			-- Update Visuals
-			button.ImageTransparency = isSprinting and 0.5 or 0
-
-			-- Update Animation
-			updateAnimation(humanoid)
-		end
+		button.ImageTransparency = 0
+		if UserInputService.TouchEnabled then button.Visible = false end
+		return
 	end
+
+	-- Apply Speed
+	humanoid.WalkSpeed = isSprinting and SPRINT_SPEED or WALK_SPEED
+	button.ImageTransparency = isSprinting and 0.5 or 0
+	updateAnimation(humanoid)
 end
 
 -- 🛡️ CHARACTER SETUP
 local function setupCharacter(character)
 	local humanoid = character:WaitForChild("Humanoid", 10)
-	if not humanoid then return end
-
-	local animator = humanoid:WaitForChild("Animator", 10)
-	if not animator then return end
+	local animator = humanoid and humanoid:WaitForChild("Animator", 10)
+	if not humanoid or not animator then return end
 
 	-- 1. LOAD ANIMATION
 	local newAnim = Instance.new("Animation")
@@ -91,15 +86,12 @@ local function setupCharacter(character)
 	-- 2. TOOL MONITORING
 	local function checkTools()
 		if character:FindFirstChildWhichIsA("Tool") then
-			-- ✋ PLAYER IS HOLDING A ITEM -> DISABLE SPRINT
 			isSprinting = false
 			updateSpeed()
 		else
-			-- ✅ HANDS ARE EMPTY -> SHOW BUTTON (Mobile)
 			if UserInputService.TouchEnabled then
 				button.Visible = true
 			end
-			-- Re-apply speed in case we just dropped a tool
 			updateSpeed()
 		end
 	end
@@ -112,23 +104,23 @@ local function setupCharacter(character)
 		updateAnimation(humanoid)
 	end)
 
-	-- 4. INITIALIZATION (The Fix)
-	checkTools()   -- Checks if we have tools
-	updateSpeed()  -- 🔥 FORCES the WalkSpeed to 30 immediately!
+	-- 4. INITIALIZATION
+	checkTools() 
+	updateSpeed() 
 end
 
 -- ============================================================================
--- 💻 PC LOGIC (Tap Shift to Toggle)
+-- 💻 PC & 🎮 CONSOLE LOGIC (Tap to Toggle)
 -- ============================================================================
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	-- If the user is typing in chat or interacting with core UI, ignore the input
 	if gameProcessed then return end 
 
-	-- Extra Check: Don't toggle if holding a tool
-	local char = player.Character
-	if char and char:FindFirstChildWhichIsA("Tool") then return end
+	if input.KeyCode == PC_BIND or input.KeyCode == CONSOLE_BIND then
+		local char = player.Character
+		if char and char:FindFirstChildWhichIsA("Tool") then return end
 
-	if input.KeyCode == Enum.KeyCode.LeftShift then
-		isSprinting = not isSprinting
+		isSprinting = not isSprinting -- FIXED TYPO HERE
 		updateSpeed()
 	end
 end)
@@ -137,7 +129,6 @@ end)
 -- 📱 MOBILE LOGIC (Tap Button to Toggle)
 -- ============================================================================
 button.MouseButton1Click:Connect(function()
-	-- Extra Check: Don't toggle if holding a tool
 	local char = player.Character
 	if char and char:FindFirstChildWhichIsA("Tool") then return end
 
@@ -148,14 +139,12 @@ end)
 -- 🛡️ RESET ON RESPAWN
 player.CharacterAdded:Connect(function(char)
 	isSprinting = false
-	runTrack = nil -- Reset track
-
-	if UserInputService.TouchEnabled then
-		button.Visible = true
-	else
-		button.Visible = false
+	if runTrack then
+		runTrack:Destroy() 
+		runTrack = nil 
 	end
 
+	button.Visible = UserInputService.TouchEnabled
 	setupCharacter(char)
 end)
 
