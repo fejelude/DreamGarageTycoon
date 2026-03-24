@@ -41,7 +41,7 @@ local BLUR_SIZE = 24
 
 -- How long (seconds) the completed dialogue stays on screen before the
 -- next UI frame opens. Raise this if players can't finish reading.
-local POST_SPEAK_DELAY = 1.2   -- ← adjust this value freely
+local POST_SPEAK_DELAY = 2.5   -- ← adjust this value freely
 
 local FEEDBACK_COLORS = {
 	Success   = Color3.fromRGB(80,  200, 120),
