@@ -1,8 +1,13 @@
--- Purpose: Controls the UI, display, and client-side interactions for the Legendary Car Shop.
 -- Purpose: Controls the UI, display, and client-side interactions for the Mythical Car Shop.
 -- Runs on: Client
 -- Location: StarterPlayerScripts.MythicalShopController
---
+-- Dependencies: Players, ReplicatedStorage, SoundService, Lighting, TweenService, UserInputService
+-- Public API: None
+-- Networking: Invokes ShopRemotes.MythicalShop (Client -> Server)
+-- Security: Purely visual client-side checks; server remains authoritative for all transactions.
+-- Performance: Uses coroutines for typewriter effect; cancels stale jobs to prevent UI corruption.
+-- Notes: Fixes the bug where missing cash inflates the "sacrifices left" dialogue.
+
 -- FIXES (v2):
 --   • ethourahSpeak now hides ALL shop frames (mainFrame + crafting) before showing the
 --     NPC speech bubble — eliminates UI stacking/overlay.
@@ -41,7 +46,7 @@ local BLUR_SIZE = 24
 
 -- How long (seconds) the completed dialogue stays on screen before the
 -- next UI frame opens. Raise this if players can't finish reading.
-local POST_SPEAK_DELAY = 2.5   -- ← adjust this value freely
+local POST_SPEAK_DELAY = 2.5  -- ← adjust this value freely
 
 local FEEDBACK_COLORS = {
 	Success   = Color3.fromRGB(80,  200, 120),
@@ -673,7 +678,7 @@ local function UpdateCraftingUI(carName)
 	end
 	if mainCraftBtn then
 		-- Always visible so players can click it at any time.
-		-- AttemptCraft handles the "not ready yet" response from Angelo.
+		-- AttemptCraft handles the "not ready yet" response from Ethourah.
 		mainCraftBtn.Visible = true
 	end
 end
@@ -764,7 +769,12 @@ local function AttemptSacrifice(carName, ingredient)
 						and currentState.CraftProgress[carName][ing]) or 0
 					if p < req then
 						allComplete = false
-						itemsLeft   = itemsLeft + (req - p)
+						-- FIX: Treat Cash as exactly 1 requirement so it doesn't inflate the number.
+						if ing == "Cash" then
+							itemsLeft = itemsLeft + 1
+						else
+							itemsLeft = itemsLeft + (req - p)
+						end
 					end
 				end
 			end
