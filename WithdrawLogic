@@ -140,7 +140,8 @@ withdrawBtn.MouseButton1Click:Connect(function()
 
 	-- 4. PREPARE DATA
 	local amount = parseAmount(amountInput.Text) 
-	local currentBank = player.leaderstats.Cash.Value
+	local hiddenStats = player:WaitForChild("HiddenStats")
+	local currentBank = hiddenStats:WaitForChild("Cash").Value
 
 	-- 5. VALIDATION
 	if (amount <= 0) or (amount > currentBank) then

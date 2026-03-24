@@ -25,9 +25,10 @@ local activeTransactions = {}
 -- [[ 1. TRANSFER: BANK -> ATM (Remote / App) ]]
 local function TransferToATM(player, amount)
 	local leaderstats = player:FindFirstChild("leaderstats")
-	if not leaderstats then return false, "Data Error" end
+	local hiddenStats = player:FindFirstChild("HiddenStats")
+	if not leaderstats or not hiddenStats then return false, "Data Error" end
 
-	local bank = leaderstats:FindFirstChild("Cash")
+	local bank = hiddenStats:FindFirstChild("Cash")
 	local atm = leaderstats:FindFirstChild("ATMBalance")
 
 	if not bank or not atm then return false, "Missing Values" end
@@ -66,10 +67,11 @@ local function WithdrawFromATM(player, amount)
 	end
 
 	local leaderstats = player:FindFirstChild("leaderstats")
+	local hiddenStats = player:FindFirstChild("HiddenStats")
 	local atm = leaderstats and leaderstats:FindFirstChild("ATMBalance")
 	local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 
-	if not atm or not wallet then return false, "Data Error" end
+	if not atm or not wallet or not hiddenStats then return false, "Data Error" end
 
 	if atm.Value >= amount then
 		atm.Value -= amount

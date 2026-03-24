@@ -798,7 +798,8 @@ local function InitializePlayer(player)
 	}
 
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
-	local cash = Instance.new("IntValue"); cash.Name = "Cash"; cash.Parent = ls
+	local hs = Instance.new("Folder"); hs.Name = "HiddenStats"; hs.Parent = player
+	local cash = Instance.new("IntValue"); cash.Name = "Cash"; cash.Parent = hs
 	local wallet = Instance.new("IntValue"); wallet.Name = "Wallet"; wallet.Parent = ls
 	local atm = Instance.new("IntValue"); atm.Name = "ATMBalance"; atm.Parent = ls
 
