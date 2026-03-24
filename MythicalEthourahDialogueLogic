@@ -1,10 +1,12 @@
--- Purpose: Handles Camera, Dialogue Logic, and UI for Legendary Monk3yDAngelo-Cars NPC, including Inquiry and Crafting.
 -- Purpose: Handles Camera, Dialogue Logic, and UI for Mythical ethourah NPC, including Inquiry and Crafting.
 -- Runs on: Client
 -- Location: StarterPlayerScripts.MythicalEthourahDialogueLogic
 -- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
 -- Public API: UpdateMythicalEthourahDialogue (BindableEvent), EthourahShopSpeak (BindableEvent)
 -- Networking: Fires ShopRemotes.MythicalShop.RequestOpenShop (Client -> Server)
+-- Security: Purely visual client-side transitions; no server authority bypass possible here.
+-- Performance: Uses callback chaining instead of parallel yielding, preventing race conditions.
+-- Notes: Fixes premature UI closing on Leave by waiting for typewriting to finish before starting the leave delay.
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
@@ -424,10 +426,13 @@ local function startInteraction(npcModel)
 			if dialogueLabel then
 				local coloredRedName = "<font color='" .. ETHOURAH_COLOR .. "'>@" .. player.Name .. "</font>"
 				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Aight slide out then. Come back when you ready to get serious </font>" .. coloredRedName .. "."
-				typewrite(dialogueLabel, goodbyeMsg)
+				typewrite(dialogueLabel, goodbyeMsg, function()
+					task.wait(LEAVE_DELAY)
+					stopInteraction()
+				end)
+			else
+				stopInteraction()
 			end
-			task.wait(LEAVE_DELAY)
-			stopInteraction()
 		end)
 
 		connectBtn(BTN_INQUIRY_ID, function()
