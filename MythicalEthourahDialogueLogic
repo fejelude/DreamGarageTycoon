@@ -50,7 +50,7 @@ local SHOP_OPEN_DELAY_SECONDS = 2.0
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
 local HOVER_SOUND_ID = "rbxassetid://6895079853"
 local CLICK_SOUND_ID = "rbxassetid://9083627113"
-local CRAFT_OPEN_MESSAGE = "Select a chassis. We require great sacrifices to build these."
+local CRAFT_OPEN_MESSAGE = "Aight pick a chassis. You already know what it costs to build with me."
 
 local HOVER_SCALE = 1.1
 local CLICK_SCALE = 0.9
@@ -345,10 +345,10 @@ local function animateButton(btn)
 end
 
 local GREETING_DIALOGUES = {
-	"Welcome to the inner circle, ",
-	"Looking to craft something extraordinary, ",
-	"The mythic cars await, ",
-	"I've been expecting you, "
+	"Aye on god you already know who runs this, step up ",
+	"King of kings right here. What you need from me ",
+	"You came to the right spot no cap. Wassup ",
+	"Only the real ones pull up to me. What it is "
 }
 
 local function startInteraction(npcModel)
@@ -423,7 +423,7 @@ local function startInteraction(npcModel)
 			setButtonsState(false)
 			if dialogueLabel then
 				local coloredRedName = "<font color='" .. ETHOURAH_COLOR .. "'>@" .. player.Name .. "</font>"
-				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Return when you are ready, </font>" .. coloredRedName .. "!"
+				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Aight slide out then. Come back when you ready to get serious </font>" .. coloredRedName .. "."
 				typewrite(dialogueLabel, goodbyeMsg)
 			end
 			task.wait(LEAVE_DELAY)
@@ -433,8 +433,7 @@ local function startInteraction(npcModel)
 		connectBtn(BTN_INQUIRY_ID, function()
 			setButtonsState(false)
 			if dialogueLabel then
-				local coloredEthourah = "<font color='" .. ETHOURAH_COLOR .. "'>Ethourah</font>"
-				local loreText = "To forge a Mythical vehicle, you must offer sacrifices. \nBring me specific cars and rare materials, and I will build you a masterpiece."
+				local loreText = "You wanna know how this works? Aight listen up. You bring me the rides and the materials I ask for and I build you something nobody else got. No sacrifices no car. Simple as that. I don't do handouts."
 				typewrite(dialogueLabel, loreText, function()
 					setButtonsState(true)
 				end)
@@ -494,80 +493,80 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	local msg = "..."
 
 	if actionType == "MenuOpen" then
-		local msgs = {CRAFT_OPEN_MESSAGE, "Take your pick. Both are engineering marvels.", "What do you have your eye on?"}
+		local msgs = {CRAFT_OPEN_MESSAGE, "Both of these are certified hits. Pick your poison.", "So what you eyeing? Talk to me."}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "SelectCar" then
 		local msgs = {
-			"Ah, the <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font>. A beautiful choice.",
-			"The <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font>? You have good taste.",
-			"Excellent selection. Let's look at what is required."
+			"Oh you went with the <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font>. Solid pick on god.",
+			"The <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font>? Yeah you got taste fr.",
+			"Bet. Let me show you what I need to make that <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font> happen."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "ConfirmSacrifice" then
-		local msgs = {"Are you certain? There is no going back once given.", "Ready to let go of this piece?", "Confirm the sacrifice. It is necessary."}
+		local msgs = {"You sure about this? Once I take it it's gone no cap.", "You really bout to let that go? Say less.", "Aight confirm it. No crying later."}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CancelSacrifice" then
-		local msgs = {"Cold feet? I understand.", "Take your time. This isn't a decision to be rushed.", "Perhaps later, then."}
+		local msgs = {"Aight you shook. Come back when you ready.", "No pressure. Take your time and think about it.", "That's cool I'll be right here when you make up your mind."}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "NotEnough" then
 		local msgs = {
-			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> in you.",
-			"Dude, you dont even have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. Come back when you actually have it.",
-			"You are short on resources. I need the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> to proceed.",
-			"I don't work for free. Bring me the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> first."
+			"Bro you really came here without the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>? Nah go get it first.",
+			"You don't even have the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. Stop wasting my time fr.",
+			"I need the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> and you ain't got it. Come back when you do.",
+			"I don't build for free. Go cop the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> and then we can talk."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "SacrificeSuccess" then
 		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"The <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> has been stripped for parts. You still have <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more sacrifices to go.",
-			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more requirements and we can begin.",
-			"Alright " .. coloredName .. " thanks for the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. We are getting closer, just <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more to go.",
-			"Good. The chassis grows stronger. <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more pieces needed.",
-			"Another piece of the puzzle. Just <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more to go before the forge is ready."
+			"The <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> got stripped for parts. You still on <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more sacrifices tho.",
+			"Sacrifice accepted no cap. Bring me <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more and we cooking.",
+			"Bet " .. coloredName .. " good looking on the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. We almost there just <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more to go.",
+			"The build gettin stronger. <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more pieces and we lit.",
+			"Another one checked off. <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more before I fire up the forge."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyDone" then
-		local msgs = {"We already have enough of that.", "That requirement is already fulfilled.", "Save it. We don't need any more of those."}
+		local msgs = {"We already got enough of that on god.", "That requirement been handled. Don't need no more.", "Chill we good on that already."}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AllComplete" then
 		local msgs = {
-			"That was the last one! The <font color='#50C878'>sacrifices are complete</font>. Ready to go?",
-			"Every piece is finally in place. Click confirm, and I will begin the build.",
-			"We have everything we need. Nice.",
-			"All requirements met. The <font color='#00E5FF'>" .. extraInfo.carName .. "</font> is ready to be born. Tell me when to start crafting... when you're ready."
+			"That was the last one no cap! The <font color='#50C878'>sacrifices are complete</font>. You ready to run it?",
+			"Everything locked in. Hit confirm and I start building fr.",
+			"We got everything we need. Let's get it.",
+			"All requirements met on god. The <font color='#00E5FF'>" .. extraInfo.carName .. "</font> is ready to be born. Just say the word."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CraftStarted" then
 		local msgs = {
-			"Alright im working on making your <font color='#B652FF'>" .. extraInfo.carName .. "</font> be back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
-			"Crafting underway homie, The <font color='#B652FF'>" .. extraInfo.carName .. "</font> will be ready soon."
+			"Aight ima get started on your <font color='#B652FF'>" .. extraInfo.carName .. "</font> fr. Pull up in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"We cooking homie. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> gonna be ready real soon."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyCrafted" then
 		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"It is finished. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> is a true work of art. It should be in your inventory already.",
-			"The <font color='#B652FF'>" .. extraInfo.carName .. "</font> its already there on your inventory, a " .. coloredName .. ".",
-			"Construction of the <font color='#B652FF'>" .. extraInfo.carName .. "</font> is done. A flawless execution. it's already there in your inventory.."
+			"It's done. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> is a masterpiece on god. Check your inventory.",
+			"The <font color='#B652FF'>" .. extraInfo.carName .. "</font> already sitting in your inventory " .. coloredName .. ".",
+			"That <font color='#B652FF'>" .. extraInfo.carName .. "</font> build is complete. Flawless execution. Go check your inventory."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CraftComplete" then
 		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"It is finished. The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is a true work of art. It should be in your inventory already.",
-			"The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> its already there on your inventory, a " .. coloredName .. ".",
-			"Construction of the <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is done. A flawless execution. it's already there in your inventory.."
+			"It's done. The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is a masterpiece on god. Check your inventory.",
+			"The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> already sitting in your inventory " .. coloredName .. ".",
+			"That <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> build is complete. Flawless execution. Go check your inventory."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyCrafting" then
 		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		local msgs = {
-			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
-			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. extraInfo.carName .. "</font>. Check back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
-			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. extraInfo.carName .. "</font> needs <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> more time, come back later alright?",
-			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
-			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> before the build is complete."
+			"Chill fam you can't rush me. I'm already on the <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now. Come back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"Bro I'm working on your <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now " .. coloredName .. ". Check back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"You can't rush perfection " .. coloredName .. ". The <font color='#B652FF'>" .. extraInfo.carName .. "</font> needs <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> more. Be patient.",
+			"I'm on it already. Pull up in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"The forge still hot. You gotta wait exactly <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> before it's done."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	end
@@ -701,105 +700,98 @@ EthourahShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	local msg = "..."
 
 	if actionType == "MenuOpen" then
-		local msgs = {CRAFT_OPEN_MESSAGE, "Take your pick. Both are engineering marvels.", "What do you have your eye on?"}
+		local msgs = {CRAFT_OPEN_MESSAGE, "Both of these are certified hits. Pick your poison.", "So what you eyeing? Talk to me."}
 		msg = msgs[math.random(1, #msgs)]
 
 	elseif actionType == "SelectCar" then
 		local display = type(extraInfo) == "string" and extraInfo or (extraInfo and extraInfo.carName or "that car")
 		local msgs = {
-			"Ah, the <font color='#00E5FF'>" .. display .. "</font>. A beautiful choice.",
-			"The <font color='#00E5FF'>" .. display .. "</font>? You have good taste.",
-			"Excellent selection. Let's look at what is required."
+			"Oh you went with the <font color='#00E5FF'>" .. display .. "</font>. Solid pick on god.",
+			"The <font color='#00E5FF'>" .. display .. "</font>? Yeah you got taste fr.",
+			"Bet. Let me show you what I need to make that <font color='#00E5FF'>" .. display .. "</font> happen."
 		}
 		msg = msgs[math.random(1, #msgs)]
 
 	elseif actionType == "ConfirmSacrifice" then
-		local msgs = {"Are you certain? There is no going back once given.", "Ready to let go of this piece?", "Confirm the sacrifice. It is necessary."}
+		local msgs = {"You sure about this? Once I take it it's gone no cap.", "You really bout to let that go? Say less.", "Aight confirm it. No crying later."}
 		msg = msgs[math.random(1, #msgs)]
 
 	elseif actionType == "CancelSacrifice" then
-		local msgs = {"Cold feet? I understand.", "Take your time. This isn't a decision to be rushed.", "Perhaps later, then."}
+		local msgs = {"Aight you shook. Come back when you ready.", "No pressure. Take your time and think about it.", "That's cool I'll be right here when you make up your mind."}
 		msg = msgs[math.random(1, #msgs)]
 
 	elseif actionType == "AlreadyDone" then
-		local msgs = {"We already have enough of that.", "That requirement is already fulfilled.", "Save it. We don't need any more of those."}
+		local msgs = {"We already got enough of that on god.", "That requirement been handled. Don't need no more.", "Chill we good on that already."}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🔴 Missing item / insufficient cash
 	elseif actionType == "NotEnough" then
 		local itemName = extraInfo and extraInfo.itemName or "that"
 		local msgs = {
-			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. itemName .. "</font> in youf.",
-			"Dude, you dont even have the <font color='#00E5FF'>" .. itemName .. "</font>. Come back when you actually have it.",
-			"You are short on resources. I need the <font color='#00E5FF'>" .. itemName .. "</font> to proceed.",
-			"I don't work for free. Bring me the <font color='#00E5FF'>" .. itemName .. "</font> first."
+			"Bro you really came here without the <font color='#00E5FF'>" .. itemName .. "</font>? Nah go get it first.",
+			"You don't even have the <font color='#00E5FF'>" .. itemName .. "</font>. Stop wasting my time fr.",
+			"I need the <font color='#00E5FF'>" .. itemName .. "</font> and you ain't got it. Come back when you do.",
+			"I don't build for free. Go cop the <font color='#00E5FF'>" .. itemName .. "</font> and then we can talk."
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🟡 Sacrifice accepted, more still needed
 	elseif actionType == "SacrificeSuccess" then
 		local itemName  = extraInfo and extraInfo.itemName  or "that"
 		local itemsLeft = extraInfo and extraInfo.itemsLeft or "?"
 		local msgs = {
-			"The <font color='#00E5FF'>" .. itemName .. "</font> has been stripped for parts. You still have <font color='#FFD700'>" .. itemsLeft .. "</font> more sacrifices to go.",
-			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. itemsLeft .. "</font> more requirements and we can begin.",
-			"Alright " .. coloredName .. " thanks for the <font color='#00E5FF'>" .. itemName .. "</font>. We are getting closer, just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go.",
-			"Good. The chassis grows stronger. <font color='#FFD700'>" .. itemsLeft .. "</font> more pieces needed.",
-			"Another piece of the puzzle. Just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go before the forge is ready."
+			"The <font color='#00E5FF'>" .. itemName .. "</font> got stripped for parts. You still on <font color='#FFD700'>" .. itemsLeft .. "</font> more sacrifices tho.",
+			"Sacrifice accepted no cap. Bring me <font color='#FFD700'>" .. itemsLeft .. "</font> more and we cooking.",
+			"Bet " .. coloredName .. " good looking on the <font color='#00E5FF'>" .. itemName .. "</font>. We almost there just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go.",
+			"The build gettin stronger. <font color='#FFD700'>" .. itemsLeft .. "</font> more pieces and we lit.",
+			"Another one checked off. <font color='#FFD700'>" .. itemsLeft .. "</font> more before I fire up the forge."
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🟢 All sacrifices complete — ready to craft
 	elseif actionType == "AllComplete" then
 		local carName = extraInfo and extraInfo.carName or "the car"
 		local msgs = {
-			"That was the last one! The <font color='#50C878'>sacrifices are complete</font>. Ready to go?",
-			"Every piece is finally in place. Click confirm, and I will begin the build.",
-			"We have everything we need. Nice.",
-			"All requirements met. The <font color='#00E5FF'>" .. carName .. "</font> is ready to be born. Tell me when to start crafting... when you're ready."
+			"That was the last one no cap! The <font color='#50C878'>sacrifices are complete</font>. You ready to run it?",
+			"Everything locked in. Hit confirm and I start building fr.",
+			"We got everything we need. Let's get it.",
+			"All requirements met on god. The <font color='#00E5FF'>" .. carName .. "</font> is ready to be born. Just say the word."
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🔥 Craft just started
 	elseif actionType == "CraftStarted" then
 		local carName = extraInfo and extraInfo.carName or "your car"
 		local timeStr = extraInfo and extraInfo.timeStr or "some time"
 		local msgs = {
-			"Alright im working on making your <font color='#B652FF'>" .. carName .. "</font>, be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"Crafting underway homie. The <font color='#B652FF'>" .. carName .. "</font> will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>."
+			"Aight ima get started on your <font color='#B652FF'>" .. carName .. "</font> fr. Pull up in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"We cooking homie. The <font color='#B652FF'>" .. carName .. "</font> gonna be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>."
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- ⏳ Craft already running — Craft button clicked while build is active
 	elseif actionType == "AlreadyCrafting" then
 		local carName = extraInfo and extraInfo.carName or "your car"
 		local timeStr = extraInfo and extraInfo.timeStr or "some time"
 		local msgs = {
-			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. carName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. carName .. "</font>. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. carName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more time, come back later alright?",
-			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete."
+			"Chill fam you can't rush me. I'm already on the <font color='#B652FF'>" .. carName .. "</font> right now. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"Bro I'm working on your <font color='#B652FF'>" .. carName .. "</font> right now " .. coloredName .. ". Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"You can't rush perfection " .. coloredName .. ". The <font color='#B652FF'>" .. carName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more. Be patient.",
+			"I'm on it already. Pull up in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"The forge still hot. You gotta wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before it's done."
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🟣 Car already crafted and in inventory
 	elseif actionType == "AlreadyCrafted" then
 		local carName = extraInfo and extraInfo.carName or "your car"
 		local msgs = {
-			"It is finished. The <font color='#B652FF'>" .. carName .. "</font> is a true work of art. It should be in your inventory already.",
-			"The <font color='#B652FF'>" .. carName .. "</font> its already there on your inventory, " .. coloredName .. ".",
-			"Construction of the <font color='#B652FF'>" .. carName .. "</font> is done. A flawless execution. it's already there in your inventory."
+			"It's done. The <font color='#B652FF'>" .. carName .. "</font> is a masterpiece on god. Check your inventory.",
+			"The <font color='#B652FF'>" .. carName .. "</font> already sitting in your inventory " .. coloredName .. ".",
+			"That <font color='#B652FF'>" .. carName .. "</font> build is complete. Flawless execution. Go check your inventory."
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🟣 Craft completed (pushed by server timer while player is online)
 	elseif actionType == "CraftComplete" then
 		local carName = (extraInfo and extraInfo.carName) or "your car"
 		local msgs = {
-			"It is finished. The <font color='#B652FF'>" .. carName .. "</font> is a true work of art. It should be in your inventory already.",
-			"The <font color='#B652FF'>" .. carName .. "</font> its already there on your inventory, " .. coloredName .. ".",
-			"Construction of the <font color='#B652FF'>" .. carName .. "</font> is done. A flawless execution. it's already there in your inventory."
+			"It's done. The <font color='#B652FF'>" .. carName .. "</font> is a masterpiece on god. Check your inventory.",
+			"The <font color='#B652FF'>" .. carName .. "</font> already sitting in your inventory " .. coloredName .. ".",
+			"That <font color='#B652FF'>" .. carName .. "</font> build is complete. Flawless execution. Go check your inventory."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	end
