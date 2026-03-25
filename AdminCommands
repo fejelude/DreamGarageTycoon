@@ -2,6 +2,7 @@
 -- Runs on: Server (ServerScriptService)
 -- Public API: /give, /remove, /clear, /fly, /tp, /wallet, /bank
 -- Security: Strict ID Whitelist, Anti-Duplicate logic, Secure Data Wiping
+-- FIX: /bank command now reads/writes Cash from HiddenStats instead of leaderstats.
 
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
@@ -242,7 +243,7 @@ Players.PlayerAdded:Connect(function(player)
 					end
 					print(string.format("🎁 [Admin] Given %d NEW items to %s", count, t.Name))
 				end
-				return -- Stop here so we don't run the single item match
+				return
 			end
 
 			-- Normal Single Item Logic
@@ -262,7 +263,7 @@ Players.PlayerAdded:Connect(function(player)
 				end
 			end
 
-			-- 🔴 /remove [player] [item] (NEW)
+			-- 🔴 /remove [player] [item]
 		elseif command == "/remove" or command == "/take" then
 			local selector = args[2]
 			local itemName = table.concat(args, " ", 3)
@@ -279,7 +280,7 @@ Players.PlayerAdded:Connect(function(player)
 				end
 			end
 
-			-- 🟢 /clearinventory [player] (Keeps Money/Data, Wipes Tools)
+			-- 🟢 /clearinventory [player]
 		elseif command == "/clearinventory" or command == "/ci" then
 			local selector = args[2]
 			local targets = getTargets(player, selector)
@@ -299,21 +300,36 @@ Players.PlayerAdded:Connect(function(player)
 			for _, t in pairs(targets) do Action_SetFlight(t, false) end
 			print("✈️ Flight Disabled")
 
-			-- 💰 /wallet & /bank [player] [amount]
+			-- 💰 /wallet [player] [amount]  →  adds to Wallet (in leaderstats)
+			-- 💰 /bank   [player] [amount]  →  adds to Cash   (in HiddenStats)
 		elseif command == "/wallet" or command == "/bank" then
 			local selector = args[2]
 			local amount = tonumber(args[3])
 			if not selector or not amount then return end
 
-			local statName = (command == "/bank") and "Cash" or "Wallet"
 			local targets = getTargets(player, selector)
 
 			for _, t in pairs(targets) do
-				local ls = t:FindFirstChild("leaderstats")
-				local stat = ls and ls:FindFirstChild(statName)
-				if stat then
-					stat.Value = stat.Value + amount
-					print(string.format("💰 Added $%d to %s's %s", amount, t.Name, statName))
+				if command == "/bank" then
+					-- ✅ FIX: Cash lives in HiddenStats, not leaderstats
+					local hs = t:FindFirstChild("HiddenStats")
+					local stat = hs and hs:FindFirstChild("Cash")
+					if stat then
+						stat.Value = stat.Value + amount
+						print(string.format("💰 Added $%d to %s's Bank (HiddenStats.Cash)", amount, t.Name))
+					else
+						warn("⚠️ HiddenStats.Cash not found for " .. t.Name)
+					end
+				else
+					-- Wallet stays in leaderstats, no change needed
+					local ls = t:FindFirstChild("leaderstats")
+					local stat = ls and ls:FindFirstChild("Wallet")
+					if stat then
+						stat.Value = stat.Value + amount
+						print(string.format("💰 Added $%d to %s's Wallet", amount, t.Name))
+					else
+						warn("⚠️ leaderstats.Wallet not found for " .. t.Name)
+					end
 				end
 			end
 
@@ -332,7 +348,7 @@ Players.PlayerAdded:Connect(function(player)
 				warn("❌ TycoonAdminAPI missing")
 			end
 
-			-- 📋 /list (See available cars)
+			-- 📋 /list
 		elseif command == "/list" then
 			print("🚗 Available Cars:")
 			for _, t in pairs(getAllTools()) do
