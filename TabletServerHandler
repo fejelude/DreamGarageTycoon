@@ -7,6 +7,7 @@
 -- Security: Ownership verification, distance checks, strict type validation, API rate limiting.
 -- Performance: Cached UserId and Headshot lookups, early-exit validation on remotes.
 -- Notes: DevProduct receipt handling is moved to ReceiptRouter. ProcessReceipt is omitted here.
+-- FIX: Cash is now read from HiddenStats instead of leaderstats to match the new data structure.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -300,10 +301,13 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 
 		if amount > 0 then
 			pendingVal.Value = 0
-			local ls = player:FindFirstChild("leaderstats")
-			if ls and ls:FindFirstChild("Cash") then
-				ls.Cash.Value += amount
+
+			-- ✅ FIX: Cash now lives in HiddenStats, not leaderstats
+			local hs = player:FindFirstChild("HiddenStats")
+			if hs and hs:FindFirstChild("Cash") then
+				hs.Cash.Value += amount
 			end
+
 			playerCooldowns[player.UserId] = os.clock()
 			playSound(claimPart, SUCCESS_SOUND, 1.0)
 			respondClaim(true, amount)
