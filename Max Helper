@@ -14,7 +14,7 @@ local Players = game:GetService("Players")
 local SoundService = game:GetService("SoundService")
 
 local player = Players.LocalPlayer
-local leaderstats = player:WaitForChild("leaderstats", 10)
+local hiddenStats = player:WaitForChild("HiddenStats", 10)
 local button = script.Parent
 local mainWindow = button.Parent 
 
@@ -29,7 +29,7 @@ button.MouseButton1Click:Connect(function()
 
 	-- 1. Get Current Bank Balance
 	local currentBank = 0
-	local cashValue = leaderstats and leaderstats:FindFirstChild("Cash")
+	local cashValue = hiddenStats and hiddenStats:FindFirstChild("Cash")
 	if cashValue then
 		currentBank = math.floor(cashValue.Value)
 	end

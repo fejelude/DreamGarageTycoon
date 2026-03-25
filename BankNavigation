@@ -33,8 +33,8 @@ end
 
 local function updateBalance()
 	if not balanceLabelV2 then return end
-	local leaderstats = player:FindFirstChild("leaderstats")
-	local cashValue = leaderstats and leaderstats:FindFirstChild("Cash")
+	local hiddenStats = player:FindFirstChild("HiddenStats")
+	local cashValue = hiddenStats and hiddenStats:FindFirstChild("Cash")
 	if cashValue then
 		balanceLabelV2.Text = "$" .. formatNumber(cashValue.Value) -- ✅ Using Suffixes now
 	end
@@ -45,8 +45,9 @@ end
 -- ============================================================================
 
 -- Wait for leaderstats to load, then connect the update function
-if player:WaitForChild("leaderstats", 10) then
-	local cash = player.leaderstats:WaitForChild("Cash", 10)
+if player:WaitForChild("HiddenStats", 10) then
+	local hiddenStats = player:FindFirstChild("HiddenStats")
+	local cash = hiddenStats and hiddenStats:WaitForChild("Cash", 10)
 	if cash then
 		cash.Changed:Connect(updateBalance)
 		updateBalance() -- Initialize display immediately

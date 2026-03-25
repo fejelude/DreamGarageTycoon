@@ -232,9 +232,9 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 			if amount > 0 then
 				pendingVal.Value = 0
-				local ls = targetPlayer:FindFirstChild("leaderstats")
-				if ls and ls:FindFirstChild("Cash") then
-					ls.Cash.Value += (amount * 2)
+				local hs = targetPlayer:FindFirstChild("HiddenStats")
+				if hs and hs:FindFirstChild("Cash") then
+					hs.Cash.Value += (amount * 2)
 				end
 			end
 			purchaseSuccess = true
