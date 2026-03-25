@@ -16,6 +16,11 @@
 --   is never mistakenly restored. Without this fix a player could sacrifice all
 --   ingredient cars, disconnect, and rejoin with both the sacrifice progress AND
 --   the cars restored in their inventory (free duplication).
+--
+-- FIX (Cash resets to 0 on rejoin):
+--   MoneyManager.GetBalance now reads Cash from HiddenStats instead of leaderstats.
+--   Previously every save wrote 0 for Bank because Cash was no longer in leaderstats,
+--   causing the balance to be wiped on every rejoin.
 
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
@@ -27,7 +32,7 @@ local HttpService = game:GetService("HttpService")
 -- ----------------------------------------------------------------------------
 -- ⚙️ CONFIGURATION & CONSTANTS
 -- ----------------------------------------------------------------------------
-local DATA_KEY = "Testingv5"
+local DATA_KEY = "Testingv7"
 local PlayerDataStore = DataStoreService:GetDataStore(DATA_KEY)
 
 local AUTOSAVE_INTERVAL = 180
@@ -127,9 +132,20 @@ end
 -- ----------------------------------------------------------------------------
 local MoneyManager = {}
 function MoneyManager.GetBalance(player, currencyType)
-	if not player or not player:FindFirstChild("leaderstats") then return 0 end
-	local val = player.leaderstats:FindFirstChild(currencyType)
-	return val and val.Value or 0
+	if not player then return 0 end
+
+	-- ✅ FIX: Cash lives in HiddenStats, everything else in leaderstats
+	if currencyType == "Cash" then
+		local hs = player:FindFirstChild("HiddenStats")
+		if not hs then return 0 end
+		local val = hs:FindFirstChild("Cash")
+		return val and val.Value or 0
+	else
+		local ls = player:FindFirstChild("leaderstats")
+		if not ls then return 0 end
+		local val = ls:FindFirstChild(currencyType)
+		return val and val.Value or 0
+	end
 end
 
 -- ----------------------------------------------------------------------------
@@ -670,7 +686,7 @@ local function save(player, isClosing)
 					if #inventory == 0
 						and (oldData.Inventory and #oldData.Inventory > 0)
 						and not session.ExplicitClear
-						and not sacrificeOccurredThisSession        -- ✅ FIX
+						and not sacrificeOccurredThisSession
 					then
 						warn("⚠️ Anti-Wipe (Inventory): Preserving for " .. player.Name)
 						finalInventory = {}
@@ -710,27 +726,28 @@ local function save(player, isClosing)
 					local stillRestored = player:GetAttribute("RestoredPending") or 0
 					local finalPending = stillRestored + currentPendingInTycoon
 
-					oldData.Bank = MoneyManager.GetBalance(player, "Cash")
-					oldData.Wallet = MoneyManager.GetBalance(player, "Wallet")
+					-- ✅ FIX: MoneyManager.GetBalance now routes Cash to HiddenStats
+					oldData.Bank       = MoneyManager.GetBalance(player, "Cash")
+					oldData.Wallet     = MoneyManager.GetBalance(player, "Wallet")
 					oldData.ATMBalance = MoneyManager.GetBalance(player, "ATMBalance")
 					oldData.Inventory = finalInventory
 					oldData.Layout = finalLayout
 					oldData.PendingEarnings = finalPending
 
 					-- ✅ SAVING SHOP STATES
-					oldData.ShopPurchases = currentShopData
-					oldData.UncommonShopPurchases = currentUncommonShopData
-					oldData.RareShopPurchases = currentRareShopData
-					oldData.EpicShopPurchases = currentEpicShopData
-					oldData.LegendaryShopPurchases = currentLegendaryShopData
-					oldData.MythicalShopPurchases = currentMythicalShopData
+					oldData.ShopPurchases          = currentShopData
+					oldData.UncommonShopPurchases   = currentUncommonShopData
+					oldData.RareShopPurchases       = currentRareShopData
+					oldData.EpicShopPurchases       = currentEpicShopData
+					oldData.LegendaryShopPurchases  = currentLegendaryShopData
+					oldData.MythicalShopPurchases   = currentMythicalShopData
 
-					oldData.OwnedBaseSkins = currentOwnedSkins
-					oldData.EquippedSkin = currentEquippedSkin
+					oldData.OwnedBaseSkins    = currentOwnedSkins
+					oldData.EquippedSkin      = currentEquippedSkin
 					oldData.HighestUnlockedPad = currentUnlockedPad
 
-					oldData.LastUpdated = os.time()
-					oldData.DataVersion = "V38_Fixed"
+					oldData.LastUpdated  = os.time()
+					oldData.DataVersion  = "V38_Fixed"
 
 					return oldData
 				end)
@@ -789,25 +806,30 @@ local function InitializePlayer(player)
 	-- When true it suppresses the inventory anti-wipe for the rest of the
 	-- session, preventing sacrificed ingredient cars from being restored.
 	SessionData[player] = {
-		LastSave         = os.time(),
-		IsDirty          = false,
-		DataLoaded       = false,
-		ExplicitClear    = false,
-		IsSaving         = false,
-		SacrificeOccurred = false,   -- set true by LegendaryCraftingInventoryAPI:RemoveTool
+		LastSave          = os.time(),
+		IsDirty           = false,
+		DataLoaded        = false,
+		ExplicitClear     = false,
+		IsSaving          = false,
+		SacrificeOccurred = false, -- set true by LegendaryCraftingInventoryAPI:RemoveTool
 	}
 
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
 	local hs = Instance.new("Folder"); hs.Name = "HiddenStats"; hs.Parent = player
-	local cash = Instance.new("IntValue"); cash.Name = "Cash"; cash.Parent = hs
-	local wallet = Instance.new("IntValue"); wallet.Name = "Wallet"; wallet.Parent = ls
-	local atm = Instance.new("IntValue"); atm.Name = "ATMBalance"; atm.Parent = ls
+	local cash   = Instance.new("IntValue"); cash.Name   = "Cash";       cash.Parent   = hs
+	local wallet = Instance.new("IntValue"); wallet.Name = "Wallet";     wallet.Parent = ls
+	local atm    = Instance.new("IntValue"); atm.Name    = "ATMBalance"; atm.Parent    = ls
 
 	local function setDirty() markDirty(player) end
-	cash.Changed:Connect(setDirty); wallet.Changed:Connect(setDirty); atm.Changed:Connect(setDirty)
+	cash.Changed:Connect(setDirty)
+	wallet.Changed:Connect(setDirty)
+	atm.Changed:Connect(setDirty)
 
 	local gear = player:WaitForChild("StarterGear", 10)
-	if gear then gear.ChildAdded:Connect(setDirty); gear.ChildRemoved:Connect(setDirty) end
+	if gear then
+		gear.ChildAdded:Connect(setDirty)
+		gear.ChildRemoved:Connect(setDirty)
+	end
 
 	local key = "User_V27_" .. player.UserId
 	local data
@@ -916,12 +938,12 @@ local function InitializePlayer(player)
 
 	local function CheckAndRestorePending()
 		local plotName = player:GetAttribute("OccupiedPlot")
-		local amount = player:GetAttribute("RestoredPending")
+		local amount   = player:GetAttribute("RestoredPending")
 
 		if plotName and amount and amount > 0 then
 			player:SetAttribute("RestoredPending", 0)
 
-			local plot = TycoonFolder:FindFirstChild(plotName)
+			local plot       = TycoonFolder:FindFirstChild(plotName)
 			local pendingVal = plot and plot:WaitForChild("PendingEarnings", 10)
 
 			if pendingVal then
@@ -942,7 +964,10 @@ local function InitializePlayer(player)
 end
 
 Players.PlayerAdded:Connect(InitializePlayer)
-Players.PlayerRemoving:Connect(function(player) save(player, true); SessionData[player] = nil end)
+Players.PlayerRemoving:Connect(function(player)
+	save(player, true)
+	SessionData[player] = nil
+end)
 
 task.spawn(function()
 	while true do
