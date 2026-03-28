@@ -1,30 +1,34 @@
--- [[ LOCAL SCRIPT: AfraiC4tLogic (Optimized with Dialogue Lock) ]]
--- Indicating what the script is for: Handles Camera, Logic, and UI for AfraiC4t ATM.
--- FEATURES: Buttons Hierarchy, Pop Animations, Sounds, Dynamic Feedback, and Cash SFX.
--- OPTIMIZATION: "Dialogue Lock" ensures buttons are hidden/disabled while NPC speaks.
+-- Purpose: Handles Camera, Logic, and UI for AfraiC4t ATM with a distinct "Big Ego" personality.
+-- Runs on: Client
+-- Location: StarterPlayerScripts
+-- Dependencies: TweenService, Players, Workspace, ReplicatedStorage, SoundService, UserInputService
+-- Public API: None
+-- Networking: Invokes WithdrawFunction (Server)
+-- Security: Client-side visual only. Actual balance and withdrawal validation MUST be handled on the server.
+-- Performance: Dialogue locks prevent UI spam. Tweening handles animations.
+-- Notes: Incorporates "slang" and randomized dialogue arrays for natural interactions.
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
-local UserInputService = game:GetService("UserInputService") -- ✅ ADDED FOR MOBILE FIX
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ⚠️ CONNECT TO SERVER FUNCTION
 local withdrawFunc = ReplicatedStorage:WaitForChild("WithdrawFunction")
 
 -- ============================================================================
 -- 🎨 COLOR CONFIGURATION
 -- ============================================================================
-local NAME_COLOR = "#FF4444"    -- Red (Player Name)
-local MONEY_COLOR = "#55FF7F"   -- Green (Money/Earn)
-local NUM_COLOR = "#000000"     -- Black (Numbers 1. 2. 3.)
-local WITHDRAW_COLOR = "#55AAFF" -- Soft Blue (Trust/Banking)
-local SPEND_COLOR = "#FFAA00"   -- Gold/Orange (Spending/Upgrades)
+local NAME_COLOR = "#FF4444"    -- Red
+local MONEY_COLOR = "#55FF7F"   -- Green
+local NUM_COLOR = "#000000"     -- Black
+local WITHDRAW_COLOR = "#55AAFF" -- Soft Blue
+local SPEND_COLOR = "#FFAA00"   -- Gold/Orange
 
 -- ============================================================================
 -- 🆔 UNIQUE IDENTIFIERS
@@ -33,31 +37,25 @@ local GUI_ID = "UI_NPC_ATM_AfraiC4t"
 local CONTAINER_ID = "Frame_ATM_Container" 
 local TEXT_ID = "Text_ATM_Dialogue"         
 
--- BUTTON NAMES
 local BTN_WITHDRAW_ID = "Btn_ATM_Withdraw" 
 local BTN_INQUIRY_ID = "Btn_ATM_Inquiry"    
 local BTN_LEAVE_ID = "Btn_ATM_Leave"
--- List for easy iteration
 local ALL_BUTTON_IDS = {BTN_WITHDRAW_ID, BTN_INQUIRY_ID, BTN_LEAVE_ID}
 
--- 📍 NPC CONFIGURATION
 local NPC_FOLDER = "NPCS"
 local TARGET_NPC = "AfraiC4t"
 local CAMERA_PART = "CameraAimPart"
 local PROMPT_NAME = "TalkPrompt" 
 
--- 🎥 SETTINGS
 local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TYPEWRITER_SPEED = 0.02
 local LEAVE_DELAY = 2 
 
--- 🔊 SOUNDS
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
 local HOVER_SOUND_ID = "rbxassetid://6895079853" 
 local CLICK_SOUND_ID = "rbxassetid://9083627113" 
-local CASH_SFX_ID = "rbxassetid://2865227271" -- [NEW] Cash Register "Cha-Ching"
+local CASH_SFX_ID = "rbxassetid://2865227271" 
 
--- ✨ ANIMATION SETTINGS
 local HOVER_SCALE = 1.1 
 local CLICK_SCALE = 0.9 
 local ANIM_SPEED = 0.1
@@ -76,13 +74,34 @@ local function formatNumber(n)
 	return string.format("%.2f%s", n / v, suffix)
 end
 
--- 💬 SINGLE NPC GREETINGS
+-- ============================================================================
+-- 💬 DIALOGUE ARRAYS (BIG EGO PERSONALITY)
+-- ============================================================================
 local GREETING_OPTIONS = {
-	"Hi [Name], I am currently holding [Balance] for you.",
-	"Welcome back, [Name]. My records show [Balance] pending pickup.",
-	"Greetings. Ready to dispense. Holding: [Balance].",
-	"Hello, [Name]. Your transferred funds of [Balance] are here.",
-	"System Online. User: [Name] | ATM Holding: [Balance]."
+	"Yo [Name], the greatest to ever do it is holding [Balance] for you right now.",
+	"Welcome back [Name]. I secured your [Balance] cause nobody does it better fr.",
+	"Pull up. I got [Balance] sitting here locked down by my security protocol.",
+	"What's good [Name]? I'm watching over your [Balance] on god.",
+	"I ain't just an ATM, I'm the vault. I got your [Balance] waiting. Let's get it."
+}
+
+local ZERO_BALANCE_OPTIONS = {
+	"Bro [Name], you really pulled up with $0? Transfer some cash first, stop wasting my time fr.",
+	"You pockets empty right now [Name]. Go earn something before you talk to me no cap.",
+	"I don't hold air [Name]. You got nothing pending. Come back when you up."
+}
+
+local LEAVE_OPTIONS = {
+	"Aight, catch you later [Name]. Don't go broke out there.",
+	"I'm out. Keep grinding [Name], maybe one day you'll be on my level.",
+	"Bet. Stay on your hustle [Name].",
+	"We done here. Go make more of that paper fr."
+}
+
+local PROCESSING_OPTIONS = {
+	"Hold up, let me run these numbers real quick...",
+	"Counting the paper, gimme a sec...",
+	"Processing that right now. Ain't nobody faster than me..."
 }
 
 -- ============================================================================
@@ -97,9 +116,6 @@ local hiddenGuis = {}
 local hiddenObjects = {}
 local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
 
--- ============================================================================
--- 🔒 FORCE HIDE UI ON LOAD
--- ============================================================================
 task.spawn(function()
 	local myGui = playerGui:WaitForChild(GUI_ID, 10)
 	if myGui then
@@ -114,8 +130,6 @@ end)
 -- ============================================================================
 -- 🎬 INTERACTION FUNCTIONS
 -- ============================================================================
-
--- ✅ NEW HELPER: Controls visibility of all buttons
 local function setButtonsState(isActive)
 	local myGui = playerGui:FindFirstChild(GUI_ID)
 	if not myGui then return end
@@ -123,8 +137,8 @@ local function setButtonsState(isActive)
 	for _, btnID in ipairs(ALL_BUTTON_IDS) do
 		local btn = myGui:FindFirstChild(btnID, true)
 		if btn then
-			btn.Visible = isActive -- Hides button if false, Shows if true
-			btn.Active = isActive  -- Prevents interaction
+			btn.Visible = isActive 
+			btn.Active = isActive  
 		end
 	end
 end
@@ -141,7 +155,6 @@ local function clearConnections()
 	buttonHoverConnections = {}
 end
 
--- 👁️ FOCUS MODE (HIDE OTHER UI DURING NPC TALK)
 local function toggleNamedGuiObjects(shouldHide, objectName)
 	if shouldHide then
 		for _, obj in pairs(playerGui:GetDescendants()) do
@@ -197,8 +210,6 @@ local function playSound(id, vol)
 	game.Debris:AddItem(s, 1)
 end
 
--- 📝 TYPEWRITER (OPTIMIZED WITH CALLBACK)
--- Added 'onComplete' parameter to know when text finishes
 local function typewrite(label, text, onComplete)
 	if not label then return end
 	label.RichText = true
@@ -227,7 +238,6 @@ local function typewrite(label, text, onComplete)
 		end
 		label.MaxVisibleGraphemes = -1 
 
-		-- ✅ TRIGGER CALLBACK IF PROVIDED
 		if onComplete and isInteracting then
 			onComplete()
 		end
@@ -237,7 +247,6 @@ end
 local function stopInteraction()
 	if not isInteracting and not isLeaving then return end
 
-	print("🛑 Closing Interaction...")
 	isInteracting = false
 	isLeaving = false
 
@@ -253,8 +262,6 @@ local function stopInteraction()
 		local humanoid = player.Character:FindFirstChild("Humanoid")
 
 		if hrp then hrp.Anchored = false end
-
-		-- ✅ MOVEMENT FIX: Restore speed so they can walk again
 		if humanoid then humanoid.WalkSpeed = 16 end
 	end
 
@@ -266,7 +273,6 @@ local function stopInteraction()
 	end
 end
 
--- ✨ AESTHETIC BUTTON ANIMATOR
 local function animateButton(btn)
 	if not btn:GetAttribute("OriginalSizeX") then
 		btn:SetAttribute("OriginalSizeX", btn.Size.X.Scale)
@@ -284,7 +290,6 @@ local function animateButton(btn)
 	local hoverSize = UDim2.new(origX * HOVER_SCALE, origXO * HOVER_SCALE, origY * HOVER_SCALE, origYO * HOVER_SCALE)
 	local clickSize = UDim2.new(origX * CLICK_SCALE, origXO * CLICK_SCALE, origY * CLICK_SCALE, origYO * CLICK_SCALE)
 
-	-- 🛡️ MOBILE FIX: Only connect Hover effects if NOT on touch device
 	if not UserInputService.TouchEnabled then
 		local connEnter = btn.MouseEnter:Connect(function()
 			playSound(HOVER_SOUND_ID, 0.5)
@@ -312,7 +317,6 @@ local function animateButton(btn)
 	table.insert(buttonHoverConnections, connUp)
 end
 
-
 local function startInteraction(npcModel)
 	if isInteracting or isLeaving then return end
 	isInteracting = true
@@ -328,17 +332,13 @@ local function startInteraction(npcModel)
 	if controls then controls:Disable() end
 	setFocusMode(true)
 
-	-- ✅ MOVEMENT FIX: Kill speed and velocity to prevent "Walking in Place" bug
 	if player.Character then
 		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		local humanoid = player.Character:FindFirstChild("Humanoid")
 
-		if humanoid then 
-			humanoid.WalkSpeed = 0 -- Forces animation to Idle
-		end
-
+		if humanoid then humanoid.WalkSpeed = 0 end
 		if hrp then
-			hrp.Velocity = Vector3.zero -- Stops sliding
+			hrp.Velocity = Vector3.zero 
 			hrp.Anchored = true 
 		end
 	end
@@ -354,38 +354,31 @@ local function startInteraction(npcModel)
 	if not container then warn("❌ Missing Frame") stopInteraction() return end
 
 	container.Visible = true
-
-	-- ✅ ENSURE BUTTONS ARE HIDDEN INITIALLY
 	setButtonsState(false)
 
 	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
 	if dialogueLabel then
-		-- 1. READ ATM BALANCE
 		local currentATM = 0
 		if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("ATMBalance") then
 			currentATM = player.leaderstats.ATMBalance.Value
 		end
 
-		-- 2. Greeting Logic
-		local greeting = GREETING_OPTIONS[math.random(1, #GREETING_OPTIONS)]
 		local coloredName = "<font color='" .. NAME_COLOR .. "'>" .. player.Name .. "</font>"
 		local coloredBalance = "<font color='" .. MONEY_COLOR .. "'>$" .. formatNumber(currentATM) .. "</font>"
+		local greeting = ""
+
+		if currentATM <= 0 then
+			greeting = ZERO_BALANCE_OPTIONS[math.random(1, #ZERO_BALANCE_OPTIONS)]
+		else
+			greeting = GREETING_OPTIONS[math.random(1, #GREETING_OPTIONS)]
+		end
 
 		greeting = greeting:gsub("%[Name%]", coloredName)
 		greeting = greeting:gsub("%[Balance%]", coloredBalance)
 
-		if currentATM <= 0 then
-			greeting = "Hello " .. coloredName .. ". I am not holding any funds for you. Transfer from your Bank App first."
-		end
-
-		-- ✅ TYPEWRITER WITH CALLBACK (SHOWS BUTTONS AFTER TEXT)
 		typewrite(dialogueLabel, greeting, function()
-			setButtonsState(true) -- SHOW BUTTONS
+			setButtonsState(true)
 		end)
-
-		-- ==============================
-		-- 🔘 BUTTON SETUP
-		-- ==============================
 
 		local function connectBtn(btnName, func)
 			local btn = myGui:FindFirstChild(btnName, true)
@@ -397,8 +390,6 @@ local function startInteraction(npcModel)
 					func()
 				end)
 				table.insert(buttonConnections, conn)
-			else
-				warn("⚠️ Warning: Could not find button '" .. btnName .. "' in UI.")
 			end
 		end
 
@@ -406,15 +397,11 @@ local function startInteraction(npcModel)
 			if isLeaving then return end
 			isLeaving = true 
 			clearConnections() 
-
-			-- ✅ HIDE BUTTONS IMMEDIATELY ON LEAVE
 			setButtonsState(false)
 
 			if dialogueLabel then
-				local coloredName = "<font color='" .. NAME_COLOR .. "'>" .. player.Name .. "</font>"
-				local goodbyeMsg = "Thank you for stopping by, " .. coloredName .. "."
-
-				-- No callback needed here as we are stopping interaction after
+				local goodbyeMsg = LEAVE_OPTIONS[math.random(1, #LEAVE_OPTIONS)]
+				goodbyeMsg = goodbyeMsg:gsub("%[Name%]", coloredName)
 				typewrite(dialogueLabel, goodbyeMsg)
 			end
 			task.wait(LEAVE_DELAY)
@@ -422,56 +409,63 @@ local function startInteraction(npcModel)
 		end)
 
 		connectBtn(BTN_INQUIRY_ID, function()
-			-- ✅ HIDE BUTTONS WHILE EXPLAINING
 			setButtonsState(false)
 
 			if dialogueLabel then
-				local guide = "<b>MY GUIDE:</b>\n\n" ..
+				local guide = "<b>LISTEN UP:</b>\n\n" ..
 					"<font color='"..NUM_COLOR.."'><b>1.</b></font> <font color='"..MONEY_COLOR.."'><b>EARN:</b></font> Your Plot generates income.\n" ..
-					"<font color='"..NUM_COLOR.."'><b>2.</b></font> <font color='"..WITHDRAW_COLOR.."'><b>WITHDRAW:</b></font> Move earnings to Wallet.\n" ..
-					"<font color='"..NUM_COLOR.."'><b>3.</b></font> <font color='"..SPEND_COLOR.."'><b>SPEND:</b></font> Use Cash for upgrades."
+					"<font color='"..NUM_COLOR.."'><b>2.</b></font> <font color='"..WITHDRAW_COLOR.."'><b>WITHDRAW:</b></font> I move it to your Wallet.\n" ..
+					"<font color='"..NUM_COLOR.."'><b>3.</b></font> <font color='"..SPEND_COLOR.."'><b>SPEND:</b></font> Upgrade your stuff so you stop looking broke fr."
 
 				typewrite(dialogueLabel, guide, function()
-					setButtonsState(true) -- SHOW BUTTONS WHEN DONE
+					setButtonsState(true)
 				end)
 			end
 		end)
 
-		-- 3. WITHDRAW BUTTON (UPDATED)
 		connectBtn(BTN_WITHDRAW_ID, function()
 			if currentATM <= 0 then
 				setButtonsState(false)
-				typewrite(dialogueLabel, "You have no funds here to withdraw.", function()
+				local brokeMsgs = {
+					"Bro you broke. Nothing to withdraw on god.",
+					"You got nothing in the vault. Stop playing with my time.",
+					"Can't pull cash out of thin air fam. Earn something first."
+				}
+				typewrite(dialogueLabel, brokeMsgs[math.random(1, #brokeMsgs)], function()
 					setButtonsState(true)
 				end)
 				return
 			end
 
-			-- ✅ HIDE BUTTONS DURING TRANSACTION
 			setButtonsState(false)
 
-			-- ✅ PROCESSING DELAY IMPLEMENTATION
-			typewrite(dialogueLabel, "Processing withdrawal...")
-			task.wait(2) -- Prolongs the state as requested
+			local procMsg = PROCESSING_OPTIONS[math.random(1, #PROCESSING_OPTIONS)]
+			typewrite(dialogueLabel, procMsg)
+			task.wait(2) 
 
 			local success, msg = withdrawFunc:InvokeServer(currentATM, "Withdraw")
 
 			if success then
-				-- ✅ PLAY CASH SOUND
 				playSound(CASH_SFX_ID, 1.0)
 
-				-- ✅ DYNAMIC MESSAGE
-				local coloredName = "<font color='" .. NAME_COLOR .. "'>" .. player.Name .. "</font>"
 				local coloredAmount = "<font color='" .. MONEY_COLOR .. "'>$" .. formatNumber(currentATM) .. "</font>"
+				local successMsgs = {
+					"Flawless transaction. Handed over " .. coloredAmount .. " to you, " .. coloredName .. ".",
+					"Boom. " .. coloredAmount .. " secured for you, " .. coloredName .. " no cap.",
+					"There you go " .. coloredName .. ". " .. coloredAmount .. " straight from the vault. Don't spend it all in one place fr."
+				}
 
-				local successMsg = "Hi " .. coloredName .. ", you have successfully withdrawn " .. coloredAmount .. "."
-
-				typewrite(dialogueLabel, successMsg)
+				typewrite(dialogueLabel, successMsgs[math.random(1, #successMsgs)])
 				task.wait(2.5) 
 				stopInteraction()
 			else
-				typewrite(dialogueLabel, "Error: " .. msg, function()
-					setButtonsState(true) -- Show buttons if error occurred so they can try again or leave
+				local errorMsgs = {
+					"Hold up, bank system trippin': " .. msg,
+					"Nah that ain't work. The system said: " .. msg .. ". Ain't my fault on god.",
+					"Something broke on the backend fr: " .. msg
+				}
+				typewrite(dialogueLabel, errorMsgs[math.random(1, #errorMsgs)], function()
+					setButtonsState(true) 
 				end)
 			end
 		end)
@@ -483,7 +477,6 @@ local ProximityPromptService = game:GetService("ProximityPromptService")
 local function setupATM()
 	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
 		if triggerPlayer == player and prompt.Name == PROMPT_NAME then
-			-- Find NPC model climbing up from the prompt
 			local current = prompt
 			local npc = nil
 			while current and current.Parent ~= Workspace do
