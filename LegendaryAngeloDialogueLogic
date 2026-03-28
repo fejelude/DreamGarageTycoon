@@ -414,7 +414,7 @@ local function startInteraction(npcModel)
 
 	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
 	if dialogueLabel then
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local randomGreeting = GREETING_DIALOGUES[math.random(1, #GREETING_DIALOGUES)]
 		local greeting = randomGreeting .. coloredName .. "."
 
@@ -442,7 +442,7 @@ local function startInteraction(npcModel)
 			clearConnections()
 			setButtonsState(false)
 			if dialogueLabel then
-				local coloredRedName = "<font color='" .. ANGELO_COLOR .. "'>@" .. player.Name .. "</font>"
+				local coloredRedName = "<font color='" .. ANGELO_COLOR .. "'>" .. player.DisplayName .. "</font>"
 				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Return when you are ready, </font>" .. coloredRedName .. "!"
 				typewrite(dialogueLabel, goodbyeMsg)
 			end
@@ -453,7 +453,6 @@ local function startInteraction(npcModel)
 		connectBtn(BTN_INQUIRY_ID, function()
 			setButtonsState(false)
 			if dialogueLabel then
-				local coloredAngelo = "<font color='" .. ANGELO_COLOR .. "'>Angelo</font>"
 				local loreText = "To forge a Legendary vehicle, you must offer sacrifices. \nBring me specific cars and rare materials, and I will build you a masterpiece."
 				typewrite(dialogueLabel, loreText, function()
 					setButtonsState(true)
@@ -554,7 +553,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "SacrificeSuccess" then
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
 			"The <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> has been stripped for parts. You still have <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more sacrifices to go.",
 			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more requirements and we can begin.",
@@ -581,7 +580,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyCrafted" then
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
 			"It is finished. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> is a true work of art. It should be in your inventory already.",
 			"The <font color='#B652FF'>" .. extraInfo.carName .. "</font> its already there on your inventory, a " .. coloredName .. ".",
@@ -589,7 +588,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CraftComplete" then
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
 			"It is finished. The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is a true work of art. It should be in your inventory already.",
 			"The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> its already there on your inventory, a " .. coloredName .. ".",
@@ -597,7 +596,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyCrafting" then
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
 			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
 			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. extraInfo.carName .. "</font>. Check back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
@@ -650,24 +649,7 @@ player.CharacterAdded:Connect(function()
 end)
 
 -- ============================================================================
--- 🛒 AngeloShopSpeak — NEW dedicated BindableEvent for all shop-driven dialogue.
---
--- ROOT CAUSE OF THE BUG:
---   After the player clicks "Craft" in the NPC menu, releaseInteractionForShop()
---   is called. That sets isInteracting = false.
---   The existing UpdateDialogueEvent handler checks:
---       if not isInteracting or isLeaving then ... return end
---   So every shop event (SacrificeSuccess, NotEnough, AlreadyCrafting, etc.)
---   immediately bailed and the callback fired without Angelo ever speaking.
---
--- THE FIX:
---   A brand new BindableEvent that the shop controller fires instead of
---   updateDialogue for all post-shop-open events. It has its own typewriter
---   that does NOT check isInteracting at all. It:
---     1. Shows the NPC speech bubble
---     2. Types the dialogue with full animation
---     3. Hides the speech bubble
---     4. Fires the callback (which restores mainFrame in the shop controller)
+-- 🛒 AngeloShopSpeak — dedicated BindableEvent for all shop-driven dialogue.
 -- ============================================================================
 local AngeloShopSpeak = Instance.new("BindableEvent")
 AngeloShopSpeak.Name = "AngeloShopSpeak"
@@ -733,7 +715,7 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	myGui.Enabled = true
 	container.Visible = true
 
-	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+	local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 	local msg = "..."
 
 	if actionType == "MenuOpen" then
@@ -761,7 +743,6 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		local msgs = {"We already have enough of that.", "That requirement is already fulfilled.", "Save it. We don't need any more of those."}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🔴 Missing item / insufficient cash
 	elseif actionType == "NotEnough" then
 		local itemName = extraInfo and extraInfo.itemName or "that"
 		local msgs = {
@@ -772,7 +753,6 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🟡 Sacrifice accepted, more still needed
 	elseif actionType == "SacrificeSuccess" then
 		local itemName  = extraInfo and extraInfo.itemName  or "that"
 		local itemsLeft = extraInfo and extraInfo.itemsLeft or "?"
@@ -785,7 +765,6 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🟢 All sacrifices complete — ready to craft
 	elseif actionType == "AllComplete" then
 		local carName = extraInfo and extraInfo.carName or "the car"
 		local msgs = {
@@ -796,7 +775,6 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🔥 Craft just started
 	elseif actionType == "CraftStarted" then
 		local carName = extraInfo and extraInfo.carName or "your car"
 		local timeStr = extraInfo and extraInfo.timeStr or "some time"
@@ -806,7 +784,6 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- ⏳ Craft already running — Craft button clicked while build is active
 	elseif actionType == "AlreadyCrafting" then
 		local carName = extraInfo and extraInfo.carName or "your car"
 		local timeStr = extraInfo and extraInfo.timeStr or "some time"
@@ -819,7 +796,6 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🟣 Car already crafted and in inventory
 	elseif actionType == "AlreadyCrafted" then
 		local carName = extraInfo and extraInfo.carName or "your car"
 		local msgs = {
@@ -829,7 +805,6 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 
-		-- 🟣 Craft completed (pushed by server timer while player is online)
 	elseif actionType == "CraftComplete" then
 		local carName = (extraInfo and extraInfo.carName) or "your car"
 		local msgs = {
