@@ -30,6 +30,7 @@ math.randomseed(os.time())
 
 -- 🔗 API CONNECTION
 local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI", 10)
+local SetRankAPI = ServerStorage:WaitForChild("SetRankAPI", 10)
 
 -- ============================================================================
 -- 🧠 INTELLIGENT PARSING (Minecraft Style)
@@ -256,6 +257,10 @@ local function Action_SetRank(player, rankName)
 	player:SetAttribute("Rank", rankName)
 
 	return true, "Success"
+end
+
+SetRankAPI.OnInvoke = function(player, rankName)
+	return Action_SetRank(player, rankName)
 end
 
 -- ============================================================================
