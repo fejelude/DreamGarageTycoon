@@ -25,22 +25,22 @@ local purchaseFeedbackRemote = remotes:WaitForChild("DarrelPurchaseFeedback")
 -- 🎨 COLOR CONFIGURATION
 local USER_COLOR = "#55AAFF"
 local UNCOMMON_COLOR = "#00FF7F"
-local MONEY_COLOR = "#55FF7F" 
-local CPS_COLOR = "#FFD700" 
+local MONEY_COLOR = "#55FF7F"
+local CPS_COLOR = "#FFD700"
 local ROBUX_COLOR = "#FFD700" -- Gold color for Robux text
 
 -- 🆔 UNIQUE IDENTIFIERS
-local GUI_ID = "UI_NPC_Darrel" 
-local CONTAINER_ID = "Frame_Darrel_Container" 
-local TEXT_ID = "Text_Darrel_Dialogue"         
+local GUI_ID = "UI_NPC_Darrel"
+local CONTAINER_ID = "Frame_Darrel_Container"
+local TEXT_ID = "Text_Darrel_Dialogue"
 local BUTTONS_FRAME_ID = "Buttons"
-local BTN_BUY_ID = "Btn_Darrel_Buy"  
+local BTN_BUY_ID = "Btn_Darrel_Buy"
 local BTN_LEAVE_ID = "Btn_Darrel_Leave"
 
 -- 📍 NPC CONFIGURATION
 local NPC_FOLDER = "NPCS"
 local TARGET_NPC = "Darrel"
-local PROMPT_NAME = "TalkPrompt" 
+local PROMPT_NAME = "TalkPrompt"
 
 -- 🎥 SETTINGS
 local TYPEWRITER_SPEED = 0.02
@@ -48,14 +48,14 @@ local DIALOGUE_PAUSE = 1
 local REACTION_PAUSE = 3.0 -- Slightly longer wait for Robux thanks
 
 -- ✨ ANIMATION SETTINGS
-local HOVER_SCALE = 1.1 
-local CLICK_SCALE = 0.9 
+local HOVER_SCALE = 1.1
+local CLICK_SCALE = 0.9
 local ANIM_SPEED = 0.1
 
 -- 🔊 SOUNDS
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
-local HOVER_SOUND_ID = "rbxassetid://6895079853" 
-local CLICK_SOUND_ID = "rbxassetid://9083627113" 
+local HOVER_SOUND_ID = "rbxassetid://6895079853"
+local CLICK_SOUND_ID = "rbxassetid://9083627113"
 
 -- ============================================================================
 -- 👑 RANK HELPER
@@ -121,7 +121,7 @@ local DIALOGUE_POOLS = {
 		"The <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font>? Oh yeah, that's gonna look incredible on your plot. Plus, it generates <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>.",
 		"Pleasure doing business. I can't wait to see the <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> sitting in your garage making <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>."
 	},
-	RobuxReactions = { -- NEW: ROBUX SPECIFIC REACTIONS
+	RobuxReactions = { -- ROBUX SPECIFIC REACTIONS
 		"Whoa, paying with <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>? Thanks, {player}! That <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> is worth every penny.",
 		"Ah, a high roller! Thanks for the <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>, {player}. Enjoy your new <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> making <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>!",
 		"Using <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>, I see? I really appreciate the support, {player}. Get that <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> on a pad ASAP!"
@@ -132,9 +132,9 @@ local DIALOGUE_POOLS = {
 -- 🛠️ STATE VARIABLES & UI HIDING
 -- ============================================================================
 local isInteracting = false
-local currentDialogueJob = nil 
-local buttonConnections = {} 
-local buttonHoverConnections = {} 
+local currentDialogueJob = nil
+local buttonConnections = {}
+local buttonHoverConnections = {}
 local hiddenGuis = {}
 local hiddenObjects = {}
 
@@ -231,13 +231,13 @@ local function typewrite(label, text, onComplete)
 		for i = 1, len do
 			if not isInteracting then break end
 			label.MaxVisibleGraphemes = i
-			if i % 3 == 0 then 
+			if i % 3 == 0 then
 				local s = Instance.new("Sound", SoundService)
 				s.SoundId = TYPING_SOUND_ID; s.Volume = 0.1; s.PlayOnRemove = true; s:Destroy()
 			end
 			task.wait(TYPEWRITER_SPEED)
 		end
-		label.MaxVisibleGraphemes = -1 
+		label.MaxVisibleGraphemes = -1
 		currentDialogueJob = nil
 		if onComplete and isInteracting then task.spawn(onComplete) end
 	end)
@@ -248,7 +248,7 @@ local function getRandomDialogue(poolKey, optionalCarId, optionalCPS)
 	if not pool or #pool == 0 then return "..." end
 
 	local rawText = pool[math.random(1, #pool)]
-	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+	local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 	rawText = string.gsub(rawText, "{player}", coloredName)
 
 	if string.find(rawText, "{money}") then
@@ -269,7 +269,7 @@ local function stopInteraction()
 	isInteracting = false
 
 	if currentDialogueJob then task.cancel(currentDialogueJob) end
-	clearConnections() 
+	clearConnections()
 	setFocusMode(false)
 
 	local controls = getControls()
@@ -327,7 +327,7 @@ end
 local function startInteraction(npcModel)
 	if isInteracting then return end
 	isInteracting = true
-	clearConnections() 
+	clearConnections()
 
 	local controls = getControls()
 	if controls then controls:Disable() end
@@ -336,8 +336,8 @@ local function startInteraction(npcModel)
 	if player.Character then
 		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		local humanoid = player.Character:FindFirstChild("Humanoid")
-		if humanoid then 
-			humanoid.WalkSpeed = 0 
+		if humanoid then
+			humanoid.WalkSpeed = 0
 			local deathConn
 			deathConn = humanoid.Died:Connect(function()
 				if deathConn then deathConn:Disconnect() end
@@ -358,15 +358,15 @@ local function startInteraction(npcModel)
 
 	local greeting = getRandomDialogue("Greetings")
 	typewrite(dialogueLabel, greeting, function()
-		task.wait(DIALOGUE_PAUSE) 
+		task.wait(DIALOGUE_PAUSE)
 		setButtonsState(true)
 	end)
 
 	local function setupBtn(btn, func)
-		if btn and btn:IsA("GuiButton") then 
-			animateButton(btn) 
+		if btn and btn:IsA("GuiButton") then
+			animateButton(btn)
 			local conn = btn.MouseButton1Click:Connect(function()
-				playSound(CLICK_SOUND_ID, 0.5) 
+				playSound(CLICK_SOUND_ID, 0.5)
 				func()
 			end)
 			table.insert(buttonConnections, conn)
@@ -374,7 +374,7 @@ local function startInteraction(npcModel)
 	end
 
 	setupBtn(buyBtn, function()
-		setButtonsState(false) 
+		setButtonsState(false)
 
 		if not hasRequiredRank("VIP") then
 			local responseText = getRandomDialogue("RankGate")
@@ -387,9 +387,9 @@ local function startInteraction(npcModel)
 
 		local responseText = getRandomDialogue("Buy")
 		typewrite(dialogueLabel, responseText, function()
-			task.wait(DIALOGUE_PAUSE) 
+			task.wait(DIALOGUE_PAUSE)
 			stopInteraction()
-			openUncommonRemote:FireServer() 
+			openUncommonRemote:FireServer()
 		end)
 	end)
 
@@ -406,7 +406,6 @@ end
 -- ============================================================================
 -- 📣 POST-PURCHASE REACTION EVENT LOGIC
 -- ============================================================================
--- Notice the new 'isRobux' parameter below:
 purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux)
 	local carData = CarStats.Cars[carId]
 	if not carData then return end
@@ -421,15 +420,14 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux)
 	if myGui and container and dialogueLabel then
 		myGui.Enabled = true
 		container.Visible = true
-		setButtonsState(false) 
+		setButtonsState(false)
 
-		-- Dynamically pick the right dialogue pool
 		local poolToUse = isRobux and "RobuxReactions" or "Reactions"
 		local reactionText = getRandomDialogue(poolToUse, carId, carData.CPS)
 
 		typewrite(dialogueLabel, reactionText, function()
-			task.wait(REACTION_PAUSE) 
-			stopInteraction() 
+			task.wait(REACTION_PAUSE)
+			stopInteraction()
 		end)
 	end
 end)
