@@ -576,6 +576,7 @@ local function save(player, isClosing)
 		local currentOwnedRaw = player:GetAttribute("OwnedBaseSkins") or "[]"
 		local currentOwnedSkins = HttpService:JSONDecode(currentOwnedRaw)
 		local currentEquippedSkin = player:GetAttribute("EquippedSkin") or "Default"
+		local currentRank = player:GetAttribute("Rank") or "Player"
 
 		local inventory = {}
 		local invCount = 0
@@ -745,6 +746,7 @@ local function save(player, isClosing)
 					oldData.OwnedBaseSkins    = currentOwnedSkins
 					oldData.EquippedSkin      = currentEquippedSkin
 					oldData.HighestUnlockedPad = currentUnlockedPad
+					oldData.Rank = currentRank
 
 					oldData.LastUpdated  = os.time()
 					oldData.DataVersion  = "V38_Fixed"
@@ -842,7 +844,7 @@ local function InitializePlayer(player)
 		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1,
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
-		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default"
+		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player"
 	}
 
 	data.Inventory              = data.Inventory              or {}
@@ -855,6 +857,7 @@ local function InitializePlayer(player)
 	data.MythicalShopPurchases  = data.MythicalShopPurchases  or {}
 	data.OwnedBaseSkins         = data.OwnedBaseSkins         or { "Default" }
 	data.EquippedSkin           = data.EquippedSkin           or "Default"
+	data.Rank                   = data.Rank                   or "Player"
 
 	cash.Value   = data.Bank       or 0
 	wallet.Value = data.Wallet     or 0
@@ -895,10 +898,27 @@ local function InitializePlayer(player)
 	local ownedJson = HttpService:JSONEncode(data.OwnedBaseSkins)
 	player:SetAttribute("OwnedBaseSkins", ownedJson)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
+	player:SetAttribute("Rank", data.Rank)
 
 	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(setDirty)
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
 	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
+	player:GetAttributeChangedSignal("Rank"):Connect(setDirty)
+
+	-- 👑 APPLY RANK VISUALS ON SPAWN/RESPAWN
+	local function ApplyRankVisual()
+		local SetRankAPI = ServerStorage:FindFirstChild("SetRankAPI")
+		if SetRankAPI then
+			SetRankAPI:Invoke(player, player:GetAttribute("Rank") or "Player")
+		else
+			warn("⚠️ SetRankAPI missing in ServerStorage")
+		end
+	end
+
+	if player.Character then
+		task.spawn(ApplyRankVisual)
+	end
+	player.CharacterAdded:Connect(ApplyRankVisual)
 
 	if player:FindFirstChild("Backpack") then player.Backpack:ClearAllChildren() end
 	if player:FindFirstChild("StarterGear") then player.StarterGear:ClearAllChildren() end
