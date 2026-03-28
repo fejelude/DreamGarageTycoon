@@ -417,7 +417,7 @@ local function startInteraction(npcModel)
 
 	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
 	if dialogueLabel then
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local randomGreeting = GREETING_DIALOGUES[math.random(1, #GREETING_DIALOGUES)]
 		local greeting = randomGreeting .. coloredName .. "."
 
@@ -445,7 +445,7 @@ local function startInteraction(npcModel)
 			clearConnections()
 			setButtonsState(false)
 			if dialogueLabel then
-				local coloredRedName = "<font color='" .. ETHOURAH_COLOR .. "'>@" .. player.Name .. "</font>"
+				local coloredRedName = "<font color='" .. ETHOURAH_COLOR .. "'>" .. player.DisplayName .. "</font>"
 				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Aight slide out then. Come back when you ready to get serious </font>" .. coloredRedName .. "."
 				typewrite(dialogueLabel, goodbyeMsg, function()
 					task.wait(LEAVE_DELAY)
@@ -559,7 +559,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "SacrificeSuccess" then
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
 			"The <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> got stripped for parts. You still on <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more sacrifices tho.",
 			"Sacrifice accepted no cap. Bring me <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more and we cooking.",
@@ -586,7 +586,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyCrafted" then
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
 			"It's done. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> is a masterpiece on god. Check your inventory.",
 			"The <font color='#B652FF'>" .. extraInfo.carName .. "</font> already sitting in your inventory " .. coloredName .. ".",
@@ -594,7 +594,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CraftComplete" then
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
 			"It's done. The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is a masterpiece on god. Check your inventory.",
 			"The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> already sitting in your inventory " .. coloredName .. ".",
@@ -602,7 +602,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyCrafting" then
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
 			"Chill fam you can't rush me. I'm already on the <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now. Come back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
 			"Bro I'm working on your <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now " .. coloredName .. ". Check back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
@@ -656,23 +656,6 @@ end)
 
 -- ============================================================================
 -- 🛒 EthourahShopSpeak — NEW dedicated BindableEvent for all shop-driven dialogue.
---
--- ROOT CAUSE OF THE BUG:
---   After the player clicks "Craft" in the NPC menu, releaseInteractionForShop()
---   is called. That sets isInteracting = false.
---   The existing UpdateDialogueEvent handler checks:
---       if not isInteracting or isLeaving then ... return end
---   So every shop event (SacrificeSuccess, NotEnough, AlreadyCrafting, etc.)
---   immediately bailed and the callback fired without Ethourah ever speaking.
---
--- THE FIX:
---   A brand new BindableEvent that the shop controller fires instead of
---   updateDialogue for all post-shop-open events. It has its own typewriter
---   that does NOT check isInteracting at all. It:
---     1. Shows the NPC speech bubble
---     2. Types the dialogue with full animation
---     3. Hides the speech bubble
---     4. Fires the callback (which restores mainFrame in the shop controller)
 -- ============================================================================
 local EthourahShopSpeak = Instance.new("BindableEvent")
 EthourahShopSpeak.Name = "EthourahShopSpeak"
@@ -738,7 +721,7 @@ EthourahShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	myGui.Enabled = true
 	container.Visible = true
 
-	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+	local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 	local msg = "..."
 
 	if actionType == "MenuOpen" then
