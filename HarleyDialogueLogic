@@ -33,13 +33,13 @@ local CAR_COLOR = "#00CC66"       -- Emerald Green (Rare cars emphasis)
 -- ============================================================================
 -- 🆔 UNIQUE IDENTIFIERS
 -- ============================================================================
-local GUI_ID = "UI_NPC_Harley" 
-local CONTAINER_ID = "Frame_Harley_Container" 
-local TEXT_ID = "Text_Harley_Dialogue"         
+local GUI_ID = "UI_NPC_Harley"
+local CONTAINER_ID = "Frame_Harley_Container"
+local TEXT_ID = "Text_Harley_Dialogue"
 
 -- BUTTON NAMES
-local BTN_INQUIRY_ID = "Btn_Harley_Inquiry"  
-local BTN_INQUIRY2_ID = "Btn_Harley_Inquiry2"  
+local BTN_INQUIRY_ID = "Btn_Harley_Inquiry"
+local BTN_INQUIRY2_ID = "Btn_Harley_Inquiry2"
 local BTN_LEAVE_ID = "Btn_Harley_Leave"
 local ALL_BUTTON_IDS = {BTN_INQUIRY_ID, BTN_INQUIRY2_ID, BTN_LEAVE_ID}
 
@@ -47,21 +47,21 @@ local ALL_BUTTON_IDS = {BTN_INQUIRY_ID, BTN_INQUIRY2_ID, BTN_LEAVE_ID}
 local NPC_FOLDER = "NPCS"
 local TARGET_NPC = "Harley"
 local CAMERA_PART = "CameraAimPart"
-local PROMPT_NAME = "TalkPrompt" 
+local PROMPT_NAME = "TalkPrompt"
 
 -- 🎥 SETTINGS
 local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TYPEWRITER_SPEED = 0.02
-local LEAVE_DELAY = 1.5 
+local LEAVE_DELAY = 1.5
 
 -- 🔊 SOUNDS
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
-local HOVER_SOUND_ID = "rbxassetid://6895079853" 
-local CLICK_SOUND_ID = "rbxassetid://9083627113" 
+local HOVER_SOUND_ID = "rbxassetid://6895079853"
+local CLICK_SOUND_ID = "rbxassetid://9083627113"
 
 -- ✨ ANIMATION SETTINGS
-local HOVER_SCALE = 1.1 
-local CLICK_SCALE = 0.9 
+local HOVER_SCALE = 1.1
+local CLICK_SCALE = 0.9
 local ANIM_SPEED = 0.1
 
 -- ============================================================================
@@ -69,12 +69,12 @@ local ANIM_SPEED = 0.1
 -- ============================================================================
 local isInteracting = false
 local isLeaving = false
-local currentDialogueJob = nil 
-local buttonConnections = {} 
-local buttonHoverConnections = {} 
+local currentDialogueJob = nil
+local buttonConnections = {}
+local buttonHoverConnections = {}
 local hiddenGuis = {}
 local hiddenObjects = {}
-local interactionCycle = 1 
+local interactionCycle = 1
 local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
 
 -- ============================================================================
@@ -83,7 +83,7 @@ local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetC
 task.spawn(function()
 	local myGui = playerGui:WaitForChild(GUI_ID, 10)
 	if myGui then
-		myGui.Enabled = false 
+		myGui.Enabled = false
 		local container = myGui:FindFirstChild(CONTAINER_ID, true)
 		if container then container.Visible = false end
 	end
@@ -100,8 +100,8 @@ local function setButtonsState(isActive)
 	for _, btnID in ipairs(ALL_BUTTON_IDS) do
 		local btn = myGui:FindFirstChild(btnID, true)
 		if btn then
-			btn.Visible = isActive 
-			btn.Active = isActive  
+			btn.Visible = isActive
+			btn.Active = isActive
 		end
 	end
 end
@@ -182,9 +182,9 @@ local function typewrite(label, text, onComplete)
 	if not label then return end
 	label.RichText = true
 
-	if currentDialogueJob then 
-		task.cancel(currentDialogueJob) 
-		currentDialogueJob = nil 
+	if currentDialogueJob then
+		task.cancel(currentDialogueJob)
+		currentDialogueJob = nil
 	end
 
 	label.Text = text
@@ -196,7 +196,7 @@ local function typewrite(label, text, onComplete)
 		for i = 1, len do
 			if not isInteracting and not isLeaving then break end
 			label.MaxVisibleGraphemes = i
-			if i % 3 == 0 then 
+			if i % 3 == 0 then
 				local s = Instance.new("Sound", SoundService)
 				s.SoundId = TYPING_SOUND_ID
 				s.Volume = 0.1
@@ -205,7 +205,7 @@ local function typewrite(label, text, onComplete)
 			end
 			task.wait(TYPEWRITER_SPEED)
 		end
-		label.MaxVisibleGraphemes = -1 
+		label.MaxVisibleGraphemes = -1
 
 		currentDialogueJob = nil
 
@@ -222,7 +222,7 @@ local function stopInteraction()
 	isLeaving = false
 
 	if currentDialogueJob then task.cancel(currentDialogueJob) end
-	clearConnections() 
+	clearConnections()
 	setFocusMode(false)
 
 	camera.CameraType = Enum.CameraType.Custom
@@ -292,7 +292,7 @@ local function startInteraction(npcModel)
 	if isInteracting or isLeaving then return end
 
 	isInteracting = true
-	clearConnections() 
+	clearConnections()
 
 	local camPart = npcModel:FindFirstChild(CAMERA_PART)
 	if not camPart then
@@ -310,8 +310,8 @@ local function startInteraction(npcModel)
 
 		if humanoid then humanoid.WalkSpeed = 0 end
 		if hrp then
-			hrp.Velocity = Vector3.zero 
-			hrp.Anchored = true 
+			hrp.Velocity = Vector3.zero
+			hrp.Anchored = true
 		end
 	end
 
@@ -322,7 +322,7 @@ local function startInteraction(npcModel)
 	if not myGui then warn("❌ [HarleyDebug] Missing GUI") stopInteraction() return end
 
 	myGui.Enabled = true
-	local container = myGui:FindFirstChild(CONTAINER_ID, true) 
+	local container = myGui:FindFirstChild(CONTAINER_ID, true)
 	if not container then warn("❌ [HarleyDebug] Missing Frame") stopInteraction() return end
 
 	container.Visible = true
@@ -332,7 +332,7 @@ local function startInteraction(npcModel)
 	if dialogueLabel then
 
 		-- COMMON STRINGS
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local coloredJacob = "<font color='" .. JACOB_COLOR .. "'>Jacob</font>"
 
 		-- REFINED LORE HIGHLIGHTS
@@ -341,7 +341,7 @@ local function startInteraction(npcModel)
 		local changeHint = "<font color='" .. MYSTERY_COLOR .. "'>tend to change</font>"
 		local carHint = "<font color='" .. CAR_COLOR .. "'>rare cars</font>"
 
-		-- INITIAL GREETING 
+		-- INITIAL GREETING
 		local greeting = "Welcome to the lot, " .. coloredName .. "."
 
 		typewrite(dialogueLabel, greeting, function()
@@ -351,10 +351,10 @@ local function startInteraction(npcModel)
 		local function connectBtn(btnName, func)
 			local btn = myGui:FindFirstChild(btnName, true)
 			if btn and btn:IsA("GuiButton") then
-				animateButton(btn) 
+				animateButton(btn)
 
 				local conn = btn.MouseButton1Click:Connect(function()
-					playSound(CLICK_SOUND_ID, 0.5) 
+					playSound(CLICK_SOUND_ID, 0.5)
 					func()
 				end)
 				table.insert(buttonConnections, conn)
@@ -366,8 +366,8 @@ local function startInteraction(npcModel)
 		-- 🔘 BUTTON: LEAVE
 		connectBtn(BTN_LEAVE_ID, function()
 			if isLeaving then return end
-			isLeaving = true 
-			clearConnections() 
+			isLeaving = true
+			clearConnections()
 			setButtonsState(false)
 
 			if dialogueLabel then
@@ -384,10 +384,10 @@ local function startInteraction(npcModel)
 
 			if dialogueLabel then
 				local coloredHarley = "<font color='" .. HARLEY_COLOR .. "'>Harley</font>"
-				local response = "I’m " .. coloredHarley .. ". " .. coloredJacob .. "’s brother. Someone’s gotta keep an eye on the place while he’s… away."
+				local response = "I'm " .. coloredHarley .. ". " .. coloredJacob .. "'s brother. Someone's gotta keep an eye on the place while he's… away."
 
 				typewrite(dialogueLabel, response, function()
-					setButtonsState(true) 
+					setButtonsState(true)
 				end)
 			end
 		end)
@@ -400,25 +400,25 @@ local function startInteraction(npcModel)
 				local cycleResponse = ""
 
 				if interactionCycle == 1 then
-					cycleResponse = coloredJacob .. "? Haven’t seen him around today. Funny thing… whenever the " .. timeHint1 .. ", " .. carHint .. " start showing up in the lot and so does he. Strange coincidence, huh?"
+					cycleResponse = coloredJacob .. "? Haven't seen him around today. Funny thing… whenever the " .. timeHint1 .. ", " .. carHint .. " start showing up in the lot and so does he. Strange coincidence, huh?"
 				elseif interactionCycle == 2 then
-					cycleResponse = "I already told you. I haven’t seen him today. But for some reason… he always shows up " .. timeHint2 .. "."
+					cycleResponse = "I already told you. I haven't seen him today. But for some reason… he always shows up " .. timeHint2 .. "."
 				elseif interactionCycle == 3 then
-					cycleResponse = "You're still asking about " .. coloredJacob .. "? …Look, I already told you. He’s never around during the day. But " .. timeHint2 .. "… things around here " .. changeHint .. "."
+					cycleResponse = "You're still asking about " .. coloredJacob .. "? …Look, I already told you. He's never around during the day. But " .. timeHint2 .. "… things around here " .. changeHint .. "."
 				end
 
 				-- Advance cycle (1 -> 2 -> 3 -> 1)
 				interactionCycle = (interactionCycle % 3) + 1
 
 				typewrite(dialogueLabel, cycleResponse, function()
-					setButtonsState(true) 
+					setButtonsState(true)
 				end)
 			end
 		end)
 
 	else
 		warn("❌ [HarleyDebug] ERROR: Could not find TextLabel named '"..TEXT_ID.."' inside Container!")
-		setButtonsState(true) 
+		setButtonsState(true)
 	end
 end
 
@@ -436,3 +436,4 @@ local function setupNPC()
 end
 
 setupNPC()
+
