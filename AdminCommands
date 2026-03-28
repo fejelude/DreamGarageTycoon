@@ -252,6 +252,9 @@ local function Action_SetRank(player, rankName)
 		end
 	end
 
+	-- 5. Set persistent non-visual attribute for client-side shop checks
+	player:SetAttribute("Rank", rankName)
+
 	return true, "Success"
 end
 
