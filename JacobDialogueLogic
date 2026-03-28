@@ -58,6 +58,27 @@ local HOVER_SOUND_ID = "rbxassetid://6895079853"
 local CLICK_SOUND_ID = "rbxassetid://9083627113"
 
 -- ============================================================================
+-- 👑 RANK HELPER
+-- ============================================================================
+local RANK_VALUES = {
+	["VIP"] = 1,
+	["VIP+"] = 2,
+	["MVP"] = 3,
+	["MVP+"] = 4,
+	["MVP++"] = 5
+}
+
+local function getPlayerRankValue()
+	local rank = player:GetAttribute("Rank")
+	return RANK_VALUES[rank] or 0
+end
+
+local function hasRequiredRank(requiredRankName)
+	local requiredValue = RANK_VALUES[requiredRankName] or 0
+	return getPlayerRankValue() >= requiredValue
+end
+
+-- ============================================================================
 -- 📊 FORMATTING HELPER
 -- ============================================================================
 local SUFFIXES = {"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"}
@@ -84,6 +105,11 @@ local DIALOGUE_POOLS = {
 		"Alright, alright! Let's see what I can hook you up with.",
 		"Good choice coming to me. Let's check the inventory.",
 		"Let's get down to business. Here's what I've got in the back."
+	},
+	RankGate = {
+		"This stuff is too hot for you right now. Come back when you're <font color='#FF4444'><b>VIP+</b></font>.",
+		"Sorry, {player}, but I only deal with <font color='#FF4444'><b>VIP+</b></font> and up.",
+		"You're not ready for this speed. <font color='#FF4444'><b>VIP+</b></font> required."
 	},
 	Leave = {
 		"Catch ya later! Don't let those tires go cold.",
@@ -349,6 +375,16 @@ local function startInteraction(npcModel)
 
 	setupBtn(buyBtn, function()
 		setButtonsState(false)
+
+		if not hasRequiredRank("VIP+") then
+			local responseText = getRandomDialogue("RankGate")
+			typewrite(dialogueLabel, responseText, function()
+				task.wait(DIALOGUE_PAUSE + 1)
+				stopInteraction()
+			end)
+			return
+		end
+
 		local responseText = getRandomDialogue("Buy")
 		typewrite(dialogueLabel, responseText, function()
 			task.wait(DIALOGUE_PAUSE)

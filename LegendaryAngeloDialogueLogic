@@ -60,6 +60,27 @@ local ANIM_SPEED = 0.1
 -- ============================================================================
 local isInteracting = false
 local isLeaving = false
+-- ============================================================================
+-- 👑 RANK HELPER
+-- ============================================================================
+local RANK_VALUES = {
+	["VIP"] = 1,
+	["VIP+"] = 2,
+	["MVP"] = 3,
+	["MVP+"] = 4,
+	["MVP++"] = 5
+}
+
+local function getPlayerRankValue()
+	local rank = player:GetAttribute("Rank")
+	return RANK_VALUES[rank] or 0
+end
+
+local function hasRequiredRank(requiredRankName)
+	local requiredValue = RANK_VALUES[requiredRankName] or 0
+	return getPlayerRankValue() >= requiredValue
+end
+
 local isOpeningShop = false
 local currentDialogueJob = nil
 local pendingShopOpenTask = nil
@@ -442,8 +463,24 @@ local function startInteraction(npcModel)
 
 		connectBtn(BTN_CRAFT_ID, function()
 			if isOpeningShop then return end
-			isOpeningShop = true
+
 			setButtonsState(false)
+
+			if not hasRequiredRank("MVP+") then
+				local msgs = {
+					"My masterpieces are reserved for the elite. Come back when you are <font color='#FF4444'><b>MVP+</b></font>.",
+					"You lack the required standing. <font color='#FF4444'><b>MVP+</b></font> is the minimum.",
+					"I only craft for those who have proven themselves. <font color='#FF4444'><b>MVP+</b></font> needed."
+				}
+				local responseText = msgs[math.random(1, #msgs)]
+				typewrite(dialogueLabel, responseText, function()
+					task.wait(2.0)
+					stopInteraction()
+				end)
+				return
+			end
+
+			isOpeningShop = true
 			local openGeneration = interactionGeneration
 
 			typewrite(dialogueLabel, CRAFT_OPEN_MESSAGE, function()

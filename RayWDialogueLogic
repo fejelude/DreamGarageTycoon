@@ -58,6 +58,27 @@ local HOVER_SOUND_ID = "rbxassetid://6895079853"
 local CLICK_SOUND_ID = "rbxassetid://9083627113"
 
 -- ============================================================================
+-- 👑 RANK HELPER
+-- ============================================================================
+local RANK_VALUES = {
+	["VIP"] = 1,
+	["VIP+"] = 2,
+	["MVP"] = 3,
+	["MVP+"] = 4,
+	["MVP++"] = 5
+}
+
+local function getPlayerRankValue()
+	local rank = player:GetAttribute("Rank")
+	return RANK_VALUES[rank] or 0
+end
+
+local function hasRequiredRank(requiredRankName)
+	local requiredValue = RANK_VALUES[requiredRankName] or 0
+	return getPlayerRankValue() >= requiredValue
+end
+
+-- ============================================================================
 -- 📊 FORMATTING HELPER
 -- ============================================================================
 local SUFFIXES = {"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"}
@@ -84,6 +105,11 @@ local DIALOGUE_POOLS = {
 		"Excellent. Here is the catalog.",
 		"Let's get down to business.",
 		"A fine choice to browse. See for yourself."
+	},
+	RankGate = {
+		"You don't have the status for this. <font color='#FF4444'><b>MVP</b></font> minimum.",
+		"This collection is reserved for <font color='#FF4444'><b>MVP</b></font> and above. Please leave.",
+		"I'm afraid your rank is insufficient. Return when you are <font color='#FF4444'><b>MVP</b></font>."
 	},
 	Leave = {
 		"Until next time.",
@@ -349,6 +375,16 @@ local function startInteraction(npcModel)
 
 	setupBtn(buyBtn, function()
 		setButtonsState(false)
+
+		if not hasRequiredRank("MVP") then
+			local responseText = getRandomDialogue("RankGate")
+			typewrite(dialogueLabel, responseText, function()
+				task.wait(DIALOGUE_PAUSE + 1)
+				stopInteraction()
+			end)
+			return
+		end
+
 		local responseText = getRandomDialogue("Buy")
 		typewrite(dialogueLabel, responseText, function()
 			task.wait(DIALOGUE_PAUSE)
