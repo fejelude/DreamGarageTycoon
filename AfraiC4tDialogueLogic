@@ -1,12 +1,12 @@
 -- Purpose: Handles Camera, Logic, and UI for AfraiC4t ATM with a distinct "Big Ego" personality.
 -- Runs on: Client
 -- Location: StarterPlayerScripts
--- Dependencies: TweenService, Players, Workspace, ReplicatedStorage, SoundService, UserInputService
+-- Dependencies: TweenService, Players, Workspace, ReplicatedStorage, SoundService, UserInputService, ProximityPromptService
 -- Public API: None
 -- Networking: Invokes WithdrawFunction (Server)
 -- Security: Client-side visual only. Actual balance and withdrawal validation MUST be handled on the server.
--- Performance: Dialogue locks prevent UI spam. Tweening handles animations.
--- Notes: Incorporates "slang" and randomized dialogue arrays for natural interactions.
+-- Performance: Dialogue locks prevent UI spam. C-side FindFirstAncestor replaces slow Luau while-loops for UI detection.
+-- Notes: ProximityPrompt is located inside the HumanoidRootPart of the NPC model.
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
@@ -14,6 +14,7 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
@@ -42,7 +43,6 @@ local BTN_INQUIRY_ID = "Btn_ATM_Inquiry"
 local BTN_LEAVE_ID = "Btn_ATM_Leave"
 local ALL_BUTTON_IDS = {BTN_WITHDRAW_ID, BTN_INQUIRY_ID, BTN_LEAVE_ID}
 
-local NPC_FOLDER = "NPCS"
 local TARGET_NPC = "AfraiC4t"
 local CAMERA_PART = "CameraAimPart"
 local PROMPT_NAME = "TalkPrompt" 
@@ -472,22 +472,22 @@ local function startInteraction(npcModel)
 	end
 end
 
-local ProximityPromptService = game:GetService("ProximityPromptService")
-
 local function setupATM()
 	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
 		if triggerPlayer == player and prompt.Name == PROMPT_NAME then
-			local current = prompt
-			local npc = nil
-			while current and current.Parent ~= Workspace do
-				if current.Name == TARGET_NPC then
-					npc = current
-					break
-				end
-				current = current.Parent
+			
+			-- Look upward through ancestors until it finds a model named "AfraiC4t"
+			local npc = prompt:FindFirstAncestor(TARGET_NPC)
+			
+			-- Fallback: If you renamed the model (e.g. "AfraiC4t 2"), just grab the model that holds the HumanoidRootPart
+			if not npc and prompt.Parent and prompt.Parent.Name == "HumanoidRootPart" then
+				npc = prompt.Parent.Parent
 			end
-			if npc then
+
+			if npc and npc:IsA("Model") then
 				startInteraction(npc)
+			else
+				warn("❌ Could not resolve NPC Model for prompt. Is it placed inside a HumanoidRootPart inside a Model?")
 			end
 		end
 	end)
