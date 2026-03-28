@@ -121,7 +121,7 @@ local DIALOGUE_POOLS = {
 		"A masterpiece. The <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> is yours. Let it generate that <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>.",
 		"Done. The <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> is a statement piece, pulling <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font> effortlessly."
 	},
-	RobuxReactions = { -- NEW: ROBUX SPECIFIC REACTIONS
+	RobuxReactions = { -- ROBUX SPECIFIC REACTIONS
 		"Paying in <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>? You value efficiency. The <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> is yours.",
 		"A premium transaction for a premium <font color='"..EPIC_COLOR.."'><b>{carName}</b></font>. Enjoy your <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>, {player}.",
 		"With <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>, you command respect. The <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> is a worthy addition."
@@ -248,7 +248,7 @@ local function getRandomDialogue(poolKey, optionalCarId, optionalCPS)
 	if not pool or #pool == 0 then return "..." end
 
 	local rawText = pool[math.random(1, #pool)]
-	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+	local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 	rawText = string.gsub(rawText, "{player}", coloredName)
 
 	if string.find(rawText, "{money}") then
@@ -406,7 +406,6 @@ end
 -- ============================================================================
 -- 📣 POST-PURCHASE REACTION EVENT LOGIC
 -- ============================================================================
--- Notice the new 'isRobux' parameter below:
 purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux)
 	local carData = CarStats.Cars[carId]
 	if not carData then return end
@@ -423,7 +422,6 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux)
 		container.Visible = true
 		setButtonsState(false)
 
-		-- Dynamically pick the right dialogue pool
 		local poolToUse = isRobux and "RobuxReactions" or "Reactions"
 		local reactionText = getRandomDialogue(poolToUse, carId, carData.CPS)
 
