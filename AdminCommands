@@ -1,17 +1,19 @@
 -- Purpose: Advanced Minecraft-Style Admin Commands
 -- Runs on: Server (ServerScriptService)
--- Public API: /give, /remove, /clear, /fly, /tp, /wallet, /bank
+-- Public API: /give, /remove, /clear, /fly, /tp, /wallet, /bank, /rank
 -- Security: Strict ID Whitelist, Anti-Duplicate logic, Secure Data Wiping
--- FIX: /bank command now reads/writes Cash from HiddenStats instead of leaderstats.
+-- FIX: /rank command now pulls securely from ServerStorage.RankTags instead of Workspace.
 
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 -- ⚙️ CONFIGURATION
 local CarTools = ServerStorage:WaitForChild("CarTools") 
 local FlyScriptTemplate = ServerStorage:WaitForChild("FlyClient", 5) 
+local RankTags = ServerStorage:WaitForChild("RankTags", 10) -- 🛡️ SECURE RANK UI LOCATION
 
 -- ⚠️ SECURITY: Add your UserID here
 local ADMIN_USER_IDS = {
@@ -206,6 +208,53 @@ local function Action_SetFlight(player, shouldFly)
 	end
 end
 
+local function Action_SetRank(player, rankName)
+	local character = player.Character
+	if not character then return false, "No Character" end
+
+	local head = character:FindFirstChild("Head")
+	local humanoid = character:FindFirstChild("Humanoid")
+	if not head or not humanoid then return false, "Character missing Head/Humanoid" end
+
+	-- 1. Hide default Roblox Name
+	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+
+	-- 2. Locate requested Rank Folder in ServerStorage
+	if not RankTags then return false, "ServerStorage.RankTags folder missing!" end
+	local rankFolder = RankTags:FindFirstChild(rankName)
+	if not rankFolder or not rankFolder:IsA("Folder") then 
+		return false, "Rank Folder not found in RankTags: " .. tostring(rankName) 
+	end
+
+	-- 3. Clean up existing custom tags
+	for _, child in pairs(head:GetChildren()) do
+		if child:IsA("BillboardGui") and child:GetAttribute("IsCustomTag") then
+			child:Destroy()
+		end
+	end
+
+	-- 4. Clone and apply new tags FROM the target Folder
+	for _, guiTemplate in pairs(rankFolder:GetChildren()) do
+		if guiTemplate:IsA("BillboardGui") then
+			local newGui = guiTemplate:Clone()
+			newGui:SetAttribute("IsCustomTag", true) 
+
+			-- Inject actual player name
+			if newGui.Name == "Displayname" then
+				local nameLabel = newGui:FindFirstChild("Name")
+				if nameLabel and nameLabel:IsA("TextLabel") then
+					nameLabel.Text = player.DisplayName
+				end
+			end
+
+			newGui.Parent = head
+		end
+	end
+
+	return true, "Success"
+end
+
 -- ============================================================================
 -- 💬 CHAT HANDLER
 -- ============================================================================
@@ -330,6 +379,27 @@ Players.PlayerAdded:Connect(function(player)
 					else
 						warn("⚠️ leaderstats.Wallet not found for " .. t.Name)
 					end
+				end
+			end
+
+			-- 👑 /rank [player] [RankFolderName]
+		elseif command == "/rank" then
+			local selector = args[2]
+			local rankName = args[3] 
+
+			if not selector or not rankName then 
+				print("⚠️ Syntax: /rank [selector] [RankName] (e.g. /rank @s VIP+)")
+				return 
+			end
+
+			local targets = getTargets(player, selector)
+
+			for _, t in pairs(targets) do
+				local success, reason = Action_SetRank(t, rankName)
+				if success then
+					print(string.format("👑 Set rank visual of %s to %s", t.Name, rankName))
+				else
+					print(string.format("⚠️ Failed to set rank for %s: %s", t.Name, reason))
 				end
 			end
 
