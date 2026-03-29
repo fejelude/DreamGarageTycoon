@@ -1,0 +1,253 @@
+-- Purpose: Handles interaction, camera, and UI logic for the Alex NPC (Ranking).
+-- Runs on: Client
+-- Location: StarterPlayerScripts
+-- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService
+-- Public API: None
+-- Networking: None (Client-side UI only)
+-- Security: Client-side visual only.
+-- Performance: Simple state toggles, checks hiddenGuis before overwriting.
+-- Notes: Manages interaction with Workspace.Npcs.Alex. Opens RankingGui.
+
+local TweenService = game:GetService("TweenService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local SoundService = game:GetService("SoundService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+local playerGui = player:WaitForChild("PlayerGui")
+
+print("🐛 [AlexDebug] Script Initializing...")
+
+-- ============================================================================
+-- 🆔 UNIQUE IDENTIFIERS & CONFIG
+-- ============================================================================
+local TARGET_NPC = "Alex"
+local CAMERA_PART = "CameraAimPart"
+local PROMPT_NAME = "TalkPrompt"
+
+local GUI_ID = "RankingGui"
+local CONTAINER_ID = "MainFrame"
+local BTN_EXIT_ID = "ExitButton"
+
+local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local CLICK_SOUND_ID = "rbxassetid://9083627113"
+
+-- Button Hover Config
+local DIM_COLOR = Color3.new(0.7, 0.7, 0.7)
+local PRESS_SPEED = 0.05
+local RELEASE_SPEED = 0.2
+
+-- ============================================================================
+-- 🛠️ STATE VARIABLES
+-- ============================================================================
+local isInteracting = false
+local buttonConnections = {}
+local hiddenGuis = {}
+local hiddenObjects = {}
+local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
+
+-- ============================================================================
+-- 🔒 FORCE HIDE UI ON LOAD
+-- ============================================================================
+task.spawn(function()
+	local myGui = playerGui:WaitForChild(GUI_ID, 10)
+	if myGui then
+		myGui.Enabled = false
+		local container = myGui:FindFirstChild(CONTAINER_ID, true)
+		if container then container.Visible = false end
+	end
+end)
+
+-- ============================================================================
+-- 🎬 INTERACTION FUNCTIONS
+-- ============================================================================
+
+local function clearConnections()
+	for _, conn in pairs(buttonConnections) do
+		if conn then conn:Disconnect() end
+	end
+	buttonConnections = {}
+end
+
+local function toggleNamedGuiObjects(shouldHide, objectName)
+	if shouldHide then
+		for _, obj in pairs(playerGui:GetDescendants()) do
+			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
+				obj.Visible = false
+				table.insert(hiddenObjects, obj)
+			end
+		end
+	else
+		for _, obj in pairs(hiddenObjects) do
+			if obj and obj.Parent and obj:IsA("GuiObject") then
+				obj.Visible = true
+			end
+		end
+		hiddenObjects = {}
+	end
+end
+
+local function toggleOtherGuis(shouldHide)
+	if shouldHide then
+		-- Prevent overwriting if already populated
+		if #hiddenGuis > 0 then return end
+
+		for _, otherGui in pairs(playerGui:GetChildren()) do
+			if otherGui:IsA("ScreenGui")
+				and otherGui.Name ~= GUI_ID
+				and otherGui.Enabled == true
+				and otherGui.Name ~= "Balance Indicator" then
+
+				otherGui.Enabled = false
+				table.insert(hiddenGuis, otherGui)
+			end
+		end
+	else
+		for _, otherGui in pairs(hiddenGuis) do
+			if otherGui and otherGui.Parent then
+				otherGui.Enabled = true
+			end
+		end
+		hiddenGuis = {}
+	end
+end
+
+local function setFocusMode(active)
+	toggleOtherGuis(active)
+	toggleNamedGuiObjects(active, "FriendBoost")
+end
+
+local function playSound(id, vol)
+	local s = Instance.new("Sound")
+	s.SoundId = id
+	s.Volume = vol or 0.5
+	s.Parent = SoundService
+	s:Play()
+	game.Debris:AddItem(s, 1)
+end
+
+local function stopInteraction()
+	if not isInteracting then return end
+	isInteracting = false
+
+	clearConnections()
+	setFocusMode(false)
+
+	camera.CameraType = Enum.CameraType.Custom
+	if controls then controls:Enable() end
+
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+
+		if hrp then hrp.Anchored = false end
+		if humanoid then humanoid.WalkSpeed = 16 end
+	end
+
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if myGui then
+		myGui.Enabled = false
+		local container = myGui:FindFirstChild(CONTAINER_ID, true)
+		if container then container.Visible = false end
+	end
+end
+
+local function animateImageButton(btn)
+	local originalColor = btn.ImageColor3
+
+	local function dimButton()
+		TweenService:Create(btn, TweenInfo.new(PRESS_SPEED), {ImageColor3 = DIM_COLOR}):Play()
+	end
+
+	local function resetButton()
+		TweenService:Create(btn, TweenInfo.new(RELEASE_SPEED), {ImageColor3 = originalColor}):Play()
+	end
+
+	if not UserInputService.TouchEnabled then
+		local connEnter = btn.MouseEnter:Connect(dimButton)
+		local connLeave = btn.MouseLeave:Connect(resetButton)
+		table.insert(buttonConnections, connEnter)
+		table.insert(buttonConnections, connLeave)
+	end
+
+	local connDown = btn.MouseButton1Down:Connect(dimButton)
+	local connUp = btn.MouseButton1Up:Connect(resetButton)
+
+	table.insert(buttonConnections, connDown)
+	table.insert(buttonConnections, connUp)
+end
+
+local function startInteraction(npcModel)
+	if isInteracting then return end
+	isInteracting = true
+	clearConnections()
+
+	if controls then controls:Disable() end
+	setFocusMode(true)
+
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+
+		if humanoid then humanoid.WalkSpeed = 0 end
+		if hrp then
+			hrp.Velocity = Vector3.zero
+			hrp.Anchored = true
+		end
+	end
+
+	local camPart = npcModel:FindFirstChild(CAMERA_PART)
+	if camPart then
+		camera.CameraType = Enum.CameraType.Scriptable
+		TweenService:Create(camera, TWEEN_INFO, {CFrame = camPart.CFrame}):Play()
+	else
+		-- In case Alex doesn't have a CameraAimPart, just anchor player and show UI.
+		warn("⚠️ [AlexDebug] Missing '"..CAMERA_PART.."' - Skipping camera tween.")
+	end
+
+	local myGui = playerGui:WaitForChild(GUI_ID, 5)
+	if not myGui then warn("❌ [AlexDebug] Missing GUI: " .. GUI_ID) stopInteraction() return end
+
+	local container = myGui:FindFirstChild(CONTAINER_ID, true)
+	if not container then warn("❌ [AlexDebug] Missing Container: " .. CONTAINER_ID) stopInteraction() return end
+
+	-- Enable UI
+	myGui.Enabled = true
+	container.Visible = true
+
+	local exitBtn = container:FindFirstChild(BTN_EXIT_ID, true)
+	if exitBtn and exitBtn:IsA("ImageButton") then
+		animateImageButton(exitBtn)
+
+		local conn = exitBtn.MouseButton1Click:Connect(function()
+			playSound(CLICK_SOUND_ID, 0.5)
+			stopInteraction()
+		end)
+		table.insert(buttonConnections, conn)
+	else
+		warn("❌ [AlexDebug] Could not find ExitButton or it is not an ImageButton: " .. BTN_EXIT_ID)
+	end
+end
+
+local ProximityPromptService = game:GetService("ProximityPromptService")
+
+local function setupNPC()
+	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
+		if triggerPlayer == player and prompt.Name == PROMPT_NAME then
+
+			local npc = prompt:FindFirstAncestor(TARGET_NPC)
+
+			if not npc and prompt.Parent and prompt.Parent.Name == "HumanoidRootPart" then
+				npc = prompt.Parent.Parent
+			end
+
+			if npc and npc:IsA("Model") and npc.Name == TARGET_NPC then
+				startInteraction(npc)
+			end
+		end
+	end)
+end
+
+setupNPC()
