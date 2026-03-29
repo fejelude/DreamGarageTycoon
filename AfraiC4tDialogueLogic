@@ -484,10 +484,8 @@ local function setupATM()
 				npc = prompt.Parent.Parent
 			end
 
-			if npc and npc:IsA("Model") then
+			if npc and npc:IsA("Model") and string.find(npc.Name, TARGET_NPC) then
 				startInteraction(npc)
-			else
-				warn("❌ Could not resolve NPC Model for prompt. Is it placed inside a HumanoidRootPart inside a Model?")
 			end
 		end
 	end)
