@@ -1,0 +1,144 @@
+-- Purpose: Client-side chat formatter for displaying visually rich rank tags (Hypixel-inspired).
+-- Runs on: Client (StarterPlayerScripts)
+-- Location: StarterPlayerScripts > ChatRankTags.client.lua
+-- Dependencies: TextChatService, Players
+-- Public API: N/A
+-- Networking: N/A
+-- Security: Reads the server-authoritative "Rank" attribute set by RankService.
+-- Performance: Lightweight text formatting on chat message receipt.
+-- Notes: Supports TextChatService natively. If TextChatService is not in use, it will silently fail.
+
+local TextChatService = game:GetService("TextChatService")
+local Players = game:GetService("Players")
+
+-- ============================================================================
+-- 🎨 COLOR & STYLING DEFINITIONS
+-- ============================================================================
+
+local RANK_COLORS = {
+	["Player"] = "#555555",
+	["VIP"] = "#AAAAAA",
+	["VIP+"] = "#CD7F32",
+	["MVP"] = "#55FF55",
+}
+
+local RANK_GRADIENTS = {
+	["MVP+"] = {
+		from = Color3.fromHex("#55FFFF"),
+		to = Color3.fromHex("#00BFFF")
+	},
+	["MVP++"] = {
+		from = Color3.fromHex("#AA00FF"),
+		to = Color3.fromHex("#FF66FF")
+	}
+}
+
+-- Name colors relative to the rank (slightly softer/lighter than rank color)
+local NAME_COLORS = {
+	["Player"] = "#777777",
+	["VIP"] = "#CCCCCC",
+	["VIP+"] = "#E6A861",
+	["MVP"] = "#88FF88",
+	["MVP+"] = "#E0FFFF",   -- Clean light cyan/white
+	["MVP++"] = "#F0E6FF",  -- Clean light lavender
+}
+
+-- ============================================================================
+-- 🛠️ HELPER FUNCTIONS
+-- ============================================================================
+
+-- Linearly interpolates between two Color3 values
+local function lerpColor(c1, c2, alpha)
+	return Color3.new(
+		c1.R + (c2.R - c1.R) * alpha,
+		c1.G + (c2.G - c1.G) * alpha,
+		c1.B + (c2.B - c1.B) * alpha
+	)
+end
+
+-- Converts a Color3 to a hex string suitable for RichText
+local function colorToHex(color)
+	return string.format("#%02X%02X%02X", math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255))
+end
+
+-- Applies a gradient to a string character by character
+local function applyGradientToText(text, colorFrom, colorTo)
+	local result = ""
+	local length = string.len(text)
+
+	-- If text is too short, just use the 'from' color or a midpoint to avoid a choppy look
+	if length <= 1 then
+		return string.format('<font color="%s">%s</font>', colorToHex(colorFrom), text)
+	end
+
+	for i = 1, length do
+		local char = string.sub(text, i, i)
+		local alpha = (i - 1) / (length - 1)
+		local charColor = lerpColor(colorFrom, colorTo, alpha)
+		result = result .. string.format('<font color="%s">%s</font>', colorToHex(charColor), char)
+	end
+
+	return result
+end
+
+-- ============================================================================
+-- 💬 CHAT FORMATTING LOGIC
+-- ============================================================================
+
+local function handleLegacyChat()
+	local StarterGui = game:GetService("StarterGui")
+	local success, err = pcall(function()
+		StarterGui:SetCore("ChatMakeSystemMessage", {
+			Text = "[ChatRankTags] Legacy chat is enabled, but TextChatService is required for rank tags.",
+			Color = Color3.fromRGB(255, 100, 100),
+			Font = Enum.Font.SourceSansBold,
+			FontSize = Enum.FontSize.Size18
+		})
+	end)
+end
+
+-- Ensure we are using the modern TextChatService
+if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	TextChatService.OnIncomingMessage = function(message)
+		local properties = Instance.new("TextChatMessageProperties")
+
+		-- If message is not from a user, just return default properties
+		if not message.TextSource then
+			return properties
+		end
+
+		local player = Players:GetPlayerByUserId(message.TextSource.UserId)
+		if not player then
+			return properties
+		end
+
+		-- Read the server-assigned Rank attribute
+		local rankName = player:GetAttribute("Rank") or "Player"
+		local displayName = player.DisplayName
+
+		local formattedRankTag = ""
+		local nameColor = NAME_COLORS[rankName] or NAME_COLORS["Player"]
+
+		-- Generate the Rank Prefix
+		local rawRankText = "[" .. rankName .. "]"
+
+		if RANK_GRADIENTS[rankName] then
+			-- Premium gradient tags (e.g. MVP+, MVP++)
+			local grad = RANK_GRADIENTS[rankName]
+			local gradientText = applyGradientToText(rawRankText, grad.from, grad.to)
+			formattedRankTag = "<b>" .. gradientText .. "</b>"
+		else
+			-- Solid color tags
+			local colorHex = RANK_COLORS[rankName] or RANK_COLORS["Player"]
+			formattedRankTag = string.format('<b><font color="%s">%s</font></b>', colorHex, rawRankText)
+		end
+
+		-- Format the final prefix: [RANK] DisplayName » 
+		properties.PrefixText = string.format('%s <font color="%s">%s</font> <font color="#AAAAAA">»</font> ', formattedRankTag, nameColor, displayName)
+
+		return properties
+	end
+else
+	warn("ChatRankTags: TextChatService is not enabled. Legacy chat styling is not supported by this script.")
+	handleLegacyChat()
+end
