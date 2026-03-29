@@ -475,19 +475,17 @@ end
 local function setupATM()
 	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
 		if triggerPlayer == player and prompt.Name == PROMPT_NAME then
-			
+
 			-- Look upward through ancestors until it finds a model named "AfraiC4t"
 			local npc = prompt:FindFirstAncestor(TARGET_NPC)
-			
+
 			-- Fallback: If you renamed the model (e.g. "AfraiC4t 2"), just grab the model that holds the HumanoidRootPart
 			if not npc and prompt.Parent and prompt.Parent.Name == "HumanoidRootPart" then
 				npc = prompt.Parent.Parent
 			end
 
-			if npc and npc:IsA("Model") then
+			if npc and npc:IsA("Model") and string.find(npc.Name, TARGET_NPC) then
 				startInteraction(npc)
-			else
-				warn("❌ Could not resolve NPC Model for prompt. Is it placed inside a HumanoidRootPart inside a Model?")
 			end
 		end
 	end)
