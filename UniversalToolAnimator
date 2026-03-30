@@ -1,94 +1,142 @@
 -- Purpose: Animates held tools (cars) with a floating effect without causing server lag.
--- Runs on: Client
--- Location: StarterPlayerScripts
--- Dependencies: RunService, Players
+-- Runs on: Client (LocalScript in StarterPlayerScripts)
+-- Dependencies: RunService, Players, CollectionService
 -- Public API: None
--- Networking: None (Purely local visual effect)
+-- Networking: None (purely local visual effect)
 -- Security: Client-sided visuals only; cannot be exploited to move hitboxes server-side.
 -- Performance: Modifies Weld C0 directly instead of rebuilding joints. Zero server network footprint.
--- Notes: Assumes the tool is held in the "Right Arm" (R6) or "RightHand" (R15).
+-- Notes: Assumes the tool is held in "Right Arm" (R6) or "RightHand" (R15).
+--        Tag car tools with the CollectionService tag defined in CAR_TOOL_TAG to opt-in.
+--
+-- Fixes applied:
+--   #1  Concurrent animateTool yield race → generation counter invalidates stale yields
+--   #2  Connection leak on respawn → characterConnections table, cleaned each respawn
+--   #3  FindFirstChild on arm can miss → WaitForChild with timeout
+--   #4  Animates every tool → CollectionService tag opt-in guard
+--   #5  FLOAT_HEIGHT stacks on grip offset → Y component replaced, not multiplied
+--   #6  task.defer + WaitForChild redundant → defer removed, WaitForChild handles timing
+--   #7  Already-held tool missed on first run → upfront GetChildren scan in onCharacterAdded
 
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local Players           = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
 
 local player = Players.LocalPlayer
 
 -- ⚙️ CONFIGURATION
-local FLOAT_HEIGHT = 3    -- Base height above hand
-local BOB_SPEED = 2       -- How fast it goes up/down
-local BOB_HEIGHT = 0.5    -- How far it travels
+local CAR_TOOL_TAG = "CarTool"  -- Tag car tools with this in CollectionService to opt-in
+local FLOAT_HEIGHT = 3          -- Base height above the hand (studs)
+local BOB_SPEED    = 2          -- How fast it bobs up/down
+local BOB_HEIGHT   = 0.5        -- How far it travels each bob cycle
 
 -- 🛡️ STATE
-local currentTool = nil
-local rightGripWeld = nil
-local originalC0 = nil
+local currentTool    = nil
+local rightGripWeld  = nil
+local originalC0     = nil
 local animConnection = nil
+
+-- Fix #1: generation counter — incremented on every new animateTool call so
+-- any still-yielding WaitForChild from a previous call knows to abort.
+local animGeneration = 0
+
+-- Fix #2: per-character connections stored so they can be cleaned up on respawn
+local characterConnections: { RBXScriptConnection } = {}
 
 local function stopAnimation()
 	if animConnection then
 		animConnection:Disconnect()
 		animConnection = nil
 	end
-
 	-- Restore the original grip offset safely if the weld still exists
 	if rightGripWeld and rightGripWeld.Parent and originalC0 then
 		rightGripWeld.C0 = originalC0
 	end
-
-	currentTool = nil
+	currentTool   = nil
 	rightGripWeld = nil
-	originalC0 = nil
+	originalC0    = nil
 end
 
 local function animateTool(character, tool)
+	-- Fix #4: only animate tools tagged as car tools
+	if not CollectionService:HasTag(tool, CAR_TOOL_TAG) then return end
+
 	stopAnimation()
 
-	-- Wait for the character's arm
-	local arm = character:FindFirstChild("Right Arm") or character:FindFirstChild("RightHand")
+	-- Fix #1: snapshot generation; if another call arrives while we yield, myGen
+	-- will differ from animGeneration and we bail out before touching any state.
+	animGeneration += 1
+	local myGen = animGeneration
+
+	-- Fix #3: WaitForChild with timeout instead of FindFirstChild (arm may not exist yet)
+	-- Fix #6: defer removed — WaitForChild already handles the timing safely
+	local arm = character:WaitForChild("Right Arm", 3)
+		or character:WaitForChild("RightHand", 3)
 	if not arm then return end
 
-	-- Roblox automatically creates a "RightGrip" weld when a tool is equipped.
-	-- We wait briefly for it to appear in the arm.
-	rightGripWeld = arm:WaitForChild("RightGrip", 2)
-	if not rightGripWeld or not rightGripWeld:IsA("Weld") then return end
+	local grip = arm:WaitForChild("RightGrip", 2)
 
-	currentTool = tool
-	originalC0 = rightGripWeld.C0
+	-- Fix #1: stale call check after the yield
+	if myGen ~= animGeneration then return end
+
+	if not grip or not grip:IsA("Weld") then return end
+
+	currentTool   = tool
+	rightGripWeld = grip
+	originalC0    = grip.C0
 
 	animConnection = RunService.RenderStepped:Connect(function()
-		-- Failsafe: if tool drops or weld is destroyed, stop animating
+		-- Failsafe: if tool is dropped or weld destroyed, stop cleanly
 		if tool.Parent ~= character or not rightGripWeld.Parent then
 			stopAnimation()
 			return
 		end
 
-		local t = time()
+		local t   = time()
 		local bob = math.sin(t * BOB_SPEED) * BOB_HEIGHT
 
-		-- Modifying C0 is instantly rendered and does NOT rebuild the joint.
-		-- This stops the physics/network lag entirely.
-		rightGripWeld.C0 = originalC0 * CFrame.new(0, FLOAT_HEIGHT + bob, 0)
+		-- Fix #5: replace the Y component of the existing C0 translation rather
+		-- than multiplying a new CFrame on top of it, so FLOAT_HEIGHT doesn't
+		-- compound with whatever offset the tool's grip already has.
+		local pos = originalC0.Position
+		rightGripWeld.C0 = CFrame.new(pos.X, pos.Y + FLOAT_HEIGHT + bob, pos.Z)
+			* CFrame.fromMatrix(Vector3.zero,
+				originalC0.XVector,
+				originalC0.YVector,
+				originalC0.ZVector)
 	end)
 end
 
 local function onCharacterAdded(character)
-	character.ChildAdded:Connect(function(child)
-		if child:IsA("Tool") then
-			-- Defer execution to ensure Roblox's backend has finished creating the RightGrip
-			task.defer(function()
-				if child.Parent == character then
-					animateTool(character, child)
-				end
-			end)
-		end
-	end)
+	-- Fix #2: disconnect all connections from the previous character
+	for _, conn in ipairs(characterConnections) do
+		conn:Disconnect()
+	end
+	characterConnections = {}
 
-	character.ChildRemoved:Connect(function(child)
-		if child == currentTool then 
-			stopAnimation() 
+	-- Fix #7: scan tools the character is ALREADY holding when the script first runs
+	-- (or after a fast respawn where a tool was re-parented before this fires)
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Tool") then
+			animateTool(character, child)
 		end
-	end)
+	end
+
+	-- Fix #2: store connections so they get cleaned up next respawn
+	table.insert(characterConnections, character.ChildAdded:Connect(function(child)
+		if child:IsA("Tool") then
+			animateTool(character, child)
+		end
+	end))
+
+	table.insert(characterConnections, character.ChildRemoved:Connect(function(child)
+		if child == currentTool then
+			stopAnimation()
+		end
+	end))
 end
 
-if player.Character then onCharacterAdded(player.Character) end
+-- Bootstrap: handle character that already exists before this script runs
+if player.Character then
+	onCharacterAdded(player.Character)
+end
 player.CharacterAdded:Connect(onCharacterAdded)
