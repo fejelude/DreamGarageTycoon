@@ -1,123 +1,162 @@
---[[ SERVER SCRIPT: Universal Car Tool (Optimized v4)
-     Goal: NO equip lag. All heavy work happens once, chunked to avoid server spikes.
+--[[ SERVER SCRIPT: Universal Car Tool (Optimized v5)
+     Fixes applied:
+       #1  Race condition on PREPARED_ATTR → added isPreparing lock
+       #2  PivotTo before welds exist → weld first, pivot last
+       #3  findCarModel can hang forever → 10s timeout + warn
+       #4  yieldEvery off-by-one guard → explicit i > 0 check
+       #5  Redundant Equipped handler → removed (Transparency set once at top)
+       #6  No Unequipped handler → added stub
+       #7  HandleLink vs PivotTo conflict → lock prevents re-entry
+       #8  CastShadow server-side no-op → moved note, keep for completeness
+       #9  Defensive descendant cache before loop
+      #10  Timeout warn in findCarModel
 ]]
 
 local RunService = game:GetService("RunService")
-
-local Tool = script.Parent
-local Handle = Tool:WaitForChild("Handle")
+local Tool       = script.Parent
+local Handle     = Tool:WaitForChild("Handle")
 
 -- === SETTINGS ===
 local HEIGHT_OFFSET = 2
-local BATCH_SIZE = 200 -- lower = smoother, higher = finishes faster
+local BATCH_SIZE    = 200   -- lower = smoother, higher = finishes faster
+local FIND_TIMEOUT  = 10    -- seconds to wait for a Model child
 local PREPARED_ATTR = "CarToolPrepared"
 -- =================
 
--- Handle: set once
-Handle.CanCollide = false
-Handle.CanTouch = false
-Handle.CanQuery = false
+-- Handle: set once at startup
+Handle.CanCollide  = false
+Handle.CanTouch    = false
+Handle.CanQuery    = false
 Handle.Transparency = 1
 
-local function findCarModel()
+-- Fix #1: boolean lock prevents concurrent calls racing past the attribute check
+local isPreparing = false
+
+-- Fix #3: timeout-safe model finder with Fix #10 warn
+local function findCarModel(): Model?
 	local m = Tool:FindFirstChildWhichIsA("Model")
 	if m then return m end
 
-	-- Wait until a Model is inserted into the Tool
-	while Tool.Parent do
-		local child = Tool.ChildAdded:Wait()
-		if child:IsA("Model") then
-			return child
+	local found: Model?
+	local conn = Tool.ChildAdded:Connect(function(child)
+		if child:IsA("Model") and not found then
+			found = child :: Model
 		end
+	end)
+
+	local deadline = os.clock() + FIND_TIMEOUT
+	repeat
+		task.wait()
+	until found or os.clock() > deadline or not Tool.Parent
+
+	conn:Disconnect()
+
+	if not found then
+		warn("[CarTool] Timed out waiting for a Model child in Tool.")
 	end
+
+	return found
 end
 
 local function ensurePrimary(model: Model): BasePart?
 	if model.PrimaryPart and model.PrimaryPart:IsA("BasePart") then
 		return model.PrimaryPart
 	end
-
-	-- Fallback: pick the first BasePart we can find
 	local candidate = model:FindFirstChildWhichIsA("BasePart", true)
 	if candidate then
 		model.PrimaryPart = candidate
 		return candidate
 	end
-
 	return nil
 end
 
+-- Fix #4: explicit i > 0 guard removes accidental yield at index 0
 local function yieldEvery(i: number)
-	if (i % BATCH_SIZE) == 0 then
+	if i > 0 and (i % BATCH_SIZE) == 0 then
 		RunService.Heartbeat:Wait()
 	end
 end
 
 local function prepareOnce()
-	if Tool:GetAttribute(PREPARED_ATTR) then
-		return
-	end
+	-- Fix #1: double-guard — attribute (survives clone) + lock (prevents race)
+	if Tool:GetAttribute(PREPARED_ATTR) or isPreparing then return end
+	isPreparing = true
 
 	local CarModel = findCarModel()
-	if not CarModel then return end
+	if not CarModel then
+		isPreparing = false
+		return
+	end
 
 	local primary = ensurePrimary(CarModel)
 	if not primary then
 		warn(("[CarTool] Model '%s' has no BaseParts."):format(CarModel.Name))
+		isPreparing = false
 		return
 	end
 
+	-- Mark prepared early so attribute is set even if we yield mid-loop
 	Tool:SetAttribute(PREPARED_ATTR, true)
 
-	-- Move once relative to the handle (no need to do this on equip)
-	CarModel:PivotTo(Handle.CFrame * CFrame.new(0, HEIGHT_OFFSET, 0))
+	-- Fix #2: WELD ALL PARTS FIRST, then pivot — prevents physics scatter
+	-- Fix #9: cache descendants before the loop in case model mutates mid-iteration
+	local descendants = CarModel:GetDescendants()
+	local processed   = 0
 
-	-- Link primary to handle (once)
-	local link = Handle:FindFirstChild("HandleLink")
-	if not link then
-		link = Instance.new("WeldConstraint")
-		link.Name = "HandleLink"
-		link.Part0 = Handle
-		link.Part1 = primary
-		link.Parent = Handle
-	end
-
-	-- Ghost + weld all parts to primary (once, chunked)
-	local processed = 0
-	for _, inst in ipairs(CarModel:GetDescendants()) do
+	for _, inst in ipairs(descendants) do
 		if inst:IsA("BasePart") then
 			processed += 1
 
-			-- Make it behave like a cosmetic model
-			inst.Anchored = false
-			inst.Massless = true
+			inst.Anchored   = false
+			inst.Massless   = true
 			inst.CanCollide = false
-			inst.CanTouch = false
-			inst.CanQuery = false
+			inst.CanTouch   = false
+			inst.CanQuery   = false
+			-- Fix #8: CastShadow is a render property; no effect server-side.
+			-- Keep the line so a LocalScript companion reading the same model
+			-- will still benefit if it mirrors these properties on the client.
 			inst.CastShadow = false
 
-			-- Weld every part to primary (prevent duplicates by naming)
 			if inst ~= primary then
 				local w = inst:FindFirstChild("_CarWeld")
 				if not w then
-					w = Instance.new("WeldConstraint")
-					w.Name = "_CarWeld"
-					w.Part0 = primary
-					w.Part1 = inst
-					w.Parent = inst -- easy/fast to check later
+					w          = Instance.new("WeldConstraint")
+					w.Name     = "_CarWeld"
+					w.Part0    = primary
+					w.Part1    = inst
+					w.Parent   = inst
 				end
 			end
 
-			yieldEvery(processed)
+			yieldEvery(processed)  -- yields only on multiples of BATCH_SIZE
 		end
 	end
+
+	-- Weld handle → primary (once, after all internal welds exist)
+	local link = Handle:FindFirstChild("HandleLink")
+	if not link then
+		link        = Instance.new("WeldConstraint")
+		link.Name   = "HandleLink"
+		link.Part0  = Handle
+		link.Part1  = primary
+		link.Parent = Handle
+	end
+
+	-- Fix #2: Pivot AFTER all welds are live — model moves as one rigid body
+	CarModel:PivotTo(Handle.CFrame * CFrame.new(0, HEIGHT_OFFSET, 0))
 end
 
--- Start preparing immediately (not on equip)
+-- Start preparing immediately (not on equip) — zero lag when player picks it up
 task.spawn(prepareOnce)
 
--- Equip = zero heavy work
+-- Fix #5: Equipped handler was redundant (Transparency already 1 above).
+-- Now used only for anything genuinely needed on equip.
 Tool.Equipped:Connect(function()
-	Handle.Transparency = 1
+	-- Nothing heavy here by design.
+	-- Add cosmetic/audio equip effects here if needed.
 end)
 
+-- Fix #6: Unequipped stub — react to drop/swap
+Tool.Unequipped:Connect(function()
+	-- Add hide logic, sound stop, etc. here if needed.
+end)
