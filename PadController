@@ -59,6 +59,10 @@ end
 local function FindToolFromModelName(modelName)
 	if CarTools:FindFirstChild(modelName, true) then return CarTools:FindFirstChild(modelName, true) end
 	if CarTools:FindFirstChild(modelName.." Item", true) then return CarTools:FindFirstChild(modelName.." Item", true) end
+	local clean = modelName:gsub(" Item", ""):gsub("Item", "")
+	for _, t in pairs(CarTools:GetDescendants()) do
+		if t.Name:gsub(" Item", "") == clean then return t end
+	end
 	if CarStats and CarStats.Cars then
 		for key, stats in pairs(CarStats.Cars) do
 			if stats.Name == modelName then
