@@ -45,13 +45,27 @@ end
 local function getAllTools()
 	if ToolCache then return ToolCache end
 	local tools = {}
-	for _, t in pairs(CarTools:GetDescendants()) do
-		if t:IsA("Tool") then table.insert(tools, t) end
+	-- FIX: Iterate through exact rarity folders instead of deep descendants to avoid mesh parts
+	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}) do
+		local folder = CarTools:FindFirstChild(folderName)
+		if folder then
+			for _, t in ipairs(folder:GetChildren()) do
+				if t:IsA("Tool") then table.insert(tools, t) end
+			end
+		end
 	end
 	ToolCache = tools
 	return tools
 end
-CarTools.DescendantAdded:Connect(function() ToolCache = nil end)
+
+-- Using ChildAdded on rarity folders to invalidate cache
+for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}) do
+	local folder = CarTools:FindFirstChild(folderName)
+	if folder then
+		folder.ChildAdded:Connect(function() ToolCache = nil end)
+		folder.ChildRemoved:Connect(function() ToolCache = nil end)
+	end
+end
 
 -- Finds a tool by partial name (e.g. "civ" finds "Honda Civic")
 local function matchTool(query)
