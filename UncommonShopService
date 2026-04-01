@@ -381,16 +381,7 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		local toolsFolder = ServerStorage:FindFirstChild("CarTools")
 		local toolSource = nil
 		if toolsFolder then
-			toolSource = (function()
-				local t = toolsFolder:FindFirstChild(carName, true) or toolsFolder:FindFirstChild(carName .. " Item", true)
-				if not t then
-					local clean = carName:gsub(" Item", ""):gsub("Item", "")
-					for _, d in pairs(toolsFolder:GetDescendants()) do
-						if d.Name == clean or d.Name:gsub(" Item", "") == clean then return d end
-					end
-				end
-				return t
-			end)()
+			toolSource = toolsFolder:FindFirstChild(carName, true) or toolsFolder:FindFirstChild(carName .. " Item", true)
 			if not toolSource then
 				local clean = carName:gsub(" Item", ""):gsub("Item", "")
 				for _, t in pairs(toolsFolder:GetDescendants()) do

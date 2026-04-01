@@ -384,12 +384,19 @@ local function setupPad(padObject)
 end
 
 -- Initialize Existing Tycoons
-for _, plot in pairs(TycoonFolder:GetChildren()) do
-	local padsFolder = plot:FindFirstChild("Pads")
+local function handlePlotAdded(plot)
+	local padsFolder = plot:WaitForChild("Pads", 10)
 	if padsFolder then
 		for _, pad in pairs(padsFolder:GetChildren()) do setupPad(pad) end
+		padsFolder.ChildAdded:Connect(setupPad)
 	end
 end
+
+for _, plot in pairs(TycoonFolder:GetChildren()) do
+	task.spawn(handlePlotAdded, plot)
+end
+
+TycoonFolder.ChildAdded:Connect(handlePlotAdded)
 
 -- 🔄 MAINTENANCE LOOP (Updated to check visual state constantly)
 task.spawn(function()
