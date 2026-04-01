@@ -49,6 +49,9 @@ local function FindModelNameFromTool(toolName)
 	if not toolName or typeof(toolName) ~= "string" then return nil end
 	local clean = toolName:gsub(" Item", ""):gsub("Item", "")
 	if CarModels:FindFirstChild(clean, true) then return clean end
+	for _, m in pairs(CarModels:GetDescendants()) do
+		if m.Name == clean then return m.Name end
+	end
 	if CarStats and CarStats.Cars and CarStats.Cars[clean] then
 		local stats = CarStats.Cars[clean]
 		if CarModels:FindFirstChild(stats.Name, true) then return stats.Name end
@@ -61,6 +64,7 @@ local function FindToolFromModelName(modelName)
 	if CarTools:FindFirstChild(modelName.." Item", true) then return CarTools:FindFirstChild(modelName.." Item", true) end
 	local clean = modelName:gsub(" Item", ""):gsub("Item", "")
 	for _, t in pairs(CarTools:GetDescendants()) do
+		if t.Name == clean then return t end
 		if t.Name:gsub(" Item", "") == clean then return t end
 	end
 	if CarStats and CarStats.Cars then

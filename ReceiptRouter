@@ -275,7 +275,19 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	elseif CAR_PRODUCT_IDS[pid] then
 		local carName = CAR_PRODUCT_IDS[pid]
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
+		local tool = nil
+		if CarTools then
+			tool = CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true)
+			if not tool then
+				local clean = carName:gsub(" Item", ""):gsub("Item", "")
+				for _, t in pairs(CarTools:GetDescendants()) do
+					if t.Name == clean or t.Name:gsub(" Item", "") == clean then
+						tool = t
+						break
+					end
+				end
+			end
+		end
 
 		if tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
@@ -296,7 +308,19 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	elseif UNCOMMON_CAR_PRODUCT_IDS[pid] then
 		local carName = UNCOMMON_CAR_PRODUCT_IDS[pid]
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
+		local tool = nil
+		if CarTools then
+			tool = CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true)
+			if not tool then
+				local clean = carName:gsub(" Item", ""):gsub("Item", "")
+				for _, t in pairs(CarTools:GetDescendants()) do
+					if t.Name == clean or t.Name:gsub(" Item", "") == clean then
+						tool = t
+						break
+					end
+				end
+			end
+		end
 
 		if tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
@@ -327,7 +351,19 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	elseif RARE_CAR_PRODUCT_IDS[pid] then
 		local carName = RARE_CAR_PRODUCT_IDS[pid]
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
+		local tool = nil
+		if CarTools then
+			tool = CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true)
+			if not tool then
+				local clean = carName:gsub(" Item", ""):gsub("Item", "")
+				for _, t in pairs(CarTools:GetDescendants()) do
+					if t.Name == clean or t.Name:gsub(" Item", "") == clean then
+						tool = t
+						break
+					end
+				end
+			end
+		end
 
 		if tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
@@ -357,7 +393,19 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	elseif EPIC_CAR_PRODUCT_IDS[pid] then
 		local carName = EPIC_CAR_PRODUCT_IDS[pid]
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
+		local tool = nil
+		if CarTools then
+			tool = CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true)
+			if not tool then
+				local clean = carName:gsub(" Item", ""):gsub("Item", "")
+				for _, t in pairs(CarTools:GetDescendants()) do
+					if t.Name == clean or t.Name:gsub(" Item", "") == clean then
+						tool = t
+						break
+					end
+				end
+			end
+		end
 
 		if tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
