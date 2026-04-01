@@ -34,15 +34,19 @@ end
 print("📦 Checking CarModels...")
 local modelNames = {}
 local modelCount = 0
-for _, model in pairs(CarModels:GetDescendants()) do
-	if model:IsA("Model") then
+for _, folder in pairs(CarModels:GetChildren()) do
+	if folder:IsA("Folder") then
+		for _, model in pairs(folder:GetChildren()) do
+			if model:IsA("Model") then
 		modelCount += 1
 		local cleanName = model.Name:gsub(" Item", ""):gsub("Item", "")
 		modelNames[cleanName] = model
 
 		-- Check for PrimaryPart
 		if not model.PrimaryPart then
-			warn("  ⚠️ Model without PrimaryPart found: " .. model.Name)
+					warn("  ⚠️ Model without PrimaryPart found: " .. model.Name)
+				end
+			end
 		end
 	end
 end
@@ -52,8 +56,10 @@ print("   ✅ Found " .. modelCount .. " models.")
 print("\n🎒 Checking CarTools...")
 local toolNames = {}
 local toolCount = 0
-for _, tool in pairs(CarTools:GetDescendants()) do
-	if tool:IsA("Tool") then
+for _, folder in pairs(CarTools:GetChildren()) do
+	if folder:IsA("Folder") then
+		for _, tool in pairs(folder:GetChildren()) do
+			if tool:IsA("Tool") then
 		toolCount += 1
 		local cleanName = tool.Name:gsub(" Item", ""):gsub("Item", "")
 		toolNames[cleanName] = tool
@@ -68,7 +74,9 @@ for _, tool in pairs(CarTools:GetDescendants()) do
 		if not toolId then
 			warn("  ⚠️ Tool missing 'ToolId' Attribute: " .. tool.Name)
 		elseif toolId ~= cleanName and toolId ~= tool.Name then
-			warn("  ⚠️ ToolId Attribute mismatch: " .. tool.Name .. " (ToolId: " .. toolId .. ")")
+					warn("  ⚠️ ToolId Attribute mismatch: " .. tool.Name .. " (ToolId: " .. toolId .. ")")
+				end
+			end
 		end
 	end
 end

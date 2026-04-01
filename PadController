@@ -49,8 +49,12 @@ local function FindModelNameFromTool(toolName)
 	if not toolName or typeof(toolName) ~= "string" then return nil end
 	local clean = toolName:gsub(" Item", ""):gsub("Item", "")
 	if CarModels:FindFirstChild(clean, true) then return clean end
-	for _, m in pairs(CarModels:GetDescendants()) do
-		if m.Name == clean then return m.Name end
+	for _, rarityFolder in pairs(CarModels:GetChildren()) do
+		if rarityFolder:IsA("Folder") then
+			for _, m in pairs(rarityFolder:GetChildren()) do
+				if m.Name == clean then return m.Name end
+			end
+		end
 	end
 	if CarStats and CarStats.Cars and CarStats.Cars[clean] then
 		local stats = CarStats.Cars[clean]
@@ -63,9 +67,12 @@ local function FindToolFromModelName(modelName)
 	if CarTools:FindFirstChild(modelName, true) then return CarTools:FindFirstChild(modelName, true) end
 	if CarTools:FindFirstChild(modelName.." Item", true) then return CarTools:FindFirstChild(modelName.." Item", true) end
 	local clean = modelName:gsub(" Item", ""):gsub("Item", "")
-	for _, t in pairs(CarTools:GetDescendants()) do
-		if t.Name == clean then return t end
-		if t.Name:gsub(" Item", "") == clean then return t end
+	for _, rarityFolder in pairs(CarTools:GetChildren()) do
+		if rarityFolder:IsA("Folder") then
+			for _, t in pairs(rarityFolder:GetChildren()) do
+				if t.Name == clean or t.Name:gsub(" Item", "") == clean then return t end
+			end
+		end
 	end
 	if CarStats and CarStats.Cars then
 		for key, stats in pairs(CarStats.Cars) do

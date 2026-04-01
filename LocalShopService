@@ -320,10 +320,15 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 			toolSource = toolsFolder:FindFirstChild(carName, true) or toolsFolder:FindFirstChild(carName .. " Item", true)
 			if not toolSource then
 				local clean = carName:gsub(" Item", ""):gsub("Item", "")
-				for _, t in pairs(toolsFolder:GetDescendants()) do
-					if t.Name == clean or t.Name:gsub(" Item", "") == clean then
-						toolSource = t
-						break
+				for _, rarityFolder in pairs(toolsFolder:GetChildren()) do
+					if rarityFolder:IsA("Folder") then
+						for _, t in pairs(rarityFolder:GetChildren()) do
+							if t.Name == clean or t.Name:gsub(" Item", "") == clean then
+								toolSource = t
+								break
+							end
+						end
+						if toolSource then break end
 					end
 				end
 			end

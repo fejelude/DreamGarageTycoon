@@ -101,8 +101,12 @@ local function validateTool(tool)
 	if CarTools:FindFirstChild(id .. " Item", true) then return true end
 	-- Fallback deep search
 	local clean = id:gsub(" Item", ""):gsub("Item", "")
-	for _, t in pairs(CarTools:GetDescendants()) do
-		if t.Name == clean or t.Name:gsub(" Item", "") == clean then return true end
+	for _, rarityFolder in pairs(CarTools:GetChildren()) do
+		if rarityFolder:IsA("Folder") then
+			for _, t in pairs(rarityFolder:GetChildren()) do
+				if t.Name == clean or t.Name:gsub(" Item", "") == clean then return true end
+			end
+		end
 	end
 	return false
 end
@@ -162,9 +166,12 @@ local function FindToolNameFromModel(modelName)
 	if CarTools:FindFirstChild(modelName, true) then return modelName end
 	if CarTools:FindFirstChild(modelName .. " Item", true) then return modelName .. " Item" end
 	local clean = modelName:gsub(" Item", ""):gsub("Item", "")
-	for _, t in pairs(CarTools:GetDescendants()) do
-		if t.Name == clean then return t.Name end
-		if t.Name:gsub(" Item", "") == clean then return t.Name end
+	for _, rarityFolder in pairs(CarTools:GetChildren()) do
+		if rarityFolder:IsA("Folder") then
+			for _, t in pairs(rarityFolder:GetChildren()) do
+				if t.Name == clean or t.Name:gsub(" Item", "") == clean then return t.Name end
+			end
+		end
 	end
 	if CarStats and CarStats.Cars then
 		for internalID, stats in pairs(CarStats.Cars) do
@@ -181,8 +188,12 @@ local function FindModelNameFromTool(toolName)
 	if not toolName or typeof(toolName) ~= "string" then return nil end
 	local clean = toolName:gsub(" Item", ""):gsub("Item", "")
 	if CarModels:FindFirstChild(clean, true) then return clean end
-	for _, m in pairs(CarModels:GetDescendants()) do
-		if m.Name == clean then return m.Name end
+	for _, rarityFolder in pairs(CarModels:GetChildren()) do
+		if rarityFolder:IsA("Folder") then
+			for _, m in pairs(rarityFolder:GetChildren()) do
+				if m.Name == clean then return m.Name end
+			end
+		end
 	end
 	if CarStats and CarStats.Cars and CarStats.Cars[clean] then
 		local stats = CarStats.Cars[clean]

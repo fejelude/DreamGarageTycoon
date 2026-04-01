@@ -45,8 +45,12 @@ end
 local function getAllTools()
 	if ToolCache then return ToolCache end
 	local tools = {}
-	for _, t in pairs(CarTools:GetDescendants()) do
-		if t:IsA("Tool") then table.insert(tools, t) end
+	for _, folder in pairs(CarTools:GetChildren()) do
+		if folder:IsA("Folder") then
+			for _, t in pairs(folder:GetChildren()) do
+				if t:IsA("Tool") then table.insert(tools, t) end
+			end
+		end
 	end
 	ToolCache = tools
 	return tools

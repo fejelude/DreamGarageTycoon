@@ -280,10 +280,15 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			tool = CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true)
 			if not tool then
 				local clean = carName:gsub(" Item", ""):gsub("Item", "")
-				for _, t in pairs(CarTools:GetDescendants()) do
-					if t.Name == clean or t.Name:gsub(" Item", "") == clean then
-						tool = t
-						break
+				for _, rarityFolder in pairs(CarTools:GetChildren()) do
+					if rarityFolder:IsA("Folder") then
+						for _, t in pairs(rarityFolder:GetChildren()) do
+							if t.Name == clean or t.Name:gsub(" Item", "") == clean then
+								tool = t
+								break
+							end
+						end
+						if tool then break end
 					end
 				end
 			end
@@ -313,10 +318,15 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			tool = CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true)
 			if not tool then
 				local clean = carName:gsub(" Item", ""):gsub("Item", "")
-				for _, t in pairs(CarTools:GetDescendants()) do
-					if t.Name == clean or t.Name:gsub(" Item", "") == clean then
-						tool = t
-						break
+				for _, rarityFolder in pairs(CarTools:GetChildren()) do
+					if rarityFolder:IsA("Folder") then
+						for _, t in pairs(rarityFolder:GetChildren()) do
+							if t.Name == clean or t.Name:gsub(" Item", "") == clean then
+								tool = t
+								break
+							end
+						end
+						if tool then break end
 					end
 				end
 			end
@@ -356,10 +366,15 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			tool = CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true)
 			if not tool then
 				local clean = carName:gsub(" Item", ""):gsub("Item", "")
-				for _, t in pairs(CarTools:GetDescendants()) do
-					if t.Name == clean or t.Name:gsub(" Item", "") == clean then
-						tool = t
-						break
+				for _, rarityFolder in pairs(CarTools:GetChildren()) do
+					if rarityFolder:IsA("Folder") then
+						for _, t in pairs(rarityFolder:GetChildren()) do
+							if t.Name == clean or t.Name:gsub(" Item", "") == clean then
+								tool = t
+								break
+							end
+						end
+						if tool then break end
 					end
 				end
 			end
@@ -398,10 +413,15 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			tool = CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true)
 			if not tool then
 				local clean = carName:gsub(" Item", ""):gsub("Item", "")
-				for _, t in pairs(CarTools:GetDescendants()) do
-					if t.Name == clean or t.Name:gsub(" Item", "") == clean then
-						tool = t
-						break
+				for _, rarityFolder in pairs(CarTools:GetChildren()) do
+					if rarityFolder:IsA("Folder") then
+						for _, t in pairs(rarityFolder:GetChildren()) do
+							if t.Name == clean or t.Name:gsub(" Item", "") == clean then
+								tool = t
+								break
+							end
+						end
+						if tool then break end
 					end
 				end
 			end
