@@ -48,22 +48,26 @@ end
 local function FindModelNameFromTool(toolName)
 	if not toolName or typeof(toolName) ~= "string" then return nil end
 	local clean = toolName:gsub(" Item", ""):gsub("Item", "")
-	if CarModels:FindFirstChild(clean) then return clean end
+	if CarModels:FindFirstChild(clean, true) then return clean end
 	if CarStats and CarStats.Cars and CarStats.Cars[clean] then
 		local stats = CarStats.Cars[clean]
-		if CarModels:FindFirstChild(stats.Name) then return stats.Name end
+		if CarModels:FindFirstChild(stats.Name, true) then return stats.Name end
 	end
 	return nil
 end
 
 local function FindToolFromModelName(modelName)
-	if CarTools:FindFirstChild(modelName) then return CarTools[modelName] end
-	if CarTools:FindFirstChild(modelName.." Item") then return CarTools[modelName.." Item"] end
+	if CarTools:FindFirstChild(modelName, true) then return CarTools:FindFirstChild(modelName, true) end
+	if CarTools:FindFirstChild(modelName.." Item", true) then return CarTools:FindFirstChild(modelName.." Item", true) end
+	local clean = modelName:gsub(" Item", ""):gsub("Item", "")
+	for _, t in pairs(CarTools:GetDescendants()) do
+		if t.Name:gsub(" Item", "") == clean then return t end
+	end
 	if CarStats and CarStats.Cars then
 		for key, stats in pairs(CarStats.Cars) do
 			if stats.Name == modelName then
-				if CarTools:FindFirstChild(key) then return CarTools[key] end
-				if CarTools:FindFirstChild(key.." Item") then return CarTools[key.." Item"] end
+				if CarTools:FindFirstChild(key, true) then return CarTools:FindFirstChild(key, true) end
+				if CarTools:FindFirstChild(key.." Item", true) then return CarTools:FindFirstChild(key.." Item", true) end
 			end
 		end
 	end
@@ -228,7 +232,7 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 	-- 3. Resolve Model from ID (NOT tool.Name)
 	-- We pass the secure ID to the helper. 
 	local realModelName = FindModelNameFromTool(secureToolId)
-	local realCar = realModelName and CarModels:FindFirstChild(realModelName)
+	local realCar = realModelName and CarModels:FindFirstChild(realModelName, true)
 
 	if realCar then
 		local toolName = tool.Name -- Still need name to destroy the instance
@@ -258,10 +262,10 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 			else
 				warn("⚠️ Spawn Failed! Refunding item to " .. player.Name)
 				-- Refund using the SECURE ID, not the tool name
-				local originalTool = CarTools:FindFirstChild(secureToolId) 
+				local originalTool = CarTools:FindFirstChild(secureToolId, true)
 				-- Fallback search if ID has "Item" suffix but CarTool doesn't or vice versa
 				if not originalTool then
-					originalTool = CarTools:FindFirstChild(secureToolId .. " Item")
+					originalTool = CarTools:FindFirstChild(secureToolId .. " Item", true)
 				end
 
 				if originalTool then

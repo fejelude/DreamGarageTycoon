@@ -315,7 +315,7 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		if wallet.Value < carData.Price then return false, "Insufficient Cash (Withdraw from ATM)" end
 
 		local toolsFolder = ServerStorage:FindFirstChild("CarTools")
-		local toolSource = toolsFolder and (toolsFolder:FindFirstChild(carName) or toolsFolder:FindFirstChild(carName .. " Item"))
+		local toolSource = toolsFolder and (toolsFolder:FindFirstChild(carName, true) or toolsFolder:FindFirstChild(carName .. " Item", true))
 		if not toolSource then return false, "System Error: Tool Missing" end
 
 		local realToolName = toolSource.Name

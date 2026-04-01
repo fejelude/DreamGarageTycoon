@@ -275,7 +275,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	elseif CAR_PRODUCT_IDS[pid] then
 		local carName = CAR_PRODUCT_IDS[pid]
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName) or CarTools:FindFirstChild(carName.." Item"))
+		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
 
 		if tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
@@ -296,7 +296,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	elseif UNCOMMON_CAR_PRODUCT_IDS[pid] then
 		local carName = UNCOMMON_CAR_PRODUCT_IDS[pid]
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName) or CarTools:FindFirstChild(carName.." Item"))
+		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
 
 		if tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
@@ -327,7 +327,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	elseif RARE_CAR_PRODUCT_IDS[pid] then
 		local carName = RARE_CAR_PRODUCT_IDS[pid]
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName) or CarTools:FindFirstChild(carName.." Item"))
+		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
 
 		if tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
@@ -357,7 +357,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	elseif EPIC_CAR_PRODUCT_IDS[pid] then
 		local carName = EPIC_CAR_PRODUCT_IDS[pid]
 		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName) or CarTools:FindFirstChild(carName.." Item"))
+		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
 
 		if tool then
 			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")

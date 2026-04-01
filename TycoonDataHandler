@@ -96,8 +96,15 @@ local function validateTool(tool)
 	if not tool:GetAttribute("IssuedByServer") then return false end
 	local id = tool:GetAttribute("ToolId")
 	if not id then return false end
-	if not CarTools:FindFirstChild(id) then return false end
-	return true
+	-- Support both formats since ID might be "Delta" but tool is "Delta Item"
+	if CarTools:FindFirstChild(id, true) then return true end
+	if CarTools:FindFirstChild(id .. " Item", true) then return true end
+	-- Fallback deep search
+	local clean = id:gsub(" Item", ""):gsub("Item", "")
+	for _, t in pairs(CarTools:GetDescendants()) do
+		if t.Name:gsub(" Item", "") == clean then return true end
+	end
+	return false
 end
 
 local function sanitizeInventory(player)
@@ -152,17 +159,17 @@ end
 -- 🛠️ ASSET LOOKUPS
 -- ----------------------------------------------------------------------------
 local function FindToolNameFromModel(modelName)
-	if CarTools:FindFirstChild(modelName) then return modelName end
-	if CarTools:FindFirstChild(modelName .. " Item") then return modelName .. " Item" end
+	if CarTools:FindFirstChild(modelName, true) then return modelName end
+	if CarTools:FindFirstChild(modelName .. " Item", true) then return modelName .. " Item" end
 	local clean = modelName:gsub(" Item", ""):gsub("Item", "")
-	for _, t in pairs(CarTools:GetChildren()) do
+	for _, t in pairs(CarTools:GetDescendants()) do
 		if t.Name:gsub(" Item", "") == clean then return t.Name end
 	end
 	if CarStats and CarStats.Cars then
 		for internalID, stats in pairs(CarStats.Cars) do
 			if stats.Name == modelName then
-				if CarTools:FindFirstChild(internalID .. " Item") then return internalID .. " Item"
-				elseif CarTools:FindFirstChild(internalID) then return internalID end
+				if CarTools:FindFirstChild(internalID .. " Item", true) then return internalID .. " Item"
+				elseif CarTools:FindFirstChild(internalID, true) then return internalID end
 			end
 		end
 	end
@@ -171,10 +178,10 @@ end
 
 local function FindModelNameFromTool(toolName)
 	local clean = toolName:gsub(" Item", ""):gsub("Item", "")
-	if CarModels:FindFirstChild(clean) then return clean end
+	if CarModels:FindFirstChild(clean, true) then return clean end
 	if CarStats and CarStats.Cars and CarStats.Cars[clean] then
 		local stats = CarStats.Cars[clean]
-		if CarModels:FindFirstChild(stats.Name) then return stats.Name end
+		if CarModels:FindFirstChild(stats.Name, true) then return stats.Name end
 	end
 	return nil
 end
@@ -200,14 +207,14 @@ end
 -- ----------------------------------------------------------------------------
 local function giveTool(player, toolName, customAttributes)
 	if not player or not player.Parent then return end
-	local sourceTool = CarTools:FindFirstChild(toolName)
+	local sourceTool = CarTools:FindFirstChild(toolName, true)
 	if not sourceTool then
 		local altName = toolName:gsub(" Item", "")
-		sourceTool = CarTools:FindFirstChild(altName)
+		sourceTool = CarTools:FindFirstChild(altName, true)
 	end
 	if not sourceTool then
 		local rec = FindToolNameFromModel(toolName)
-		if rec then sourceTool = CarTools:FindFirstChild(rec) end
+		if rec then sourceTool = CarTools:FindFirstChild(rec, true) end
 	end
 
 	if sourceTool then
@@ -301,7 +308,7 @@ local function RestoreLayout(player, plot, layoutData)
 			if isOccupied and not isOccupied.Value then
 				local realModelName = FindModelNameFromTool(toolName)
 				if realModelName then
-					local carModel = CarModels:FindFirstChild(realModelName)
+					local carModel = CarModels:FindFirstChild(realModelName, true)
 					if carModel then
 						local newCar = carModel:Clone()
 						newCar:SetAttribute("OwnerUserId", player.UserId)
@@ -692,7 +699,7 @@ local function save(player, isClosing)
 						warn("⚠️ Anti-Wipe (Inventory): Preserving for " .. player.Name)
 						finalInventory = {}
 						for _, oldId in pairs(oldData.Inventory) do
-							if CarTools:FindFirstChild(oldId) then
+							if CarTools:FindFirstChild(oldId, true) then
 								table.insert(finalInventory, oldId)
 							end
 						end
