@@ -1,0 +1,78 @@
+-- Purpose: Diagnostics for CarTools and CarModels hierarchy against CarStats
+-- Runs on: Server (ServerScriptService)
+-- Notes: Iterates through CarStats and verifies the target Tool and Model exists in the correct Rarity folder.
+
+local ServerStorage = game:GetService("ServerStorage")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local CarModels = ServerStorage:WaitForChild("CarModels")
+local CarTools = ServerStorage:WaitForChild("CarTools")
+local CarStatsModule = ReplicatedStorage:WaitForChild("CarStats")
+
+local CarStats = require(CarStatsModule)
+
+local VALID_RARITIES = {
+	Common = true,
+	Uncommon = true,
+	Rare = true,
+	Epic = true,
+	Legendary = true,
+	Mythic = true
+}
+
+print("=============================================")
+print("🛡️ [Hierarchy Diagnostics] Starting Scan...")
+print("=============================================")
+
+local missingTools = 0
+local missingModels = 0
+local invalidRarities = 0
+
+for carId, data in pairs(CarStats.Cars) do
+	local expectedRarity = data.Rarity
+	local modelName = data.Name -- This is usually the model name (e.g. "Clunker", "Neo-Revuelto")
+
+	if not expectedRarity or not VALID_RARITIES[expectedRarity] then
+		warn("⚠️ [Hierarchy] Invalid or missing Rarity for CarStats ID '" .. carId .. "': " .. tostring(expectedRarity))
+		invalidRarities += 1
+		continue
+	end
+
+	-- 1. Check Tool
+	local toolFolder = CarTools:FindFirstChild(expectedRarity)
+	if not toolFolder then
+		warn("❌ [Hierarchy] Missing Folder in CarTools: " .. expectedRarity)
+	else
+		-- Look for the tool. We check either `carId` or `modelName` and their " Item" variants
+		local tool = toolFolder:FindFirstChild(carId) or
+					 toolFolder:FindFirstChild(carId .. " Item") or
+					 toolFolder:FindFirstChild(modelName) or
+					 toolFolder:FindFirstChild(modelName .. " Item")
+
+		if not tool then
+			warn("❌ [Hierarchy - TOOL] Missing Tool for '" .. carId .. "' in ServerStorage.CarTools." .. expectedRarity)
+			missingTools += 1
+		end
+	end
+
+	-- 2. Check Model
+	local modelFolder = CarModels:FindFirstChild(expectedRarity)
+	if not modelFolder then
+		warn("❌ [Hierarchy] Missing Folder in CarModels: " .. expectedRarity)
+	else
+		-- Look for the model.
+		local model = modelFolder:FindFirstChild(modelName) or modelFolder:FindFirstChild(carId)
+
+		if not model then
+			warn("❌ [Hierarchy - MODEL] Missing Model for '" .. carId .. "' (Expected Name: '" .. modelName .. "') in ServerStorage.CarModels." .. expectedRarity)
+			missingModels += 1
+		end
+	end
+end
+
+print("=============================================")
+print("🛡️ [Hierarchy Diagnostics] Scan Complete.")
+print("  - Invalid Rarities: " .. invalidRarities)
+print("  - Missing Tools: " .. missingTools)
+print("  - Missing Models: " .. missingModels)
+print("=============================================")

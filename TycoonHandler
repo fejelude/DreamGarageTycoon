@@ -62,9 +62,11 @@ local function assignPlot(player)
 	-- 1. Gather all plots
 	local plots = TycoonFolder:GetChildren()
 
-	-- 2. Sort plots alphabetically/numerically by Name (Ascending)
+	-- 2. Sort plots numerically by parsing the number from the Name (e.g., "Tycoon1" -> 1)
 	table.sort(plots, function(a, b)
-		return a.Name < b.Name
+		local numA = tonumber(a.Name:match("%d+")) or 999
+		local numB = tonumber(b.Name:match("%d+")) or 999
+		return numA < numB
 	end)
 
 	-- 3. Loop through the sorted array using ipairs to respect the sequence
