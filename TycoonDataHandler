@@ -21,6 +21,37 @@
 --   MoneyManager.GetBalance now reads Cash from HiddenStats instead of leaderstats.
 --   Previously every save wrote 0 for Bank because Cash was no longer in leaderstats,
 --   causing the balance to be wiped on every rejoin.
+--
+-- FIX (Inventory Doubles on Every Rejoin — CRITICAL):
+--   The save() function previously scanned both Backpack AND StarterGear.
+--   Because giveTool() places a clone in both containers, each tool was recorded
+--   twice per unique type. Over successive rejoin cycles the inventory would
+--   grow exponentially (3 cars → 4 → 5 → ...). StarterGear is now excluded
+--   from the inventory scan; it is a within-session respawn mirror only and
+--   must never contribute to the persisted inventory count.
+--
+-- FIX (Failed Saves Silently Drop Data — HIGH):
+--   session.IsDirty and session.LastSave were reset unconditionally after the
+--   pcall around executeSave, even when every retry failed. Data written since
+--   the last successful save was permanently lost with no retry possible. Both
+--   fields are now only updated when the save actually succeeded.
+--
+-- FIX (AdminAPI RemoveTool Bypasses SacrificeOccurred — MEDIUM):
+--   AdminAPI's RemoveTool action did not set session.SacrificeOccurred = true.
+--   Any tool removed via the admin API could be incorrectly restored by the
+--   inventory anti-wipe guard on the next save. The flag is now set in all
+--   three removal paths (AdminAPI, LegendaryCraftingAPI, MythicalCraftingAPI).
+--
+-- FIX (Shop Cleanup Not pcall-Protected → IsSaving Deadlock — LOW):
+--   If any shopBindable:Invoke("Close", player) threw an error, execution
+--   never reached session.IsSaving = false. The player's session would be
+--   permanently locked and no future autosave would ever run. All shop cleanup
+--   calls are now wrapped in individual pcalls.
+--
+-- FIX (Ambiguous loop variable `_` used as modulus counter — LOW):
+--   RestoreLayout used `_` (the conventional discard variable) as both the
+--   loop index discard AND a modulo throttle. A dedicated `padIndex` counter
+--   now drives the task.wait() throttle.
 
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
@@ -312,6 +343,11 @@ local function RestoreLayout(player, plot, layoutData)
 	local processedPads = {}
 	local restoredCount = 0
 
+	-- ✅ FIX: Use a dedicated counter instead of the discard variable `_`
+	--   so the throttle task.wait() fires reliably every 5 pads regardless
+	--   of what ipairs assigns internally.
+	local padIndex = 0
+
 	for _, data in ipairs(layoutData) do
 		local toolName = data.Tool
 		local padName = data.Pad
@@ -357,8 +393,12 @@ local function RestoreLayout(player, plot, layoutData)
 				end
 			end
 		end
+
 		releasePadLock(lockId)
-		if _ % 5 == 0 then task.wait() end
+
+		-- ✅ FIX: Throttle using dedicated padIndex counter instead of `_`
+		padIndex += 1
+		if padIndex % 5 == 0 then task.wait() end
 	end
 
 	if restoredCount > 0 then
@@ -440,23 +480,37 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		markDirty(player)
 		print("⚠️ FORCE WIPE INITIATED FOR: " .. player.Name)
 		return true
+
 	elseif action == "GiveTool" and player then
 		local toolName, customAttributes = ...
 		giveTool(player, toolName, customAttributes)
 		return true
+
 	elseif action == "RemoveTool" and player then
 		local targetToolId, requestedAmount = ...
 		if not targetToolId then return false end
+
 		local removedCount = removeMatchingTools(player, targetToolId, requestedAmount)
 		if removedCount < math.max(1, tonumber(requestedAmount) or 1) then
 			return false, removedCount
 		end
+
+		-- ✅ FIX: Set SacrificeOccurred so the anti-wipe guard does not
+		--   restore admin-removed tools on the next save, matching the
+		--   behaviour of LegendaryCraftingInventoryAPI and MythicalCraftingInventoryAPI.
+		local session = SessionData[player]
+		if session then
+			session.SacrificeOccurred = true
+		end
+
 		markDirty(player)
 		return true, removedCount
+
 	elseif action == "MarkDirty" and player then
 		markDirty(player)
 		return true
 	end
+
 	return false
 end
 
@@ -601,6 +655,8 @@ local function save(player, isClosing)
 
 	session.IsSaving = true -- 🔒 LOCK
 
+	local saveSucceeded = false -- ✅ FIX: track outcome so dirty/timer only update on success
+
 	local function executeSave()
 		print("💾 Saving data for " .. player.Name .. "...")
 
@@ -614,6 +670,11 @@ local function save(player, isClosing)
 		local invCount = 0
 		local seenInstances = {}
 
+		-- ✅ FIX: Do NOT scan StarterGear. StarterGear holds one mirror clone
+		--   of each unique tool purely so tools survive respawns within a
+		--   session. Scanning it caused every tool to be recorded twice,
+		--   leading to exponential inventory growth across rejoin cycles.
+		--   Backpack + Character is the authoritative inventory source.
 		local function scanContainer(container)
 			if not container then return end
 			for _, tool in pairs(container:GetChildren()) do
@@ -631,7 +692,7 @@ local function save(player, isClosing)
 		end
 
 		scanContainer(player:FindFirstChild("Backpack"))
-		scanContainer(player:FindFirstChild("StarterGear"))
+		-- StarterGear intentionally excluded — see FIX note above
 		scanContainer(player.Character)
 
 		local layout = {}
@@ -788,7 +849,10 @@ local function save(player, isClosing)
 				end)
 			end)
 
-			if updateSuccess and updateResult ~= nil then return true end
+			if updateSuccess and updateResult ~= nil then
+				saveSucceeded = true
+				return true
+			end
 			task.wait(0.35 * attempt)
 		end
 		error("UpdateAsync failed after retries")
@@ -801,30 +865,39 @@ local function save(player, isClosing)
 		print("✅ Saved: " .. player.Name)
 	end
 
-	session.IsDirty = false
-	session.LastSave = os.time()
-
-	-- [[ SHOP CLEANUP ]]
-	if isClosing then
-		local shopBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
-		if shopBindable then shopBindable:Invoke("Close", player) end
-
-		local uncommonShopBindable = ServerStorage:FindFirstChild("UncommonShopPersistenceFunction")
-		if uncommonShopBindable then uncommonShopBindable:Invoke("Close", player) end
-
-		local rareShopBindable = ServerStorage:FindFirstChild("RareShopPersistenceFunction")
-		if rareShopBindable then rareShopBindable:Invoke("Close", player) end
-
-		local epicShopBindable = ServerStorage:FindFirstChild("EpicShopPersistenceFunction")
-		if epicShopBindable then epicShopBindable:Invoke("Close", player) end
-
-		local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
-		if legendaryShopBindable then legendaryShopBindable:Invoke("Close", player) end
-
-		local mythicalShopBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
-		if mythicalShopBindable then mythicalShopBindable:Invoke("Close", player) end
+	-- ✅ FIX: Only mark the session clean and advance the save timer when the
+	--   save actually succeeded. If every retry failed, IsDirty stays true so
+	--   the next autosave cycle will attempt again rather than silently losing
+	--   the unsaved changes.
+	if saveSucceeded then
+		session.IsDirty = false
+		session.LastSave = os.time()
 	end
 
+	-- [[ SHOP CLEANUP ]]
+	-- ✅ FIX: Each shop Invoke is wrapped in its own pcall. If any individual
+	--   shop script errors, it does not prevent the remaining cleanup calls
+	--   from running, and critically does not prevent session.IsSaving from
+	--   being released — which previously caused a permanent save deadlock.
+	if isClosing then
+		local function safeClose(bindableName)
+			local b = ServerStorage:FindFirstChild(bindableName)
+			if not b then return end
+			local ok2, err2 = pcall(function() b:Invoke("Close", player) end)
+			if not ok2 then
+				warn("⚠️ Shop cleanup error (" .. bindableName .. "): " .. tostring(err2))
+			end
+		end
+
+		safeClose("ShopPersistenceFunction")
+		safeClose("UncommonShopPersistenceFunction")
+		safeClose("RareShopPersistenceFunction")
+		safeClose("EpicShopPersistenceFunction")
+		safeClose("LegendaryShopPersistenceFunction")
+		safeClose("MythicalShopPersistenceFunction")
+	end
+
+	-- 🔓 ALWAYS release the lock, even when save failed or cleanup errored
 	session.IsSaving = false
 
 	local syncEvent = game.ServerStorage:FindFirstChild("TycoonSaveCompleted")
@@ -846,7 +919,7 @@ local function InitializePlayer(player)
 		DataLoaded        = false,
 		ExplicitClear     = false,
 		IsSaving          = false,
-		SacrificeOccurred = false, -- set true by LegendaryCraftingInventoryAPI:RemoveTool
+		SacrificeOccurred = false, -- set true by any RemoveTool API path
 	}
 
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
