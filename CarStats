@@ -21,21 +21,21 @@ CarStats.Cars = {
 		CPS = 1,
 		Rarity = "Common",
 		Price = 8,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://77461766313927"
 	},
 	["Rustix"] = {
 		Name = "Rustix",
 		CPS = 3,
 		Rarity = "Common",
 		Price = 74,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://99020962527307"
 	},
 	["Breako"] = {
 		Name = "Breako",
 		CPS = 6,
 		Rarity = "Common",
 		Price = 300,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://75157672528769"
 	},
 	["Delta"] = {
 		Name = "Delta",
@@ -49,7 +49,7 @@ CarStats.Cars = {
 		CPS = 18,
 		Rarity = "Common",
 		Price = 2700,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://121269756910499"
 	},
 	["Iva"] = {
 		Name = "Iva",
@@ -70,7 +70,7 @@ CarStats.Cars = {
 		CPS = 67,
 		Rarity = "Common",
 		Price = 38000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://83228450813196"
 	},
 	["Senator"] = {
 		Name = "Senator",
@@ -108,28 +108,28 @@ CarStats.Cars = {
 		CPS = 1152,
 		Rarity = "Uncommon",
 		Price = 11580000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://80549434406003"
 	},
 	["Yora"] = {
 		Name = "Toyota Camry",
 		CPS = 2304,
 		Rarity = "Uncommon",
 		Price = 46630000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://100860611691470"
 	},
 	["Ricky"] = {
 		Name = "Toyota Hilux",
 		CPS = 4608,
 		Rarity = "Uncommon",
 		Price = 187800000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://131987165243512"
 	},
 	["Uber"] = {
 		Name = "Toyota Vios",
 		CPS = 9216,
 		Rarity = "Uncommon",
 		Price = 756200000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://133479626182397"
 	},
 	["Ironclad"] = {
 		Name = "Toyota Hilux",
@@ -164,14 +164,14 @@ CarStats.Cars = {
 		CPS = 70806,
 		Rarity = "Uncommon",
 		Price = 45528200000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://128746494123971"
 	},
 	["Mia"] = {
 		Name = "Mazda Miata",
 		CPS = 92048,
 		Rarity = "Uncommon",
 		Price = 77139700000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://123042770818859"
 	},
 
 	-- 🟦 RARE TIERS
@@ -216,21 +216,21 @@ CarStats.Cars = {
 		CPS = 251947,
 		Rarity = "Rare",
 		Price = 583607700000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://71807708992897"
 	},
 	["Camara"] = {
 		Name = "Chevrolet Camaro",
 		CPS = 277141,
 		Rarity = "Rare",
 		Price = 706816700000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://70523109585121"
 	},
 	["Corvo"] = {
 		Name = "Chevrolet Corvette",
 		CPS = 304855,
 		Rarity = "Rare",
 		Price = 856040900000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://115624559936422"
 	},
 
 	-- 🟪 EPIC TIERS
@@ -240,21 +240,21 @@ CarStats.Cars = {
 		CPS = 365826,
 		Rarity = "Epic",
 		Price = 1234886900000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://121592699935481"
 	},
 	["Apollo"] = {
 		Name = "Mercedes-Benz SL63",
 		CPS = 402408,
 		Rarity = "Epic",
 		Price = 1495594600000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://96482025395144"
 	},
 	["Sovereign"] = {
 		Name = "Bentley Mulsanne",
 		CPS = 442648,
 		Rarity = "Epic",
 		Price = 1811341300000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://75540917790823"
 	},
 	["Sirene"] = {
 		Name = "Porsche 911",
@@ -268,14 +268,14 @@ CarStats.Cars = {
 		CPS = 535603,
 		Rarity = "Epic",
 		Price = 2656895800000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://126364890907645"
 	},
 	["Shaguar"] = {
 		Name = "Jaguar E-Type",
 		CPS = 589163,
 		Rarity = "Epic",
 		Price = 3217822400000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://106900782827186"
 	},
 	["Vortex"] = {
 		Name = "BMW i8",
@@ -292,28 +292,28 @@ CarStats.Cars = {
 		CPS = 989793,
 		Rarity = "Legendary",
 		Price = 9127912000000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://134268391936184"
 	},
 	["Neo-Performante"] = {
 		Name = "Lamborghini Huracan",
 		CPS = 1187751,
 		Rarity = "Legendary",
 		Price = 13167510800000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://82570438114688"
 	},
 	["Neo-Zentorno"] = {
 		Name = "Lamborghini Sian",
 		CPS = 1425301,
 		Rarity = "Legendary",
 		Price = 18994866300000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://90578253729088"
 	},
 	["Neo-Revuelto"] = {
 		Name = "Lamborghini Revuelto",
 		CPS = 1710361,
 		Rarity = "Legendary",
 		Price = 27401151700000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://70597582162315"
 	},
 	["Yamura"] = {
 		Name = "McLaren Senna",
@@ -344,21 +344,21 @@ CarStats.Cars = {
 		CPS = 3605713,
 		Rarity = "Mythic",
 		Price = 122666543300000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://73109344994067"
 	},
 	["Solitaire"] = {
 		Name = "Lamborghini Egoista",
 		CPS = 4759540,
 		Rarity = "Mythic",
 		Price = 214312047100000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://72773579287906"
 	},
 	["Hyperspace"] = {
 		Name = "Lamborghini Vision",
 		CPS = 5000000,
 		Rarity = "Mythic",
 		Price = 236627293000000,
-		Image = "rbxassetid://0"
+		Image = "rbxassetid://117059311536102"
 	}
 }
 
