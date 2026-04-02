@@ -1,107 +1,143 @@
--- Purpose: Handles all DataStore operations, Security Validation, Session Management, and prevents item duplication.
--- Runs on: Server
--- Location: ServerScriptService > TycoonDataHandler
--- Dependencies: Players, ServerStorage, DataStoreService, Workspace, ReplicatedStorage, HttpService, CarStats, BaseSkinStats
--- Public API: TycoonAdminAPI (BindableFunction), LegendaryCraftingInventoryFunction (BindableFunction)
--- Public API: TycoonAdminAPI (BindableFunction), LegendaryCraftingInventoryFunction (BindableFunction), MythicalCraftingInventoryFunction (BindableFunction)
--- Networking: TycoonAdminLog (RemoteEvent), ShopRemotes (via Bindable)
--- Security: Server-authoritative tool validation, anti-wipe protection, fixed StarterGear duplication exploit.
--- Performance: Batched saving, lock-based pad restoration to prevent race conditions.
--- Notes: Updated to support UNCOMMON, RARE, EPIC, LEGENDARY, and MYTHICAL SHOP Persistence.
+-- ============================================================================
+-- TycoonDataHandler — Server Script
+-- ============================================================================
+-- Purpose:   Handles all DataStore operations, security validation, session
+--            management, and prevents item duplication.
+-- Runs on:   Server
+-- Location:  ServerScriptService > TycoonDataHandler
+-- Dependencies: Players, ServerStorage, DataStoreService, Workspace,
+--               ReplicatedStorage, HttpService, CarStats, BaseSkinStats
+-- Public API:   TycoonAdminAPI (BindableFunction)
+--               LegendaryCraftingInventoryFunction (BindableFunction)
+--               MythicalCraftingInventoryFunction (BindableFunction)
+-- Networking:   TycoonAdminLog (RemoteEvent), ShopRemotes (via Bindable)
+-- Security:     Server-authoritative tool validation, anti-wipe protection.
+-- Performance:  Batched saving, lock-based pad restoration, throttled sanitize.
+-- Notes:        Supports UNCOMMON, RARE, EPIC, LEGENDARY, and MYTHICAL shop
+--               persistence.
+--
+-- ============================================================================
+-- CHANGELOG
+-- ============================================================================
+--
+-- FIX (Held Tool Lost on Disconnect — CRITICAL):
+--   When a player equips a tool it moves from Backpack into Character. If the
+--   character is already destroyed by the time PlayerRemoving fires (a race
+--   Roblox does NOT guarantee against), scanning player.Character returns
+--   nothing, and the equipped tool is silently dropped from the saved
+--   inventory.
+--
+--   Two-layer defence:
+--     1. save() pre-snapshots Character tool IDs synchronously *before* any
+--        yielding occurs, so the scan happens on a still-valid reference.
+--     2. CharacterRemoving caches the held tool ID in session.HeldToolId as a
+--        fallback. If Character is nil when save() runs, this cache is used.
+--   CharacterAdded clears the cache so stale data never bleeds across deaths.
+--
+-- FIX (HasTool Count Inflated by StarterGear Mirror — MEDIUM):
+--   giveTool() places one clone in Backpack (N copies for N owned) and one
+--   mirror clone in StarterGear (always exactly 1, deduped). Previous
+--   countMatchingTools() scanned StarterGear too, meaning a player with
+--   one real tool appeared to own two. A crafting system requiring 2
+--   ingredients would pass with only 1 real item — a free crafting exploit.
+--   StarterGear is now excluded from countMatchingTools; only Backpack +
+--   Character (equipped slot) are counted.
+--
+-- FIX (StarterGear Mirror Orphaned After RemoveTool — MEDIUM):
+--   When the last copy of a tool is removed via removeMatchingTools, the
+--   StarterGear mirror persisted because earlier cleanup only targeted
+--   Backpack and Character. On respawn, the orphaned mirror re-populated
+--   the Backpack as though the player still owned the item.
+--   removeMatchingTools now checks whether any copies survive in
+--   Backpack + Character after the primary removal pass; if none do, the
+--   StarterGear mirror is also destroyed.
+--
+-- FIX (Currency Read Inside UpdateAsync Callback — MEDIUM):
+--   MoneyManager.GetBalance (and other per-player reads) were called inside
+--   the UpdateAsync transform function. Roblox discourages side-effects and
+--   external I/O inside that callback; doing so can produce stale snapshots
+--   if the callback is retried. All currency and attribute values are now
+--   captured synchronously before UpdateAsync is invoked.
 --
 -- FIX (Legendary Sacrifice Dupe):
---   Added session.SacrificeOccurred flag. Set to true whenever
---   LegendaryCraftingInventoryAPI:RemoveTool succeeds. The anti-wipe inventory
---   check is gated behind this flag so a legitimate sacrifice-to-empty-inventory
---   is never mistakenly restored. Without this fix a player could sacrifice all
---   ingredient cars, disconnect, and rejoin with both the sacrifice progress AND
---   the cars restored in their inventory (free duplication).
+--   session.SacrificeOccurred flag gates the inventory anti-wipe check so a
+--   legitimate sacrifice-to-empty-inventory is never incorrectly restored.
 --
--- FIX (Cash resets to 0 on rejoin):
---   MoneyManager.GetBalance now reads Cash from HiddenStats instead of leaderstats.
---   Previously every save wrote 0 for Bank because Cash was no longer in leaderstats,
---   causing the balance to be wiped on every rejoin.
+-- FIX (Cash Resets to 0 on Rejoin):
+--   MoneyManager.GetBalance reads Cash from HiddenStats, not leaderstats.
 --
 -- FIX (Inventory Doubles on Every Rejoin — CRITICAL):
---   The save() function previously scanned both Backpack AND StarterGear.
---   Because giveTool() places a clone in both containers, each tool was recorded
---   twice per unique type. Over successive rejoin cycles the inventory would
---   grow exponentially (3 cars → 4 → 5 → ...). StarterGear is now excluded
---   from the inventory scan; it is a within-session respawn mirror only and
---   must never contribute to the persisted inventory count.
+--   StarterGear excluded from save() inventory scan. It is a within-session
+--   respawn mirror only and must never contribute to the persisted count.
 --
 -- FIX (Failed Saves Silently Drop Data — HIGH):
---   session.IsDirty and session.LastSave were reset unconditionally after the
---   pcall around executeSave, even when every retry failed. Data written since
---   the last successful save was permanently lost with no retry possible. Both
---   fields are now only updated when the save actually succeeded.
+--   IsDirty and LastSave are only updated when the save actually succeeded.
 --
 -- FIX (AdminAPI RemoveTool Bypasses SacrificeOccurred — MEDIUM):
---   AdminAPI's RemoveTool action did not set session.SacrificeOccurred = true.
---   Any tool removed via the admin API could be incorrectly restored by the
---   inventory anti-wipe guard on the next save. The flag is now set in all
---   three removal paths (AdminAPI, LegendaryCraftingAPI, MythicalCraftingAPI).
+--   All removal paths (AdminAPI, LegendaryCraftingAPI, MythicalCraftingAPI)
+--   now set session.SacrificeOccurred = true.
 --
 -- FIX (Shop Cleanup Not pcall-Protected → IsSaving Deadlock — LOW):
---   If any shopBindable:Invoke("Close", player) threw an error, execution
---   never reached session.IsSaving = false. The player's session would be
---   permanently locked and no future autosave would ever run. All shop cleanup
---   calls are now wrapped in individual pcalls.
+--   Each shop cleanup Invoke is wrapped in its own pcall so a single error
+--   cannot prevent session.IsSaving from being released.
 --
--- FIX (Ambiguous loop variable `_` used as modulus counter — LOW):
---   RestoreLayout used `_` (the conventional discard variable) as both the
---   loop index discard AND a modulo throttle. A dedicated `padIndex` counter
---   now drives the task.wait() throttle.
+-- FIX (Ambiguous loop variable `_` as modulus counter — LOW):
+--   RestoreLayout uses a dedicated padIndex counter for the throttle.
+-- ============================================================================
 
-local Players = game:GetService("Players")
-local ServerStorage = game:GetService("ServerStorage")
+local Players          = game:GetService("Players")
+local ServerStorage    = game:GetService("ServerStorage")
 local DataStoreService = game:GetService("DataStoreService")
-local Workspace = game:GetService("Workspace")
+local Workspace        = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
+local HttpService      = game:GetService("HttpService")
 
--- ----------------------------------------------------------------------------
--- ⚙️ CONFIGURATION & CONSTANTS
--- ----------------------------------------------------------------------------
-local DATA_KEY = "Testingv7"
-local PlayerDataStore = DataStoreService:GetDataStore(DATA_KEY)
+-- ============================================================================
+-- ⚙️  CONFIGURATION & CONSTANTS
+-- ============================================================================
+local DATA_KEY            = "Testingv8"
+local PlayerDataStore     = DataStoreService:GetDataStore(DATA_KEY)
 
-local AUTOSAVE_INTERVAL = 180
-local MIN_SAVE_INTERVAL = 60
-local MAX_RETRIES = 3
+local AUTOSAVE_INTERVAL   = 180   -- seconds between automatic saves
+local MIN_SAVE_INTERVAL   = 60    -- minimum seconds between any two saves
+local MAX_RETRIES         = 3     -- DataStore retry attempts
 
-local MAX_INVENTORY_SIZE = 500
-local MAX_LAYOUT_SIZE = 200
-local STARTER_CAR_NAME = "Delta Item"
+local MAX_INVENTORY_SIZE  = 500
+local MAX_LAYOUT_SIZE     = 200
+local STARTER_CAR_NAME    = "Delta Item"
 
--- ----------------------------------------------------------------------------
--- 📂 ASSET REFERENCES
--- ----------------------------------------------------------------------------
-local CarTools = ServerStorage:WaitForChild("CarTools")
-local CarModels = ServerStorage:WaitForChild("CarModels")
-local TycoonFolder = Workspace:WaitForChild("Tycoons")
+-- ============================================================================
+-- 📂  ASSET REFERENCES
+-- ============================================================================
+local CarTools      = ServerStorage:WaitForChild("CarTools")
+local CarModels     = ServerStorage:WaitForChild("CarModels")
+local TycoonFolder  = Workspace:WaitForChild("Tycoons")
 local AdminLogEvent = ServerStorage:FindFirstChild("TycoonAdminLog")
 
 -- 📚 MODULES
 local CarStats
-local success, err = pcall(function()
-	CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
-end)
-if not success then warn("⚠️ CarStats module not found.") end
+do
+	local ok, err = pcall(function()
+		CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+	end)
+	if not ok then warn("⚠️ CarStats module not found: " .. tostring(err)) end
+end
 
--- ----------------------------------------------------------------------------
--- 🔒 STATE MANAGEMENT
--- ----------------------------------------------------------------------------
-local SessionData = {}
-local PadLocks = {}
+-- ============================================================================
+-- 🔒  STATE MANAGEMENT
+-- ============================================================================
+local SessionData = {}  -- [Player] = session table
+local PadLocks    = {}  -- [lockId] = true (prevents concurrent pad restoration)
 
--- ----------------------------------------------------------------------------
--- 🛡️ HELPER FUNCTIONS
--- ----------------------------------------------------------------------------
+-- ============================================================================
+-- 🛡️  HELPERS
+-- ============================================================================
 local function logAdmin(message, severity)
-	local prefix = severity and "[" .. severity .. "] " or "[INFO] "
+	local prefix = severity and ("[" .. severity .. "] ") or "[INFO] "
 	warn("🛡️ " .. prefix .. message)
-	if AdminLogEvent then AdminLogEvent:FireAllClients(prefix .. message) end
+	if AdminLogEvent then
+		AdminLogEvent:FireAllClients(prefix .. message)
+	end
 end
 
 local function markDirty(player)
@@ -111,26 +147,29 @@ local function markDirty(player)
 	end
 end
 
--- ----------------------------------------------------------------------------
--- 🛡️ IDENTITY & VALIDATION
--- ----------------------------------------------------------------------------
+-- ============================================================================
+-- 🛡️  IDENTITY & VALIDATION
+-- ============================================================================
 local function tagIssued(tool, originalName)
 	if not tool then return end
 	tool:SetAttribute("IssuedByServer", true)
-	tool:SetAttribute("IssuedAt", os.time())
-	tool:SetAttribute("IssuedId", HttpService:GenerateGUID(false))
-	tool:SetAttribute("ToolId", originalName)
+	tool:SetAttribute("IssuedAt",       os.time())
+	tool:SetAttribute("IssuedId",       HttpService:GenerateGUID(false))
+	tool:SetAttribute("ToolId",         originalName)
 end
 
 local function safeFindCarTool(targetName)
 	if not targetName then return nil end
 	local cleanName = targetName:gsub(" Item", ""):gsub("Item", "")
 
-	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}) do
+	for _, folderName in ipairs({ "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic" }) do
 		local folder = CarTools:FindFirstChild(folderName)
 		if folder then
 			for _, tool in ipairs(folder:GetChildren()) do
-				if tool.Name == targetName or tool.Name == cleanName .. " Item" or tool.Name == cleanName then
+				if tool.Name == targetName
+					or tool.Name == cleanName .. " Item"
+					or tool.Name == cleanName
+				then
 					return tool
 				end
 			end
@@ -143,7 +182,7 @@ local function safeFindCarModel(targetName)
 	if not targetName then return nil end
 	local cleanName = targetName:gsub(" Item", ""):gsub("Item", "")
 
-	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}) do
+	for _, folderName in ipairs({ "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic" }) do
 		local folder = CarModels:FindFirstChild(folderName)
 		if folder then
 			for _, model in ipairs(folder:GetChildren()) do
@@ -161,10 +200,7 @@ local function validateTool(tool)
 	if not tool:GetAttribute("IssuedByServer") then return false end
 	local id = tool:GetAttribute("ToolId")
 	if not id then return false end
-
-	if safeFindCarTool(id) then return true end
-
-	return false
+	return safeFindCarTool(id) ~= nil
 end
 
 local function sanitizeInventory(player)
@@ -194,30 +230,31 @@ local function sanitizeInventory(player)
 	end
 end
 
--- ----------------------------------------------------------------------------
--- 💰 MONEY MANAGER
--- ----------------------------------------------------------------------------
+-- ============================================================================
+-- 💰  MONEY MANAGER
+-- ============================================================================
 local MoneyManager = {}
+
 function MoneyManager.GetBalance(player, currencyType)
 	if not player then return 0 end
 
-	-- ✅ FIX: Cash lives in HiddenStats, everything else in leaderstats
+	-- Cash lives in HiddenStats; all other currencies live in leaderstats.
 	if currencyType == "Cash" then
-		local hs = player:FindFirstChild("HiddenStats")
+		local hs  = player:FindFirstChild("HiddenStats")
 		if not hs then return 0 end
 		local val = hs:FindFirstChild("Cash")
 		return val and val.Value or 0
 	else
-		local ls = player:FindFirstChild("leaderstats")
+		local ls  = player:FindFirstChild("leaderstats")
 		if not ls then return 0 end
 		local val = ls:FindFirstChild(currencyType)
 		return val and val.Value or 0
 	end
 end
 
--- ----------------------------------------------------------------------------
--- 🛠️ ASSET LOOKUPS
--- ----------------------------------------------------------------------------
+-- ============================================================================
+-- 🛠️  ASSET LOOKUPS
+-- ============================================================================
 local function FindToolNameFromModel(modelName)
 	local tool = safeFindCarTool(modelName)
 	if tool then return tool.Name end
@@ -225,8 +262,8 @@ local function FindToolNameFromModel(modelName)
 	if CarStats and CarStats.Cars then
 		for internalID, stats in pairs(CarStats.Cars) do
 			if stats.Name == modelName then
-				local fallbackTool = safeFindCarTool(internalID)
-				if fallbackTool then return fallbackTool.Name end
+				local fallback = safeFindCarTool(internalID)
+				if fallback then return fallback.Name end
 			end
 		end
 	end
@@ -239,9 +276,9 @@ local function FindModelNameFromTool(toolName)
 
 	local clean = toolName:gsub(" Item", ""):gsub("Item", "")
 	if CarStats and CarStats.Cars and CarStats.Cars[clean] then
-		local stats = CarStats.Cars[clean]
-		local fallbackModel = safeFindCarModel(stats.Name)
-		if fallbackModel then return fallbackModel.Name end
+		local stats    = CarStats.Cars[clean]
+		local fallback = safeFindCarModel(stats.Name)
+		if fallback then return fallback.Name end
 	end
 	return nil
 end
@@ -250,7 +287,7 @@ local function getMainPart(obj)
 	if obj:IsA("BasePart") then return obj end
 	if obj:IsA("Model") then
 		if obj.PrimaryPart then return obj.PrimaryPart end
-		for _, child in pairs(obj:GetChildren()) do
+		for _, child in ipairs(obj:GetChildren()) do
 			if child:IsA("BasePart") and child.Name ~= "Border" then return child end
 		end
 		return obj:FindFirstChildWhichIsA("BasePart")
@@ -262,63 +299,70 @@ local function generateCarGUID(player)
 	return player.UserId .. "_" .. HttpService:GenerateGUID(false)
 end
 
--- ----------------------------------------------------------------------------
--- 🎁 GIVE TOOL
--- ----------------------------------------------------------------------------
+-- ============================================================================
+-- 🎁  GIVE TOOL
+-- ============================================================================
 local function giveTool(player, toolName, customAttributes)
 	if not player or not player.Parent then return end
+
 	local sourceTool = safeFindCarTool(toolName)
 	if not sourceTool then
-		local rec = FindToolNameFromModel(toolName)
-		if rec then sourceTool = safeFindCarTool(rec) end
+		local resolved = FindToolNameFromModel(toolName)
+		if resolved then sourceTool = safeFindCarTool(resolved) end
 	end
 
-	if sourceTool then
-		local backpackTool = sourceTool:Clone()
-		local gearTool = sourceTool:Clone()
-		tagIssued(backpackTool, sourceTool.Name)
-		tagIssued(gearTool, sourceTool.Name)
+	if not sourceTool then
+		warn("⚠️ [DATA] Invalid tool requested: " .. tostring(toolName))
+		return
+	end
 
-		if type(customAttributes) == "table" then
-			for k, v in pairs(customAttributes) do
-				backpackTool:SetAttribute(k, v)
-				gearTool:SetAttribute(k, v)
+	-- Clone once for Backpack (real inventory slot) and once for StarterGear
+	-- (within-session respawn mirror, always exactly 1 copy per unique ToolId).
+	local backpackTool = sourceTool:Clone()
+	local gearTool     = sourceTool:Clone()
+	tagIssued(backpackTool, sourceTool.Name)
+	tagIssued(gearTool,     sourceTool.Name)
+
+	if type(customAttributes) == "table" then
+		for k, v in pairs(customAttributes) do
+			backpackTool:SetAttribute(k, v)
+			gearTool:SetAttribute(k, v)
+		end
+	end
+
+	-- Backpack: real inventory (one slot per owned copy).
+	if player:FindFirstChild("Backpack") then
+		backpackTool.Parent = player.Backpack
+	else
+		warn("⚠️ Receiver dead/respawning. Item added to StarterGear only.")
+		backpackTool:Destroy()
+	end
+
+	-- StarterGear: respawn mirror. Only one clone per unique ToolId allowed.
+	local gear = player:FindFirstChild("StarterGear")
+	if gear then
+		local alreadyMirrored = false
+		for _, child in ipairs(gear:GetChildren()) do
+			if child:GetAttribute("ToolId") == sourceTool.Name then
+				alreadyMirrored = true
+				break
 			end
 		end
-
-		if player:FindFirstChild("Backpack") then
-			backpackTool.Parent = player.Backpack
-		else
-			warn("⚠️ Receiver dead/respawning. Item added to StarterGear only.")
-			backpackTool:Destroy()
-		end
-
-		if player:FindFirstChild("StarterGear") then
-			local exists = false
-			for _, child in ipairs(player.StarterGear:GetChildren()) do
-				if child:GetAttribute("ToolId") == sourceTool.Name then
-					exists = true
-					break
-				end
-			end
-			if not exists then
-				gearTool.Parent = player.StarterGear
-			else
-				gearTool:Destroy()
-			end
+		if not alreadyMirrored then
+			gearTool.Parent = gear
 		else
 			gearTool:Destroy()
 		end
-
-		markDirty(player)
 	else
-		warn("⚠️ [DATA] Invalid tool requested: " .. tostring(toolName))
+		gearTool:Destroy()
 	end
+
+	markDirty(player)
 end
 
--- ----------------------------------------------------------------------------
--- 🏗️ LAYOUT RESTORATION
--- ----------------------------------------------------------------------------
+-- ============================================================================
+-- 🏗️  LAYOUT RESTORATION
+-- ============================================================================
 local function acquirePadLock(lockId)
 	if PadLocks[lockId] then return false end
 	PadLocks[lockId] = true
@@ -335,27 +379,28 @@ local function RestoreLayout(player, plot, layoutData)
 
 	local padsFolder = plot:WaitForChild("Pads", 10)
 	if not padsFolder then return end
-	local placedCarsFolder = plot:FindFirstChild("PlacedCars") or Instance.new("Folder", plot)
+
+	local placedCarsFolder = plot:FindFirstChild("PlacedCars")
+		or Instance.new("Folder", plot)
 	placedCarsFolder.Name = "PlacedCars"
 
-	local validPads = {}
-	for _, p in ipairs(padsFolder:GetChildren()) do validPads[p.Name] = true end
+	local validPads     = {}
+	for _, p in ipairs(padsFolder:GetChildren()) do
+		validPads[p.Name] = true
+	end
+
 	local processedPads = {}
 	local restoredCount = 0
-
-	-- ✅ FIX: Use a dedicated counter instead of the discard variable `_`
-	--   so the throttle task.wait() fires reliably every 5 pads regardless
-	--   of what ipairs assigns internally.
-	local padIndex = 0
+	local padIndex      = 0
 
 	for _, data in ipairs(layoutData) do
 		local toolName = data.Tool
-		local padName = data.Pad
-		if not validPads[padName] then continue end
-		if processedPads[padName] then continue end
+		local padName  = data.Pad
+		if not validPads[padName]      then continue end
+		if processedPads[padName]      then continue end
 
 		local padObject = padsFolder[padName]
-		local lockId = padObject:GetFullName()
+		local lockId    = padObject:GetFullName()
 
 		if not acquirePadLock(lockId) then
 			task.wait(0.1)
@@ -373,21 +418,29 @@ local function RestoreLayout(player, plot, layoutData)
 					if carModel then
 						local newCar = carModel:Clone()
 						newCar:SetAttribute("OwnerUserId", player.UserId)
-						newCar:SetAttribute("CarGUID", generateCarGUID(player))
-						for _, p in pairs(newCar:GetDescendants()) do
-							if p:IsA("BasePart") then p.Anchored = true; p.CanCollide = true end
+						newCar:SetAttribute("CarGUID",     generateCarGUID(player))
+
+						for _, p in ipairs(newCar:GetDescendants()) do
+							if p:IsA("BasePart") then
+								p.Anchored    = true
+								p.CanCollide  = true
+							end
 						end
+
 						local padTop = padPart.CFrame * CFrame.new(0, (padPart.Size.Y / 2) + 5, 0)
 						newCar:PivotTo(padTop)
 						newCar.Parent = placedCarsFolder
 
 						isOccupied.Value = true
-						local linked = padPart:FindFirstChild("LinkedCar") or Instance.new("ObjectValue", padPart)
-						linked.Name = "LinkedCar"
+
+						local linked = padPart:FindFirstChild("LinkedCar")
+							or Instance.new("ObjectValue", padPart)
+						linked.Name  = "LinkedCar"
 						linked.Value = newCar
 
-						if padPart:FindFirstChild("PlacePrompt") then padPart.PlacePrompt.Enabled = false end
-						if padPart:FindFirstChild("PickupPrompt") then padPart.PickupPrompt.Enabled = true end
+						if padPart:FindFirstChild("PlacePrompt")  then padPart.PlacePrompt.Enabled  = false end
+						if padPart:FindFirstChild("PickupPrompt") then padPart.PickupPrompt.Enabled = true  end
+
 						restoredCount += 1
 					end
 				end
@@ -396,7 +449,6 @@ local function RestoreLayout(player, plot, layoutData)
 
 		releasePadLock(lockId)
 
-		-- ✅ FIX: Throttle using dedicated padIndex counter instead of `_`
 		padIndex += 1
 		if padIndex % 5 == 0 then task.wait() end
 	end
@@ -407,6 +459,9 @@ local function RestoreLayout(player, plot, layoutData)
 	end
 end
 
+-- ============================================================================
+-- 🔧  TOOL MATCHING UTILITIES
+-- ============================================================================
 local function toolMatchesId(tool, targetToolId)
 	return tool
 		and tool:IsA("Tool")
@@ -418,6 +473,14 @@ local function toolMatchesId(tool, targetToolId)
 		)
 end
 
+-- countMatchingTools: returns how many real copies of targetToolId a player
+-- owns. Only Backpack and Character (equipped slot) are scanned.
+--
+-- StarterGear is intentionally excluded: giveTool() always places exactly one
+-- mirror clone there regardless of how many real copies the player owns.
+-- Including StarterGear would inflate the count by 1 whenever the player has
+-- at least one copy, allowing crafting recipes to be satisfied with one fewer
+-- real ingredient than required.
 local function countMatchingTools(player, targetToolId)
 	if not player or not targetToolId then return 0 end
 
@@ -432,12 +495,19 @@ local function countMatchingTools(player, targetToolId)
 	end
 
 	scan(player:FindFirstChild("Backpack"))
-	scan(player:FindFirstChild("StarterGear"))
 	if player.Character then scan(player.Character) end
+	-- StarterGear excluded — see above.
 
 	return total
 end
 
+-- removeMatchingTools: removes up to requestedAmount copies from Backpack,
+-- Character, and (as a final cleanup step) StarterGear.
+--
+-- StarterGear is cleaned up ONLY when no copies remain in Backpack or
+-- Character after the primary removal pass. This keeps the respawn mirror
+-- alive when the player still owns other copies, while preventing an
+-- orphaned mirror from re-populating the Backpack on the next respawn.
 local function removeMatchingTools(player, targetToolId, requestedAmount)
 	if not player or not targetToolId then return 0 end
 
@@ -455,20 +525,35 @@ local function removeMatchingTools(player, targetToolId, requestedAmount)
 		end
 	end
 
+	-- Primary removal: real inventory locations.
 	removeFromContainer(player:FindFirstChild("Backpack"))
-	removeFromContainer(player:FindFirstChild("StarterGear"))
 	if player.Character then removeFromContainer(player.Character) end
+
+	-- StarterGear mirror cleanup: only destroy the mirror if no real copies
+	-- remain, so the respawn mirror does not re-add a removed tool.
+	local survivingCopies = countMatchingTools(player, targetToolId)
+	if survivingCopies == 0 then
+		local gear = player:FindFirstChild("StarterGear")
+		if gear then
+			for _, child in ipairs(gear:GetChildren()) do
+				if toolMatchesId(child, targetToolId) then
+					child:Destroy()
+					break -- StarterGear holds at most one mirror per ToolId
+				end
+			end
+		end
+	end
 
 	return removedCount
 end
 
--- ----------------------------------------------------------------------------
--- 🔄 ADMIN API (BindableFunction)
--- ----------------------------------------------------------------------------
+-- ============================================================================
+-- 🔄  ADMIN API  (BindableFunction)
+-- ============================================================================
 local AdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 if not AdminAPI then
-	AdminAPI = Instance.new("BindableFunction")
-	AdminAPI.Name = "TycoonAdminAPI"
+	AdminAPI        = Instance.new("BindableFunction")
+	AdminAPI.Name   = "TycoonAdminAPI"
 	AdminAPI.Parent = ServerStorage
 end
 
@@ -476,7 +561,7 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	if action == "ForceWipe" and player and SessionData[player] then
 		SessionData[player].ExplicitClear = true
 		if player:FindFirstChild("StarterGear") then player.StarterGear:ClearAllChildren() end
-		if player:FindFirstChild("Backpack") then player.Backpack:ClearAllChildren() end
+		if player:FindFirstChild("Backpack")    then player.Backpack:ClearAllChildren()    end
 		markDirty(player)
 		print("⚠️ FORCE WIPE INITIATED FOR: " .. player.Name)
 		return true
@@ -490,18 +575,17 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		local targetToolId, requestedAmount = ...
 		if not targetToolId then return false end
 
-		local removedCount = removeMatchingTools(player, targetToolId, requestedAmount)
-		if removedCount < math.max(1, tonumber(requestedAmount) or 1) then
+		local needed       = math.max(1, tonumber(requestedAmount) or 1)
+		local removedCount = removeMatchingTools(player, targetToolId, needed)
+
+		if removedCount < needed then
 			return false, removedCount
 		end
 
-		-- ✅ FIX: Set SacrificeOccurred so the anti-wipe guard does not
-		--   restore admin-removed tools on the next save, matching the
-		--   behaviour of LegendaryCraftingInventoryAPI and MythicalCraftingInventoryAPI.
+		-- Mark sacrifice so the inventory anti-wipe does not restore the
+		-- admin-removed tools on the next save.
 		local session = SessionData[player]
-		if session then
-			session.SacrificeOccurred = true
-		end
+		if session then session.SacrificeOccurred = true end
 
 		markDirty(player)
 		return true, removedCount
@@ -514,21 +598,14 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	return false
 end
 
--- ----------------------------------------------------------------------------
--- 🗡️ LEGENDARY CRAFTING INVENTORY API (BindableFunction)
---
--- FIX: When RemoveTool succeeds (a sacrifice was consumed), we set
--- session.SacrificeOccurred = true. The save() function reads this flag
--- inside the UpdateAsync callback to skip the inventory anti-wipe check,
--- preventing the sacrificed items from being incorrectly restored.
--- The flag is intentionally NEVER reset — it stays true for the entire
--- session, because the legendary shop's persisted CraftProgress is the
--- source of truth for any future saves in the same session.
--- ----------------------------------------------------------------------------
-local LegendaryCraftingInventoryAPI = ServerStorage:FindFirstChild("LegendaryCraftingInventoryFunction")
+-- ============================================================================
+-- 🗡️  LEGENDARY CRAFTING INVENTORY API  (BindableFunction)
+-- ============================================================================
+local LegendaryCraftingInventoryAPI =
+	ServerStorage:FindFirstChild("LegendaryCraftingInventoryFunction")
 if not LegendaryCraftingInventoryAPI then
-	LegendaryCraftingInventoryAPI = Instance.new("BindableFunction")
-	LegendaryCraftingInventoryAPI.Name = "LegendaryCraftingInventoryFunction"
+	LegendaryCraftingInventoryAPI        = Instance.new("BindableFunction")
+	LegendaryCraftingInventoryAPI.Name   = "LegendaryCraftingInventoryFunction"
 	LegendaryCraftingInventoryAPI.Parent = ServerStorage
 end
 
@@ -553,12 +630,8 @@ LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 			return false, removedCount
 		end
 
-		-- ✅ FIX: Mark that a legitimate inventory reduction occurred this
-		-- session so the anti-wipe in save() does not restore sacrificed items.
 		local session = SessionData[player]
-		if session then
-			session.SacrificeOccurred = true
-		end
+		if session then session.SacrificeOccurred = true end
 
 		markDirty(player)
 		return true, removedCount
@@ -576,13 +649,14 @@ LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 	return false
 end
 
--- ----------------------------------------------------------------------------
--- 🗡️ MYTHICAL CRAFTING INVENTORY API (BindableFunction)
--- ----------------------------------------------------------------------------
-local MythicalCraftingInventoryAPI = ServerStorage:FindFirstChild("MythicalCraftingInventoryFunction")
+-- ============================================================================
+-- 🗡️  MYTHICAL CRAFTING INVENTORY API  (BindableFunction)
+-- ============================================================================
+local MythicalCraftingInventoryAPI =
+	ServerStorage:FindFirstChild("MythicalCraftingInventoryFunction")
 if not MythicalCraftingInventoryAPI then
-	MythicalCraftingInventoryAPI = Instance.new("BindableFunction")
-	MythicalCraftingInventoryAPI.Name = "MythicalCraftingInventoryFunction"
+	MythicalCraftingInventoryAPI        = Instance.new("BindableFunction")
+	MythicalCraftingInventoryAPI.Name   = "MythicalCraftingInventoryFunction"
 	MythicalCraftingInventoryAPI.Parent = ServerStorage
 end
 
@@ -608,9 +682,7 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 		end
 
 		local session = SessionData[player]
-		if session then
-			session.SacrificeOccurred = true
-		end
+		if session then session.SacrificeOccurred = true end
 
 		markDirty(player)
 		return true, removedCount
@@ -628,21 +700,22 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 	return false
 end
 
--- ----------------------------------------------------------------------------
--- 💾 SAVING
--- ----------------------------------------------------------------------------
+-- ============================================================================
+-- 💾  SAVING
+-- ============================================================================
 local function save(player, isClosing)
 	local session = SessionData[player]
 	if not session or not session.DataLoaded then return end
 
+	-- ── Wait for an in-progress save to finish ──────────────────────────────
 	if session.IsSaving then
 		if isClosing then
-			local s = os.clock()
-			while session.IsSaving and (os.clock() - s < 4) do
+			local deadline = os.clock() + 4
+			while session.IsSaving and os.clock() < deadline do
 				task.wait(0.1)
 			end
 			if session.IsSaving then
-				warn("⚠️ Save Lock timed out. Forcing save.")
+				warn("⚠️ Save lock timed out for " .. player.Name .. ". Forcing release.")
 				session.IsSaving = false
 			end
 		else
@@ -651,234 +724,252 @@ local function save(player, isClosing)
 	end
 
 	if not isClosing and (os.time() - session.LastSave < MIN_SAVE_INTERVAL) then return end
-	if not session.IsDirty and not isClosing then return end
+	if not isClosing and not session.IsDirty then return end
 
-	session.IsSaving = true -- 🔒 LOCK
+	session.IsSaving = true
 
-	local saveSucceeded = false -- ✅ FIX: track outcome so dirty/timer only update on success
+	-- ── Pre-snapshot all live data synchronously ─────────────────────────────
+	-- Everything that reads from the player is captured HERE, before any
+	-- yielding, so the values are consistent and the UpdateAsync callback
+	-- remains a pure data-transform with no side-effects.
 
-	local function executeSave()
-		print("💾 Saving data for " .. player.Name .. "...")
+	local snapBank       = MoneyManager.GetBalance(player, "Cash")
+	local snapWallet     = MoneyManager.GetBalance(player, "Wallet")
+	local snapATM        = MoneyManager.GetBalance(player, "ATMBalance")
+	local snapPadLevel   = player:GetAttribute("HighestUnlockedPad") or 1
+	local snapSkins      = HttpService:JSONDecode(player:GetAttribute("OwnedBaseSkins") or "[]")
+	local snapEquipped   = player:GetAttribute("EquippedSkin") or "Default"
+	local snapRank       = player:GetAttribute("Rank") or "Player"
+	local snapPlotName   = player:GetAttribute("OccupiedPlot")
+	local snapPending    = 0
 
-		local currentUnlockedPad = player:GetAttribute("HighestUnlockedPad") or 1
-		local currentOwnedRaw = player:GetAttribute("OwnedBaseSkins") or "[]"
-		local currentOwnedSkins = HttpService:JSONDecode(currentOwnedRaw)
-		local currentEquippedSkin = player:GetAttribute("EquippedSkin") or "Default"
-		local currentRank = player:GetAttribute("Rank") or "Player"
+	-- ── Inventory snapshot ───────────────────────────────────────────────────
+	-- Scan Backpack first, then Character (equipped slot).
+	--
+	-- FIX (Held Tool Lost on Disconnect): player.Character may already be nil
+	-- by the time PlayerRemoving fires. We capture it into a local reference
+	-- RIGHT NOW (synchronously) before any task.wait(). If it is already nil
+	-- here, we fall back to session.HeldToolId which was cached by the
+	-- CharacterRemoving listener set up in InitializePlayer.
 
-		local inventory = {}
-		local invCount = 0
-		local seenInstances = {}
+	local characterRef   = player.Character  -- snapshot reference; may be nil
+	local heldToolFallback = (not characterRef) and session.HeldToolId or nil
 
-		-- ✅ FIX: Do NOT scan StarterGear. StarterGear holds one mirror clone
-		--   of each unique tool purely so tools survive respawns within a
-		--   session. Scanning it caused every tool to be recorded twice,
-		--   leading to exponential inventory growth across rejoin cycles.
-		--   Backpack + Character is the authoritative inventory source.
-		local function scanContainer(container)
-			if not container then return end
-			for _, tool in pairs(container:GetChildren()) do
-				if validateTool(tool) and not seenInstances[tool] then
-					seenInstances[tool] = true
-					if invCount < MAX_INVENTORY_SIZE then
-						local id = tool:GetAttribute("ToolId")
-						if id then
-							table.insert(inventory, id)
-							invCount += 1
+	local inventory     = {}
+	local invCount      = 0
+	local seenInstances = {}
+
+	local function scanContainer(container)
+		if not container then return end
+		for _, tool in ipairs(container:GetChildren()) do
+			if validateTool(tool) and not seenInstances[tool] then
+				seenInstances[tool] = true
+				if invCount < MAX_INVENTORY_SIZE then
+					local id = tool:GetAttribute("ToolId")
+					if id then
+						table.insert(inventory, id)
+						invCount += 1
+					end
+				end
+			end
+		end
+	end
+
+	-- Backpack = primary storage (N copies per N owned tools).
+	scanContainer(player:FindFirstChild("Backpack"))
+	-- StarterGear intentionally excluded — within-session respawn mirror only.
+	-- Character = equipped slot (tool moves from Backpack → Character on equip).
+	scanContainer(characterRef)
+
+	-- If the character was already gone, include the cached held tool.
+	if heldToolFallback and safeFindCarTool(heldToolFallback) then
+		local alreadySaved = false
+		for _, savedId in ipairs(inventory) do
+			if savedId == heldToolFallback then
+				alreadySaved = true
+				break
+			end
+		end
+		if not alreadySaved and invCount < MAX_INVENTORY_SIZE then
+			table.insert(inventory, heldToolFallback)
+			invCount += 1
+		end
+	end
+
+	-- ── Layout snapshot ──────────────────────────────────────────────────────
+	local layout = {}
+	if snapPlotName and TycoonFolder:FindFirstChild(snapPlotName) then
+		local plot = TycoonFolder[snapPlotName]
+
+		local pendingVal = plot:FindFirstChild("PendingEarnings")
+		if pendingVal then snapPending = pendingVal.Value end
+
+		local pads = plot:FindFirstChild("Pads")
+		if pads then
+			for _, padObject in ipairs(pads:GetChildren()) do
+				local padPart = getMainPart(padObject)
+				if padPart then
+					local linked = padPart:FindFirstChild("LinkedCar")
+					if linked and linked.Value then
+						local car = linked.Value
+						if car.Parent and car:IsDescendantOf(plot)
+							and car:GetAttribute("OwnerUserId") == player.UserId
+						then
+							local tName = FindToolNameFromModel(car.Name)
+							if tName then
+								table.insert(layout, { Tool = tName, Pad = padObject.Name })
+							end
 						end
 					end
 				end
 			end
 		end
+	end
 
-		scanContainer(player:FindFirstChild("Backpack"))
-		-- StarterGear intentionally excluded — see FIX note above
-		scanContainer(player.Character)
+	-- ── Shop state snapshot ──────────────────────────────────────────────────
+	local function invokeShop(bindableName, playerRef)
+		local b = ServerStorage:FindFirstChild(bindableName)
+		if not b then return {} end
+		local ok2, result = pcall(function() return b:Invoke("Get", playerRef) end)
+		if not ok2 then
+			warn("⚠️ Shop invoke error (" .. bindableName .. "): " .. tostring(result))
+			return {}
+		end
+		return result or {}
+	end
 
-		local layout = {}
-		local plotName = player:GetAttribute("OccupiedPlot")
-		local currentPendingInTycoon = 0
+	local snapShopCommon    = invokeShop("ShopPersistenceFunction",          player)
+	local snapShopUncommon  = invokeShop("UncommonShopPersistenceFunction",  player)
+	local snapShopRare      = invokeShop("RareShopPersistenceFunction",      player)
+	local snapShopEpic      = invokeShop("EpicShopPersistenceFunction",      player)
+	local snapShopLegendary = invokeShop("LegendaryShopPersistenceFunction", player)
+	local snapShopMythical  = invokeShop("MythicalShopPersistenceFunction",  player)
 
-		if plotName and TycoonFolder:FindFirstChild(plotName) then
-			local plot = TycoonFolder[plotName]
-			if plot:FindFirstChild("PendingEarnings") then
-				currentPendingInTycoon = plot.PendingEarnings.Value
-			end
-			local pads = plot:FindFirstChild("Pads")
-			if pads then
-				for _, padObject in pairs(pads:GetChildren()) do
-					local padPart = getMainPart(padObject)
-					if padPart then
-						local linked = padPart:FindFirstChild("LinkedCar")
-						if linked and linked.Value then
-							local car = linked.Value
-							if car.Parent and car:IsDescendantOf(plot) then
-								local isOwned = (car:GetAttribute("OwnerUserId") == player.UserId)
-								if isOwned then
-									local tName = FindToolNameFromModel(car.Name)
-									if tName then
-										table.insert(layout, { Tool = tName, Pad = padObject.Name })
+	-- ── Capture session flags for use inside the async callback ──────────────
+	local sacrificeOccurred = session.SacrificeOccurred == true
+	local explicitClear     = session.ExplicitClear     == true
+	local restoredPending   = player:GetAttribute("RestoredPending") or 0
+
+	-- ── Attempt the DataStore write ──────────────────────────────────────────
+	local saveSucceeded = false
+
+	local function executeSave()
+		print("💾 Saving data for " .. player.Name .. "…")
+
+		for attempt = 1, MAX_RETRIES do
+			local updateOk, updateResult = pcall(function()
+				return PlayerDataStore:UpdateAsync(
+					"User_V27_" .. player.UserId,
+					function(oldData)
+						oldData = oldData or {}
+
+						-- ── INVENTORY ANTI-WIPE ───────────────────────────
+						-- If the new inventory is empty but the stored one was
+						-- not, assume something went wrong — UNLESS a
+						-- sacrifice or explicit wipe occurred this session.
+						local finalInventory = inventory
+
+						if #inventory == 0
+							and (oldData.Inventory and #oldData.Inventory > 0)
+							and not explicitClear
+							and not sacrificeOccurred
+						then
+							warn("⚠️ Anti-Wipe (Inventory): Preserving for " .. player.Name)
+							finalInventory = {}
+							for _, oldId in ipairs(oldData.Inventory) do
+								if safeFindCarTool(oldId) then
+									table.insert(finalInventory, oldId)
+								end
+							end
+						end
+
+						-- ── LAYOUT ANTI-WIPE ──────────────────────────────
+						local finalLayout           = layout
+						local suspiciousLayoutWipe  = (#layout == 0)
+							and (oldData.Layout and #oldData.Layout > 0)
+
+						if suspiciousLayoutWipe and not explicitClear then
+							local oldInvCount = oldData.Inventory and #oldData.Inventory or 0
+							local newInvCount = #finalInventory
+
+							if newInvCount > oldInvCount then
+								-- Player picked up a car from a pad; the
+								-- inventory growing confirms a legitimate wipe.
+								print("✅ Valid pickup detected. Saving empty layout.")
+								finalLayout = layout
+							else
+								warn("⚠️ Anti-Wipe (Layout): Preserving for " .. player.Name)
+								finalLayout = {}
+								local seenPads = {}
+								for _, oldEntry in ipairs(oldData.Layout) do
+									if FindModelNameFromTool(oldEntry.Tool)
+										and not seenPads[oldEntry.Pad]
+									then
+										seenPads[oldEntry.Pad] = true
+										table.insert(finalLayout, oldEntry)
 									end
 								end
 							end
 						end
+
+						-- ── COMMIT ────────────────────────────────────────
+						oldData.Bank       = snapBank
+						oldData.Wallet     = snapWallet
+						oldData.ATMBalance = snapATM
+
+						oldData.Inventory       = finalInventory
+						oldData.Layout          = finalLayout
+						oldData.PendingEarnings = restoredPending + snapPending
+
+						oldData.ShopPurchases         = snapShopCommon
+						oldData.UncommonShopPurchases  = snapShopUncommon
+						oldData.RareShopPurchases      = snapShopRare
+						oldData.EpicShopPurchases      = snapShopEpic
+						oldData.LegendaryShopPurchases = snapShopLegendary
+						oldData.MythicalShopPurchases  = snapShopMythical
+
+						oldData.OwnedBaseSkins     = snapSkins
+						oldData.EquippedSkin       = snapEquipped
+						oldData.HighestUnlockedPad = snapPadLevel
+						oldData.Rank               = snapRank
+
+						oldData.LastUpdated = os.time()
+						oldData.DataVersion = "V39_Perfect"
+
+						return oldData
 					end
-				end
-			end
-		end
-
-		-- [[ COMMON SHOP SYNC ]]
-		local shopBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
-		local currentShopData = {}
-		if shopBindable then currentShopData = shopBindable:Invoke("Get", player) or {} end
-
-		-- [[ 🟢 UNCOMMON SHOP SYNC ]]
-		local uncommonShopBindable = ServerStorage:FindFirstChild("UncommonShopPersistenceFunction")
-		local currentUncommonShopData = {}
-		if uncommonShopBindable then currentUncommonShopData = uncommonShopBindable:Invoke("Get", player) or {} end
-
-		-- [[ 🟣 RARE SHOP SYNC ]]
-		local rareShopBindable = ServerStorage:FindFirstChild("RareShopPersistenceFunction")
-		local currentRareShopData = {}
-		if rareShopBindable then currentRareShopData = rareShopBindable:Invoke("Get", player) or {} end
-
-		-- [[ 🟠 EPIC SHOP SYNC ]]
-		local epicShopBindable = ServerStorage:FindFirstChild("EpicShopPersistenceFunction")
-		local currentEpicShopData = {}
-		if epicShopBindable then currentEpicShopData = epicShopBindable:Invoke("Get", player) or {} end
-
-		-- [[ 🟡 LEGENDARY SHOP SYNC ]]
-		-- This captures CraftProgress, ActiveCrafts, and CompletedCrafts so
-		-- that sacrificed ingredients are never lost even on sudden disconnect.
-		local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
-		local currentLegendaryShopData = {}
-		if legendaryShopBindable then
-			currentLegendaryShopData = legendaryShopBindable:Invoke("Get", player) or {}
-		end
-
-		-- [[ 🔴 MYTHICAL SHOP SYNC ]]
-		local mythicalShopBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
-		local currentMythicalShopData = {}
-		if mythicalShopBindable then
-			currentMythicalShopData = mythicalShopBindable:Invoke("Get", player) or {}
-		end
-
-		-- Snapshot the flag before entering UpdateAsync (closure captures it)
-		local sacrificeOccurredThisSession = session.SacrificeOccurred == true
-
-		for attempt = 1, MAX_RETRIES do
-			local updateSuccess, updateResult = pcall(function()
-				return PlayerDataStore:UpdateAsync("User_V27_" .. player.UserId, function(oldData)
-					oldData = oldData or {}
-
-					-- ── INVENTORY ANTI-WIPE ──────────────────────────────────────
-					-- Skip restoration if a legitimate sacrifice occurred this
-					-- session. Without this guard a player who sacrificed all their
-					-- ingredient cars (leaving inventory empty) would have those
-					-- cars incorrectly restored the moment they disconnected.
-					local finalInventory = inventory
-
-					if #inventory == 0
-						and (oldData.Inventory and #oldData.Inventory > 0)
-						and not session.ExplicitClear
-						and not sacrificeOccurredThisSession
-					then
-						warn("⚠️ Anti-Wipe (Inventory): Preserving for " .. player.Name)
-						finalInventory = {}
-						for _, oldId in pairs(oldData.Inventory) do
-							if safeFindCarTool(oldId) then
-								table.insert(finalInventory, oldId)
-							end
-						end
-					end
-
-					-- ── LAYOUT ANTI-WIPE ─────────────────────────────────────────
-					local finalLayout = layout
-					local isSuspiciousLayoutWipe = (#layout == 0) and (oldData.Layout and #oldData.Layout > 0)
-
-					if isSuspiciousLayoutWipe and not session.ExplicitClear then
-						local oldInvCount = oldData.Inventory and #oldData.Inventory or 0
-						local newInvCount = #finalInventory
-
-						if newInvCount > oldInvCount then
-							print("✅ Valid Pickup Detected. Saving empty layout.")
-							finalLayout = layout
-						else
-							warn("⚠️ Anti-Wipe (Layout): Preserving for " .. player.Name)
-							finalLayout = {}
-							local seenPads = {}
-							for _, oldEntry in pairs(oldData.Layout) do
-								if FindModelNameFromTool(oldEntry.Tool) and not seenPads[oldEntry.Pad] then
-									seenPads[oldEntry.Pad] = true
-									table.insert(finalLayout, oldEntry)
-								end
-							end
-						end
-					else
-						finalLayout = layout
-					end
-
-					local stillRestored = player:GetAttribute("RestoredPending") or 0
-					local finalPending = stillRestored + currentPendingInTycoon
-
-					-- ✅ FIX: MoneyManager.GetBalance now routes Cash to HiddenStats
-					oldData.Bank       = MoneyManager.GetBalance(player, "Cash")
-					oldData.Wallet     = MoneyManager.GetBalance(player, "Wallet")
-					oldData.ATMBalance = MoneyManager.GetBalance(player, "ATMBalance")
-					oldData.Inventory = finalInventory
-					oldData.Layout = finalLayout
-					oldData.PendingEarnings = finalPending
-
-					-- ✅ SAVING SHOP STATES
-					oldData.ShopPurchases          = currentShopData
-					oldData.UncommonShopPurchases   = currentUncommonShopData
-					oldData.RareShopPurchases       = currentRareShopData
-					oldData.EpicShopPurchases       = currentEpicShopData
-					oldData.LegendaryShopPurchases  = currentLegendaryShopData
-					oldData.MythicalShopPurchases   = currentMythicalShopData
-
-					oldData.OwnedBaseSkins    = currentOwnedSkins
-					oldData.EquippedSkin      = currentEquippedSkin
-					oldData.HighestUnlockedPad = currentUnlockedPad
-					oldData.Rank = currentRank
-
-					oldData.LastUpdated  = os.time()
-					oldData.DataVersion  = "V38_Fixed"
-
-					return oldData
-				end)
+				)
 			end)
 
-			if updateSuccess and updateResult ~= nil then
+			if updateOk and updateResult ~= nil then
 				saveSucceeded = true
-				return true
+				return
 			end
+
 			task.wait(0.35 * attempt)
 		end
-		error("UpdateAsync failed after retries")
+
+		error("UpdateAsync failed after " .. MAX_RETRIES .. " retries")
 	end
 
 	local ok, saveErr = pcall(executeSave)
 	if not ok then
-		warn("❌ Save Failed " .. player.Name .. ": " .. tostring(saveErr))
+		warn("❌ Save failed for " .. player.Name .. ": " .. tostring(saveErr))
 	elseif isClosing then
 		print("✅ Saved: " .. player.Name)
 	end
 
-	-- ✅ FIX: Only mark the session clean and advance the save timer when the
-	--   save actually succeeded. If every retry failed, IsDirty stays true so
-	--   the next autosave cycle will attempt again rather than silently losing
-	--   the unsaved changes.
+	-- Only advance the save clock when the write actually succeeded.
+	-- If every retry failed, IsDirty remains true so the next autosave
+	-- cycle will try again rather than silently losing the changes.
 	if saveSucceeded then
-		session.IsDirty = false
+		session.IsDirty  = false
 		session.LastSave = os.time()
 	end
 
-	-- [[ SHOP CLEANUP ]]
-	-- ✅ FIX: Each shop Invoke is wrapped in its own pcall. If any individual
-	--   shop script errors, it does not prevent the remaining cleanup calls
-	--   from running, and critically does not prevent session.IsSaving from
-	--   being released — which previously caused a permanent save deadlock.
+	-- ── Shop cleanup (closing only) ──────────────────────────────────────────
+	-- Each call is individually pcall-protected so one failing shop cannot
+	-- prevent the others from closing or block the IsSaving lock release.
 	if isClosing then
 		local function safeClose(bindableName)
 			local b = ServerStorage:FindFirstChild(bindableName)
@@ -897,33 +988,38 @@ local function save(player, isClosing)
 		safeClose("MythicalShopPersistenceFunction")
 	end
 
-	-- 🔓 ALWAYS release the lock, even when save failed or cleanup errored
+	-- Always release the lock, even on failure or error.
 	session.IsSaving = false
 
-	local syncEvent = game.ServerStorage:FindFirstChild("TycoonSaveCompleted")
+	local syncEvent = ServerStorage:FindFirstChild("TycoonSaveCompleted")
 	if syncEvent then syncEvent:Fire(player.Name) end
 
 	player:SetAttribute("DataSaved", true)
 end
 
--- ----------------------------------------------------------------------------
--- 🚪 PLAYER INITIALIZATION
--- ----------------------------------------------------------------------------
+-- ============================================================================
+-- 🚪  PLAYER INITIALIZATION
+-- ============================================================================
 local function InitializePlayer(player)
-	-- ✅ FIX: SacrificeOccurred added to session state.
-	-- When true it suppresses the inventory anti-wipe for the rest of the
-	-- session, preventing sacrificed ingredient cars from being restored.
 	SessionData[player] = {
 		LastSave          = os.time(),
 		IsDirty           = false,
 		DataLoaded        = false,
 		ExplicitClear     = false,
 		IsSaving          = false,
-		SacrificeOccurred = false, -- set true by any RemoveTool API path
+		SacrificeOccurred = false,
+		-- HeldToolId: caches the ToolId of any tool the player was holding
+		-- when their character was removed (CharacterRemoving). Used as a
+		-- fallback in save() when player.Character is already nil.
+		HeldToolId        = nil,
 	}
 
+	local session = SessionData[player]
+
+	-- ── Leaderstats & HiddenStats ────────────────────────────────────────────
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
 	local hs = Instance.new("Folder"); hs.Name = "HiddenStats"; hs.Parent = player
+
 	local cash   = Instance.new("IntValue"); cash.Name   = "Cash";       cash.Parent   = hs
 	local wallet = Instance.new("IntValue"); wallet.Name = "Wallet";     wallet.Parent = ls
 	local atm    = Instance.new("IntValue"); atm.Name    = "ATMBalance"; atm.Parent    = ls
@@ -933,85 +1029,102 @@ local function InitializePlayer(player)
 	wallet.Changed:Connect(setDirty)
 	atm.Changed:Connect(setDirty)
 
+	-- ── StarterGear dirty tracking ───────────────────────────────────────────
 	local gear = player:WaitForChild("StarterGear", 10)
 	if gear then
 		gear.ChildAdded:Connect(setDirty)
 		gear.ChildRemoved:Connect(setDirty)
 	end
 
+	-- ── Held-tool cache (FIX: Held Tool Lost on Disconnect) ──────────────────
+	-- CharacterRemoving fires reliably before the instance is destroyed.
+	-- We snapshot the equipped tool ID here so save() can use it as a
+	-- fallback when player.Character is already nil during PlayerRemoving.
+	player.CharacterRemoving:Connect(function(character)
+		if not session then return end
+		session.HeldToolId = nil -- clear first; re-set only if a tool is found
+		for _, child in ipairs(character:GetChildren()) do
+			if child:IsA("Tool") and validateTool(child) then
+				local id = child:GetAttribute("ToolId")
+				if id then
+					session.HeldToolId = id
+					break -- a player can only equip one tool at a time
+				end
+			end
+		end
+	end)
+
+	-- Clear the held-tool cache when a fresh character spawns so a previous
+	-- death's cached value never contaminates a new session snapshot.
+	player.CharacterAdded:Connect(function()
+		if session then
+			session.HeldToolId = nil
+		end
+	end)
+
+	-- ── Load data ────────────────────────────────────────────────────────────
 	local key = "User_V27_" .. player.UserId
 	local data
-	local loadSuccess, loadErr = pcall(function() data = PlayerDataStore:GetAsync(key) end)
+	local loadOk, loadErr = pcall(function()
+		data = PlayerDataStore:GetAsync(key)
+	end)
 
-	if not loadSuccess then player:Kick("Data Load Error. Rejoin.") return end
+	if not loadOk then
+		warn("❌ Data load failed for " .. player.Name .. ": " .. tostring(loadErr))
+		player:Kick("Data Load Error. Please rejoin.")
+		return
+	end
 
-	-- ✅ INITIALIZE DEFAULT DATA
-	data = data or {
-		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1,
-		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
-		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
-		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player"
-	}
+	-- ── Default data ─────────────────────────────────────────────────────────
+	data = data or {}
+	data.Inventory             = data.Inventory             or {}
+	data.Layout                = data.Layout                or {}
+	data.PendingEarnings       = data.PendingEarnings       or 0
+	data.HighestUnlockedPad    = data.HighestUnlockedPad    or 1
+	data.ShopPurchases         = data.ShopPurchases         or {}
+	data.UncommonShopPurchases = data.UncommonShopPurchases or {}
+	data.RareShopPurchases     = data.RareShopPurchases     or {}
+	data.EpicShopPurchases     = data.EpicShopPurchases     or {}
+	data.LegendaryShopPurchases= data.LegendaryShopPurchases or {}
+	data.MythicalShopPurchases = data.MythicalShopPurchases  or {}
+	data.OwnedBaseSkins        = data.OwnedBaseSkins        or { "Default" }
+	data.EquippedSkin          = data.EquippedSkin          or "Default"
+	data.Rank                  = data.Rank                  or "Player"
 
-	data.Inventory              = data.Inventory              or {}
-	data.Layout                 = data.Layout                 or {}
-	data.ShopPurchases          = data.ShopPurchases          or {}
-	data.UncommonShopPurchases  = data.UncommonShopPurchases  or {}
-	data.RareShopPurchases      = data.RareShopPurchases      or {}
-	data.EpicShopPurchases      = data.EpicShopPurchases      or {}
-	data.LegendaryShopPurchases = data.LegendaryShopPurchases or {}
-	data.MythicalShopPurchases  = data.MythicalShopPurchases  or {}
-	data.OwnedBaseSkins         = data.OwnedBaseSkins         or { "Default" }
-	data.EquippedSkin           = data.EquippedSkin           or "Default"
-	data.Rank                   = data.Rank                   or "Player"
-
+	-- ── Apply currency ───────────────────────────────────────────────────────
 	cash.Value   = data.Bank       or 0
 	wallet.Value = data.Wallet     or 0
 	atm.Value    = data.ATMBalance or 0
 
-	-- [[ COMMON SHOP RESTORE ]]
-	local shopBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
-	if shopBindable then shopBindable:Invoke("Load", player, data.ShopPurchases) end
-
-	-- [[ 🟢 UNCOMMON SHOP RESTORE ]]
-	local uncommonShopBindable = ServerStorage:FindFirstChild("UncommonShopPersistenceFunction")
-	if uncommonShopBindable then uncommonShopBindable:Invoke("Load", player, data.UncommonShopPurchases) end
-
-	-- [[ 🟣 RARE SHOP RESTORE ]]
-	local rareShopBindable = ServerStorage:FindFirstChild("RareShopPersistenceFunction")
-	if rareShopBindable then rareShopBindable:Invoke("Load", player, data.RareShopPurchases) end
-
-	-- [[ 🟠 EPIC SHOP RESTORE ]]
-	local epicShopBindable = ServerStorage:FindFirstChild("EpicShopPersistenceFunction")
-	if epicShopBindable then epicShopBindable:Invoke("Load", player, data.EpicShopPurchases) end
-
-	-- [[ 🟡 LEGENDARY SHOP RESTORE ]]
-	-- Restores CraftProgress, ActiveCrafts, and CompletedCrafts so players
-	-- never lose sacrificed ingredients or active builds on rejoin.
-	local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
-	if legendaryShopBindable then
-		legendaryShopBindable:Invoke("Load", player, data.LegendaryShopPurchases)
+	-- ── Restore shop states ──────────────────────────────────────────────────
+	local function invokeShopLoad(bindableName, payload)
+		local b = ServerStorage:FindFirstChild(bindableName)
+		if not b then return end
+		local ok2, err2 = pcall(function() b:Invoke("Load", player, payload) end)
+		if not ok2 then
+			warn("⚠️ Shop load error (" .. bindableName .. "): " .. tostring(err2))
+		end
 	end
 
-	-- [[ 🔴 MYTHICAL SHOP RESTORE ]]
-	local mythicalShopBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
-	if mythicalShopBindable then
-		mythicalShopBindable:Invoke("Load", player, data.MythicalShopPurchases)
-	end
+	invokeShopLoad("ShopPersistenceFunction",          data.ShopPurchases)
+	invokeShopLoad("UncommonShopPersistenceFunction",  data.UncommonShopPurchases)
+	invokeShopLoad("RareShopPersistenceFunction",      data.RareShopPurchases)
+	invokeShopLoad("EpicShopPersistenceFunction",      data.EpicShopPurchases)
+	invokeShopLoad("LegendaryShopPersistenceFunction", data.LegendaryShopPurchases)
+	invokeShopLoad("MythicalShopPersistenceFunction",  data.MythicalShopPurchases)
 
-	-- ✅ APPLY ATTRIBUTES
-	player:SetAttribute("HighestUnlockedPad", data.HighestUnlockedPad or 1)
-	local ownedJson = HttpService:JSONEncode(data.OwnedBaseSkins)
-	player:SetAttribute("OwnedBaseSkins", ownedJson)
-	player:SetAttribute("EquippedSkin", data.EquippedSkin)
-	player:SetAttribute("Rank", data.Rank)
+	-- ── Apply player attributes ──────────────────────────────────────────────
+	player:SetAttribute("HighestUnlockedPad", data.HighestUnlockedPad)
+	player:SetAttribute("OwnedBaseSkins",     HttpService:JSONEncode(data.OwnedBaseSkins))
+	player:SetAttribute("EquippedSkin",       data.EquippedSkin)
+	player:SetAttribute("Rank",               data.Rank)
 
 	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(setDirty)
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
 	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rank"):Connect(setDirty)
 
-	-- 👑 APPLY RANK VISUALS ON SPAWN/RESPAWN
+	-- ── Rank visuals ─────────────────────────────────────────────────────────
 	local function ApplyRankVisual()
 		local SetRankAPI = ServerStorage:FindFirstChild("SetRankAPI")
 		if SetRankAPI then
@@ -1021,31 +1134,31 @@ local function InitializePlayer(player)
 		end
 	end
 
-	if player.Character then
-		task.spawn(ApplyRankVisual)
-	end
+	if player.Character then task.spawn(ApplyRankVisual) end
 	player.CharacterAdded:Connect(ApplyRankVisual)
 
-	if player:FindFirstChild("Backpack") then player.Backpack:ClearAllChildren() end
+	-- ── Restore inventory ────────────────────────────────────────────────────
+	if player:FindFirstChild("Backpack")    then player.Backpack:ClearAllChildren()    end
 	if player:FindFirstChild("StarterGear") then player.StarterGear:ClearAllChildren() end
 
-	if data.Inventory then
-		for _, toolName in pairs(data.Inventory) do
-			giveTool(player, toolName)
-		end
+	for _, toolName in ipairs(data.Inventory) do
+		giveTool(player, toolName)
 	end
 
-	if #data.Inventory == 0 and (not data.Layout or #data.Layout == 0) then
+	-- Give the starter car only to brand-new players (no inventory, no layout).
+	if #data.Inventory == 0 and #data.Layout == 0 then
 		giveTool(player, STARTER_CAR_NAME)
 	end
 
 	sanitizeInventory(player)
 
+	-- ── Restore pending earnings ─────────────────────────────────────────────
 	if data.PendingEarnings and data.PendingEarnings > 0 then
 		player:SetAttribute("RestoredPending", data.PendingEarnings)
 	end
 
-	if data.Layout and #data.Layout > 0 then
+	-- ── Restore tycoon layout ────────────────────────────────────────────────
+	if #data.Layout > 0 then
 		task.spawn(function()
 			local plotName = player:GetAttribute("OccupiedPlot")
 			if not plotName then
@@ -1062,70 +1175,89 @@ local function InitializePlayer(player)
 		end)
 	end
 
+	-- ── Restore pending earnings to tycoon plot ──────────────────────────────
 	local function CheckAndRestorePending()
 		local plotName = player:GetAttribute("OccupiedPlot")
 		local amount   = player:GetAttribute("RestoredPending")
+		if not (plotName and amount and amount > 0) then return end
 
-		if plotName and amount and amount > 0 then
-			player:SetAttribute("RestoredPending", 0)
+		player:SetAttribute("RestoredPending", 0)
 
-			local plot       = TycoonFolder:FindFirstChild(plotName)
-			local pendingVal = plot and plot:WaitForChild("PendingEarnings", 10)
+		local plot       = TycoonFolder:FindFirstChild(plotName)
+		local pendingVal = plot and plot:WaitForChild("PendingEarnings", 10)
 
-			if pendingVal then
-				pendingVal.Value = pendingVal.Value + amount
-				markDirty(player)
-				print("✅ RESTORED PENDING: $" .. amount .. " to " .. plot.Name)
-			else
-				warn("⚠️ Failed to restore pending earnings. Reverting amount.")
-				player:SetAttribute("RestoredPending", amount)
-			end
+		if pendingVal then
+			pendingVal.Value += amount
+			markDirty(player)
+			print("✅ Restored pending earnings: $" .. amount .. " → " .. plotName)
+		else
+			warn("⚠️ Could not find PendingEarnings. Reverting attribute.")
+			player:SetAttribute("RestoredPending", amount)
 		end
 	end
 
 	player:GetAttributeChangedSignal("OccupiedPlot"):Connect(CheckAndRestorePending)
 	CheckAndRestorePending()
 
-	SessionData[player].DataLoaded = true
+	session.DataLoaded = true
 end
 
+-- ============================================================================
+-- 🔌  PLAYER LIFECYCLE
+-- ============================================================================
 Players.PlayerAdded:Connect(InitializePlayer)
+
 Players.PlayerRemoving:Connect(function(player)
 	save(player, true)
 	SessionData[player] = nil
 end)
 
+-- ============================================================================
+-- ⏰  AUTOSAVE LOOP
+-- ============================================================================
 task.spawn(function()
 	while true do
 		task.wait(10)
 		local now = os.time()
-		for _, player in pairs(Players:GetPlayers()) do
+		for _, player in ipairs(Players:GetPlayers()) do
 			local session = SessionData[player]
-			if session and session.DataLoaded and session.IsDirty
-				and (now - session.LastSave >= AUTOSAVE_INTERVAL) then
+			if session
+				and session.DataLoaded
+				and session.IsDirty
+				and (now - session.LastSave >= AUTOSAVE_INTERVAL)
+			then
 				task.spawn(function() save(player, false) end)
 			end
 		end
 	end
 end)
 
+-- ============================================================================
+-- 🛡️  PERIODIC SANITIZE LOOP
+-- ============================================================================
 task.spawn(function()
 	while true do
 		task.wait(25)
-		for _, player in pairs(Players:GetPlayers()) do
+		for _, player in ipairs(Players:GetPlayers()) do
 			sanitizeInventory(player)
 		end
 	end
 end)
 
+-- ============================================================================
+-- 🔒  SERVER SHUTDOWN — FLUSH ALL SESSIONS
+-- ============================================================================
 game:BindToClose(function()
 	local threads = 0
-	for _, p in pairs(Players:GetPlayers()) do
+	for _, player in ipairs(Players:GetPlayers()) do
 		threads += 1
-		task.spawn(function() save(p, true); threads -= 1 end)
+		task.spawn(function()
+			save(player, true)
+			threads -= 1
+		end)
 	end
-	local s = os.clock()
-	while threads > 0 and (os.clock() - s) < 25 do
+	local deadline = os.clock() + 25
+	while threads > 0 and os.clock() < deadline do
 		task.wait(0.1)
 	end
 end)
