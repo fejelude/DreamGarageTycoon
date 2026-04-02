@@ -29,7 +29,7 @@ local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 
 -- ⚙️ CONFIGURATION
 local REROLL_PRODUCT_ID = 3556540207 
-local SHOP_CARS = {"Sadie", "Sirene", "Vortex"}
+local SHOP_CARS = {"Razor", "Apollo", "Sovereign", "Sirene", "Classy", "Shaguar", "Vortex"}
 local SPECIAL_SFX_ID = "rbxassetid://140072726814802" 
 local BLUR_SIZE = 24 
 
@@ -43,7 +43,6 @@ local FEEDBACK_COLORS = {
 
 -- 🔴 ROBUX IDS (NEW EPIC IDS)
 local ROBUX_PRODUCTS = {
-	Sadie  = 3556536171,
 	Sirene = 3556537696,
 	Vortex = 3556538294
 }

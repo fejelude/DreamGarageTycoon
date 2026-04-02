@@ -25,7 +25,7 @@ local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 
 -- ⚙️ CONFIGURATION
 local REROLL_PRODUCT_ID = 3520990584 
-local SHOP_CARS = {"Delta", "Iva", "Atom", "Windsor", "Senator", "Riva"}
+local SHOP_CARS = {"Breako", "Delta", "Iva", "Atom", "Hiva", "Senator", "Windsor", "Riva"}
 local SPECIAL_SFX_ID = "rbxassetid://140072726814802" 
 local BLUR_SIZE = 24 
 

@@ -10,7 +10,19 @@ local HttpService = game:GetService("HttpService")
 -- =========================
 -- UNCOMMON CONFIG
 -- =========================
-local CAR_WEIGHTS = {Raiju = 50, Ironclad = 28, Vapid = 14, Galadriel = 6, Kingston = 2}
+local CAR_WEIGHTS = {
+	Raiju = 60,
+	Vioz = 50,
+	Yora = 35,
+	Ricky = 25,
+	Uber = 18,
+	Ironclad = 12,
+	Vapid = 8,
+	Galadriel = 5,
+	Kingston = 3,
+	Blackhead = 2,
+	Mia = 1
+}
 local ALWAYS_STOCK = {}
 
 local RESTOCK_INTERVAL = 1800
@@ -163,20 +175,57 @@ local function generateStockConfiguration(seedValue)
 		return { Featured = featuredFlags, Limits = stockLimits }
 	end
 
-	local roll = rng:NextInteger(1, totalWeight)
-	local current = 0
-	local picked = nil
-	for _, car in ipairs(poolKeys) do
-		current += poolWeights[car]
-		if roll <= current then
-			picked = car
-			break
-		end
+	-- Dopamine-driven variable rewards & near-miss mechanics
+	-- Pick 1 to 3 cars to be featured
+	local numToPick = 1
+	local multiRoll = rng:NextNumber()
+	if multiRoll > 0.95 then
+		numToPick = 3
+	elseif multiRoll > 0.80 then
+		numToPick = 2
 	end
 
-	if picked then
-		featuredFlags[picked] = true
-		stockLimits[picked] = MAX_STOCK
+	local tempPoolKeys = {}
+	for _, k in ipairs(poolKeys) do table.insert(tempPoolKeys, k) end
+
+	for i = 1, numToPick do
+		if #tempPoolKeys == 0 then break end
+
+		local currentTotalWeight = 0
+		for _, car in ipairs(tempPoolKeys) do
+			currentTotalWeight += poolWeights[car]
+		end
+
+		local roll = rng:NextInteger(1, currentTotalWeight)
+		local current = 0
+		local pickedIdx = nil
+		local picked = nil
+
+		for idx, car in ipairs(tempPoolKeys) do
+			current += poolWeights[car]
+			if roll <= current then
+				picked = car
+				pickedIdx = idx
+				break
+			end
+		end
+
+		if picked then
+			table.remove(tempPoolKeys, pickedIdx)
+			featuredFlags[picked] = true
+
+			-- Variable stock and near-miss
+			local stockRoll = rng:NextNumber()
+			if stockRoll > 0.98 then
+				-- Near miss! Appears sold out immediately
+				stockLimits[picked] = 0
+			elseif stockRoll > 0.90 then
+				-- Jackpot! More stock
+				stockLimits[picked] = MAX_STOCK + rng:NextInteger(1, 2)
+			else
+				stockLimits[picked] = MAX_STOCK
+			end
+		end
 	end
 
 	return { Featured = featuredFlags, Limits = stockLimits }
