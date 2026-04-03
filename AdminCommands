@@ -137,14 +137,16 @@ end
 -- ============================================================================
 local RESTOCK_TOPIC = "AdminShopRestock"
 
-pcall(function()
-	MessagingService:SubscribeAsync(RESTOCK_TOPIC, function(message)
-		local data = message.Data
-		if type(data) == "string" then
-			print("🌐 [Admin] Cross-server Restock Received:", data)
-			AdminRestockEvent:Fire(data)
-			RestockNotificationEvent:FireAllClients(data)
-		end
+task.spawn(function()
+	pcall(function()
+		MessagingService:SubscribeAsync(RESTOCK_TOPIC, function(message)
+			local data = message.Data
+			if type(data) == "string" then
+				print("🌐 [Admin] Cross-server Restock Received:", data)
+				AdminRestockEvent:Fire(data)
+				RestockNotificationEvent:FireAllClients(data)
+			end
+		end)
 	end)
 end)
 
@@ -440,8 +442,10 @@ Players.PlayerAdded:Connect(function(player)
 
 			local targetItem = itemName:lower()
 			if targetItem == "all" then
-				pcall(function()
-					MessagingService:PublishAsync(RESTOCK_TOPIC, "all")
+				task.spawn(function()
+					pcall(function()
+						MessagingService:PublishAsync(RESTOCK_TOPIC, "all")
+					end)
 				end)
 				print("🔄 [Admin] Published global restock command for ALL items.")
 			else
@@ -461,8 +465,10 @@ Players.PlayerAdded:Connect(function(player)
 					end
 				end
 
-				pcall(function()
-					MessagingService:PublishAsync(RESTOCK_TOPIC, realCarName)
+				task.spawn(function()
+					pcall(function()
+						MessagingService:PublishAsync(RESTOCK_TOPIC, realCarName)
+					end)
 				end)
 				print("🔄 [Admin] Published global restock command for:", realCarName)
 			end
