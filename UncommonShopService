@@ -106,6 +106,13 @@ if not PersistenceBindable then
 	PersistenceBindable.Parent = ServerStorage
 end
 
+local AdminRestockEvent = ServerStorage:FindFirstChild("AdminRestockEvent")
+if not AdminRestockEvent then
+	AdminRestockEvent = Instance.new("BindableEvent")
+	AdminRestockEvent.Name = "AdminRestockEvent"
+	AdminRestockEvent.Parent = ServerStorage
+end
+
 -- =========================
 -- STATE
 -- =========================
@@ -491,6 +498,39 @@ end
 -- =========================
 -- ROTATION LOOP
 -- =========================
+-- =========================
+-- ADMIN RESTOCK HANDLER
+-- =========================
+AdminRestockEvent.Event:Connect(function(carName)
+	if type(carName) ~= "string" then return end
+
+	local isAll = (carName == "all")
+	local isMine = CAR_WEIGHTS[carName] ~= nil
+
+	if not isAll and not isMine then return end
+
+	print("🔄 [UncommonShop] Processing Admin Restock for:", carName)
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		local session = getSession(player)
+		local config = session.Cache
+
+		if isAll then
+			for cName, _ in pairs(CAR_WEIGHTS) do
+				config.Featured[cName] = true
+				config.Limits[cName] = MAX_STOCK
+				session.Purchased[cName] = 0
+			end
+		else
+			config.Featured[carName] = true
+			config.Limits[carName] = MAX_STOCK
+			session.Purchased[carName] = 0
+		end
+
+		pushUpdate(player, session, "AdminRestock")
+	end
+end)
+
 task.spawn(function()
 	local lastGlobalID = getGlobalSeedID()
 	while true do

@@ -9,10 +9,18 @@ local ServerStorage = game:GetService("ServerStorage")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+local MessagingService = game:GetService("MessagingService")
 
 -- ⚙️ CONFIGURATION
 local CarTools = ServerStorage:WaitForChild("CarTools") 
 local FlyScriptTemplate = ServerStorage:WaitForChild("FlyClient", 5) 
+
+local AdminRestockEvent = ServerStorage:FindFirstChild("AdminRestockEvent")
+if not AdminRestockEvent then
+	AdminRestockEvent = Instance.new("BindableEvent")
+	AdminRestockEvent.Name = "AdminRestockEvent"
+	AdminRestockEvent.Parent = ServerStorage
+end
 
 -- ⚠️ SECURITY: Add your UserID here
 local ADMIN_USER_IDS = {
@@ -113,6 +121,21 @@ local function tagIssued(tool, realID)
 	tool:SetAttribute("ToolId", realID) 
 	tool.CanBeDropped = false
 end
+
+-- ============================================================================
+-- 🌐 MESSAGING SERVICE HOOKS
+-- ============================================================================
+local RESTOCK_TOPIC = "AdminShopRestock"
+
+pcall(function()
+	MessagingService:SubscribeAsync(RESTOCK_TOPIC, function(message)
+		local data = message.Data
+		if type(data) == "string" then
+			print("🌐 [Admin] Cross-server Restock Received:", data)
+			AdminRestockEvent:Fire(data)
+		end
+	end)
+end)
 
 -- ============================================================================
 -- 🎯 TARGET SELECTORS
@@ -394,6 +417,34 @@ Players.PlayerAdded:Connect(function(player)
 			print("🚗 Available Cars:")
 			for _, t in pairs(getAllTools()) do
 				print(" - " .. getCleanID(t.Name))
+			end
+
+			-- 🔄 /restock [item] or "all"
+		elseif command == "/restock" then
+			local itemName = table.concat(args, " ", 2)
+			if not itemName or itemName == "" then
+				print("⚠️ Syntax: /restock [item] OR /restock all")
+				return
+			end
+
+			local targetItem = itemName:lower()
+			if targetItem == "all" then
+				pcall(function()
+					MessagingService:PublishAsync(RESTOCK_TOPIC, "all")
+				end)
+				print("🔄 [Admin] Published global restock command for ALL items.")
+			else
+				-- Match item name safely
+				local tool = matchTool(itemName)
+				if not tool then
+					print("❌ [Admin] Unknown Item: " .. itemName)
+					return
+				end
+				local realCarName = tool.Name
+				pcall(function()
+					MessagingService:PublishAsync(RESTOCK_TOPIC, realCarName)
+				end)
+				print("🔄 [Admin] Published global restock command for:", realCarName)
 			end
 		end
 	end)
