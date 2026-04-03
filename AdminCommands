@@ -447,15 +447,20 @@ Players.PlayerAdded:Connect(function(player)
 						MessagingService:PublishAsync(RESTOCK_TOPIC, "all")
 					end)
 				end)
-				print("🔄 [Admin] Published global restock command for ALL items.")
+				print("🔄 [Admin] Published global restock command for ALL cars.")
 			else
-				-- Match item name safely
+				-- Match car name safely
 				local tool = matchTool(itemName)
 				if not tool then
-					print("❌ [Admin] Unknown Item: " .. itemName)
+					print("❌ [Admin] Unknown Car: " .. itemName)
 					return
 				end
+
+				-- Convert the tool name back to the base CarStats key (e.g. "Riva Item" -> "Riva")
 				local realCarName = tool.Name
+				if realCarName:lower():sub(-5) == " item" then
+					realCarName = realCarName:sub(1, -6)
+				end
 
 				local carData = CarStats.Cars and CarStats.Cars[realCarName]
 				if carData then
