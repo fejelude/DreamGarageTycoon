@@ -1,111 +1,155 @@
--- Purpose: Deep Diagnostic Tool for Global Shop Restock implementation.
+-- Purpose: Deep Diagnostic Tool for Shop Content and UI Hierarchy.
 -- Runs on: Server (ServerScriptService)
 -- Instructions: Place this in ServerScriptService and run the game. Read the output in the Developer Console (F9) or Output window.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 local StarterGui = game:GetService("StarterGui")
-local StarterPlayer = game:GetService("StarterPlayer")
+
+local CarStats = nil
+pcall(function()
+	CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 3))
+end)
 
 local function logResult(passed, name, path, notes)
 	if passed then
-		print(string.format("✅ PASS | %s | Found at: %s", name, path))
+		print(string.format("  ✅ PASS | %s | Found at: %s", name, path))
 	else
-		warn(string.format("❌ FAIL | %s | Missing from: %s | Fix: %s", name, path, notes or "Create it."))
+		warn(string.format("  ❌ FAIL | %s | Missing from: %s | Fix: %s", name, path, notes or "Create it."))
 	end
 end
+
+local SHOP_UIs = {
+	Common = "LocalShopUI",
+	Uncommon = "UncommonShopUi",
+	Rare = "RareShopUi",
+	Epic = "EpicShopUi"
+}
 
 local function runDiagnostics()
 	print("\n=======================================================")
-	print("🔍 STARTING GLOBAL RESTOCK DIAGNOSTICS...")
+	print("🔍 STARTING DEEP SHOP DIAGNOSTICS...")
 	print("=======================================================\n")
 
-	-- 1. ServerScriptService Scripts
-	print("--- 📜 SERVER SCRIPTS ---")
-
-	local adminCommands = ServerScriptService:FindFirstChild("AdminCommands")
-	logResult(adminCommands ~= nil, "AdminCommands", "ServerScriptService", "Make sure AdminCommands script is placed here.")
-
-	local localShop = ServerScriptService:FindFirstChild("LocalShopService")
-	logResult(localShop ~= nil, "LocalShopService", "ServerScriptService", "Make sure LocalShopService script is placed here.")
-
-	local uncommonShop = ServerScriptService:FindFirstChild("UncommonShopService")
-	logResult(uncommonShop ~= nil, "UncommonShopService", "ServerScriptService", "Make sure UncommonShopService script is placed here.")
-
-	local rareShop = ServerScriptService:FindFirstChild("RareShopService")
-	logResult(rareShop ~= nil, "RareShopService", "ServerScriptService", "Make sure RareShopService script is placed here.")
-
-	local epicShop = ServerScriptService:FindFirstChild("EpicShopService")
-	logResult(epicShop ~= nil, "EpicShopService", "ServerScriptService", "Make sure EpicShopService script is placed here.")
-
-	local legShop = ServerScriptService:FindFirstChild("LegendaryShopService")
-	logResult(legShop ~= nil, "LegendaryShopService", "ServerScriptService", "Should be here, but /restock will ignore it.")
-
-	local mythicShop = ServerScriptService:FindFirstChild("MythicalShopService")
-	logResult(mythicShop ~= nil, "MythicalShopService", "ServerScriptService", "Should be here, but /restock will ignore it.")
-
-	-- 2. StarterPlayerScripts (Client Scripts)
-	print("\n--- 💻 CLIENT SCRIPTS ---")
-	local starterScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts")
-	if starterScripts then
-		local notifClient = starterScripts:FindFirstChild("RestockNotificationClient")
-		logResult(notifClient ~= nil, "RestockNotificationClient", "StarterPlayer > StarterPlayerScripts", "Create a LocalScript with the notification code here.")
-	else
-		logResult(false, "StarterPlayerScripts", "StarterPlayer", "Could not find StarterPlayerScripts folder.")
+	if not CarStats or type(CarStats.Cars) ~= "table" then
+		warn("❌ CRITICAL FAIL: Could not load ReplicatedStorage.CarStats. Aborting.")
+		return
 	end
 
-	-- 3. ReplicatedStorage (Shared Modules & Remotes)
-	print("\n--- 📦 REPLICATED STORAGE ---")
-	local carStats = ReplicatedStorage:FindFirstChild("CarStats")
-	logResult(carStats ~= nil, "CarStats Module", "ReplicatedStorage", "Make sure CarStats ModuleScript is placed here.")
+	local carGroups = {
+		Common = {},
+		Uncommon = {},
+		Rare = {},
+		Epic = {}
+	}
 
-	local notifRemote = ReplicatedStorage:FindFirstChild("RestockNotificationEvent")
-	logResult(notifRemote ~= nil, "RestockNotificationEvent", "ReplicatedStorage", "Create a RemoteEvent named RestockNotificationEvent here.")
+	-- Group cars by rarity
+	for carName, data in pairs(CarStats.Cars) do
+		if carGroups[data.Rarity] then
+			table.insert(carGroups[data.Rarity], carName)
+		end
+	end
 
-	-- 4. ServerStorage (Server Bindables)
-	print("\n--- 🔐 SERVER STORAGE ---")
-	local adminRestockBindable = ServerStorage:FindFirstChild("AdminRestockEvent")
-	logResult(adminRestockBindable ~= nil, "AdminRestockEvent", "ServerStorage", "Create a BindableEvent named AdminRestockEvent here (or AdminCommands will auto-create it).")
+	local CarToolsFolder = ServerStorage:FindFirstChild("CarTools")
+	if not CarToolsFolder then
+		warn("❌ CRITICAL FAIL: ServerStorage.CarTools folder is missing. No cars can be given!")
+	end
 
-	-- 5. StarterGui (UI Hierarchy)
-	print("\n--- 🖥️ UI HIERARCHY ---")
-	local notificationsGui = StarterGui:FindFirstChild("Notifications")
-	if notificationsGui then
-		logResult(true, "Notifications ScreenGui", "StarterGui", "")
+	-- Check each tier
+	for rarity, expectedCars in pairs(carGroups) do
+		print(string.format("\n================ [ %s SHOP ] ================", string.upper(rarity)))
 
-		local notifFrame = notificationsGui:FindFirstChild("RestockNotificationFrame")
-		if notifFrame then
-			logResult(true, "RestockNotificationFrame", "StarterGui > Notifications", "")
+		-- 1. Check UI Hierarchy
+		local uiName = SHOP_UIs[rarity]
+		local gui = StarterGui:FindFirstChild(uiName)
+		local scrollFrame = nil
 
-			local notifText = notifFrame:FindFirstChild("RestockNotification")
-			if notifText then
-				logResult(true, "RestockNotification TextLabel", "StarterGui > Notifications > RestockNotificationFrame", "")
-
-				if notifText:IsA("TextLabel") then
-					if notifText.RichText then
-						logResult(true, "RichText Enabled", "Properties of RestockNotification", "")
-					else
-						logResult(false, "RichText Enabled", "Properties of RestockNotification", "You MUST check the 'RichText' property to ON for the rarity colors to work!")
+		if gui then
+			local mainFrame = gui:FindFirstChild("MainFrame")
+			if mainFrame then
+				scrollFrame = mainFrame:FindFirstChild("ScrollFrame")
+				if scrollFrame then
+					print(string.format("\n--- 🖥️ UI HIERARCHY FOUND: StarterGui > %s > MainFrame > ScrollFrame ---", uiName))
+					-- Print the actual contents of the ScrollFrame
+					local children = scrollFrame:GetChildren()
+					print(string.format("Found %d total UI elements in ScrollFrame.", #children))
+					for _, child in ipairs(children) do
+						if child:IsA("GuiObject") then
+							local subChildren = {}
+							for _, sub in ipairs(child:GetChildren()) do table.insert(subChildren, sub.Name) end
+							print(string.format("  ├─ [%s] %s -> Contains: { %s }", child.ClassName, child.Name, table.concat(subChildren, ", ")))
+						end
 					end
 				else
-					logResult(false, "RestockNotification is TextLabel", "StarterGui > Notifications > RestockNotificationFrame", "RestockNotification must be a TextLabel, not a " .. notifText.ClassName)
+					logResult(false, "ScrollFrame", string.format("StarterGui > %s > MainFrame", uiName), "Create a ScrollingFrame named ScrollFrame here.")
 				end
 			else
-				logResult(false, "RestockNotification", "StarterGui > Notifications > RestockNotificationFrame", "Create a TextLabel named RestockNotification inside the frame.")
+				logResult(false, "MainFrame", string.format("StarterGui > %s", uiName), "Create a Frame named MainFrame here.")
 			end
 		else
-			logResult(false, "RestockNotificationFrame", "StarterGui > Notifications", "Create a Frame named RestockNotificationFrame inside the Notifications ScreenGui.")
+			logResult(false, uiName, "StarterGui", "Create a ScreenGui named " .. uiName)
 		end
-	else
-		logResult(false, "Notifications ScreenGui", "StarterGui", "Create a ScreenGui named Notifications in StarterGui.")
+
+		-- 2. Check Expected Cars (UI Cards & ServerStorage Tools)
+		print("\n--- 🚘 EXPECTED CAR VALIDATION ---")
+		for _, carName in ipairs(expectedCars) do
+			print(string.format("\n  [ Examining: %s ]", carName))
+
+			-- Check Tool
+			local toolExists = false
+			if CarToolsFolder then
+				local rarityFolder = CarToolsFolder:FindFirstChild(rarity)
+				if rarityFolder then
+					if rarityFolder:FindFirstChild(carName) or rarityFolder:FindFirstChild(carName .. " Item") then
+						toolExists = true
+					end
+				else
+					logResult(false, rarity .. " Folder", "ServerStorage > CarTools", "Create a folder named " .. rarity)
+				end
+			end
+			logResult(toolExists, "Tool Model", string.format("ServerStorage > CarTools > %s", rarity), string.format("Add the tool named '%s' or '%s Item'.", carName, carName))
+
+			-- Check UI Card
+			if scrollFrame then
+				local card = scrollFrame:FindFirstChild(carName)
+				if card then
+					logResult(true, "UI Card Frame", string.format("ScrollFrame > %s", carName), "")
+
+					-- Check required buttons/images inside the card
+					local buyBtn = card:FindFirstChild("BuyButton")
+					logResult(buyBtn ~= nil, "BuyButton", string.format("Card '%s'", carName), "Create a TextButton or ImageButton named BuyButton inside this card.")
+
+					local robuxBtn = card:FindFirstChild("RobuxButton")
+					-- We won't strictly fail this if they don't want robux buttons, but we'll note it.
+					if not robuxBtn then
+						print(string.format("  ⚠️ INFO | RobuxButton | Missing from: Card '%s' | Note: Not required, but players cannot buy with Robux.", carName))
+					end
+
+					local noStockBtn = card:FindFirstChild("NoStockIndicator")
+					logResult(noStockBtn ~= nil, "NoStockIndicator", string.format("Card '%s'", carName), "Create a GuiObject named NoStockIndicator inside this card (used for near-misses).")
+
+					local imageContainer = card:FindFirstChild("CarImageContainer")
+					local directImage = card:FindFirstChild(carName .. "-Image") or card:FindFirstChild("CarImage")
+
+					if imageContainer then
+						local img = imageContainer:FindFirstChild("CarImage")
+						logResult(img ~= nil, "CarImage (inside Container)", string.format("Card '%s' > CarImageContainer", carName), "Create an ImageLabel named CarImage inside the CarImageContainer.")
+					elseif directImage then
+						logResult(true, "CarImage (Direct)", string.format("Card '%s'", carName), "")
+					else
+						logResult(false, "Car Image Element", string.format("Card '%s'", carName), "Create EITHER a 'CarImageContainer' with a 'CarImage' inside, OR an ImageLabel named 'CarImage' or '" .. carName .. "-Image'.")
+					end
+				else
+					logResult(false, "UI Card Frame", string.format("ScrollFrame > %s", carName), string.format("Create a Frame inside ScrollFrame and name it EXACTLY '%s' to match CarStats.", carName))
+				end
+			end
+		end
 	end
 
 	print("\n=======================================================")
-	print("✅ DIAGNOSTICS COMPLETE!")
-	print("Read the logs above. Anything marked ❌ FAIL needs to be fixed in Studio.")
+	print("✅ DEEP DIAGNOSTICS COMPLETE!")
+	print("Scroll up and fix anything marked ❌ FAIL.")
 	print("=======================================================\n")
 end
 
--- Delay slightly to ensure everything is loaded if running in a live game
 task.delay(1, runDiagnostics)
