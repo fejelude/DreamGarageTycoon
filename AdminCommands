@@ -30,6 +30,8 @@ if not RestockNotificationEvent then
 	RestockNotificationEvent.Parent = ReplicatedStorage
 end
 
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
 -- ⚠️ SECURITY: Add your UserID here
 local ADMIN_USER_IDS = {
 	[5512860740] = true, -- Your ID
@@ -450,6 +452,15 @@ Players.PlayerAdded:Connect(function(player)
 					return
 				end
 				local realCarName = tool.Name
+
+				local carData = CarStats.Cars and CarStats.Cars[realCarName]
+				if carData then
+					if carData.Rarity == "Legendary" or carData.Rarity == "Mythic" then
+						print("❌ [Admin] Cannot restock crafted items (Legendary/Mythic).")
+						return
+					end
+				end
+
 				pcall(function()
 					MessagingService:PublishAsync(RESTOCK_TOPIC, realCarName)
 				end)
