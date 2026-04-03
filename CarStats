@@ -209,7 +209,7 @@ CarStats.Cars = {
 		CPS = 229043,
 		Rarity = "Rare",
 		Price = 481874599999, -- 1399 Robux
-		Image = "rbxassetid://83107430147728"
+		Image = "rbxassetid://132906177403005"
 	},
 	["Vipera"] = {
 		Name = "Chevrolet C7",
