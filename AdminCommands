@@ -22,6 +22,14 @@ if not AdminRestockEvent then
 	AdminRestockEvent.Parent = ServerStorage
 end
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RestockNotificationEvent = ReplicatedStorage:FindFirstChild("RestockNotificationEvent")
+if not RestockNotificationEvent then
+	RestockNotificationEvent = Instance.new("RemoteEvent")
+	RestockNotificationEvent.Name = "RestockNotificationEvent"
+	RestockNotificationEvent.Parent = ReplicatedStorage
+end
+
 -- ⚠️ SECURITY: Add your UserID here
 local ADMIN_USER_IDS = {
 	[5512860740] = true, -- Your ID
@@ -133,6 +141,7 @@ pcall(function()
 		if type(data) == "string" then
 			print("🌐 [Admin] Cross-server Restock Received:", data)
 			AdminRestockEvent:Fire(data)
+			RestockNotificationEvent:FireAllClients(data)
 		end
 	end)
 end)
