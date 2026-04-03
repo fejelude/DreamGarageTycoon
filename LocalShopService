@@ -11,8 +11,11 @@ local Players = game:GetService("Players")
 -- CONFIG
 -- =========================
 local CAR_WEIGHTS = {
+	Clunker = 150,
+	Rustix = 110,
 	Breako = 80,
 	Delta = 50,
+	Diva = 35,
 	Iva = 20,
 	Atom = 15,
 	Hiva = 12,
