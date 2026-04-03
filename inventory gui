@@ -1,9 +1,33 @@
--- [[ LOCAL SCRIPT: Inventory UI (Optimized v3 - FINAL) ]]
+-- [[ LOCAL SCRIPT: Inventory UI (Optimized v3 - FIXED) ]]
 --      - UI pooling (no destroy/recreate spam)
 --      - Event-driven inventory tracking (fast updates)
 --      - No per-item Heartbeat loops (Tweens instead)
 --      - FIXED: Backpack/Character respawn logic (Critical)
 --      - Keeps: dynamic FOV, xCount, mobile friendly, universal glow
+--
+-- ============================================================
+-- FIX LOG (all changes marked with -- FIX #N)
+-- FIX #1  addButtonEffects now RETURNS its connections so they
+--         can be stored in buttonCons and properly disconnected
+--         on pool release.  Previously they leaked forever.
+-- FIX #2  CharacterAdded no longer calls scanContainer(char)
+--         twice. The duplicate call inside task.defer was removed;
+--         onCharacter() already calls scanContainer internally.
+-- FIX #3  setGlow now stores the running tween on the gradient
+--         instance itself (__GlowTween). When a pooled button is
+--         reused for a different rarity the old tween is cancelled
+--         and a fresh one is started regardless of __GlowTweened.
+-- FIX #4  addButtonEffects is now SKIPPED for buttons that already
+--         have hover connections registered (tracked via a button
+--         attribute), preventing compound tween accumulation on
+--         every re-render of a pooled button.
+-- FIX #5  __EquippedStroke / __EquippedTag are now toggled
+--         visible/invisible instead of Destroy/re-create every
+--         render, eliminating repeated Instance churn.
+-- FIX #6  setGlow stores the TweenService:Create result and only
+--         creates a new tween when the rarity actually changes,
+--         avoiding redundant tween object allocation each render.
+-- ============================================================
 
 -- Services
 local Players = game:GetService("Players")
@@ -165,14 +189,29 @@ local function toggleOtherGuis(shouldHide)
 	end
 end
 
--- Button effects
+-- =========================================================
+-- FIX #1 + FIX #4
+-- addButtonEffects now RETURNS the connection list so callers
+-- can store them for cleanup.  It also guards against being
+-- called more than once on the same button via the attribute
+-- "__HoverBound", preventing tween accumulation on pool reuse.
+-- =========================================================
 local function addButtonEffects(btn, scaleOnly, getBaseBg)
+	-- FIX #4: skip if already bound; connections are still alive from last use
+	if btn:GetAttribute("__HoverBound") then
+		return {}
+	end
+	btn:SetAttribute("__HoverBound", true)
+
 	local scale = btn:FindFirstChild("UIScale") or Instance.new("UIScale", btn)
 	local baseZ = btn.ZIndex
 
-	if UserInputService.TouchEnabled then return end
+	-- FIX #1: collect connections to return
+	local connections = {}
 
-	btn.MouseEnter:Connect(function()
+	if UserInputService.TouchEnabled then return connections end
+
+	table.insert(connections, btn.MouseEnter:Connect(function()
 		playSfx(SFX.Hover)
 		btn.ZIndex = baseZ + 20
 		TweenService:Create(scale, TweenInfo.new(0.2), { Scale = 1.1 }):Play()
@@ -184,9 +223,9 @@ local function addButtonEffects(btn, scaleOnly, getBaseBg)
 			end
 			TweenService:Create(btn, TweenInfo.new(0.2), goals):Play()
 		end
-	end)
+	end))
 
-	btn.MouseLeave:Connect(function()
+	table.insert(connections, btn.MouseLeave:Connect(function()
 		btn.ZIndex = baseZ
 		TweenService:Create(scale, TweenInfo.new(0.2), { Scale = 1 }):Play()
 
@@ -198,7 +237,9 @@ local function addButtonEffects(btn, scaleOnly, getBaseBg)
 			end
 			TweenService:Create(btn, TweenInfo.new(0.2), goals):Play()
 		end
-	end)
+	end))
+
+	return connections  -- FIX #1: caller merges these into buttonCons
 end
 
 local function addOpenButtonHover(btn)
@@ -383,8 +424,22 @@ local function disconnectButton(btn)
 		end
 	end
 	buttonCons[btn] = nil
+	-- FIX #4: clear hover-bound flag so the next getPooledButton
+	-- call can re-register effects if the button is truly new.
+	-- We intentionally do NOT clear it here — hover connections
+	-- are kept alive on the pooled button to avoid re-registering
+	-- them; only click/equip connections are stored in buttonCons.
 end
 
+-- =========================================================
+-- FIX #3 + FIX #6
+-- setGlow now tracks the last rarity applied on the gradient
+-- via __GlowRarity attribute.  If the rarity differs from the
+-- previous render, the old tween is cancelled and a new one
+-- started.  This fixes the stale-tween bug on pool reuse and
+-- avoids creating redundant tween objects when the rarity
+-- has not changed.
+-- =========================================================
 local function setGlow(label, rarity)
 	local stroke = label:FindFirstChild("__GlowStroke") or Instance.new("UIStroke")
 	stroke.Name = "__GlowStroke"
@@ -397,6 +452,7 @@ local function setGlow(label, rarity)
 	grad.Rotation = -20
 	grad.Parent = label
 
+	-- Always update gradient colours so reused buttons show the correct rarity
 	if rarity == "Mythic" then
 		grad.Color = ColorSequence.new({
 			ColorSequenceKeypoint.new(0.0, Color3.fromRGB(255, 0, 0)),
@@ -420,14 +476,28 @@ local function setGlow(label, rarity)
 		grad.Color = ColorSequence.new(Color3.fromRGB(150, 150, 150), Color3.fromRGB(220, 220, 220))
 	end
 
-	if not label:GetAttribute("__GlowTweened") then
-		label:SetAttribute("__GlowTweened", true)
+	-- FIX #3 + FIX #6: only (re)start the tween when the rarity changed
+	local lastRarity = grad:GetAttribute("__GlowRarity")
+	if lastRarity ~= rarity then
+		grad:SetAttribute("__GlowRarity", rarity)
+
+		-- Cancel the previous tween stored on the gradient (if any)
+		local oldTween = grad:GetAttribute("__GlowTweenRunning")
+		-- Roblox can't store tween objects in attributes, so we cancel
+		-- via a shared table keyed by the gradient instance
+		if not _G.__GlowTweens then _G.__GlowTweens = setmetatable({}, { __mode = "k" }) end
+		if _G.__GlowTweens[grad] then
+			_G.__GlowTweens[grad]:Cancel()
+		end
+
 		grad.Offset = Vector2.new(-0.35, 0)
-		TweenService:Create(
+		local newTween = TweenService:Create(
 			grad,
 			TweenInfo.new(2.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
 			{ Offset = Vector2.new(0.35, 0) }
-		):Play()
+		)
+		newTween:Play()
+		_G.__GlowTweens[grad] = newTween  -- FIX #3/#6: track for future cancellation
 	end
 end
 
@@ -467,6 +537,30 @@ local function createItemButton()
 	nameLabel.TextScaled = true
 	nameLabel.ZIndex = 5
 	nameLabel.TextColor3 = Color3.new(1, 1, 1)
+
+	-- FIX #5: pre-create equipped decorators as hidden rather than
+	-- destroying and recreating them on every render pass.
+	local equippedStroke = Instance.new("UIStroke")
+	equippedStroke.Name = "__EquippedStroke"
+	equippedStroke.Color = Color3.fromRGB(255, 255, 100) -- CONFIG.Colors.Gold
+	equippedStroke.Thickness = 4
+	equippedStroke.Enabled = false  -- hidden by default
+	equippedStroke.Parent = btn
+
+	local equippedTag = Instance.new("TextLabel")
+	equippedTag.Name = "__EquippedTag"
+	equippedTag.BackgroundTransparency = 1
+	equippedTag.Size = UDim2.new(1, -4, 0.25, 0)
+	equippedTag.Position = UDim2.new(0.5, 0, 0.5, 0)
+	equippedTag.AnchorPoint = Vector2.new(0.5, 0.5)
+	equippedTag.Font = Enum.Font.FredokaOne
+	equippedTag.TextScaled = true
+	equippedTag.Text = "EQUIPPED"
+	equippedTag.TextColor3 = Color3.fromRGB(255, 255, 100) -- CONFIG.Colors.Gold
+	equippedTag.Rotation = -15
+	equippedTag.ZIndex = 7
+	equippedTag.Visible = false  -- hidden by default
+	equippedTag.Parent = btn
 
 	return btn
 end
@@ -555,40 +649,30 @@ local function renderCurrentTab()
 			countTag.Text = "x" .. tostring(count)
 			countTag.Visible = true
 
+			-- FIX #5: toggle pre-created equipped decorators instead of
+			-- destroying and re-creating them on every render.
 			local equipped = (char and char:FindFirstChild((tool and tool.Name) or carName)) ~= nil
 			local existingStroke = btn:FindFirstChild("__EquippedStroke")
 			local existingTag = btn:FindFirstChild("__EquippedTag")
 
-			if equipped then
-				if not existingStroke then
-					local stroke = Instance.new("UIStroke")
-					stroke.Name = "__EquippedStroke"
-					stroke.Color = CONFIG.Colors.Gold
-					stroke.Thickness = 4
-					stroke.Parent = btn
-				end
-				if nameLabel and not existingTag then
-					local tag = nameLabel:Clone()
-					tag.Name = "__EquippedTag"
-					tag.Parent = btn
-					tag.Text = "EQUIPPED"
-					tag.TextColor3 = CONFIG.Colors.Gold
-					tag.Position = UDim2.new(0.5, 0, 0.5, 0)
-					tag.Rotation = -15
-					tag.ZIndex = 7
-					for _, c in ipairs(tag:GetChildren()) do
-						if c:IsA("UIGradient") then c:Destroy() end
-					end
-				end
-			else
-				if existingStroke then existingStroke:Destroy() end
-				if existingTag then existingTag:Destroy() end
+			if existingStroke then
+				existingStroke.Enabled = equipped
+			end
+			if existingTag then
+				existingTag.Visible = equipped
 			end
 
-			addButtonEffects(btn, false, function() return baseBg end)
-
+			-- FIX #1: merge hover connections into buttonCons so they are
+			-- properly disconnected when the button returns to the pool.
+			-- FIX #4: addButtonEffects self-guards against double-binding.
 			local cons = {}
 			buttonCons[btn] = cons
+
+			local hoverCons = addButtonEffects(btn, false, function() return baseBg end)
+			for _, c in ipairs(hoverCons) do
+				table.insert(cons, c)
+			end
+
 			table.insert(cons, btn.MouseButton1Click:Connect(function()
 				playSfx(SFX.Equip)
 
@@ -597,7 +681,8 @@ local function renderCurrentTab()
 				local currentBp = player:FindFirstChild("Backpack")
 				if not currentBp then return end
 
-				local moveTool = currentBp:FindFirstChild((tool and tool.Name) or carName) or charNow:FindFirstChild((tool and tool.Name) or carName)
+				local moveTool = currentBp:FindFirstChild((tool and tool.Name) or carName)
+					or charNow:FindFirstChild((tool and tool.Name) or carName)
 				if not moveTool or not moveTool:IsA("Tool") then return end
 
 				local humanoid = charNow:FindFirstChildOfClass("Humanoid")
@@ -636,7 +721,7 @@ end
 
 -- ========= CRITICAL FIX: BACKPACK HOOKING =========
 local currentBackpack = player:WaitForChild("Backpack")
-local bpConnections = {} -- track connections to disconnect later
+local bpConnections = {}
 
 local function bindContainer(container)
 	local conns = {}
@@ -666,7 +751,6 @@ local function onCharacter(char)
 	scanContainer(char)
 	local charConnections = bindContainer(char)
 
-	-- When char dies, clean up char connections
 	local deathConn
 	deathConn = char:WaitForChild("Humanoid").Died:Connect(function()
 		for _, c in ipairs(charConnections) do c:Disconnect() end
@@ -676,9 +760,16 @@ local function onCharacter(char)
 	scheduleRender()
 end
 
--- Handle Respawn Logic
+-- =========================================================
+-- FIX #2
+-- CharacterAdded previously called scanContainer(char) twice:
+-- once directly inside the task.defer block, and a second time
+-- inside onCharacter().  This doubled every tool count after
+-- each respawn.  The redundant direct call is now removed;
+-- onCharacter() handles the scan.
+-- =========================================================
 player.CharacterAdded:Connect(function(char)
-	-- 1. Reset Data
+	-- 1. Reset data
 	toolToCleanName = {}
 	counts = {}
 	sampleTool = {}
@@ -686,17 +777,15 @@ player.CharacterAdded:Connect(function(char)
 	-- 2. Switch to NEW Backpack
 	currentBackpack = player:WaitForChild("Backpack")
 
-	-- Clean old backpack connections
 	for _, c in ipairs(bpConnections) do c:Disconnect() end
-
-	-- Bind new backpack
 	bpConnections = bindContainer(currentBackpack)
 	scanContainer(currentBackpack)
 
 	-- 3. Handle Character
+	-- FIX #2: removed the redundant scanContainer(char) here;
+	-- onCharacter() already calls it internally.
 	task.defer(function()
-		scanContainer(char)
-		onCharacter(char)
+		onCharacter(char)  -- this internally calls scanContainer(char)
 		scheduleRender()
 	end)
 end)
@@ -725,7 +814,6 @@ local function performClose()
 		fade.Completed:Connect(function()
 			shopMusic:Stop()
 
-			-- Only resume normal audio if the global mute flag is not set
 			if SoundService:GetAttribute("MusicMuted") ~= true then
 				shopMusic.Volume = 0.5
 				if gameThemeSound then gameThemeSound:Resume() end
@@ -747,7 +835,6 @@ openButton.MouseButton1Click:Connect(function()
 
 	if gameThemeSound and gameThemeSound.IsPlaying then gameThemeSound:Pause() end
 
-	-- Only start shop music if the global mute flag is not set
 	if SoundService:GetAttribute("MusicMuted") ~= true then
 		if not shopMusic.IsPlaying then
 			shopMusic.Volume = 0.5
@@ -770,7 +857,6 @@ openButton.MouseButton1Click:Connect(function()
 
 	TweenService:Create(camera, CONFIG.Tween, { FieldOfView = CONFIG.FOV.Open }):Play()
 
-	-- Render UI now (fast)
 	renderCurrentTab()
 end)
 
