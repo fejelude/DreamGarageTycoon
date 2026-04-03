@@ -419,6 +419,10 @@ local function init()
 		Kit.Sound:Play("Open")
 		gui.Enabled = true 
 
+		if timerLabel then
+			timerLabel.Text = "Loading Restock Timer..."
+		end
+
 		currentState = {Featured = {}, Stock = {}, StockLimit = {}, Purchased = {}}
 		UpdateDisplay(scrollFrame)
 

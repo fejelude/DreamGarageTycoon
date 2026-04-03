@@ -531,6 +531,8 @@ AdminRestockEvent.Event:Connect(function(carName)
 	end
 end)
 
+local RestockNotificationEvent = ReplicatedStorage:FindFirstChild("RestockNotificationEvent")
+
 task.spawn(function()
 	local lastGlobalID = getGlobalSeedID()
 	while true do
@@ -545,6 +547,9 @@ task.spawn(function()
 				-- didReset=true, causing this loop to skip pushUpdate and leave clients stale.
 				local session = getSession(player)
 				pushUpdate(player, session, "Auto")
+			end
+			if RestockNotificationEvent then
+				RestockNotificationEvent:FireAllClients("AutoRestock", "Uncommon")
 			end
 		end
 	end

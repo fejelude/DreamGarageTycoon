@@ -466,6 +466,8 @@ end)
 -- =========================
 -- ROTATION LOOP
 -- =========================
+local RestockNotificationEvent = ReplicatedStorage:FindFirstChild("RestockNotificationEvent")
+
 task.spawn(function()
 	local lastGlobalID = getGlobalSeedID()
 	while true do
@@ -482,6 +484,10 @@ task.spawn(function()
 				-- leaving clients with a permanently stale UI showing the old (possibly sold-out) car.
 				local session = getSession(player)
 				pushUpdate(player, session, "Auto")
+			end
+
+			if RestockNotificationEvent then
+				RestockNotificationEvent:FireAllClients("AutoRestock", "Common")
 			end
 		end
 	end
