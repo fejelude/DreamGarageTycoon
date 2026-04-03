@@ -140,14 +140,14 @@ RestockNotificationEvent.OnClientEvent:Connect(function(arg1, arg2)
 		if carData then
 			local rarity = carData.Rarity or "Common"
 			local colorHex = getRarityColor(rarity)
-			local nameStr = carData.Name or carName
+			local nameStr = carName -- Use the fictional key name, not the real manufacturer name
 
 			-- Remove " Car" from the nameStr if it's already there to avoid duplicates, then append it
 			if nameStr:lower():sub(-4) == " car" then
 				nameStr = nameStr:sub(1, -5)
 			end
 
-			-- E.g. <font color="#00F5D4"><b>Nissan Skyline Car</b></font> has been restocked to the <font color="#00F5D4"><b>Uncommon</b></font> Shop!
+			-- E.g. <font color="#00F5D4"><b>Galadriel Car</b></font> has been restocked to the <font color="#00F5D4"><b>Uncommon</b></font> Shop!
 			message = string.format([[<font color="%s"><b>%s Car</b></font> has been restocked to the <font color="%s"><b>%s</b></font> Shop!]], colorHex, nameStr, colorHex, rarity)
 		else
 			-- Fallback if car isn't in CarStats for some reason
