@@ -48,7 +48,15 @@ local ROBUX_PRODUCTS = {
 	Ironclad  = 3555929595,
 	Vapid     = 3555930076,
 	Galadriel = 3555930681,
-	Kingston  = 3555931766
+	Kingston  = 3555931766,
+
+	-- 🔵 NEW CARS
+	Vioz      = 3569681463,
+	Yora      = 3569682549,
+	Ricky     = 3569683032,
+	Uber      = 3569683706,
+	Blackhead = 3569699394,
+	Mia       = 3569699739
 }
 
 -- 📡 REMOTES (ISOLATED FOR UNCOMMON)
@@ -434,3 +442,4 @@ local function init()
 end
 
 if player.Character then init() else player.CharacterAdded:Wait(); init() end
+
