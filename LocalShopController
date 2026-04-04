@@ -25,7 +25,7 @@ local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 
 -- ⚙️ CONFIGURATION
 local REROLL_PRODUCT_ID = 3520990584 
-local SHOP_CARS = {"Delta", "Iva", "Atom", "Windsor", "Senator", "Riva"}
+local SHOP_CARS = {"Clunker", "Rustix", "Breako", "Delta", "Diva", "Iva", "Atom", "Hiva", "Senator", "Windsor", "Riva"}
 local SPECIAL_SFX_ID = "rbxassetid://140072726814802" 
 local BLUR_SIZE = 24 
 
@@ -44,7 +44,14 @@ local ROBUX_PRODUCTS = {
 	Atom    = 3524327478, 
 	Windsor = 3524327780, 
 	Senator = 3524328208, 
-	Riva    = 3524328713
+	Riva    = 3524328713,
+
+	-- 🟢 NEW CARS
+	Clunker = 3569674363,
+	Rustix  = 3569675190,
+	Breako  = 3569675919,
+	Diva    = 3569677174,
+	Hiva    = 3569678091
 }
 
 -- 📡 REMOTES
@@ -419,6 +426,10 @@ local function init()
 		setFocusMode(true) 
 		Kit.Sound:Play("Open")
 		gui.Enabled = true 
+
+		if timerLabel then
+			timerLabel.Text = "Loading Restock Timer..."
+		end
 
 		currentState = {Featured = {}, Stock = {}, StockLimit = {}, Purchased = {}}
 		UpdateDisplay(scrollFrame)

@@ -10,7 +10,15 @@ local HttpService       = game:GetService("HttpService")
 -- =========================
 -- EPIC CONFIG
 -- =========================
-local CAR_WEIGHTS    = { Sadie = 80, Sirene = 18, Vortex = 2 }
+local CAR_WEIGHTS = {
+	Razor = 70,
+	Apollo = 50,
+	Sovereign = 35,
+	Sirene = 20,
+	Classy = 10,
+	Shaguar = 5,
+	Vortex = 1
+}
 local ALWAYS_STOCK   = {}
 
 local RESTOCK_INTERVAL        = 14400
@@ -64,6 +72,13 @@ if not PersistenceBindable then
 	PersistenceBindable        = Instance.new("BindableFunction")
 	PersistenceBindable.Name   = "EpicShopPersistenceFunction"
 	PersistenceBindable.Parent = ServerStorage
+end
+
+local AdminRestockEvent = ServerStorage:FindFirstChild("AdminRestockEvent")
+if not AdminRestockEvent then
+	AdminRestockEvent = Instance.new("BindableEvent")
+	AdminRestockEvent.Name = "AdminRestockEvent"
+	AdminRestockEvent.Parent = ServerStorage
 end
 
 -- =========================
@@ -134,20 +149,57 @@ local function generateStockConfiguration(seedValue)
 		return { Featured = featuredFlags, Limits = stockLimits }
 	end
 
-	local roll    = rng:NextInteger(1, totalWeight)
-	local current = 0
-	local picked  = nil
-	for _, car in ipairs(poolKeys) do
-		current += poolWeights[car]
-		if roll <= current then
-			picked = car
-			break
-		end
+	-- Dopamine-driven variable rewards & near-miss mechanics
+	-- Pick 1 to 3 cars to be featured
+	local numToPick = 1
+	local multiRoll = rng:NextNumber()
+	if multiRoll > 0.95 then
+		numToPick = 3
+	elseif multiRoll > 0.80 then
+		numToPick = 2
 	end
 
-	if picked then
-		featuredFlags[picked] = true
-		stockLimits[picked]   = MAX_STOCK
+	local tempPoolKeys = {}
+	for _, k in ipairs(poolKeys) do table.insert(tempPoolKeys, k) end
+
+	for i = 1, numToPick do
+		if #tempPoolKeys == 0 then break end
+
+		local currentTotalWeight = 0
+		for _, car in ipairs(tempPoolKeys) do
+			currentTotalWeight += poolWeights[car]
+		end
+
+		local roll = rng:NextInteger(1, currentTotalWeight)
+		local current = 0
+		local pickedIdx = nil
+		local picked = nil
+
+		for idx, car in ipairs(tempPoolKeys) do
+			current += poolWeights[car]
+			if roll <= current then
+				picked = car
+				pickedIdx = idx
+				break
+			end
+		end
+
+		if picked then
+			table.remove(tempPoolKeys, pickedIdx)
+			featuredFlags[picked] = true
+
+			-- Variable stock and near-miss
+			local stockRoll = rng:NextNumber()
+			if stockRoll > 0.98 then
+				-- Near miss! Appears sold out immediately
+				stockLimits[picked] = 0
+			elseif stockRoll > 0.90 then
+				-- Jackpot! More stock
+				stockLimits[picked] = MAX_STOCK + rng:NextInteger(1, 2)
+			else
+				stockLimits[picked] = MAX_STOCK
+			end
+		end
 	end
 
 	return { Featured = featuredFlags, Limits = stockLimits }
@@ -405,6 +457,41 @@ function RerollBindable.OnInvoke(player)
 	return true
 end
 
+-- =========================
+-- ADMIN RESTOCK HANDLER
+-- =========================
+AdminRestockEvent.Event:Connect(function(carName)
+	if type(carName) ~= "string" then return end
+
+	local isAll = (carName == "all")
+	local isMine = CAR_WEIGHTS[carName] ~= nil
+
+	if not isAll and not isMine then return end
+
+	print("🔄 [EpicShop] Processing Admin Restock for:", carName)
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		local session = getSession(player)
+		local config = session.Cache
+
+		if isAll then
+			for cName, _ in pairs(CAR_WEIGHTS) do
+				config.Featured[cName] = true
+				config.Limits[cName] = MAX_STOCK
+				session.Purchased[cName] = 0
+			end
+		else
+			config.Featured[carName] = true
+			config.Limits[carName] = MAX_STOCK
+			session.Purchased[carName] = 0
+		end
+
+		pushUpdate(player, session, "AdminRestock")
+	end
+end)
+
+local RestockNotificationEvent = ReplicatedStorage:FindFirstChild("RestockNotificationEvent")
+
 task.spawn(function()
 	local lastGlobalID = getGlobalSeedID()
 	while true do
@@ -419,6 +506,9 @@ task.spawn(function()
 				-- didReset=true, causing this loop to skip pushUpdate and leave clients stale.
 				local session = getSession(player)
 				pushUpdate(player, session, "Auto")
+			end
+			if RestockNotificationEvent then
+				RestockNotificationEvent:FireAllClients("AutoRestock", "Epic")
 			end
 		end
 	end
