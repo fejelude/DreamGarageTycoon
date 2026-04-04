@@ -29,7 +29,12 @@ local CAR_PRODUCT_IDS = {
 	[3524327478] = "Atom",
 	[3524327780] = "Windsor",
 	[3524328208] = "Senator",
-	[3524328713] = "Riva"
+	[3524328713] = "Riva",
+	[3569674363] = "Clunker",
+	[3569675190] = "Rustix",
+	[3569675919] = "Breako",
+	[3569677174] = "Diva",
+	[3569678091] = "Hiva",
 }
 
 -- 🔵 UNCOMMON SHOP CONFIG
@@ -40,7 +45,13 @@ local UNCOMMON_CAR_PRODUCT_IDS = {
 	[3555929595] = "Ironclad",
 	[3555930076] = "Vapid",
 	[3555930681] = "Galadriel",
-	[3555931766] = "Kingston"
+	[3555931766] = "Kingston",
+	[3569681463] = "Vioz",
+	[3569682549] = "Yora",
+	[3569683032] = "Ricky",
+	[3569683706] = "Uber",
+	[3569699394] = "Blackhead",
+	[3569699739] = "Mia",
 }
 
 -- 🟣 RARE SHOP CONFIG
@@ -50,16 +61,24 @@ local RARE_CAR_PRODUCT_IDS = {
 	[3556129501] = "Maverick",
 	[3556127982] = "Javelin",
 	[3556128765] = "Stuttgart",
-	[3556130011] = "Velocity"
+	[3556130011] = "Velocity",
+	[3556536171] = "Sadie", -- Sadie moved from Epic to Rare
+	[3569702085] = "Vipera",
+	[3569702417] = "Camara",
+	[3569702782] = "Corvo",
 }
 
--- 🟡 EPIC SHOP CONFIG (NEW)
+-- 🟡 EPIC SHOP CONFIG
 local EPIC_SHOP_REROLL_ID = 3556540207
 
 local EPIC_CAR_PRODUCT_IDS = {
-	[3556536171] = "Sadie",
 	[3556537696] = "Sirene",
-	[3556538294] = "Vortex"
+	[3556538294] = "Vortex",
+	[3569704442] = "Razor",
+	[3569705950] = "Apollo",
+	[3569706897] = "Sovereign",
+	[3569707752] = "Classy",
+	[3569708179] = "Shaguar",
 }
 
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
@@ -68,7 +87,7 @@ local TycoonFolder = Workspace:WaitForChild("Tycoons")
 local ShopRerollFunc = ServerStorage:WaitForChild("ShopRerollFunction", 30)
 local UncommonShopRerollFunc = ServerStorage:WaitForChild("UncommonShopRerollFunction", 30)
 local RareShopRerollFunc = ServerStorage:WaitForChild("RareShopRerollFunction", 30) 
-local EpicShopRerollFunc = ServerStorage:WaitForChild("EpicShopRerollFunction", 30) -- ✅ NEW
+local EpicShopRerollFunc = ServerStorage:WaitForChild("EpicShopRerollFunction", 30)
 
 -- 📡 REMOTES SETUP
 local PadUnlockEvent = ReplicatedStorage:FindFirstChild("PadUnlockEvent")
@@ -177,6 +196,32 @@ local function markPurchaseProcessed(purchaseKey)
 end
 
 -- ============================================================================
+-- 🚗 HELPER: Give a car tool immediately upon purchase
+-- ============================================================================
+local function giveCarTool(targetPlayer, carName)
+	local CarTools = ServerStorage:FindFirstChild("CarTools")
+	local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName .. " Item", true))
+	if not tool then
+		warn("⚠️ Car Tool missing from ServerStorage: " .. carName)
+		return false
+	end
+
+	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not TycoonAdminAPI then
+		warn("⚠️ TycoonAdminAPI missing!")
+		return false
+	end
+
+	local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
+		IssuedByServer = true,
+		IssuedAt = os.time(),
+		ToolId = tool.Name,
+	})
+
+	return invokeOk and giveResult == true
+end
+
+-- ============================================================================
 -- 🧾 MAIN RECEIPT PROCESSOR
 -- ============================================================================
 MarketplaceService.ProcessReceipt = function(receiptInfo)
@@ -202,7 +247,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	local purchaseKey = buyerId .. "_" .. receiptInfo.PurchaseId
 	local alreadyProcessed = wasPurchaseProcessed(purchaseKey)
 	if alreadyProcessed == nil then
-		return Enum.ProductPurchaseDecision.NotProcessedYet 
+		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
 	if alreadyProcessed then
@@ -210,7 +255,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	end
 
 	local pid = receiptInfo.ProductId
-	local purchaseSuccess = false 
+	local purchaseSuccess = false
 
 	local skinFound = nil
 	if BaseSkinStats then
@@ -222,11 +267,12 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 	end
 
+	-- ─── 2X TABLET ───────────────────────────────────────────────────────────
 	if pid == TABLET_2X_ID then
 		local myPlotName = targetPlayer:GetAttribute("OccupiedPlot")
 		local plot = myPlotName and TycoonFolder:FindFirstChild(myPlotName)
 
-		if plot and plot:FindFirstChild("PendingEarnings") then 
+		if plot and plot:FindFirstChild("PendingEarnings") then
 			local pendingVal = plot.PendingEarnings
 			local amount = pendingVal.Value
 
@@ -240,9 +286,10 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			purchaseSuccess = true
 		end
 
+		-- ─── SHOP REROLLS ────────────────────────────────────────────────────────
 	elseif pid == SHOP_REROLL_ID then
 		if ShopRerollFunc then
-			ShopRerollFunc:Invoke(targetPlayer) 
+			ShopRerollFunc:Invoke(targetPlayer)
 			purchaseSuccess = true
 		end
 
@@ -262,7 +309,6 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			warn("⚠️ RareShopRerollFunction missing!")
 		end
 
-		-- ✅ NEW: EPIC REROLL LOGIC
 	elseif pid == EPIC_SHOP_REROLL_ID then
 		if EpicShopRerollFunc then
 			EpicShopRerollFunc:Invoke(targetPlayer)
@@ -271,118 +317,51 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			warn("⚠️ EpicShopRerollFunction missing!")
 		end
 
-		-- 🚗 COMMON CAR PURCHASE
+		-- ─── 🟢 COMMON CAR ───────────────────────────────────────────────────────
 	elseif CAR_PRODUCT_IDS[pid] then
 		local carName = CAR_PRODUCT_IDS[pid]
-		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
+		purchaseSuccess = giveCarTool(targetPlayer, carName)
 
-		if tool then
-			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-			if TycoonAdminAPI then
-				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
-					IssuedByServer = true,
-					IssuedAt = os.time(),
-					ToolId = tool.Name
-				})
-
-				if invokeOk and giveResult == true then
-					purchaseSuccess = true
-				end
-			end
-		end
-
-		-- 🏎️ UNCOMMON CAR PURCHASE
+		-- ─── 🔵 UNCOMMON CAR ─────────────────────────────────────────────────────
 	elseif UNCOMMON_CAR_PRODUCT_IDS[pid] then
 		local carName = UNCOMMON_CAR_PRODUCT_IDS[pid]
-		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
+		purchaseSuccess = giveCarTool(targetPlayer, carName)
 
-		if tool then
-			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-			if TycoonAdminAPI then
-				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
-					IssuedByServer = true,
-					IssuedAt = os.time(),
-					ToolId = tool.Name
-				})
-
-				if invokeOk and giveResult == true then
-					purchaseSuccess = true
-
-					-- 📣 NEW: TELL DARREL A ROBUX PURCHASE HAPPENED
-					local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
-					local feedbackRemote = ShopRemotes and ShopRemotes:FindFirstChild("DarrelPurchaseFeedback")
-					if feedbackRemote then
-						-- The "true" marks this as a Robux purchase for special dialogue
-						feedbackRemote:FireClient(targetPlayer, carName, true) 
-					end
-				end
+		if purchaseSuccess then
+			local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
+			local feedbackRemote = ShopRemotes and ShopRemotes:FindFirstChild("DarrelPurchaseFeedback")
+			if feedbackRemote then
+				feedbackRemote:FireClient(targetPlayer, carName, true)
 			end
-		else
-			warn("⚠️ Uncommon Car Tool missing from ServerStorage: " .. carName)
 		end
 
-		-- 💎 RARE CAR PURCHASE
+		-- ─── 🟣 RARE CAR ─────────────────────────────────────────────────────────
 	elseif RARE_CAR_PRODUCT_IDS[pid] then
 		local carName = RARE_CAR_PRODUCT_IDS[pid]
-		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
+		purchaseSuccess = giveCarTool(targetPlayer, carName)
 
-		if tool then
-			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-			if TycoonAdminAPI then
-				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
-					IssuedByServer = true,
-					IssuedAt = os.time(),
-					ToolId = tool.Name
-				})
-
-				if invokeOk and giveResult == true then
-					purchaseSuccess = true
-
-					-- 📣 NEW: TELL JACOB A ROBUX PURCHASE HAPPENED
-					local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
-					local feedbackRemote = ShopRemotes and ShopRemotes:FindFirstChild("JacobPurchaseFeedback")
-					if feedbackRemote then
-						feedbackRemote:FireClient(targetPlayer, carName, true)
-					end
-				end
+		if purchaseSuccess then
+			local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
+			local feedbackRemote = ShopRemotes and ShopRemotes:FindFirstChild("JacobPurchaseFeedback")
+			if feedbackRemote then
+				feedbackRemote:FireClient(targetPlayer, carName, true)
 			end
-		else
-			warn("⚠️ Rare Car Tool missing from ServerStorage: " .. carName)
 		end
 
-		-- 🏆 NEW: EPIC CAR PURCHASE LOGIC
+		-- ─── 🟡 EPIC CAR ─────────────────────────────────────────────────────────
 	elseif EPIC_CAR_PRODUCT_IDS[pid] then
 		local carName = EPIC_CAR_PRODUCT_IDS[pid]
-		local CarTools = ServerStorage:FindFirstChild("CarTools")
-		local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName.." Item", true))
+		purchaseSuccess = giveCarTool(targetPlayer, carName)
 
-		if tool then
-			local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-			if TycoonAdminAPI then
-				local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
-					IssuedByServer = true,
-					IssuedAt = os.time(),
-					ToolId = tool.Name
-				})
-
-				if invokeOk and giveResult == true then
-					purchaseSuccess = true
-
-					-- 📣 NEW: TELL RAYW A ROBUX PURCHASE HAPPENED
-					local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
-					local feedbackRemote = ShopRemotes and ShopRemotes:FindFirstChild("RayWPurchaseFeedback")
-					if feedbackRemote then
-						feedbackRemote:FireClient(targetPlayer, carName, true)
-					end
-				end
+		if purchaseSuccess then
+			local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
+			local feedbackRemote = ShopRemotes and ShopRemotes:FindFirstChild("RayWPurchaseFeedback")
+			if feedbackRemote then
+				feedbackRemote:FireClient(targetPlayer, carName, true)
 			end
-		else
-			warn("⚠️ Epic Car Tool missing from ServerStorage: " .. carName)
 		end
 
+		-- ─── 🎨 BASE SKIN ─────────────────────────────────────────────────────────
 	elseif skinFound then
 		local ownedRaw = targetPlayer:GetAttribute("OwnedBaseSkins") or "[]"
 		local ownedTable = {}
@@ -391,7 +370,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 		if table.find(ownedTable, skinFound) then
 			warn("🛡️ Security: Blocked purchase! " .. targetPlayer.Name .. " already owns the " .. skinFound .. " pad.")
-			return Enum.ProductPurchaseDecision.NotProcessedYet 
+			return Enum.ProductPurchaseDecision.NotProcessedYet
 		else
 			table.insert(ownedTable, skinFound)
 			targetPlayer:SetAttribute("OwnedBaseSkins", HttpService:JSONEncode(ownedTable))
@@ -408,6 +387,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 	end
 
+	-- ─── FINALIZE ─────────────────────────────────────────────────────────────
 	if purchaseSuccess then
 		if not markPurchaseProcessed(purchaseKey) then
 			return Enum.ProductPurchaseDecision.NotProcessedYet
