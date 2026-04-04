@@ -8,17 +8,15 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 
 -- 1. REFERENCES
-local label = script.Parent -- The Balance TextLabel
-local container = label.Parent -- The BalanceContainer (Frame)
+local label = script.Parent
+local container = label.Parent
 
--- ⚠️ SAFETY CHECK: We look for the label you added to the container
--- We use a timeout so it doesn't freeze your game if the label is missing.
 local addedLabel = container:WaitForChild("AddedMoneyLabel", 5)
 
 if not addedLabel then
 	warn("❌ CRITICAL ERROR: 'AddedMoneyLabel' not found in BalanceContainer!")
 	warn("👉 Make sure you created a TextLabel named exactly 'AddedMoneyLabel' inside the container.")
-	return -- Stop the script to prevent further errors
+	return
 end
 
 -- 2. WAIT FOR DATA
@@ -28,16 +26,16 @@ local walletValue = leaderstats:WaitForChild("Wallet")
 -- STATE VARIABLES
 local currentBalance = walletValue.Value
 local scriptStartTime = os.clock()
-local activeTween = nil -- Tracks the current text fade animation so we can override it
-local activeStrokeTween = nil -- Tracks the current stroke fade animation so we can override it
-local hideJob = nil -- Tracks the timer
+local activeTween = nil
+local activeStrokeTween = nil
+local hideJob = nil
 
 -- ============================================================================
 -- ⚙️ SETTINGS
 -- ============================================================================
-local SHOW_DURATION = 2.0 -- How long the text stays visible
-local TEXT_COLOR_GAIN = Color3.fromRGB(85, 255, 127)   -- Green (+)
-local TEXT_COLOR_LOSS = Color3.fromRGB(255, 80, 80)    -- Red (-)
+local SHOW_DURATION = 2.0
+local TEXT_COLOR_GAIN = Color3.fromRGB(85, 255, 127)
+local TEXT_COLOR_LOSS = Color3.fromRGB(255, 80, 80)
 
 -- ============================================================================
 -- 📊 FORMATTING HELPER
@@ -46,24 +44,23 @@ local SUFFIXES = {"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"}
 
 local function formatMoney(n)
 	n = tonumber(n) or 0
-	-- Includes your requested "$" suffix
 	if n < 1000 then return tostring(math.floor(n)) .. "$" end
 	local i = math.floor(math.log(n, 1000))
 	local v = math.pow(1000, i)
 	local suffix = SUFFIXES[i] or "?"
-	return string.format("%.2f%s$", n / v, suffix)
+	-- ✅ FIX: math.floor to 2 decimal places to prevent rounding up
+	-- e.g. 199,999 → 199.99K$ instead of incorrectly rounding to 200.00K$
+	return string.format("%.2f%s$", math.floor(n / v * 100) / 100, suffix)
 end
 
 -- ============================================================================
 -- 💡 FEEDBACK LOGIC (Using AddedMoneyLabel)
 -- ============================================================================
 local function showFeedback(amount, isGain)
-	-- 1. Reset: Cancel any running animations to prevent glitches
 	if hideJob then task.cancel(hideJob) hideJob = nil end
 	if activeTween then activeTween:Cancel() activeTween = nil end
 	if activeStrokeTween then activeStrokeTween:Cancel() activeStrokeTween = nil end
 
-	-- 2. Update Content
 	if isGain then
 		addedLabel.Text = "+" .. formatMoney(amount)
 		addedLabel.TextColor3 = TEXT_COLOR_GAIN
@@ -72,30 +69,22 @@ local function showFeedback(amount, isGain)
 		addedLabel.TextColor3 = TEXT_COLOR_LOSS
 	end
 
-	-- 3. Show Immediately
-	-- IMPORTANT: We keep this label Visible at all times so parent layouts
-	-- (especially UIListLayout) don't reflow and shift the balance position.
 	addedLabel.Visible = true
 	addedLabel.TextTransparency = 0
 	if addedLabel:FindFirstChild("UIStroke") then
 		addedLabel.UIStroke.Transparency = 0
 	end
 
-	-- 4. Schedule Fade Out
 	hideJob = task.delay(SHOW_DURATION, function()
 		local tweenInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
-		-- Tween Text
 		activeTween = TweenService:Create(addedLabel, tweenInfo, {TextTransparency = 1})
 		activeTween:Play()
 
-		-- Tween Stroke (if you have one)
 		if addedLabel:FindFirstChild("UIStroke") then
 			activeStrokeTween = TweenService:Create(addedLabel.UIStroke, tweenInfo, {Transparency = 1})
 			activeStrokeTween:Play()
 		end
-
-		-- Keep visible after fade so layout size stays stable (no UI jumping)
 	end)
 end
 
@@ -106,24 +95,19 @@ local function updateDisplay()
 	label.Text = formatMoney(walletValue.Value)
 end
 
--- 1. Init: Hide the added label by default
 updateDisplay()
--- Keep this visible with full transparency so no layout shift occurs.
 addedLabel.Visible = true
 addedLabel.TextTransparency = 1
 if addedLabel:FindFirstChild("UIStroke") then
 	addedLabel.UIStroke.Transparency = 1
 end
 
--- Keep text anchored consistently so value-length changes don't look like movement.
 label.TextXAlignment = Enum.TextXAlignment.Left
 addedLabel.TextXAlignment = Enum.TextXAlignment.Left
 
--- 2. Changed Event
 walletValue.Changed:Connect(function(newValue)
 	local difference = newValue - currentBalance
 
-	-- [LOGIC] Only animate if game has been running for > 2 seconds
 	if (os.clock() - scriptStartTime > 2) then
 		if difference > 0 then
 			showFeedback(math.abs(difference), true)
