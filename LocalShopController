@@ -44,7 +44,14 @@ local ROBUX_PRODUCTS = {
 	Atom    = 3524327478, 
 	Windsor = 3524327780, 
 	Senator = 3524328208, 
-	Riva    = 3524328713
+	Riva    = 3524328713,
+
+	-- 🟢 NEW CARS
+	Clunker = 3569674363,
+	Rustix  = 3569675190,
+	Breako  = 3569675919,
+	Diva    = 3569677174,
+	Hiva    = 3569678091
 }
 
 -- 📡 REMOTES
@@ -440,3 +447,4 @@ local function init()
 end
 
 if player.Character then init() else player.CharacterAdded:Wait(); init() end
+
