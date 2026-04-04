@@ -43,8 +43,15 @@ local FEEDBACK_COLORS = {
 
 -- 🔴 ROBUX IDS (NEW EPIC IDS)
 local ROBUX_PRODUCTS = {
-	Sirene = 3556537696,
-	Vortex = 3556538294
+	Sirene    = 3556537696,
+	Vortex    = 3556538294,
+	
+	-- 🟡 NEW CARS
+	Razor     = 3569704442,
+	Apollo    = 3569705950,
+	Sovereign = 3569706897,
+	Classy    = 3569707752,
+	Shaguar   = 3569708179
 }
 
 -- 📡 REMOTES (ISOLATED FOR EPIC)
