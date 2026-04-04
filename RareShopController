@@ -47,7 +47,13 @@ local ROBUX_PRODUCTS = {
 	Maverick  = 3556129501,
 	Javelin   = 3556127982,
 	Stuttgart = 3556128765,
-	Velocity  = 3556130011 -- ✅ Verified unique ID
+	Velocity  = 3556130011, -- ✅ Verified unique ID
+
+	-- 🟣 NEW CARS
+	Sadie     = 3556536171,
+	Vipera    = 3569702085,
+	Camara    = 3569702417,
+	Corvo     = 3569702782
 }
 
 -- 📡 REMOTES (ISOLATED FOR RARE)
@@ -439,3 +445,4 @@ local function init()
 end
 
 if player.Character then init() else player.CharacterAdded:Wait(); init() end
+
