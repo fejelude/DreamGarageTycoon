@@ -27,7 +27,7 @@ local closeButton = window:WaitForChild("CloseButton")
 local btnMusicOn = window:WaitForChild("MusicOnButton")
 local btnMusicOff = window:WaitForChild("MusicOffButton")
 
--- 🔊 SFX BUTTONS (NEW)
+-- 🔊 SFX BUTTONS
 local btnSFXOn = window:WaitForChild("SFXOnButton")
 local btnSFXOff = window:WaitForChild("SFXOffButton")
 
@@ -60,15 +60,14 @@ local CONFIG = {
 
 	-- Animation Settings
 	Anim = {
-		OpenTime = 1.0,   -- 1 Second fade in
-		StartScale = 0.0, -- Starts at 0 size
+		OpenTime = 1.0,
+		StartScale = 0.0,
 		EasingStyle = Enum.EasingStyle.Exponential,
 	},
 }
 
 -- 🔊 SFX HELPER
 local function playUiSound(name)
-	-- Do not play UI sounds if SFX is muted
 	if SoundService:GetAttribute("SFXMuted") == true then return end
 
 	local id = CONFIG.Sounds[name]
@@ -113,34 +112,53 @@ local function setOtherGuisEnabled(enabled)
 	end
 end
 
+-- ✅ SYNC BUTTON VISUALS FROM LIVE ATTRIBUTE VALUES
+local function syncButtonStates()
+	local lodEnabled = workspace:GetAttribute("CarLODEnabled")
+	btnLODOn.Visible = lodEnabled ~= true
+	btnLODOff.Visible = lodEnabled == true
+
+	local animEnabled = workspace:GetAttribute("CarAnimationEnabled")
+	btnAnimOn.Visible = animEnabled == true
+	btnAnimOff.Visible = animEnabled ~= true
+
+	local musicMuted = SoundService:GetAttribute("MusicMuted")
+	btnMusicOn.Visible = not (musicMuted == true)
+	btnMusicOff.Visible = musicMuted == true
+
+	local sfxMuted = SoundService:GetAttribute("SFXMuted")
+	btnSFXOn.Visible = not (sfxMuted == true)
+	btnSFXOff.Visible = sfxMuted == true
+end
+
 -- 🟢 WINDOW VISIBILITY (Centered Pop Open / Instant Close)
 local currentTween = nil
 
 local function setWindowVisible(isOpen)
-	if currentTween then 
-		currentTween:Cancel() 
+	if currentTween then
+		currentTween:Cancel()
 		currentTween = nil
 	end
 
 	local A = CONFIG.Anim
 
 	if isOpen then
+		syncButtonStates()
 		window.Visible = true
 		openButton.Visible = false
-		uiScale.Scale = A.StartScale 
+		uiScale.Scale = A.StartScale
 		playUiSound("Open")
 		setOtherGuisEnabled(false)
 
 		local info = TweenInfo.new(A.OpenTime, A.EasingStyle, Enum.EasingDirection.Out)
 		currentTween = TweenService:Create(uiScale, info, { Scale = 1 })
 		currentTween:Play()
-
 	else
 		playUiSound("Click")
 
 		window.Visible = false
 		openButton.Visible = true
-		uiScale.Scale = 1 
+		uiScale.Scale = 1
 
 		setOtherGuisEnabled(true)
 	end
@@ -166,8 +184,8 @@ end
 
 -- ⚡ LOD TOGGLE LOGIC
 local function setLODEnabled(isEnabled)
-	btnLODOn.Visible = isEnabled
-	btnLODOff.Visible = not isEnabled
+	btnLODOn.Visible = not isEnabled
+	btnLODOff.Visible = isEnabled
 
 	workspace:SetAttribute("CarLODEnabled", isEnabled)
 
@@ -188,15 +206,13 @@ local function setAnimationEnabled(isEnabled)
 	end
 end
 
--- 🔊 SFX TOGGLE LOGIC (NEW)
+-- 🔊 SFX TOGGLE LOGIC
 local function setSFXMuted(shouldBeMuted)
 	btnSFXOn.Visible = not shouldBeMuted
 	btnSFXOff.Visible = shouldBeMuted
 
-	-- We set this attribute so other scripts (like car sounds, button clicks) can read it later
 	SoundService:SetAttribute("SFXMuted", shouldBeMuted)
 
-	-- If we are unmuting, we can play a click sound right away to confirm to the user
 	if window.Visible and not shouldBeMuted then
 		playUiSound("Click")
 	end
@@ -229,23 +245,38 @@ setupButton(closeButton, function() setWindowVisible(false) end)
 setupButton(btnMusicOn, function() setMusicMuted(true) end)
 setupButton(btnMusicOff, function() setMusicMuted(false) end)
 
--- Connect SFX Buttons (NEW)
+-- Connect SFX Buttons
 setupButton(btnSFXOn, function() setSFXMuted(true) end)
 setupButton(btnSFXOff, function() setSFXMuted(false) end)
 
 -- Connect Performance Buttons
-setupButton(btnLODOn, function() setLODEnabled(false) end)
-setupButton(btnLODOff, function() setLODEnabled(true) end)
+setupButton(btnLODOn, function() setLODEnabled(true) end)
+setupButton(btnLODOff, function() setLODEnabled(false) end)
 
 setupButton(btnAnimOn, function() setAnimationEnabled(false) end)
 setupButton(btnAnimOff, function() setAnimationEnabled(true) end)
 
--- Default State
+-- ✅ FIX: All four settings are now nil-guarded.
+-- Defaults only apply on the very first run of the session.
+-- Any subsequent LocalScript reset (e.g. respawn) will read the
+-- existing attribute and leave the player's chosen setting intact.
+if workspace:GetAttribute("CarLODEnabled") == nil then
+	setLODEnabled(false)       -- Default: LOD OFF
+end
+
+if workspace:GetAttribute("CarAnimationEnabled") == nil then
+	setAnimationEnabled(false) -- Default: Animation OFF
+end
+
+if SoundService:GetAttribute("MusicMuted") == nil then
+	setMusicMuted(false)       -- Default: Music ON
+end
+
+if SoundService:GetAttribute("SFXMuted") == nil then
+	setSFXMuted(false)         -- Default: SFX ON
+end
+
+-- Default window state
 window.Visible = false
 openButton.Visible = true
 
--- Sync initial states immediately so buttons reflect correct visual data
-setMusicMuted(false)
-setSFXMuted(false)
-setLODEnabled(true)       -- Best Performance default
-setAnimationEnabled(false) -- Best Performance default
