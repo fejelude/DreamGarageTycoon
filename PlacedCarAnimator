@@ -17,9 +17,17 @@ local TycoonFolder = Workspace:WaitForChild("Tycoons")
 local DISPLACEMENT_SPREAD = 0.5   -- How high/low it goes (Studs)
 local DISPLACEMENT_SPEED = 2      -- How fast it bobs up and down
 
+-- ⚙️ PERFORMANCE CONFIGURATION (LOD)
+local LOD_CULL_DISTANCE = 200    -- Distance beyond which a car is culled
+local LOD_CHECK_INTERVAL = 0.5   -- How often (in seconds) we check LOD distance
+
 -- 🛡️ STATE MANAGEMENT
 -- We store the "Base Position" of every car so it doesn't drift away
 local activeCars = {} -- [CarModel] = OriginalCFrame
+local carParents = {} -- [CarModel] = OriginalParentInstance
+local lastLODCheck = 0
+local carsCulled = {} -- [CarModel] = true (Keeps track of cars that are currently hidden)
+local carsAtBase = {} -- [CarModel] = true (Keeps track of cars that have been reset to base CFrame when animation is off)
 
 -- 🛠️ REGISTER CAR
 local function trackCar(car)
@@ -32,6 +40,28 @@ local function trackCar(car)
 
 	if car.Parent then
 		activeCars[car] = car:GetPivot()
+		carParents[car] = car.Parent
+	end
+end
+
+-- ⚡ CULLING HELPER
+-- Create a local cache folder in ReplicatedStorage for culling (maximum performance gain)
+local carCacheFolder = Instance.new("Folder")
+carCacheFolder.Name = "CarLODCache"
+carCacheFolder.Parent = game:GetService("ReplicatedStorage")
+
+local function setCarVisibility(car, isVisible)
+	if carsCulled[car] == not isVisible then return end -- Already in correct state
+	carsCulled[car] = not isVisible
+
+	if not isVisible then
+		-- Move to cache folder completely to stop rendering & physics processing
+		car.Parent = carCacheFolder
+	else
+		-- Restore to its original PlacedCars folder
+		if carParents[car] then
+			car.Parent = carParents[car]
+		end
 	end
 end
 
@@ -51,7 +81,14 @@ local function monitorPlot(plot)
 
 	-- 3. Cleanup removed cars (When a player picks it up)
 	carFolder.ChildRemoved:Connect(function(car)
-		activeCars[car] = nil
+		-- Only clear if it was actually destroyed/removed permanently
+		-- Not if it was just moved to our carCacheFolder for LOD culling
+		if car.Parent ~= carCacheFolder then
+			activeCars[car] = nil
+			carsCulled[car] = nil
+			carsAtBase[car] = nil
+			carParents[car] = nil
+		end
 	end)
 end
 
@@ -64,20 +101,67 @@ end
 TycoonFolder.ChildAdded:Connect(monitorPlot)
 
 -- 🔄 ANIMATION LOOP (RenderStepped runs every frame on Client)
-RunService.RenderStepped:Connect(function()
+RunService.RenderStepped:Connect(function(dt)
 	local t = time()
 
-	-- Calculate bobbing (Sine Wave)
-	local yDisplacement = math.sin(t * DISPLACEMENT_SPEED) * DISPLACEMENT_SPREAD
+	local lodEnabled = Workspace:GetAttribute("CarLODEnabled") == true
+	local animEnabled = Workspace:GetAttribute("CarAnimationEnabled") == true
+
+	local currentCamera = Workspace.CurrentCamera
+	local camPos = currentCamera and currentCamera.CFrame.Position or Vector3.new()
+
+	-- ⚡ LOD DISTANCE CHECK (Throttled to save CPU)
+	if t - lastLODCheck > LOD_CHECK_INTERVAL then
+		lastLODCheck = t
+
+		for car, baseCF in pairs(activeCars) do
+			-- Need to check if it's still parented somewhere valid (not destroyed)
+			if car.Parent then
+				if lodEnabled then
+					-- Distance check against baseCF (the car might be cached and its actual pos irrelevant)
+					local dist = (camPos - baseCF.Position).Magnitude
+					if dist > LOD_CULL_DISTANCE then
+						setCarVisibility(car, false)
+					else
+						setCarVisibility(car, true)
+					end
+				else
+					-- If LOD is turned off, make sure all cars are visible
+					setCarVisibility(car, true)
+				end
+			else
+				-- Car was deleted
+				activeCars[car] = nil
+				carsCulled[car] = nil
+				carsAtBase[car] = nil
+				carParents[car] = nil
+			end
+		end
+	end
+
+	-- ⚡ ANIMATION CALCULATION & APPLY
+	local yDisplacement = 0
+	if animEnabled then
+		-- Calculate bobbing (Sine Wave)
+		yDisplacement = math.sin(t * DISPLACEMENT_SPEED) * DISPLACEMENT_SPREAD
+	end
 
 	for car, baseCF in pairs(activeCars) do
 		if car.Parent then
-			-- Apply ONLY height change (No Rotation)
-			-- Logic: Take Base Position -> Add Y Offset -> Move Car locally
-			car:PivotTo(baseCF * CFrame.new(0, yDisplacement, 0))
-		else
-			-- Garbage collection if car was deleted unexpectedly
-			activeCars[car] = nil
+			-- Skip animating if culled to save CPU/GPU overhead
+			if carsCulled[car] then continue end
+
+			if animEnabled then
+				-- Apply ONLY height change (No Rotation)
+				car:PivotTo(baseCF * CFrame.new(0, yDisplacement, 0))
+				carsAtBase[car] = false
+			else
+				-- If animation disabled, reset to base once and stop pivoting
+				if not carsAtBase[car] then
+					car:PivotTo(baseCF)
+					carsAtBase[car] = true
+				end
+			end
 		end
 	end
 end)

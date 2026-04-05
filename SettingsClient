@@ -31,6 +31,18 @@ local btnMusicOff = window:WaitForChild("MusicOffButton")
 local btnSFXOn = window:WaitForChild("SFXOnButton")
 local btnSFXOff = window:WaitForChild("SFXOffButton")
 
+-- ⚡ PERFORMANCE BUTTONS (LOD & ANIMATION)
+local performanceFrame = window:WaitForChild("Performance")
+local optionsFrame = performanceFrame:WaitForChild("Options")
+
+local option1Frame = optionsFrame:WaitForChild("Option 1")
+local btnLODOn = option1Frame:WaitForChild("Option1On")
+local btnLODOff = option1Frame:WaitForChild("Option1Off")
+
+local option2Frame = optionsFrame:WaitForChild("Option 2")
+local btnAnimOn = option2Frame:WaitForChild("Option2On")
+local btnAnimOff = option2Frame:WaitForChild("Option2Off")
+
 -- 🔊 MUSIC TARGET
 local gameTheme = SoundService:WaitForChild("GameTheme", 5)
 
@@ -152,6 +164,30 @@ local function setMusicMuted(shouldBeMuted)
 	end
 end
 
+-- ⚡ LOD TOGGLE LOGIC
+local function setLODEnabled(isEnabled)
+	btnLODOn.Visible = isEnabled
+	btnLODOff.Visible = not isEnabled
+
+	workspace:SetAttribute("CarLODEnabled", isEnabled)
+
+	if window.Visible then
+		playUiSound("Click")
+	end
+end
+
+-- ⚡ ANIMATION TOGGLE LOGIC
+local function setAnimationEnabled(isEnabled)
+	btnAnimOn.Visible = isEnabled
+	btnAnimOff.Visible = not isEnabled
+
+	workspace:SetAttribute("CarAnimationEnabled", isEnabled)
+
+	if window.Visible then
+		playUiSound("Click")
+	end
+end
+
 -- 🔊 SFX TOGGLE LOGIC (NEW)
 local function setSFXMuted(shouldBeMuted)
 	btnSFXOn.Visible = not shouldBeMuted
@@ -197,6 +233,13 @@ setupButton(btnMusicOff, function() setMusicMuted(false) end)
 setupButton(btnSFXOn, function() setSFXMuted(true) end)
 setupButton(btnSFXOff, function() setSFXMuted(false) end)
 
+-- Connect Performance Buttons
+setupButton(btnLODOn, function() setLODEnabled(false) end)
+setupButton(btnLODOff, function() setLODEnabled(true) end)
+
+setupButton(btnAnimOn, function() setAnimationEnabled(false) end)
+setupButton(btnAnimOff, function() setAnimationEnabled(true) end)
+
 -- Default State
 window.Visible = false
 openButton.Visible = true
@@ -204,3 +247,5 @@ openButton.Visible = true
 -- Sync initial states immediately so buttons reflect correct visual data
 setMusicMuted(false)
 setSFXMuted(false)
+setLODEnabled(true)       -- Best Performance default
+setAnimationEnabled(false) -- Best Performance default
