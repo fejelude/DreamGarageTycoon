@@ -13,6 +13,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 local button = script.Parent -- The ImageButton
 
 -- === CONFIGURATION ===
@@ -24,7 +25,12 @@ local CONSOLE_BIND = Enum.KeyCode.ButtonY
 
 -- === STATE ===
 local isSprinting = false
-local runTrack = nil 
+local runTrack = nil
+
+-- Helper: true while the loading screen owns the character
+local function isLoadingActive()
+	return playerGui:GetAttribute("LoadingScreenActive") == true
+end
 
 -- 1. VISIBILITY SETUP (Mobile Check)
 button.Visible = UserInputService.TouchEnabled
@@ -44,8 +50,10 @@ local function updateAnimation(humanoid)
 	end
 end
 
--- 🛠️ SPEED HANDLER
+-- 🛠️ SPEED HANDLER (gated)
 local function updateSpeed()
+	if isLoadingActive() then return end -- GATE: loading screen owns WalkSpeed
+
 	local character = player.Character
 	if not character then return end
 
@@ -55,7 +63,7 @@ local function updateSpeed()
 	-- 🛑 SAFETY CHECK: If holding a tool, NEVER sprint
 	if character:FindFirstChildWhichIsA("Tool") then
 		isSprinting = false
-		humanoid.WalkSpeed = WALK_SPEED 
+		humanoid.WalkSpeed = WALK_SPEED
 
 		if runTrack and runTrack.IsPlaying then runTrack:Stop() end
 
@@ -105,22 +113,34 @@ local function setupCharacter(character)
 	end)
 
 	-- 4. INITIALIZATION
-	checkTools() 
-	updateSpeed() 
+	-- If loading is still active, defer the first speed/tool write
+	-- until the loading screen releases control via the attribute
+	if isLoadingActive() then
+		local attrConn
+		attrConn = playerGui:GetAttributeChangedSignal("LoadingScreenActive"):Connect(function()
+			if not isLoadingActive() then
+				attrConn:Disconnect()
+				checkTools() -- now safe to write WalkSpeed
+			end
+		end)
+	else
+		checkTools()
+		updateSpeed()
+	end
 end
 
 -- ============================================================================
 -- 💻 PC & 🎮 CONSOLE LOGIC (Tap to Toggle)
 -- ============================================================================
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	-- If the user is typing in chat or interacting with core UI, ignore the input
-	if gameProcessed then return end 
+	if gameProcessed then return end
+	if isLoadingActive() then return end -- GATE: ignore input during loading
 
 	if input.KeyCode == PC_BIND or input.KeyCode == CONSOLE_BIND then
 		local char = player.Character
 		if char and char:FindFirstChildWhichIsA("Tool") then return end
 
-		isSprinting = not isSprinting -- FIXED TYPO HERE
+		isSprinting = not isSprinting
 		updateSpeed()
 	end
 end)
@@ -129,6 +149,8 @@ end)
 -- 📱 MOBILE LOGIC (Tap Button to Toggle)
 -- ============================================================================
 button.MouseButton1Click:Connect(function()
+	if isLoadingActive() then return end -- GATE: ignore input during loading
+
 	local char = player.Character
 	if char and char:FindFirstChildWhichIsA("Tool") then return end
 
@@ -140,8 +162,8 @@ end)
 player.CharacterAdded:Connect(function(char)
 	isSprinting = false
 	if runTrack then
-		runTrack:Destroy() 
-		runTrack = nil 
+		runTrack:Destroy()
+		runTrack = nil
 	end
 
 	button.Visible = UserInputService.TouchEnabled
