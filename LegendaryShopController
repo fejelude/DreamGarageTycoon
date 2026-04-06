@@ -38,10 +38,14 @@ local Kit      = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 -- ============================================================================
 -- ⚙️  CONFIG
 -- ============================================================================
-local SHOP_CARS = { "LaRossa", "Yamura" }
+local SHOP_CARS = { "Neo-Periscopio", "Neo-Performante", "Neo-Zentorno", "Neo-Revuelto", "Yamura", "LaRossa" }
 local RECIPES   = {
-	["LaRossa"] = { TargetCar = "La Rossa", Cash = 150000000, Riva = 7, Kingston = 3, Velocity = 4, Vortex = 2 },
-	["Yamura"]  = { TargetCar = "Yamura",   Cash = 90000000,  Riva = 5, Kingston = 3, Velocity = 2, Vortex = 1 },
+	["Neo-Periscopio"] = { TargetCar = "Neo-Periscopio", Cash = 250000000, Razor = 2, Maverick = 3, Galadriel = 4, Riva = 5, CraftTime = 21600 },
+	["Neo-Performante"] = { TargetCar = "Neo-Performante", Cash = 350000000, Sovereign = 2, Stuttgart = 3, Kingston = 3, Riva = 5, CraftTime = 28800 },
+	["Neo-Zentorno"] = { TargetCar = "Neo-Zentorno", Cash = 500000000, Classy = 2, Sadie = 2, Blackhead = 3, Riva = 4, CraftTime = 36000 },
+	["Neo-Revuelto"] = { TargetCar = "Neo-Revuelto", Cash = 650000000, Shaguar = 2, Vipera = 3, Mia = 2, Riva = 4, CraftTime = 43200 },
+	["Yamura"]  = { TargetCar = "Yamura", Cash = 800000000, Sirene = 2, Vortex = 1, Camara = 3, Mia = 2, CraftTime = 64800 },
+	["LaRossa"] = { TargetCar = "La Rossa", Cash = 1000000000, Vortex = 2, Corvo = 3, Mia = 3, Riva = 5, CraftTime = 86400 },
 }
 local BLUR_SIZE = 24
 
@@ -932,7 +936,7 @@ local function AttemptCraft(carName)
 	end
 
 	-- Start craft
-	local craftHours = (carName == "Yamura" and "12" or "48")
+	local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
 	local confirmText = string.format(
 		"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
 		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),

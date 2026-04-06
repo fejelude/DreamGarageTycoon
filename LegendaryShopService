@@ -34,23 +34,59 @@ local HttpService       = game:GetService("HttpService")
 -- LEGENDARY CONFIG (END-GAME RARITY)
 -- =========================
 local RECIPES = {
-	["LaRossa"] = {
-		TargetCar = "La Rossa",
-		Cash      = 150000000,
-		Riva      = 7,
+	["Neo-Periscopio"] = {
+		TargetCar = "Neo-Periscopio",
+		Cash      = 250000000,
+		Razor     = 2,
+		Maverick  = 3,
+		Galadriel = 4,
+		Riva      = 5,
+		CraftTime = 21600, -- 6 hours
+	},
+	["Neo-Performante"] = {
+		TargetCar = "Neo-Performante",
+		Cash      = 350000000,
+		Sovereign = 2,
+		Stuttgart = 3,
 		Kingston  = 3,
-		Velocity  = 4,
-		Vortex    = 2,
-		CraftTime = 172800, -- 48 hours
+		Riva      = 5,
+		CraftTime = 28800, -- 8 hours
+	},
+	["Neo-Zentorno"] = {
+		TargetCar = "Neo-Zentorno",
+		Cash      = 500000000,
+		Classy    = 2,
+		Sadie     = 2,
+		Blackhead = 3,
+		Riva      = 4,
+		CraftTime = 36000, -- 10 hours
+	},
+	["Neo-Revuelto"] = {
+		TargetCar = "Neo-Revuelto",
+		Cash      = 650000000,
+		Shaguar   = 2,
+		Vipera    = 3,
+		Mia       = 2,
+		Riva      = 4,
+		CraftTime = 43200, -- 12 hours
 	},
 	["Yamura"] = {
 		TargetCar = "Yamura",
-		Cash      = 90000000,
-		Riva      = 5,
-		Kingston  = 3,
-		Velocity  = 2,
+		Cash      = 800000000,
+		Sirene    = 2,
 		Vortex    = 1,
-		CraftTime = 43200, -- 12 hours
+		Camara    = 3,
+		Mia       = 2,
+		CraftTime = 64800, -- 18 hours
+	},
+	["LaRossa"] = {
+		TargetCar = "La Rossa",
+		Cash      = 1000000000,
+		Vortex    = 2,
+		Corvo     = 3,
+		Mia       = 3,
+		Riva      = 5,
+		CraftTime = 86400, -- 24 hours
 	},
 }
 
@@ -211,8 +247,12 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 			end
 
 			-- Ensure per-car sub-tables always exist
-			session.CraftProgress["LaRossa"] = session.CraftProgress["LaRossa"] or {}
+			session.CraftProgress["Neo-Periscopio"] = session.CraftProgress["Neo-Periscopio"] or {}
+			session.CraftProgress["Neo-Performante"] = session.CraftProgress["Neo-Performante"] or {}
+			session.CraftProgress["Neo-Zentorno"] = session.CraftProgress["Neo-Zentorno"] or {}
+			session.CraftProgress["Neo-Revuelto"] = session.CraftProgress["Neo-Revuelto"] or {}
 			session.CraftProgress["Yamura"]  = session.CraftProgress["Yamura"]  or {}
+			session.CraftProgress["LaRossa"] = session.CraftProgress["LaRossa"] or {}
 
 			print("✅ [LegendaryShop] Loaded progress for " .. player.Name)
 		end

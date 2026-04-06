@@ -37,11 +37,39 @@ local HttpService       = game:GetService("HttpService")
 local RECIPES = {
 	["Centurion"] = {
 		TargetCar = "Centurion",
-		Cash      = 199999999,
+		Cash      = 79000000000000,
+		Yamura    = 1,
+		Vortex    = 1,
+		Velocity  = 2,
+		Blackhead = 2,
+		CraftTime = 108000, -- 30 hours
+	},
+	["Grotti-Ferocious"] = {
+		TargetCar = "Grotti-Ferocious",
+		Cash      = 122000000000000,
 		Yamura    = 1,
 		Vortex    = 2,
 		Velocity  = 3,
-		Kingston  = 4,
+		Mia       = 1,
+		CraftTime = 129600, -- 36 hours
+	},
+	["Solitaire"] = {
+		TargetCar = "Solitaire",
+		Cash      = 199000000000000,
+		["Neo-Revuelto"] = 1,
+		Vortex    = 2,
+		Corvo     = 1,
+		Mia       = 2,
+		CraftTime = 151200, -- 42 hours
+	},
+	["Hyperspace"] = {
+		TargetCar = "Hyperspace",
+		Cash      = 229000000000000,
+		["La Rossa"] = 1,
+		Vortex    = 1,
+		Corvo     = 1,
+		Mia       = 2,
+		Riva      = 3,
 		CraftTime = 172800, -- 48 hours
 	},
 }
@@ -155,7 +183,12 @@ local function getSession(player)
 	local uid = player.UserId
 	if not PlayerSessions[uid] then
 		PlayerSessions[uid] = {
-			CraftProgress  = { ["Centurion"] = {} },
+			CraftProgress  = {
+				["Centurion"] = {},
+				["Grotti-Ferocious"] = {},
+				["Solitaire"] = {},
+				["Hyperspace"] = {}
+			},
 			ActiveCrafts   = {},
 			CompletedCrafts = {},
 		}
@@ -204,6 +237,9 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 
 			-- Ensure per-car sub-tables always exist
 			session.CraftProgress["Centurion"] = session.CraftProgress["Centurion"] or {}
+			session.CraftProgress["Grotti-Ferocious"] = session.CraftProgress["Grotti-Ferocious"] or {}
+			session.CraftProgress["Solitaire"] = session.CraftProgress["Solitaire"] or {}
+			session.CraftProgress["Hyperspace"] = session.CraftProgress["Hyperspace"] or {}
 
 			print("✅ [MythicalShop] Loaded progress for " .. player.Name)
 		end

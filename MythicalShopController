@@ -38,9 +38,12 @@ local Kit      = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 -- ============================================================================
 -- ⚙️  CONFIG
 -- ============================================================================
-local SHOP_CARS = { "Centurion" }
+local SHOP_CARS = { "Centurion", "Grotti-Ferocious", "Solitaire", "Hyperspace" }
 local RECIPES   = {
-	["Centurion"] = { TargetCar = "Centurion", Cash = 199999999, Yamura = 1, Vortex = 2, Velocity = 3, Kingston = 4 },
+	["Centurion"] = { TargetCar = "Centurion", Cash = 79000000000000, Yamura = 1, Vortex = 1, Velocity = 2, Blackhead = 2, CraftTime = 108000 },
+	["Grotti-Ferocious"] = { TargetCar = "Grotti-Ferocious", Cash = 122000000000000, Yamura = 1, Vortex = 2, Velocity = 3, Mia = 1, CraftTime = 129600 },
+	["Solitaire"] = { TargetCar = "Solitaire", Cash = 199000000000000, ["Neo-Revuelto"] = 1, Vortex = 2, Corvo = 1, Mia = 2, CraftTime = 151200 },
+	["Hyperspace"] = { TargetCar = "Hyperspace", Cash = 229000000000000, ["La Rossa"] = 1, Vortex = 1, Corvo = 1, Mia = 2, Riva = 3, CraftTime = 172800 },
 }
 local BLUR_SIZE = 24
 
@@ -931,7 +934,7 @@ local function AttemptCraft(carName)
 	end
 
 	-- Start craft
-	local craftHours = (carName == "Yamura" and "12" or "48")
+	local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
 	local confirmText = string.format(
 		"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
 		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
