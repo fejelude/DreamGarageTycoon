@@ -40,10 +40,10 @@ local Kit      = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 -- ============================================================================
 local SHOP_CARS = { "Centurion", "Grotti-Ferocious", "Solitaire", "Hyperspace" }
 local RECIPES   = {
-	["Centurion"] = { TargetCar = "Centurion", Cash = 79000000000000, Yamura = 1, Vortex = 1, Velocity = 2, Blackhead = 2, CraftTime = 108000 },
-	["Grotti-Ferocious"] = { TargetCar = "Grotti-Ferocious", Cash = 122000000000000, Yamura = 1, Vortex = 2, Velocity = 3, Mia = 1, CraftTime = 129600 },
-	["Solitaire"] = { TargetCar = "Solitaire", Cash = 199000000000000, ["Neo-Revuelto"] = 1, Vortex = 2, Corvo = 1, Mia = 2, CraftTime = 151200 },
-	["Hyperspace"] = { TargetCar = "Hyperspace", Cash = 229000000000000, ["La Rossa"] = 1, Vortex = 1, Corvo = 1, Mia = 2, Riva = 3, CraftTime = 172800 },
+	["Centurion"] = { TargetCar = "Centurion", Cash = 5000000000000, Yamura = 1, Vortex = 1, Velocity = 2, Blackhead = 2, CraftTime = 108000 },
+	["Grotti-Ferocious"] = { TargetCar = "Grotti-Ferocious", Cash = 8000000000000, Yamura = 1, Vortex = 2, Velocity = 3, Mia = 1, CraftTime = 129600 },
+	["Solitaire"] = { TargetCar = "Solitaire", Cash = 12000000000000, ["Neo-Revuelto"] = 1, Vortex = 2, Corvo = 1, Mia = 2, CraftTime = 151200 },
+	["Hyperspace"] = { TargetCar = "Hyperspace", Cash = 18000000000000, ["La Rossa"] = 1, Vortex = 1, Corvo = 1, Mia = 2, Riva = 3, CraftTime = 172800 },
 }
 local BLUR_SIZE = 24
 

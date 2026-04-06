@@ -36,7 +36,7 @@ local HttpService       = game:GetService("HttpService")
 local RECIPES = {
 	["Neo-Periscopio"] = {
 		TargetCar = "Neo-Periscopio",
-		Cash      = 250000000,
+		Cash      = 500000000000,
 		Razor     = 2,
 		Maverick  = 3,
 		Galadriel = 4,
@@ -45,7 +45,7 @@ local RECIPES = {
 	},
 	["Neo-Performante"] = {
 		TargetCar = "Neo-Performante",
-		Cash      = 350000000,
+		Cash      = 800000000000,
 		Sovereign = 2,
 		Stuttgart = 3,
 		Kingston  = 3,
@@ -54,7 +54,7 @@ local RECIPES = {
 	},
 	["Neo-Zentorno"] = {
 		TargetCar = "Neo-Zentorno",
-		Cash      = 500000000,
+		Cash      = 1200000000000,
 		Classy    = 2,
 		Sadie     = 2,
 		Blackhead = 3,
@@ -63,7 +63,7 @@ local RECIPES = {
 	},
 	["Neo-Revuelto"] = {
 		TargetCar = "Neo-Revuelto",
-		Cash      = 650000000,
+		Cash      = 1800000000000,
 		Shaguar   = 2,
 		Vipera    = 3,
 		Mia       = 2,
@@ -72,7 +72,7 @@ local RECIPES = {
 	},
 	["Yamura"] = {
 		TargetCar = "Yamura",
-		Cash      = 800000000,
+		Cash      = 2700000000000,
 		Sirene    = 2,
 		Vortex    = 1,
 		Camara    = 3,
@@ -81,7 +81,7 @@ local RECIPES = {
 	},
 	["LaRossa"] = {
 		TargetCar = "La Rossa",
-		Cash      = 1000000000,
+		Cash      = 4000000000000,
 		Vortex    = 2,
 		Corvo     = 3,
 		Mia       = 3,

@@ -37,7 +37,7 @@ local HttpService       = game:GetService("HttpService")
 local RECIPES = {
 	["Centurion"] = {
 		TargetCar = "Centurion",
-		Cash      = 79000000000000,
+		Cash      = 5000000000000,
 		Yamura    = 1,
 		Vortex    = 1,
 		Velocity  = 2,
@@ -46,7 +46,7 @@ local RECIPES = {
 	},
 	["Grotti-Ferocious"] = {
 		TargetCar = "Grotti-Ferocious",
-		Cash      = 122000000000000,
+		Cash      = 8000000000000,
 		Yamura    = 1,
 		Vortex    = 2,
 		Velocity  = 3,
@@ -55,7 +55,7 @@ local RECIPES = {
 	},
 	["Solitaire"] = {
 		TargetCar = "Solitaire",
-		Cash      = 199000000000000,
+		Cash      = 12000000000000,
 		["Neo-Revuelto"] = 1,
 		Vortex    = 2,
 		Corvo     = 1,
@@ -64,7 +64,7 @@ local RECIPES = {
 	},
 	["Hyperspace"] = {
 		TargetCar = "Hyperspace",
-		Cash      = 229000000000000,
+		Cash      = 18000000000000,
 		["La Rossa"] = 1,
 		Vortex    = 1,
 		Corvo     = 1,
