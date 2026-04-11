@@ -93,17 +93,9 @@ local UncommonShopRerollFunc = ServerStorage:WaitForChild("UncommonShopRerollFun
 local RareShopRerollFunc = ServerStorage:WaitForChild("RareShopRerollFunction", 30) 
 local EpicShopRerollFunc = ServerStorage:WaitForChild("EpicShopRerollFunction", 30)
 
-local SkipLegendaryCraftFunc = ServerStorage:FindFirstChild("SkipLegendaryCraftFunction") or Instance.new("BindableFunction")
-if SkipLegendaryCraftFunc.Parent ~= ServerStorage then
-	SkipLegendaryCraftFunc.Name = "SkipLegendaryCraftFunction"
-	SkipLegendaryCraftFunc.Parent = ServerStorage
-end
-
-local SkipMythicalCraftFunc = ServerStorage:FindFirstChild("SkipMythicalCraftFunction") or Instance.new("BindableFunction")
-if SkipMythicalCraftFunc.Parent ~= ServerStorage then
-	SkipMythicalCraftFunc.Name = "SkipMythicalCraftFunction"
-	SkipMythicalCraftFunc.Parent = ServerStorage
-end
+local BindableFunctions = ReplicatedStorage:WaitForChild("BindableFunctions")
+local SkipLegendaryCraftFunc = BindableFunctions:WaitForChild("SkipLegendaryCraftFunction")
+local SkipMythicalCraftFunc = BindableFunctions:WaitForChild("SkipMythicalCraftFunction")
 
 -- 📡 REMOTES SETUP
 local PadUnlockEvent = ReplicatedStorage:FindFirstChild("PadUnlockEvent")

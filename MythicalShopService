@@ -126,12 +126,8 @@ if not PersistenceBindable then
 	PersistenceBindable.Parent = ServerStorage
 end
 
-local SkipCraftFunc = ServerStorage:FindFirstChild("SkipMythicalCraftFunction")
-if not SkipCraftFunc then
-	SkipCraftFunc        = Instance.new("BindableFunction")
-	SkipCraftFunc.Name   = "SkipMythicalCraftFunction"
-	SkipCraftFunc.Parent = ServerStorage
-end
+local BindableFunctions = ReplicatedStorage:WaitForChild("BindableFunctions")
+local SkipCraftFunc = BindableFunctions:WaitForChild("SkipMythicalCraftFunction")
 
 local MythicalInventoryBindable = ServerStorage:FindFirstChild("MythicalCraftingInventoryFunction")
 if not MythicalInventoryBindable then
