@@ -105,11 +105,38 @@ local shopSessionId          = 0
 local shopViewVersion        = 0
 local confirmationVersion    = 0
 local confirmationRestoreState = nil
+local acknowledgedCrafts     = {}
 
 -- ============================================================================
 -- 🔧  SMALL HELPERS
 -- ============================================================================
 local USER_COLOR = "#55AAFF"
+
+local function formatTimeAgo(timestamp)
+	if type(timestamp) ~= "number" then return "recently" end
+	local delta = os.time() - timestamp
+	if delta < 60 then
+		return "just now"
+	elseif delta < 3600 then
+		local mins = math.floor(delta / 60)
+		return mins .. " minute" .. (mins == 1 and "" or "s") .. " ago"
+	elseif delta < 86400 then
+		local hours = math.floor(delta / 3600)
+		return hours .. " hour" .. (hours == 1 and "" or "s") .. " ago"
+	elseif delta < 604800 then
+		local days = math.floor(delta / 86400)
+		return days .. " day" .. (days == 1 and "" or "s") .. " ago"
+	elseif delta < 2592000 then
+		local weeks = math.floor(delta / 604800)
+		return weeks .. " week" .. (weeks == 1 and "" or "s") .. " ago"
+	elseif delta < 31536000 then
+		local months = math.floor(delta / 2592000)
+		return months .. " month" .. (months == 1 and "" or "s") .. " ago"
+	else
+		local years = math.floor(delta / 31536000)
+		return years .. " year" .. (years == 1 and "" or "s") .. " ago"
+	end
+end
 
 local function pickRandom(t)
 	return t[math.random(1, #t)]
@@ -1144,34 +1171,118 @@ local function init()
 		setFocusMode(true)
 		Kit.Sound:Play("Open")
 		gui.Enabled          = true
-		mainFrame.Visible    = true
+		mainFrame.Visible    = false -- wait for dialogue/logic
 		activeCarFocus       = nil
 		isProcessingPurchase = false
 		confirmationRestoreState = nil
 		hideAllCraftingMenus()
+
 		currentState = { CraftProgress = {}, ActiveCrafts = {}, CompletedCrafts = {} }
-		UpdateDisplay()
 		local realState = FuncGetState:InvokeServer()
 		if not isActiveShopSession(sessionId) then return end
 		currentState = realState
 		UpdateDisplay()
+
+		-- Check Mythical state for cross-tier lock
+		local mythicalRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes") and ReplicatedStorage.ShopRemotes:FindFirstChild("MythicalShop")
+		local getMythicalState = mythicalRemotes and mythicalRemotes:FindFirstChild("GetMythicalShopState")
+		local mythicState = getMythicalState and getMythicalState:InvokeServer() or {}
+
+		local myCraft, myCraftEnd
+		for c, e in pairs(currentState.ActiveCrafts or {}) do myCraft, myCraftEnd = c, e; break end
+
+		local otherCraft
+		for c, _ in pairs(mythicState.ActiveCrafts or {}) do otherCraft = c; break end
+
+		if myCraft then
+			local delta = math.max(0, myCraftEnd - os.time())
+			local timeStr = string.format("%02d:%02d:%02d",
+				math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
+
+			angeloSpeak(pickRandom({
+				"You are already building the <font color='#00E5FF'>" .. getDisplayCarName(myCraft) .. "</font>! It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+				"The forge is occupied making your <font color='#00E5FF'>" .. getDisplayCarName(myCraft) .. "</font>. Wait <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			}), function()
+				if not isActiveShopSession(sessionId) then return end
+				task.wait(3.5)
+				if not isActiveShopSession(sessionId) then return end
+				closeShopUI(true)
+				MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
+			end)
+			return
+		elseif otherCraft then
+			angeloSpeak("You are already busy crafting a Mythical car. Come back when you are finished there.", function()
+				if not isActiveShopSession(sessionId) then return end
+				closeShopUI(true)
+			end)
+			return
+		end
+
+		-- Check for unacknowledged completed crafts
+		local recentCompletedCar = nil
+		local completedTime = nil
+		for c, t in pairs(currentState.CompletedCrafts or {}) do
+			if not acknowledgedCrafts[c] then
+				recentCompletedCar = c
+				completedTime = t
+				acknowledgedCrafts[c] = true
+				break
+			end
+		end
+
+		if recentCompletedCar then
+			local dName = getDisplayCarName(recentCompletedCar)
+			local timeAgo = formatTimeAgo(completedTime)
+			angeloSpeak(pickRandom({
+				"Your <font color='#B652FF'>" .. dName .. "</font> has been crafted and delivered to your inventory <font color='#FFD700'>" .. timeAgo .. "</font>!",
+				"The <font color='#B652FF'>" .. dName .. "</font> was completed <font color='#FFD700'>" .. timeAgo .. "</font>. It's sitting in your inventory now."
+			}), function()
+				if isActiveShopSession(sessionId) then mainFrame.Visible = true end
+			end)
+			return
+		end
+
+		-- Default open
+		mainFrame.Visible = true
 	end)
 
 	RemoteUpdate.OnClientEvent:Connect(function(newState)
-		if newState.Reason == "Complete" then
-			local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
-			local carName
-			if currentState and currentState.CompletedCrafts and newState.CompletedCrafts then
-				for n, _ in pairs(newState.CompletedCrafts) do
-					if not currentState.CompletedCrafts[n] then carName = n; break end
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local carName
+		if currentState and currentState.CompletedCrafts and newState.CompletedCrafts then
+			for n, _ in pairs(newState.CompletedCrafts) do
+				if not currentState.CompletedCrafts[n] then carName = n; break end
+			end
+		end
+
+		if not carName then
+			-- Fallback: find the car that was just actively crafting but is now gone
+			if currentState and currentState.ActiveCrafts then
+				for n, _ in pairs(currentState.ActiveCrafts) do
+					if not newState.ActiveCrafts or not newState.ActiveCrafts[n] then
+						carName = n
+						break
+					end
 				end
 			end
+		end
+
+		if newState.Reason == "Complete" then
 			local dName = carName and getDisplayCarName(carName) or "your car"
+			if carName then acknowledgedCrafts[carName] = true end
 			angeloSpeak(pickRandom({
 				"It is finished. The <font color='#B652FF'>" .. dName .. "</font> is a true work of art. It should be in your inventory already.",
 				"The <font color='#B652FF'>" .. dName .. "</font> is already there in your inventory, " .. coloredName .. ".",
 				"Construction of the <font color='#B652FF'>" .. dName .. "</font> is done. A flawless execution. It's already there in your inventory.",
 			}))
+		elseif newState.Reason == "Skipped" then
+			if carName then acknowledgedCrafts[carName] = true end
+			angeloSpeak(
+				"<font color='#B652FF'>I used magic to do this immediately</font>, it drains my energy, so I need payment to do it. The car should be in your inventory.",
+				function()
+					if isShopOpen then mainFrame.Visible = true end
+				end
+			)
 		end
 		currentState = newState
 		UpdateDisplay()

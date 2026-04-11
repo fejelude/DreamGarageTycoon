@@ -129,6 +129,8 @@ end
 local BindableFunctions = ReplicatedStorage:WaitForChild("BindableFunctions")
 local SkipCraftFunc = BindableFunctions:WaitForChild("SkipMythicalCraftFunction")
 
+local LegendaryPersistenceBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
+
 local MythicalInventoryBindable = ServerStorage:FindFirstChild("MythicalCraftingInventoryFunction")
 if not MythicalInventoryBindable then
 	MythicalInventoryBindable        = Instance.new("BindableFunction")
@@ -415,6 +417,17 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 		local session = getSession(player)
 
 		if session.ActiveCrafts[carName]   then return false, "Crafting already in progress!" end
+
+		-- Cross-tier lock: ensure Legendary isn't actively crafting
+		if LegendaryPersistenceBindable then
+			local ok, legSession = safeInvoke(LegendaryPersistenceBindable, 2, "Get", player)
+			if ok and legSession and legSession.ActiveCrafts then
+				for _, _ in pairs(legSession.ActiveCrafts) do
+					return false, "You are already crafting a Legendary car!"
+				end
+			end
+		end
+
 		if session.CompletedCrafts[carName] then return false, "You already crafted this!"    end
 
 		local progress = session.CraftProgress[carName] or {}
@@ -452,18 +465,33 @@ SkipCraftFunc.OnInvoke = function(player)
 	if not player then return false, "No player provided" end
 	local session = getSession(player)
 
-	local foundActive = false
+	local skippedCar = nil
 	for carName, endTime in pairs(session.ActiveCrafts) do
-		-- Found an active craft, force completion time to now
-		session.ActiveCrafts[carName] = os.time()
-		foundActive = true
+		skippedCar = carName
+		break
 	end
 
-	if not foundActive then
+	if not skippedCar then
 		return false, "No active crafts to skip"
 	end
 
-	return true, "Success"
+	session.ActiveCrafts[skippedCar] = nil
+	session.CompletedCrafts[skippedCar] = os.time()
+
+	local realToolName = RECIPES[skippedCar].TargetCar
+	local invokeOk, giveResult = safeInvoke(MythicalInventoryBindable, 3, "GiveTool", player, realToolName)
+
+	if invokeOk and giveResult ~= false then
+		print("✅ [MythicalShop] SKIP Granted " .. realToolName .. " to " .. player.Name)
+		pushUpdate(player, session, "Skipped")
+		safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
+		return true, "Success"
+	else
+		warn("⚠️ [MythicalShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name)
+		session.ActiveCrafts[skippedCar] = os.time() + 60 -- revert and retry in 1m if failed
+		session.CompletedCrafts[skippedCar] = nil
+		return false, "System error granting item"
+	end
 end
 
 -- =========================
@@ -483,7 +511,7 @@ task.spawn(function()
 			for carName, endTime in pairs(session.ActiveCrafts) do
 				if now >= endTime then
 					session.ActiveCrafts[carName]   = nil
-					session.CompletedCrafts[carName] = true
+					session.CompletedCrafts[carName] = now -- save timestamp for dialogue
 
 					local realToolName           = RECIPES[carName].TargetCar
 					local invokeOk, giveResult   =
