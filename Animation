@@ -38,7 +38,8 @@ local animNames = {
 	    	{ id = "http://www.roblox.com/asset/?id=117479886498975", weight = 10 } 
 			}, 
 	run = 	{
-				{ id = "run.xml", weight = 10 } 
+				-- FIX: replaced local "run.xml" reference with a valid Roblox asset URL
+				{ id = "http://www.roblox.com/asset/?id=180426354", weight = 10 } 
 			}, 
 	jump = 	{
 				{ id = "http://www.roblox.com/asset/?id=125750702", weight = 10 } 
@@ -57,7 +58,6 @@ local animNames = {
 			},
 	toolslash = {
 				{ id = "http://www.roblox.com/asset/?id=129967390", weight = 10 } 
---				{ id = "slash.xml", weight = 10 } 
 			},
 	toollunge = {
 				{ id = "http://www.roblox.com/asset/?id=129967478", weight = 10 } 
@@ -109,7 +109,6 @@ function configureAnimationSet(name, fileList)
 	-- check for config values
 	local config = script:FindFirstChild(name)
 	if (config ~= nil) then
---		print("Loading anims " .. name)
 		table.insert(animTable[name].connections, config.ChildAdded:connect(function(child) configureAnimationSet(name, fileList) end))
 		table.insert(animTable[name].connections, config.ChildRemoved:connect(function(child) configureAnimationSet(name, fileList) end))
 		local idx = 1
@@ -126,7 +125,6 @@ function configureAnimationSet(name, fileList)
 				end
 				animTable[name].count = animTable[name].count + 1
 				animTable[name].totalWeight = animTable[name].totalWeight + animTable[name][idx].weight
-	--			print(name .. " [" .. idx .. "] " .. animTable[name][idx].anim.AnimationId .. " (" .. animTable[name][idx].weight .. ")")
 				idx = idx + 1
 			end
 		end
@@ -142,7 +140,6 @@ function configureAnimationSet(name, fileList)
 			animTable[name][idx].weight = anim.weight
 			animTable[name].count = animTable[name].count + 1
 			animTable[name].totalWeight = animTable[name].totalWeight + anim.weight
---			print(name .. " [" .. idx .. "] " .. anim.id .. " (" .. anim.weight .. ")")
 		end
 	end
 end
@@ -158,17 +155,15 @@ end
 script.ChildAdded:connect(scriptChildModified)
 script.ChildRemoved:connect(scriptChildModified)
 
--- Clear any existing animation tracks
--- Fixes issue with characters that are moved in and out of the Workspace accumulating tracks
+-- FIX: use Animator for loading/clearing animations instead of deprecated Humanoid:LoadAnimation()
 local animator = if Humanoid then Humanoid:FindFirstChildOfClass("Animator") else nil
 if animator then
 	local animTracks = animator:GetPlayingAnimationTracks()
-	for i,track in ipairs(animTracks) do
+	for i, track in ipairs(animTracks) do
 		track:Stop(0)
 		track:Destroy()
 	end
 end
-
 
 for name, fileList in pairs(animNames) do 
 	configureAnimationSet(name, fileList)
@@ -220,7 +215,6 @@ end
 
 function keyFrameReachedFunc(frameName)
 	if (frameName == "End") then
-
 		local repeatAnim = currentAnim
 		-- return to idle if finishing an emote
 		if (emoteNames[repeatAnim] ~= nil and emoteNames[repeatAnim] == false) then
@@ -243,7 +237,6 @@ function playAnimation(animName, transitionTime, humanoid)
 		roll = roll - animTable[animName][idx].weight
 		idx = idx + 1
 	end
---		print(animName .. " " .. idx .. " [" .. origRoll .. "]")
 	local anim = animTable[animName][idx].anim
 
 	-- switch animation		
@@ -256,8 +249,8 @@ function playAnimation(animName, transitionTime, humanoid)
 
 		currentAnimSpeed = 1.0
 	
-		-- load it to the humanoid; get AnimationTrack
-		currentAnimTrack = humanoid:LoadAnimation(anim)
+		-- FIX: use Animator:LoadAnimation() instead of deprecated Humanoid:LoadAnimation()
+		currentAnimTrack = animator:LoadAnimation(anim)
 		currentAnimTrack.Priority = Enum.AnimationPriority.Core
 		 
 		-- play the animation
@@ -270,9 +263,7 @@ function playAnimation(animName, transitionTime, humanoid)
 			currentAnimKeyframeHandler:disconnect()
 		end
 		currentAnimKeyframeHandler = currentAnimTrack.KeyframeReached:connect(keyFrameReachedFunc)
-		
 	end
-
 end
 
 -------------------------------------------------------------------------------------------
@@ -285,11 +276,9 @@ local currentToolAnimKeyframeHandler = nil
 
 function toolKeyFrameReachedFunc(frameName)
 	if (frameName == "End") then
---		print("Keyframe : ".. frameName)	
 		playToolAnimation(toolAnimName, 0.0, Humanoid)
 	end
 end
-
 
 function playToolAnimation(animName, transitionTime, humanoid, priority)	 
 		
@@ -300,7 +289,6 @@ function playToolAnimation(animName, transitionTime, humanoid, priority)
 			roll = roll - animTable[animName][idx].weight
 			idx = idx + 1
 		end
---		print(animName .. " * " .. idx .. " [" .. origRoll .. "]")
 		local anim = animTable[animName][idx].anim
 
 		if (toolAnimInstance ~= anim) then
@@ -311,8 +299,8 @@ function playToolAnimation(animName, transitionTime, humanoid, priority)
 				transitionTime = 0
 			end
 					
-			-- load it to the humanoid; get AnimationTrack
-			toolAnimTrack = humanoid:LoadAnimation(anim)
+			-- FIX: use Animator:LoadAnimation() instead of deprecated Humanoid:LoadAnimation()
+			toolAnimTrack = animator:LoadAnimation(anim)
 			if priority then
 				toolAnimTrack.Priority = priority
 			end
@@ -341,7 +329,6 @@ function stopToolAnimations()
 		toolAnimTrack = nil
 	end
 
-
 	return oldAnim
 end
 
@@ -354,7 +341,8 @@ function onRunning(speed)
 	
 	if speed > 0.01 then
 		playAnimation("walk", 0.1, Humanoid)
-		if currentAnimInstance and currentAnimInstance.AnimationId == "http://www.roblox.com/asset/?id=180426354" then
+		-- FIX: corrected animation ID to match the actual walk animation in animNames
+		if currentAnimInstance and currentAnimInstance.AnimationId == "http://www.roblox.com/asset/?id=117479886498975" then
 			setAnimationSpeed(speed / 14.5)
 		end
 		pose = "Running"
@@ -480,8 +468,9 @@ function move(time)
 		return
 	elseif (pose == "Running") then
 		playAnimation("walk", 0.1, Humanoid)
-	elseif (pose == "Dead" or pose == "GettingUp" or pose == "FallingDown" or pose == "Seated" or pose == "PlatformStanding") then
---		print("Wha " .. pose)
+	elseif (pose == "Dead" or pose == "GettingUp" or pose == "FallingDown" or pose == "PlatformStanding") then
+		-- FIX: removed duplicate "Seated" check from this branch; it was unreachable since
+		-- Seated is already handled by the elseif above
 		stopAllAnimations()
 		amplitude = 0.1
 		frequency = 1
@@ -550,7 +539,6 @@ game:GetService("Players").LocalPlayer.Chatted:connect(function(msg)
 	if (pose == "Standing" and emoteNames[emote] ~= nil) then
 		playAnimation(emote, 0.1, Humanoid)
 	end
-
 end)
 
 -- emote bindable hook
@@ -562,13 +550,13 @@ script:WaitForChild("PlayEmote").OnInvoke = function(emote)
 	if emoteNames[emote] ~= nil then
 		-- Default emotes
 		playAnimation(emote, EMOTE_TRANSITION_TIME, Humanoid)
-
 		return true, currentAnimTrack
 	end
 
 	-- Return false to indicate that the emote could not be played
 	return false
 end
+
 -- main program
 
 -- initialize to idle
@@ -579,6 +567,3 @@ while Figure.Parent ~= nil do
 	local _, time = wait(0.1)
 	move(time)
 end
-
-
-
