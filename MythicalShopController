@@ -23,6 +23,7 @@ local SoundService      = game:GetService("SoundService")
 local Lighting          = game:GetService("Lighting")
 local TweenService      = game:GetService("TweenService")
 local UserInputService  = game:GetService("UserInputService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
@@ -56,6 +57,8 @@ local FEEDBACK_COLORS = {
 	FailRobux = Color3.fromRGB(255, 95,  95),
 	FailCash  = Color3.fromRGB(255, 170, 60),
 }
+
+local MYTHICAL_SKIP_PRODUCT_ID = 3573933156
 
 -- ============================================================================
 -- 📡  REMOTES
@@ -1034,6 +1037,11 @@ local function OpenCraftingMenu(carName)
 			if not mainCraftBtn then
 				mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
 			end
+	local premiumCraftBtn
+	if mainCraftBtn then
+		premiumCraftBtn = mainCraftBtn.Parent:FindFirstChild("PremiumCraft")
+	end
+
 			if mainCraftBtn and not mainCraftBtn:GetAttribute("Connected") then
 				mainCraftBtn:SetAttribute("Connected", true)
 				Kit.Tween:SetupButton(mainCraftBtn, function()
@@ -1043,6 +1051,24 @@ local function OpenCraftingMenu(carName)
 					end
 				end)
 			end
+
+	if premiumCraftBtn and not premiumCraftBtn:GetAttribute("Connected") then
+		premiumCraftBtn:SetAttribute("Connected", true)
+		Kit.Tween:SetupButton(premiumCraftBtn, function()
+			if premiumCraftBtn.Visible and premiumCraftBtn.Active
+				and activeCarFocus == carName and isShopOpen then
+				if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
+					-- Found active craft, prompt purchase
+					MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
+				else
+					ethourahSpeak(pickRandom({
+						"You don't have an active build for the <font color='#00E5FF'>" .. getDisplayCarName(carName) .. "</font> yet.",
+						"Start the build before trying to speed it up.",
+					}))
+				end
+			end
+		end)
+	end
 
 			if sacrificeItems then
 				for ingredient, _ in pairs(RECIPES[carName]) do

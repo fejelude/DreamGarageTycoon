@@ -142,6 +142,13 @@ if not PersistenceBindable then
 	PersistenceBindable.Parent = ServerStorage
 end
 
+local SkipCraftFunc = ServerStorage:FindFirstChild("SkipLegendaryCraftFunction")
+if not SkipCraftFunc then
+	SkipCraftFunc        = Instance.new("BindableFunction")
+	SkipCraftFunc.Name   = "SkipLegendaryCraftFunction"
+	SkipCraftFunc.Parent = ServerStorage
+end
+
 local LegendaryInventoryBindable = ServerStorage:FindFirstChild("LegendaryCraftingInventoryFunction")
 if not LegendaryInventoryBindable then
 	LegendaryInventoryBindable        = Instance.new("BindableFunction")
@@ -453,6 +460,27 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 	end
 
 	return logicOk, msg
+end
+
+-- =========================
+-- SKIP CRAFTING BINDABLE (FROM RECEIPT ROUTER)
+-- =========================
+SkipCraftFunc.OnInvoke = function(player)
+	if not player then return false, "No player provided" end
+	local session = getSession(player)
+
+	local foundActive = false
+	for carName, endTime in pairs(session.ActiveCrafts) do
+		-- Found an active craft, force completion time to now
+		session.ActiveCrafts[carName] = os.time()
+		foundActive = true
+	end
+
+	if not foundActive then
+		return false, "No active crafts to skip"
+	end
+
+	return true, "Success"
 end
 
 -- =========================

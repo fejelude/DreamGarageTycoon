@@ -81,6 +81,10 @@ local EPIC_CAR_PRODUCT_IDS = {
 	[3569708179] = "Shaguar",
 }
 
+-- 🔴 SKIP CRAFT TIME PRODUCT IDS
+local LEGENDARY_SKIP_CRAFT_ID = 3573930334
+local MYTHICAL_SKIP_CRAFT_ID = 3573933156
+
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
 -- Bindable Functions Reference Setup
@@ -88,6 +92,18 @@ local ShopRerollFunc = ServerStorage:WaitForChild("ShopRerollFunction", 30)
 local UncommonShopRerollFunc = ServerStorage:WaitForChild("UncommonShopRerollFunction", 30)
 local RareShopRerollFunc = ServerStorage:WaitForChild("RareShopRerollFunction", 30) 
 local EpicShopRerollFunc = ServerStorage:WaitForChild("EpicShopRerollFunction", 30)
+
+local SkipLegendaryCraftFunc = ServerStorage:FindFirstChild("SkipLegendaryCraftFunction") or Instance.new("BindableFunction")
+if SkipLegendaryCraftFunc.Parent ~= ServerStorage then
+	SkipLegendaryCraftFunc.Name = "SkipLegendaryCraftFunction"
+	SkipLegendaryCraftFunc.Parent = ServerStorage
+end
+
+local SkipMythicalCraftFunc = ServerStorage:FindFirstChild("SkipMythicalCraftFunction") or Instance.new("BindableFunction")
+if SkipMythicalCraftFunc.Parent ~= ServerStorage then
+	SkipMythicalCraftFunc.Name = "SkipMythicalCraftFunction"
+	SkipMythicalCraftFunc.Parent = ServerStorage
+end
 
 -- 📡 REMOTES SETUP
 local PadUnlockEvent = ReplicatedStorage:FindFirstChild("PadUnlockEvent")
@@ -359,6 +375,23 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			if feedbackRemote then
 				feedbackRemote:FireClient(targetPlayer, carName, true)
 			end
+		end
+
+		-- ─── ⏩ SKIP CRAFT TIMES ──────────────────────────────────────────────────
+	elseif pid == LEGENDARY_SKIP_CRAFT_ID then
+		local ok, success, msg = safeInvoke(SkipLegendaryCraftFunc, 5, targetPlayer)
+		if ok and success then
+			purchaseSuccess = true
+		else
+			warn("⚠️ Legendary Craft Skip failed or no active craft: " .. tostring(msg))
+		end
+
+	elseif pid == MYTHICAL_SKIP_CRAFT_ID then
+		local ok, success, msg = safeInvoke(SkipMythicalCraftFunc, 5, targetPlayer)
+		if ok and success then
+			purchaseSuccess = true
+		else
+			warn("⚠️ Mythical Craft Skip failed or no active craft: " .. tostring(msg))
 		end
 
 		-- ─── 🎨 BASE SKIN ─────────────────────────────────────────────────────────
