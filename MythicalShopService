@@ -317,15 +317,6 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	local ethourahRoot = ethourah and ethourah:FindFirstChild("HumanoidRootPart")
 	if not ethourahRoot then return false, "NPC missing" end
 
-	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
-	if distance > MAX_INTERACTION_DISTANCE then
-		warn(string.format(
-			"🛡️ [Security] %s attempted to SACRIFICE from %d studs away.",
-			player.Name, math.floor(distance)
-			))
-		return false, "Too far away!"
-	end
-
 	local recipe = RECIPES[carName]
 	if not recipe              then return false, "Invalid Mythical Car" end
 	if not recipe[ingredient]  then return false, "Invalid Ingredient"    end
@@ -395,15 +386,6 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 	local ethourah     = npcs and npcs:FindFirstChild("ethourah")
 	local ethourahRoot = ethourah and ethourah:FindFirstChild("HumanoidRootPart")
 	if not ethourahRoot then return false, "NPC missing" end
-
-	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
-	if distance > MAX_INTERACTION_DISTANCE then
-		warn(string.format(
-			"🛡️ [Security] %s attempted to CRAFT from %d studs away.",
-			player.Name, math.floor(distance)
-			))
-		return false, "Too far away!"
-	end
 
 	local recipe = RECIPES[carName]
 	if not recipe then return false, "Invalid Mythical Car" end

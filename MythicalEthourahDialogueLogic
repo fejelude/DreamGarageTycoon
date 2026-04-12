@@ -459,7 +459,12 @@ local function startInteraction(npcModel)
 		connectBtn(BTN_INQUIRY_ID, function()
 			setButtonsState(false)
 			if dialogueLabel then
-				local loreText = "You wanna know how this works? Aight listen up. You bring me the rides and the materials I ask for and I build you something nobody else got. No sacrifices no car. Simple as that. I don't do handouts."
+				local inqMsgs = {
+					"You wanna know how this works? Aight listen up. You bring me the rides and the cash I ask for, and I build you something nobody else got. No sacrifices, no car. Simple as that. I don't do handouts.",
+					"It's basic math bro. You hand over the exact whips I need, I tear 'em apart, and I hand you back a Mythic. Don't overthink it.",
+					"Look, I take what's good and make it perfect. Bring the tribute I ask for and you'll leave with a legend. No cap."
+				}
+				local loreText = inqMsgs[math.random(1, #inqMsgs)]
 				typewrite(dialogueLabel, loreText, function()
 					setButtonsState(true)
 				end)
@@ -473,9 +478,10 @@ local function startInteraction(npcModel)
 
 			if not hasRequiredRank("MVP++") then
 				local msgs = {
-					"Nah bro, you ain't ready for this heat. <font color='#FF4444'><b>MVP++</b></font> or step off.",
-					"Come back when you actually matter on god. <font color='#FF4444'><b>MVP++</b></font> required.",
-					"I only do business with the highest rollers. Get <font color='#FF4444'><b>MVP++</b></font> and we'll talk."
+					"Nah bro, you ain't ready for this heat. Hit <font color='#FF4444'><b>MVP++</b></font> or step off.",
+					"Come back when you actually matter on god. <font color='#FF4444'><b>MVP++</b></font> is the baseline here.",
+					"I only do business with the absolute highest rollers. Get your <font color='#FF4444'><b>MVP++</b></font> up and we'll talk.",
+					"You think you can just walk up to me with that weak rank? Go get <font color='#FF4444'><b>MVP++</b></font> first."
 				}
 				local responseText = msgs[math.random(1, #msgs)]
 				typewrite(dialogueLabel, responseText, function()
@@ -485,10 +491,52 @@ local function startInteraction(npcModel)
 				return
 			end
 
+			-- PRE-CHECK ACTIVE CRAFT: Do not show "pick a chassis" if already crafting
+			local FuncGetState = MythicalRemotes:FindFirstChild("GetMythicalShopState")
+			local currentState = FuncGetState and FuncGetState:InvokeServer() or {}
+
+			local activeCar, endTime
+			if currentState and currentState.ActiveCrafts then
+				for c, e in pairs(currentState.ActiveCrafts) do
+					activeCar = c
+					endTime = e
+					break
+				end
+			end
+
+			if activeCar and endTime then
+				local delta = math.max(0, endTime - os.time())
+				local timeStr = string.format("%02d:%02d:%02d",
+					math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
+
+				local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
+				local busyMsgs = {
+					"Bro I'm already putting in work on your <font color='#B652FF'>" .. activeCar .. "</font>. Give me <font color='#FF4C4C'>" .. timeStr .. "</font> and it's yours.",
+					"You can't rush me " .. coloredName .. ". The <font color='#B652FF'>" .. activeCar .. "</font> is gonna take another <font color='#FF4C4C'>" .. timeStr .. "</font>. Chill.",
+					"I'm literally building the <font color='#B652FF'>" .. activeCar .. "</font> right now. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font> fr.",
+					"The forge is hot and I'm busy. The <font color='#B652FF'>" .. activeCar .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font>."
+				}
+
+				local responseText = busyMsgs[math.random(1, #busyMsgs)]
+				typewrite(dialogueLabel, responseText, function()
+					task.wait(2.5)
+					stopInteraction()
+				end)
+				return
+			end
+
 			isOpeningShop = true
 			local openGeneration = interactionGeneration
 
-			typewrite(dialogueLabel, CRAFT_OPEN_MESSAGE, function()
+			local openMsgs = {
+				CRAFT_OPEN_MESSAGE,
+				"Aight let's see what you're working with. Pick a blueprint.",
+				"Bet. Pull up the menu and choose what you wanna drop bags on.",
+				"Let's get it. Choose a chassis and I'll tell you the cost."
+			}
+			local openMsg = openMsgs[math.random(1, #openMsgs)]
+
+			typewrite(dialogueLabel, openMsg, function()
 				if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
 
 				if pendingShopOpenTask then

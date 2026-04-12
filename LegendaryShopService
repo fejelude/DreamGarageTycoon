@@ -328,15 +328,6 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	local angeloRoot = angelo and angelo:FindFirstChild("HumanoidRootPart")
 	if not angeloRoot then return false, "NPC missing" end
 
-	local distance = (char.PrimaryPart.Position - angeloRoot.Position).Magnitude
-	if distance > MAX_INTERACTION_DISTANCE then
-		warn(string.format(
-			"🛡️ [Security] %s attempted to SACRIFICE from %d studs away.",
-			player.Name, math.floor(distance)
-			))
-		return false, "Too far away!"
-	end
-
 	local recipe = RECIPES[carName]
 	if not recipe              then return false, "Invalid Legendary Car" end
 	if not recipe[ingredient]  then return false, "Invalid Ingredient"    end
@@ -406,15 +397,6 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 	local angelo     = npcs and npcs:FindFirstChild("Monk3yDAngelo-Cars")
 	local angeloRoot = angelo and angelo:FindFirstChild("HumanoidRootPart")
 	if not angeloRoot then return false, "NPC missing" end
-
-	local distance = (char.PrimaryPart.Position - angeloRoot.Position).Magnitude
-	if distance > MAX_INTERACTION_DISTANCE then
-		warn(string.format(
-			"🛡️ [Security] %s attempted to CRAFT from %d studs away.",
-			player.Name, math.floor(distance)
-			))
-		return false, "Too far away!"
-	end
 
 	local recipe = RECIPES[carName]
 	if not recipe then return false, "Invalid Legendary Car" end
