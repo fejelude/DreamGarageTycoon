@@ -150,6 +150,20 @@ local function FormatCommas(num)
 	return tostring(num):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
 end
 
+local function FormatAbbreviated(num)
+	if num >= 1e12 then
+		return string.format("%.1fT", num / 1e12):gsub("%.0T", "T")
+	elseif num >= 1e9 then
+		return string.format("%.1fB", num / 1e9):gsub("%.0B", "B")
+	elseif num >= 1e6 then
+		return string.format("%.1fM", num / 1e6):gsub("%.0M", "M")
+	elseif num >= 1e3 then
+		return string.format("%.1fK", num / 1e3):gsub("%.0K", "K")
+	else
+		return tostring(num)
+	end
+end
+
 local function escapeRichText(text)
 	text = tostring(text)
 	return text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;")
@@ -684,12 +698,13 @@ local function UpdateCraftingUI(carName)
 				infoLabel.RichText = true
 				if ingredient == "Cash" then
 					infoLabel.Text = isDone
-						and ("<font color='#50C878'>$" .. FormatCommas(requiredAmount) .. " / $" .. FormatCommas(requiredAmount) .. "</font>")
-						or  ("$" .. FormatCommas(current) .. " / $" .. FormatCommas(requiredAmount))
+						and ("<font color='#50C878'>Sacrificed " .. FormatAbbreviated(requiredAmount) .. " / " .. FormatAbbreviated(requiredAmount) .. "</font>")
+						or  ("Sacrificed " .. FormatAbbreviated(current) .. " / " .. FormatAbbreviated(requiredAmount))
 				else
+					local remaining = requiredAmount - current
 					infoLabel.Text = isDone
-						and ("<font color='#50C878'>" .. requiredAmount .. " / " .. requiredAmount .. "</font>")
-						or  (current .. " / " .. requiredAmount)
+						and ("<font color='#50C878'>Sacrifice complete</font>")
+						or  ("Sacrifice " .. remaining .. " more to continue")
 				end
 			end
 			if isDone then
