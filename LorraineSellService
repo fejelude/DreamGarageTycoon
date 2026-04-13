@@ -14,7 +14,7 @@ local CarSellPrices = require(ReplicatedStorage:WaitForChild("CarSellPrices"))
 local SellFunction = ReplicatedStorage:WaitForChild("LorraineSellFunction")
 local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
 
-local MAX_AMOUNT_LIMIT = 1000000000000 -- 1 Trillion safety cap
+local MAX_AMOUNT_LIMIT = 1000000000000000000 -- 1 Quintillion safety cap
 local MAX_DISTANCE = 30 -- Max interaction distance
 
 local activeTransactions = {}

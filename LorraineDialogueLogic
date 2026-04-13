@@ -390,8 +390,11 @@ local function bindConfirmationButton(button, callback)
 		callback()
 	end
 
-	-- Only use Activated to prevent Mobile / PC double firing race condition
-	addConfirmationConnection(button.Activated:Connect(hp))
+	if UserInputService.TouchEnabled then
+		addConfirmationConnection(button.Activated:Connect(hp))
+	else
+		addConfirmationConnection(button.MouseButton1Click:Connect(hp))
+	end
 end
 
 local function PromptConfirmation(text, callback)
@@ -531,12 +534,11 @@ local function handleSell(dialogueLabel)
 				invokeCompleted = true
 			end)
 
-			-- Timeout mechanism
+			-- Timeout mechanism (No artificial waiting, immediately breaks once invokeCompleted)
 			local elapsed = 0
 			local timeoutLimit = 10
 			while not invokeCompleted and elapsed < timeoutLimit do
-				task.wait(0.5)
-				elapsed += 0.5
+				elapsed += task.wait()
 			end
 
 			if not invokeCompleted then
@@ -623,10 +625,20 @@ local function startInteraction(npcModel)
 			local btn = buttons and buttons:FindFirstChild(btnName, true)
 			if btn and btn:IsA("GuiButton") then
 				animateButton(btn)
-				local conn = btn.Activated:Connect(function()
-					playSound(CLICK_SOUND_ID, 0.5)
-					func()
-				end)
+
+				local conn
+				if UserInputService.TouchEnabled then
+					conn = btn.Activated:Connect(function()
+						playSound(CLICK_SOUND_ID, 0.5)
+						func()
+					end)
+				else
+					conn = btn.MouseButton1Click:Connect(function()
+						playSound(CLICK_SOUND_ID, 0.5)
+						func()
+					end)
+				end
+
 				table.insert(buttonConnections, conn)
 			else
 				warn("⚠️ [LorraineDebug] Warning: Could not find button '" .. btnName .. "' in UI.")
