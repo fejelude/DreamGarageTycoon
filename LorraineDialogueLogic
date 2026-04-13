@@ -419,7 +419,7 @@ local function bindConfirmationButton(button, callback)
 	applyConfirmationButtonFeedback(button)
 
 	local fired = false
-	local function hp()
+	local function hp() 
 		if fired then return end
 		fired = true
 
@@ -427,7 +427,7 @@ local function bindConfirmationButton(button, callback)
 		button.Active = false
 		pcall(function() button.Interactable = false end)
 
-		callback()
+		callback() 
 	end
 
 	-- Only use Activated for all devices as requested
@@ -502,8 +502,9 @@ end
 local function handleQuestion(dialogueLabel)
 	local equippedCarId = getEquippedCar()
 	if not equippedCarId then
-		-- Explicitly mention that a car needs to be held, and IMMEDIATELY close after saying it
+		-- No car equipped
 		typewrite(dialogueLabel, "Hmm~ I'd love to help, but darling, you aren't holding anything~ Equip a car first and come back to me! 🌸", function()
+			task.wait(2)
 			stopInteraction()
 		end)
 		return
@@ -511,7 +512,9 @@ local function handleQuestion(dialogueLabel)
 
 	local details = CarSellPrices.GetDetails(equippedCarId)
 	if not details then
+		-- Unknown item
 		typewrite(dialogueLabel, "Oh my~ I'm afraid I don't know the value of that item, darling. Are you sure it's a car? ✨", function()
+			task.wait(2)
 			stopInteraction()
 		end)
 		return
@@ -528,8 +531,9 @@ local function handleSell(dialogueLabel)
 
 	local equippedCarId = getEquippedCar()
 	if not equippedCarId then
-		-- Explicitly mention that a car needs to be held, and IMMEDIATELY close after saying it
+		-- No car equipped
 		typewrite(dialogueLabel, "Hmm~ I'd love to help, but darling, you aren't holding anything~ Equip a car first and come back to me! 🌸", function()
+			task.wait(2)
 			stopInteraction()
 		end)
 		return
@@ -537,7 +541,9 @@ local function handleSell(dialogueLabel)
 
 	local details = CarSellPrices.GetDetails(equippedCarId)
 	if not details then
+		-- Unknown item
 		typewrite(dialogueLabel, "Oh my~ I'm afraid I don't know the value of that item, darling. Are you sure it's a car? ✨", function()
+			task.wait(2)
 			stopInteraction()
 		end)
 		return
