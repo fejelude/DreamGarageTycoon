@@ -1,0 +1,50 @@
+-- Purpose: Defines the sell prices for all cars, used by Lorraine NPC system.
+-- Runs on: Shared
+-- Location: ReplicatedStorage > CarSellPrices
+-- Dependencies: CarStats
+-- Public API: CarSellPrices.GetDetails(carId), CarSellPrices.CleanId(carId)
+-- Security: Server relies on this to calculate transaction amounts.
+-- Performance: Prices are cached at load time.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
+local CarSellPrices = {}
+local SELL_MULTIPLIER = 0.50 -- 50% of base price
+
+CarSellPrices.Prices = {}
+
+-- Initialize the sell prices based on CarStats
+-- The dictionary key is populated with BOTH the real tool name (stats.Name) AND the fantasy name (carId)
+-- so the player's equipped car can be looked up regardless of how the tool is named.
+-- The Name property ALWAYS forces the fantasy name (carId) so the NPC dialogue speaks the correct lore name.
+for carId, stats in pairs(CarStats.Cars) do
+	local priceStr = tostring(stats.Price or 0):gsub(",", "")
+	local priceVal = tonumber(priceStr)
+
+	if priceVal and priceVal > 0 and stats.Name then
+		local details = {
+			Name = carId,
+			SellPrice = math.floor(priceVal * SELL_MULTIPLIER)
+		}
+		-- Map both possible tool names to the same details
+		CarSellPrices.Prices[carId] = details
+		CarSellPrices.Prices[stats.Name] = details
+	end
+end
+
+-- Centralized ID cleaning
+function CarSellPrices.CleanId(carId)
+	if not carId then return nil end
+	return carId:gsub(" Item", ""):gsub("Item", "")
+end
+
+-- Safely lookup car sell price and display name
+function CarSellPrices.GetDetails(carId)
+	local cleanId = CarSellPrices.CleanId(carId)
+	if not cleanId then return nil end
+
+	return CarSellPrices.Prices[cleanId]
+end
+
+return CarSellPrices
