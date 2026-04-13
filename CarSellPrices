@@ -2,7 +2,7 @@
 -- Runs on: Shared
 -- Location: ReplicatedStorage > CarSellPrices
 -- Dependencies: CarStats
--- Public API: CarSellPrices.GetPrice(carId)
+-- Public API: CarSellPrices.GetDetails(carId), CarSellPrices.CleanId(carId)
 -- Security: Server relies on this to calculate transaction amounts.
 -- Performance: Prices are cached at load time.
 
@@ -16,7 +16,7 @@ CarSellPrices.Prices = {}
 
 -- Initialize the sell prices based on CarStats
 for carId, stats in pairs(CarStats.Cars) do
-	if stats.Price and stats.Name then
+	if type(stats.Price) == "number" and stats.Price > 0 and stats.Name then
 		CarSellPrices.Prices[carId] = {
 			Name = stats.Name,
 			SellPrice = math.floor(stats.Price * SELL_MULTIPLIER)
@@ -24,12 +24,16 @@ for carId, stats in pairs(CarStats.Cars) do
 	end
 end
 
+-- Centralized ID cleaning
+function CarSellPrices.CleanId(carId)
+	if not carId then return nil end
+	return carId:gsub(" Item", ""):gsub("Item", "")
+end
+
 -- Safely lookup car sell price and display name
 function CarSellPrices.GetDetails(carId)
-	if not carId then return nil end
-
-	-- Clean ID just in case it has " Item" appended
-	local cleanId = carId:gsub(" Item", ""):gsub("Item", "")
+	local cleanId = CarSellPrices.CleanId(carId)
+	if not cleanId then return nil end
 
 	return CarSellPrices.Prices[cleanId]
 end

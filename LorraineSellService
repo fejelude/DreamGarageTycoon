@@ -52,9 +52,17 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 
 		local pRoot = character:FindFirstChild("HumanoidRootPart")
 		local npcFolder = workspace:FindFirstChild("NPCS")
-		local lorraineNpc = npcFolder and npcFolder:FindFirstChild("Lorraine")
+		if not npcFolder then
+			warn("⚠️ NPCS folder not found in workspace!")
+			return false, "Security Check Failed: Distance could not be verified."
+		end
+
+		local lorraineNpc = npcFolder:FindFirstChild("Lorraine")
 
 		if not pRoot or not lorraineNpc then
+			if not lorraineNpc then
+				warn("⚠️ Lorraine NPC not found in NPCS folder!")
+			end
 			return false, "Security Check Failed: Distance could not be verified."
 		end
 
@@ -74,8 +82,8 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 		end
 
 		-- Sanitize ID mapping (matching `safeFindCarTool` pattern in `TycoonDataHandler`)
-		local cleanRequestedId = requestedCarId:gsub(" Item", ""):gsub("Item", "")
-		local cleanActualId = actualCarId:gsub(" Item", ""):gsub("Item", "")
+		local cleanRequestedId = CarSellPrices.CleanId(requestedCarId)
+		local cleanActualId = CarSellPrices.CleanId(actualCarId)
 
 		if cleanRequestedId ~= cleanActualId then
 			warn("⚠️ Sell Exploit Attempt: " .. player.Name .. " requested to sell " .. cleanRequestedId .. " but is holding " .. cleanActualId)
@@ -121,7 +129,7 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 
 	-- Release Transaction Lock
 	-- Wait slightly to add a tiny cooldown rate limit
-	task.delay(1, function()
+	task.delay(5, function()
 		activeTransactions[player.UserId] = nil
 	end)
 

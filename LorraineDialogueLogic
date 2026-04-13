@@ -218,8 +218,7 @@ local function typewrite(label, text, onComplete)
 end
 
 local function stopInteraction()
-	if not isInteracting and not isLeaving then return end
-
+	-- Safety cleanup, regardless of isInteracting flag
 	isInteracting = false
 	isLeaving = false
 	isProcessingSell = false
@@ -230,7 +229,7 @@ local function stopInteraction()
 	end
 
 	clearConnections()
-	setFocusMode(false)
+	setFocusMode(false) -- Restores GUIs even if bypassed previously
 
 	camera.CameraType = Enum.CameraType.Custom
 	if controls then controls:Enable() end
@@ -248,32 +247,49 @@ local function stopInteraction()
 		local container = myGui:FindFirstChild(CONTAINER_ID, true)
 		if container then container.Visible = false end
 	end
+
+	local cGui, cMain = playerGui:FindFirstChild("Confirmation"), playerGui:FindFirstChild("Confirmation") and playerGui.Confirmation:FindFirstChild("MainFrame")
+	if cGui then cGui.Enabled = false end
+	if cMain and cMain:IsA("GuiObject") then cMain.Visible = false end
 end
 
 local function animateButton(btn)
-	if not btn:GetAttribute("OriginalSizeX") then
-		btn:SetAttribute("OriginalSizeX", btn.Size.X.Scale)
-		btn:SetAttribute("OriginalSizeXO", btn.Size.X.Offset)
-		btn:SetAttribute("OriginalSizeY", btn.Size.Y.Scale)
-		btn:SetAttribute("OriginalSizeYO", btn.Size.Y.Offset)
-	end
+	-- Always read the freshest original size in case it changed
+	local origX = btn.Size.X.Scale
+	local origXO = btn.Size.X.Offset
+	local origY = btn.Size.Y.Scale
+	local origYO = btn.Size.Y.Offset
 
-	local origX = btn:GetAttribute("OriginalSizeX")
-	local origXO = btn:GetAttribute("OriginalSizeXO")
-	local origY = btn:GetAttribute("OriginalSizeY")
-	local origYO = btn:GetAttribute("OriginalSizeYO")
+	local origTransparency
+	if btn:IsA("ImageButton") or btn:IsA("ImageLabel") then
+		origTransparency = btn.ImageTransparency
+	else
+		origTransparency = btn.BackgroundTransparency
+	end
 
 	local normalSize = UDim2.new(origX, origXO, origY, origYO)
 	local hoverSize = UDim2.new(origX * HOVER_SCALE, origXO * HOVER_SCALE, origY * HOVER_SCALE, origYO * HOVER_SCALE)
 	local clickSize = UDim2.new(origX * CLICK_SCALE, origXO * CLICK_SCALE, origY * CLICK_SCALE, origYO * CLICK_SCALE)
 
+	local function setTransparency(t)
+		local goal = {}
+		if btn:IsA("ImageButton") or btn:IsA("ImageLabel") then
+			goal.ImageTransparency = t
+		else
+			goal.BackgroundTransparency = t
+		end
+		TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), goal):Play()
+	end
+
 	if not UserInputService.TouchEnabled then
 		local connEnter = btn.MouseEnter:Connect(function()
 			playSound(HOVER_SOUND_ID, 0.5)
 			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = hoverSize}):Play()
+			setTransparency(math.min(1, origTransparency + 0.25))
 		end)
 		local connLeave = btn.MouseLeave:Connect(function()
 			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = normalSize}):Play()
+			setTransparency(origTransparency)
 		end)
 		table.insert(buttonHoverConnections, connEnter)
 		table.insert(buttonHoverConnections, connLeave)
@@ -281,10 +297,14 @@ local function animateButton(btn)
 
 	local connDown = btn.MouseButton1Down:Connect(function()
 		TweenService:Create(btn, TweenInfo.new(0.05), {Size = clickSize}):Play()
+		setTransparency(math.min(1, origTransparency + 0.25))
 	end)
 	local connUp = btn.MouseButton1Up:Connect(function()
 		local target = (not UserInputService.TouchEnabled) and hoverSize or normalSize
 		TweenService:Create(btn, TweenInfo.new(ANIM_SPEED, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = target}):Play()
+		if UserInputService.TouchEnabled then
+			setTransparency(origTransparency)
+		end
 	end)
 	table.insert(buttonHoverConnections, connDown)
 	table.insert(buttonHoverConnections, connUp)
@@ -355,11 +375,23 @@ end
 
 local function bindConfirmationButton(button, callback)
 	if not button then return end
+	button.Active = true
+	button.Interactable = true
+
 	local fired = false
-	local function hp() if fired then return end; fired = true; callback() end
+	local function hp()
+		if fired then return end
+		fired = true
+
+		-- Immediately lock button to prevent double-fire
+		button.Active = false
+		pcall(function() button.Interactable = false end)
+
+		callback()
+	end
+
+	-- Only use Activated to prevent Mobile / PC double firing race condition
 	addConfirmationConnection(button.Activated:Connect(hp))
-	addConfirmationConnection(button.MouseButton1Click:Connect(hp))
-	addConfirmationConnection(button.TouchTap:Connect(hp))
 end
 
 local function PromptConfirmation(text, callback)
@@ -482,27 +514,49 @@ local function handleSell(dialogueLabel)
 		if not isInteracting then return end
 
 		if not confirmed then
-			isProcessingSell = false
 			typewrite(dialogueLabel, "Oh, changed your mind~? That's perfectly fine, darling 💅 Take all the time you need~", function()
+				isProcessingSell = false
 				setButtonsState(true)
 			end)
 			return
 		end
 
-		-- Confirmed, execute sell via server
+		-- Confirmed, execute sell via server with a timeout protection
 		task.spawn(function()
-			local success, msg = SellFunction:InvokeServer(equippedCarId)
-			isProcessingSell = false
+			local success, msg
+			local invokeCompleted = false
+
+			local invokeThread = task.spawn(function()
+				success, msg = SellFunction:InvokeServer(equippedCarId)
+				invokeCompleted = true
+			end)
+
+			-- Timeout mechanism
+			local elapsed = 0
+			local timeoutLimit = 10
+			while not invokeCompleted and elapsed < timeoutLimit do
+				task.wait(0.5)
+				elapsed += 0.5
+			end
+
+			if not invokeCompleted then
+				pcall(task.cancel, invokeThread)
+				warn("⚠️ LorraineSellFunction InvokeServer timed out.")
+				success = false
+				msg = "The server is taking too long to respond."
+			end
 
 			if not isInteracting then return end
 
 			if success then
 				playSound(CLICK_SOUND_ID, 0.5) -- Optional: Add a success sound here
 				typewrite(dialogueLabel, "Wonderful~ 🌟 It was a pleasure doing business with you, darling! Your wallet is looking quite fabulous now~ ✨", function()
+					isProcessingSell = false
 					setButtonsState(true)
 				end)
 			else
 				typewrite(dialogueLabel, "Oh dear... Something went wrong. " .. (msg or "Try again later.") .. " 💔", function()
+					isProcessingSell = false
 					setButtonsState(true)
 				end)
 			end
@@ -515,6 +569,9 @@ end
 -- ============================================================================
 local function startInteraction(npcModel)
 	if isInteracting or isLeaving then return end
+
+	-- Safety clear in case a previous interaction didn't clean up properly
+	stopInteraction()
 
 	isInteracting = true
 	isProcessingSell = false
@@ -566,7 +623,7 @@ local function startInteraction(npcModel)
 			local btn = buttons and buttons:FindFirstChild(btnName, true)
 			if btn and btn:IsA("GuiButton") then
 				animateButton(btn)
-				local conn = btn.MouseButton1Click:Connect(function()
+				local conn = btn.Activated:Connect(function()
 					playSound(CLICK_SOUND_ID, 0.5)
 					func()
 				end)
