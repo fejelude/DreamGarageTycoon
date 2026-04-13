@@ -34,23 +34,59 @@ local HttpService       = game:GetService("HttpService")
 -- LEGENDARY CONFIG (END-GAME RARITY)
 -- =========================
 local RECIPES = {
-	["LaRossa"] = {
-		TargetCar = "La Rossa",
-		Cash      = 150000000,
-		Riva      = 7,
+	["Neo-Periscopio"] = {
+		TargetCar = "Neo-Periscopio",
+		Cash      = 500000000000,
+		Razor     = 2,
+		Maverick  = 3,
+		Galadriel = 4,
+		Riva      = 5,
+		CraftTime = 21600, -- 6 hours
+	},
+	["Neo-Performante"] = {
+		TargetCar = "Neo-Performante",
+		Cash      = 800000000000,
+		Sovereign = 2,
+		Stuttgart = 3,
 		Kingston  = 3,
-		Velocity  = 4,
-		Vortex    = 2,
-		CraftTime = 172800, -- 48 hours
+		Riva      = 5,
+		CraftTime = 28800, -- 8 hours
+	},
+	["Neo-Zentorno"] = {
+		TargetCar = "Neo-Zentorno",
+		Cash      = 1200000000000,
+		Classy    = 2,
+		Sadie     = 2,
+		Blackhead = 3,
+		Riva      = 4,
+		CraftTime = 36000, -- 10 hours
+	},
+	["Neo-Revuelto"] = {
+		TargetCar = "Neo-Revuelto",
+		Cash      = 1800000000000,
+		Shaguar   = 2,
+		Vipera    = 3,
+		Mia       = 2,
+		Riva      = 4,
+		CraftTime = 43200, -- 12 hours
 	},
 	["Yamura"] = {
 		TargetCar = "Yamura",
-		Cash      = 90000000,
-		Riva      = 5,
-		Kingston  = 3,
-		Velocity  = 2,
+		Cash      = 2700000000000,
+		Sirene    = 2,
 		Vortex    = 1,
-		CraftTime = 43200, -- 12 hours
+		Camara    = 3,
+		Mia       = 2,
+		CraftTime = 64800, -- 18 hours
+	},
+	["LaRossa"] = {
+		TargetCar = "La Rossa",
+		Cash      = 4000000000000,
+		Vortex    = 2,
+		Corvo     = 3,
+		Mia       = 3,
+		Riva      = 5,
+		CraftTime = 86400, -- 24 hours
 	},
 }
 
@@ -105,6 +141,9 @@ if not PersistenceBindable then
 	PersistenceBindable.Name   = "LegendaryShopPersistenceFunction"
 	PersistenceBindable.Parent = ServerStorage
 end
+
+local BindableFunctions = ReplicatedStorage:WaitForChild("BindableFunctions")
+local SkipCraftFunc = BindableFunctions:WaitForChild("SkipLegendaryCraftFunction")
 
 local LegendaryInventoryBindable = ServerStorage:FindFirstChild("LegendaryCraftingInventoryFunction")
 if not LegendaryInventoryBindable then
@@ -211,8 +250,12 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 			end
 
 			-- Ensure per-car sub-tables always exist
-			session.CraftProgress["LaRossa"] = session.CraftProgress["LaRossa"] or {}
+			session.CraftProgress["Neo-Periscopio"] = session.CraftProgress["Neo-Periscopio"] or {}
+			session.CraftProgress["Neo-Performante"] = session.CraftProgress["Neo-Performante"] or {}
+			session.CraftProgress["Neo-Zentorno"] = session.CraftProgress["Neo-Zentorno"] or {}
+			session.CraftProgress["Neo-Revuelto"] = session.CraftProgress["Neo-Revuelto"] or {}
 			session.CraftProgress["Yamura"]  = session.CraftProgress["Yamura"]  or {}
+			session.CraftProgress["LaRossa"] = session.CraftProgress["LaRossa"] or {}
 
 			print("✅ [LegendaryShop] Loaded progress for " .. player.Name)
 		end
@@ -285,15 +328,6 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	local angeloRoot = angelo and angelo:FindFirstChild("HumanoidRootPart")
 	if not angeloRoot then return false, "NPC missing" end
 
-	local distance = (char.PrimaryPart.Position - angeloRoot.Position).Magnitude
-	if distance > MAX_INTERACTION_DISTANCE then
-		warn(string.format(
-			"🛡️ [Security] %s attempted to SACRIFICE from %d studs away.",
-			player.Name, math.floor(distance)
-			))
-		return false, "Too far away!"
-	end
-
 	local recipe = RECIPES[carName]
 	if not recipe              then return false, "Invalid Legendary Car" end
 	if not recipe[ingredient]  then return false, "Invalid Ingredient"    end
@@ -364,15 +398,6 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 	local angeloRoot = angelo and angelo:FindFirstChild("HumanoidRootPart")
 	if not angeloRoot then return false, "NPC missing" end
 
-	local distance = (char.PrimaryPart.Position - angeloRoot.Position).Magnitude
-	if distance > MAX_INTERACTION_DISTANCE then
-		warn(string.format(
-			"🛡️ [Security] %s attempted to CRAFT from %d studs away.",
-			player.Name, math.floor(distance)
-			))
-		return false, "Too far away!"
-	end
-
 	local recipe = RECIPES[carName]
 	if not recipe then return false, "Invalid Legendary Car" end
 
@@ -413,6 +438,27 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 	end
 
 	return logicOk, msg
+end
+
+-- =========================
+-- SKIP CRAFTING BINDABLE (FROM RECEIPT ROUTER)
+-- =========================
+SkipCraftFunc.OnInvoke = function(player)
+	if not player then return false, "No player provided" end
+	local session = getSession(player)
+
+	local foundActive = false
+	for carName, endTime in pairs(session.ActiveCrafts) do
+		-- Found an active craft, force completion time to now
+		session.ActiveCrafts[carName] = os.time()
+		foundActive = true
+	end
+
+	if not foundActive then
+		return false, "No active crafts to skip"
+	end
+
+	return true, "Success"
 end
 
 -- =========================

@@ -453,7 +453,12 @@ local function startInteraction(npcModel)
 		connectBtn(BTN_INQUIRY_ID, function()
 			setButtonsState(false)
 			if dialogueLabel then
-				local loreText = "To forge a Legendary vehicle, you must offer sacrifices. \nBring me specific cars and rare materials, and I will build you a masterpiece."
+				local inqMsgs = {
+					"To forge a Legendary vehicle, you must offer sacrifices. Bring me specific cars and raw capital, and I will build you a masterpiece.",
+					"The vehicles I construct are not sold, they are earned. Bring me the requested vehicles, and watch what I can do with them.",
+					"I strip down lesser machines to build titans. Provide me with the exact vehicles I ask for, and I'll hand you the keys to a legend."
+				}
+				local loreText = inqMsgs[math.random(1, #inqMsgs)]
 				typewrite(dialogueLabel, loreText, function()
 					setButtonsState(true)
 				end)
@@ -467,9 +472,10 @@ local function startInteraction(npcModel)
 
 			if not hasRequiredRank("MVP+") then
 				local msgs = {
-					"My masterpieces are reserved for the elite. Come back when you are <font color='#FF4444'><b>MVP+</b></font>.",
-					"You lack the required standing. <font color='#FF4444'><b>MVP+</b></font> is the minimum.",
-					"I only craft for those who have proven themselves. <font color='#FF4444'><b>MVP+</b></font> needed."
+					"My masterpieces are reserved for the elite. Return to me once you have achieved <font color='#FF4444'><b>MVP+</b></font>.",
+					"You lack the required standing to commission my work. <font color='#FF4444'><b>MVP+</b></font> is the absolute minimum.",
+					"I only craft for those who have truly proven themselves. Come back when you are <font color='#FF4444'><b>MVP+</b></font>.",
+					"Do not insult me. My time is exclusively for <font color='#FF4444'><b>MVP+</b></font> clients and above."
 				}
 				local responseText = msgs[math.random(1, #msgs)]
 				typewrite(dialogueLabel, responseText, function()
@@ -479,10 +485,51 @@ local function startInteraction(npcModel)
 				return
 			end
 
+			-- PRE-CHECK ACTIVE CRAFT: Do not show "pick a chassis" if already crafting
+			local FuncGetState = LegendaryRemotes:FindFirstChild("GetLegendaryShopState")
+			local currentState = FuncGetState and FuncGetState:InvokeServer() or {}
+
+			local activeCar, endTime
+			if currentState and currentState.ActiveCrafts then
+				for c, e in pairs(currentState.ActiveCrafts) do
+					activeCar = c
+					endTime = e
+					break
+				end
+			end
+
+			if activeCar and endTime then
+				local delta = math.max(0, endTime - os.time())
+				local timeStr = string.format("%02d:%02d:%02d",
+					math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
+
+				local busyMsgs = {
+					"I am already forging your <font color='#B652FF'>" .. activeCar .. "</font>. It will require another <font color='#FF4C4C'>" .. timeStr .. "</font> to cool.",
+					"Patience. Your <font color='#B652FF'>" .. activeCar .. "</font> is still under construction. Return in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+					"The forge is lit and your <font color='#B652FF'>" .. activeCar .. "</font> is taking shape. Do not disturb me for another <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+					"Greatness takes time. The <font color='#B652FF'>" .. activeCar .. "</font> will be finished in <font color='#FF4C4C'>" .. timeStr .. "</font>."
+				}
+
+				local responseText = busyMsgs[math.random(1, #busyMsgs)]
+				typewrite(dialogueLabel, responseText, function()
+					task.wait(2.5)
+					stopInteraction()
+				end)
+				return
+			end
+
 			isOpeningShop = true
 			local openGeneration = interactionGeneration
 
-			typewrite(dialogueLabel, CRAFT_OPEN_MESSAGE, function()
+			local openMsgs = {
+				CRAFT_OPEN_MESSAGE,
+				"Very well. Show me which chassis you desire, and I will list the necessary sacrifices.",
+				"A wise choice to seek my services. Let us review the blueprints.",
+				"Step into the forge. Pick the vehicle you wish to breathe life into."
+			}
+			local openMsg = openMsgs[math.random(1, #openMsgs)]
+
+			typewrite(dialogueLabel, openMsg, function()
 				if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
 
 				if pendingShopOpenTask then

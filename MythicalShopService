@@ -37,11 +37,39 @@ local HttpService       = game:GetService("HttpService")
 local RECIPES = {
 	["Centurion"] = {
 		TargetCar = "Centurion",
-		Cash      = 199999999,
+		Cash      = 5000000000000,
+		Yamura    = 1,
+		Vortex    = 1,
+		Velocity  = 2,
+		Blackhead = 2,
+		CraftTime = 108000, -- 30 hours
+	},
+	["Grotti-Ferocious"] = {
+		TargetCar = "Grotti-Ferocious",
+		Cash      = 8000000000000,
 		Yamura    = 1,
 		Vortex    = 2,
 		Velocity  = 3,
-		Kingston  = 4,
+		Mia       = 1,
+		CraftTime = 129600, -- 36 hours
+	},
+	["Solitaire"] = {
+		TargetCar = "Solitaire",
+		Cash      = 12000000000000,
+		["Neo-Revuelto"] = 1,
+		Vortex    = 2,
+		Corvo     = 1,
+		Mia       = 2,
+		CraftTime = 151200, -- 42 hours
+	},
+	["Hyperspace"] = {
+		TargetCar = "Hyperspace",
+		Cash      = 18000000000000,
+		["La Rossa"] = 1,
+		Vortex    = 1,
+		Corvo     = 1,
+		Mia       = 2,
+		Riva      = 3,
 		CraftTime = 172800, -- 48 hours
 	},
 }
@@ -97,6 +125,11 @@ if not PersistenceBindable then
 	PersistenceBindable.Name   = "MythicalShopPersistenceFunction"
 	PersistenceBindable.Parent = ServerStorage
 end
+
+local BindableFunctions = ReplicatedStorage:WaitForChild("BindableFunctions")
+local SkipCraftFunc = BindableFunctions:WaitForChild("SkipMythicalCraftFunction")
+
+local LegendaryPersistenceBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
 
 local MythicalInventoryBindable = ServerStorage:FindFirstChild("MythicalCraftingInventoryFunction")
 if not MythicalInventoryBindable then
@@ -155,7 +188,12 @@ local function getSession(player)
 	local uid = player.UserId
 	if not PlayerSessions[uid] then
 		PlayerSessions[uid] = {
-			CraftProgress  = { ["Centurion"] = {} },
+			CraftProgress  = {
+				["Centurion"] = {},
+				["Grotti-Ferocious"] = {},
+				["Solitaire"] = {},
+				["Hyperspace"] = {}
+			},
 			ActiveCrafts   = {},
 			CompletedCrafts = {},
 		}
@@ -204,6 +242,9 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 
 			-- Ensure per-car sub-tables always exist
 			session.CraftProgress["Centurion"] = session.CraftProgress["Centurion"] or {}
+			session.CraftProgress["Grotti-Ferocious"] = session.CraftProgress["Grotti-Ferocious"] or {}
+			session.CraftProgress["Solitaire"] = session.CraftProgress["Solitaire"] or {}
+			session.CraftProgress["Hyperspace"] = session.CraftProgress["Hyperspace"] or {}
 
 			print("✅ [MythicalShop] Loaded progress for " .. player.Name)
 		end
@@ -276,15 +317,6 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	local ethourahRoot = ethourah and ethourah:FindFirstChild("HumanoidRootPart")
 	if not ethourahRoot then return false, "NPC missing" end
 
-	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
-	if distance > MAX_INTERACTION_DISTANCE then
-		warn(string.format(
-			"🛡️ [Security] %s attempted to SACRIFICE from %d studs away.",
-			player.Name, math.floor(distance)
-			))
-		return false, "Too far away!"
-	end
-
 	local recipe = RECIPES[carName]
 	if not recipe              then return false, "Invalid Mythical Car" end
 	if not recipe[ingredient]  then return false, "Invalid Ingredient"    end
@@ -355,15 +387,6 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 	local ethourahRoot = ethourah and ethourah:FindFirstChild("HumanoidRootPart")
 	if not ethourahRoot then return false, "NPC missing" end
 
-	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
-	if distance > MAX_INTERACTION_DISTANCE then
-		warn(string.format(
-			"🛡️ [Security] %s attempted to CRAFT from %d studs away.",
-			player.Name, math.floor(distance)
-			))
-		return false, "Too far away!"
-	end
-
 	local recipe = RECIPES[carName]
 	if not recipe then return false, "Invalid Mythical Car" end
 
@@ -376,6 +399,17 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 		local session = getSession(player)
 
 		if session.ActiveCrafts[carName]   then return false, "Crafting already in progress!" end
+
+		-- Cross-tier lock: ensure Legendary isn't actively crafting
+		if LegendaryPersistenceBindable then
+			local ok, legSession = safeInvoke(LegendaryPersistenceBindable, 2, "Get", player)
+			if ok and legSession and legSession.ActiveCrafts then
+				for _, _ in pairs(legSession.ActiveCrafts) do
+					return false, "You are already crafting a Legendary car!"
+				end
+			end
+		end
+
 		if session.CompletedCrafts[carName] then return false, "You already crafted this!"    end
 
 		local progress = session.CraftProgress[carName] or {}
@@ -407,6 +441,42 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 end
 
 -- =========================
+-- SKIP CRAFTING BINDABLE (FROM RECEIPT ROUTER)
+-- =========================
+SkipCraftFunc.OnInvoke = function(player)
+	if not player then return false, "No player provided" end
+	local session = getSession(player)
+
+	local skippedCar = nil
+	for carName, endTime in pairs(session.ActiveCrafts) do
+		skippedCar = carName
+		break
+	end
+
+	if not skippedCar then
+		return false, "No active crafts to skip"
+	end
+
+	session.ActiveCrafts[skippedCar] = nil
+	session.CompletedCrafts[skippedCar] = os.time()
+
+	local realToolName = RECIPES[skippedCar].TargetCar
+	local invokeOk, giveResult = safeInvoke(MythicalInventoryBindable, 3, "GiveTool", player, realToolName)
+
+	if invokeOk and giveResult ~= false then
+		print("✅ [MythicalShop] SKIP Granted " .. realToolName .. " to " .. player.Name)
+		pushUpdate(player, session, "Skipped")
+		safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
+		return true, "Success"
+	else
+		warn("⚠️ [MythicalShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name)
+		session.ActiveCrafts[skippedCar] = os.time() + 60 -- revert and retry in 1m if failed
+		session.CompletedCrafts[skippedCar] = nil
+		return false, "System error granting item"
+	end
+end
+
+-- =========================
 -- OFFLINE COMPLETION / TIMER LOOP
 -- =========================
 task.spawn(function()
@@ -423,7 +493,7 @@ task.spawn(function()
 			for carName, endTime in pairs(session.ActiveCrafts) do
 				if now >= endTime then
 					session.ActiveCrafts[carName]   = nil
-					session.CompletedCrafts[carName] = true
+					session.CompletedCrafts[carName] = now -- save timestamp for dialogue
 
 					local realToolName           = RECIPES[carName].TargetCar
 					local invokeOk, giveResult   =
