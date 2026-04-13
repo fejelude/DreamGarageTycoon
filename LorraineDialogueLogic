@@ -373,10 +373,50 @@ local function playConfirmationOpenTween(cMain)
 	TweenService:Create(cMain, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Position = bp }):Play()
 end
 
+local function applyConfirmationButtonFeedback(button)
+	if not button then return nil end
+	local ti = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	if not button:GetAttribute("OrigBgColor") then
+		button:SetAttribute("OrigBgColor", button.BackgroundColor3)
+		if button:IsA("ImageButton") then button:SetAttribute("OrigImgColor", button.ImageColor3) end
+	end
+	local origBg  = button:GetAttribute("OrigBgColor")
+	local origImg = button:IsA("ImageButton") and button:GetAttribute("OrigImgColor") or nil
+
+	button.BackgroundColor3 = origBg
+	if origImg then button.ImageColor3 = origImg end
+
+	local function tv(dim)
+		local g = {}
+		if button.BackgroundTransparency < 1 then
+			local h, s, v = origBg:ToHSV()
+			g.BackgroundColor3 = dim and Color3.fromHSV(h, s, math.clamp(v * 0.75, 0, 1)) or origBg
+		end
+		if origImg then
+			local h, s, v = origImg:ToHSV()
+			g.ImageColor3 = dim and Color3.fromHSV(h, s, math.clamp(v * 0.75, 0, 1)) or origImg
+		end
+		if next(g) then TweenService:Create(button, ti, g):Play() end
+	end
+
+	addConfirmationConnection(button.MouseEnter:Connect(function() tv(true) end))
+	addConfirmationConnection(button.MouseLeave:Connect(function() tv(false) end))
+	addConfirmationConnection(button.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then tv(true) end
+	end))
+	addConfirmationConnection(button.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then tv(false) end
+	end))
+	return button
+end
+
 local function bindConfirmationButton(button, callback)
 	if not button then return end
 	button.Active = true
 	button.Interactable = true
+
+	-- Apply Legendary-style hover dim
+	applyConfirmationButtonFeedback(button)
 
 	local fired = false
 	local function hp()
@@ -390,11 +430,8 @@ local function bindConfirmationButton(button, callback)
 		callback()
 	end
 
-	if UserInputService.TouchEnabled then
-		addConfirmationConnection(button.Activated:Connect(hp))
-	else
-		addConfirmationConnection(button.MouseButton1Click:Connect(hp))
-	end
+	-- Only use Activated for all devices as requested
+	addConfirmationConnection(button.Activated:Connect(hp))
 end
 
 local function PromptConfirmation(text, callback)
@@ -465,8 +502,9 @@ end
 local function handleQuestion(dialogueLabel)
 	local equippedCarId = getEquippedCar()
 	if not equippedCarId then
+		-- Explicitly mention that a car needs to be held, and IMMEDIATELY close after saying it
 		typewrite(dialogueLabel, "Hmm~ I'd love to help, but darling, you aren't holding anything~ Equip a car first and come back to me! 🌸", function()
-			setButtonsState(true)
+			stopInteraction()
 		end)
 		return
 	end
@@ -474,7 +512,7 @@ local function handleQuestion(dialogueLabel)
 	local details = CarSellPrices.GetDetails(equippedCarId)
 	if not details then
 		typewrite(dialogueLabel, "Oh my~ I'm afraid I don't know the value of that item, darling. Are you sure it's a car? ✨", function()
-			setButtonsState(true)
+			stopInteraction()
 		end)
 		return
 	end
@@ -490,8 +528,9 @@ local function handleSell(dialogueLabel)
 
 	local equippedCarId = getEquippedCar()
 	if not equippedCarId then
+		-- Explicitly mention that a car needs to be held, and IMMEDIATELY close after saying it
 		typewrite(dialogueLabel, "Hmm~ I'd love to help, but darling, you aren't holding anything~ Equip a car first and come back to me! 🌸", function()
-			setButtonsState(true)
+			stopInteraction()
 		end)
 		return
 	end
@@ -499,7 +538,7 @@ local function handleSell(dialogueLabel)
 	local details = CarSellPrices.GetDetails(equippedCarId)
 	if not details then
 		typewrite(dialogueLabel, "Oh my~ I'm afraid I don't know the value of that item, darling. Are you sure it's a car? ✨", function()
-			setButtonsState(true)
+			stopInteraction()
 		end)
 		return
 	end
@@ -519,7 +558,8 @@ local function handleSell(dialogueLabel)
 		if not confirmed then
 			typewrite(dialogueLabel, "Oh, changed your mind~? That's perfectly fine, darling 💅 Take all the time you need~", function()
 				isProcessingSell = false
-				setButtonsState(true)
+				task.wait(1.5)
+				stopInteraction()
 			end)
 			return
 		end
@@ -554,12 +594,14 @@ local function handleSell(dialogueLabel)
 				playSound(CLICK_SOUND_ID, 0.5) -- Optional: Add a success sound here
 				typewrite(dialogueLabel, "Wonderful~ 🌟 It was a pleasure doing business with you, darling! Your wallet is looking quite fabulous now~ ✨", function()
 					isProcessingSell = false
-					setButtonsState(true)
+					task.wait(1.5)
+					stopInteraction()
 				end)
 			else
 				typewrite(dialogueLabel, "Oh dear... Something went wrong. " .. (msg or "Try again later.") .. " 💔", function()
 					isProcessingSell = false
-					setButtonsState(true)
+					task.wait(2)
+					stopInteraction()
 				end)
 			end
 		end)

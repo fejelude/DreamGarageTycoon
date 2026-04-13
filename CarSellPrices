@@ -15,12 +15,19 @@ local SELL_MULTIPLIER = 0.50 -- 50% of base price
 CarSellPrices.Prices = {}
 
 -- Initialize the sell prices based on CarStats
+-- The dictionary key is populated with BOTH the real tool name (stats.Name) AND the fantasy name (carId)
+-- so the player's equipped car can be looked up regardless of how the tool is named.
+-- The Name property ALWAYS forces the fantasy name (carId) so the NPC dialogue speaks the correct lore name.
 for carId, stats in pairs(CarStats.Cars) do
-	if type(stats.Price) == "number" and stats.Price > 0 and stats.Name then
-		CarSellPrices.Prices[carId] = {
-			Name = stats.Name,
-			SellPrice = math.floor(stats.Price * SELL_MULTIPLIER)
+	local priceVal = tonumber(tostring(stats.Price or 0):gsub(",", ""))
+	if priceVal and priceVal > 0 and stats.Name then
+		local details = {
+			Name = carId,
+			SellPrice = math.floor(priceVal * SELL_MULTIPLIER)
 		}
+		-- Map both possible tool names to the same details
+		CarSellPrices.Prices[carId] = details
+		CarSellPrices.Prices[stats.Name] = details
 	end
 end
 

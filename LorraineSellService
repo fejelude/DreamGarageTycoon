@@ -14,21 +14,20 @@ local CarSellPrices = require(ReplicatedStorage:WaitForChild("CarSellPrices"))
 local SellFunction = ReplicatedStorage:WaitForChild("LorraineSellFunction")
 local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
 
-local MAX_AMOUNT_LIMIT = 1000000000000000000 -- 1 Quintillion safety cap
 local MAX_DISTANCE = 30 -- Max interaction distance
 
 local activeTransactions = {}
 
 -- Retrieve player's equipped car strictly on the server
 local function getServerEquippedCar(player)
-	if not player.Character then return nil end
+	if not player.Character then return nil, nil end
 	for _, child in ipairs(player.Character:GetChildren()) do
 		if child:IsA("Tool") then
 			local id = child:GetAttribute("ToolId") or child.Name
 			return id, child
 		end
 	end
-	return nil
+	return nil, nil
 end
 
 SellFunction.OnServerInvoke = function(player, requestedCarId)
@@ -77,7 +76,7 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 
 		-- 4. Validation: Check equipped tool strictly on server
 		local actualCarId, actualTool = getServerEquippedCar(player)
-		if not actualCarId then
+		if not actualCarId or not actualTool then
 			return false, "You are not holding a car."
 		end
 
@@ -97,18 +96,30 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 		end
 
 		local sellAmount = details.SellPrice
-		if sellAmount <= 0 or sellAmount >= MAX_AMOUNT_LIMIT then
+		if sellAmount <= 0 then
 			return false, "Invalid sell amount."
 		end
 
-		-- 6. Execution: Remove item via TycoonAdminAPI to ensure full cleanup and anti-wipe protection
+		-- 6. Execution: Remove item via TycoonAdminAPI & manual destroy to guarantee anti-wipe + UI updates
+		-- TycoonDataHandler's `RemoveTool` loops Backpack -> StarterGear -> Character and stops when `requestedAmount` is reached.
+		-- We MUST call TycoonAdminAPI BEFORE destroying actualTool so the API can safely scan and process the inventory removal logic first.
+
 		local removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, cleanActualId, 1)
 		if not removeSuccess then
-			-- Fallback: try removing with exact `actualCarId` just in case
+			-- Fallback: try removing with exact `actualCarId` just in case the API strictly needs the raw name
 			removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, actualCarId, 1)
-			if not removeSuccess then
-				return false, "Failed to remove the car from your inventory."
-			end
+		end
+
+		-- CRITICAL: If both attempts to remove the tool fail, abort the transaction completely.
+		-- Do not give the player cash if we could not guarantee the car was removed from their data.
+		if not removeSuccess then
+			return false, "Failed to remove the car from your inventory. Transaction aborted."
+		end
+
+		-- API removed one instance (likely the StarterGear clone or the Backpack clone).
+		-- Now we explicitly destroy the held tool in the character to guarantee it leaves the player's hands.
+		if actualTool and actualTool.Parent then
+			actualTool:Destroy()
 		end
 
 		-- 7. Execution: Add Funds
@@ -116,7 +127,7 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 
 		if not wallet then
-			-- Highly unlikely, but refund if leaderstats is broken
+			-- Highly unlikely, but refund if leaderstats is suddenly missing
 			TycoonAdminAPI:Invoke("GiveTool", player, actualCarId)
 			return false, "Could not locate wallet."
 		end
@@ -128,7 +139,6 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 	end)
 
 	-- Release Transaction Lock
-	-- Wait slightly to add a tiny cooldown rate limit
 	task.delay(5, function()
 		activeTransactions[player.UserId] = nil
 	end)
