@@ -19,7 +19,9 @@ CarSellPrices.Prices = {}
 -- so the player's equipped car can be looked up regardless of how the tool is named.
 -- The Name property ALWAYS forces the fantasy name (carId) so the NPC dialogue speaks the correct lore name.
 for carId, stats in pairs(CarStats.Cars) do
-	local priceVal = tonumber(tostring(stats.Price or 0):gsub(",", ""))
+	local priceStr = tostring(stats.Price or 0):gsub(",", "")
+	local priceVal = tonumber(priceStr)
+
 	if priceVal and priceVal > 0 and stats.Name then
 		local details = {
 			Name = carId,
