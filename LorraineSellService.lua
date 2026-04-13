@@ -1,0 +1,140 @@
+-- Purpose: Handles server-side validation and execution for selling cars to Lorraine.
+-- Runs on: Server
+-- Location: ServerScriptService > LorraineSellService
+-- Dependencies: ReplicatedStorage, ServerStorage, Players
+-- Public API: None
+-- Networking: Listens to LorraineSellFunction (RemoteFunction)
+-- Security: Server-authoritative inventory checks, debounces, distance checks, and economy limits.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local Players = game:GetService("Players")
+
+local CarSellPrices = require(ReplicatedStorage:WaitForChild("CarSellPrices"))
+local SellFunction = ReplicatedStorage:WaitForChild("LorraineSellFunction")
+local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
+
+local MAX_AMOUNT_LIMIT = 1000000000000 -- 1 Trillion safety cap
+local MAX_DISTANCE = 30 -- Max interaction distance
+
+local activeTransactions = {}
+
+-- Retrieve player's equipped car strictly on the server
+local function getServerEquippedCar(player)
+	if not player.Character then return nil end
+	for _, child in ipairs(player.Character:GetChildren()) do
+		if child:IsA("Tool") then
+			local id = child:GetAttribute("ToolId") or child.Name
+			return id, child
+		end
+	end
+	return nil
+end
+
+SellFunction.OnServerInvoke = function(player, requestedCarId)
+	-- 1. Argument validation
+	if type(requestedCarId) ~= "string" then
+		return false, "Invalid request format."
+	end
+
+	-- 2. Transaction Lock (Prevents Spam/Race Conditions)
+	if activeTransactions[player.UserId] then
+		return false, "Transaction in progress. Please wait."
+	end
+	activeTransactions[player.UserId] = true
+
+	local success, result, msg = pcall(function()
+		-- 3. Validation: Verify character and distance to Lorraine
+		local character = player.Character
+		if not character then
+			return false, "Character not found."
+		end
+
+		local pRoot = character:FindFirstChild("HumanoidRootPart")
+		local npcFolder = workspace:FindFirstChild("NPCS")
+		local lorraineNpc = npcFolder and npcFolder:FindFirstChild("Lorraine")
+
+		if not pRoot or not lorraineNpc then
+			return false, "Security Check Failed: Distance could not be verified."
+		end
+
+		local npcRoot = lorraineNpc:FindFirstChild("HumanoidRootPart") or lorraineNpc.PrimaryPart
+		if not npcRoot then
+			return false, "NPC not found."
+		end
+
+		if (pRoot.Position - npcRoot.Position).Magnitude > MAX_DISTANCE then
+			return false, "You are too far away!"
+		end
+
+		-- 4. Validation: Check equipped tool strictly on server
+		local actualCarId, actualTool = getServerEquippedCar(player)
+		if not actualCarId then
+			return false, "You are not holding a car."
+		end
+
+		-- Sanitize ID mapping (matching `safeFindCarTool` pattern in `TycoonDataHandler`)
+		local cleanRequestedId = requestedCarId:gsub(" Item", ""):gsub("Item", "")
+		local cleanActualId = actualCarId:gsub(" Item", ""):gsub("Item", "")
+
+		if cleanRequestedId ~= cleanActualId then
+			warn("⚠️ Sell Exploit Attempt: " .. player.Name .. " requested to sell " .. cleanRequestedId .. " but is holding " .. cleanActualId)
+			return false, "Item mismatch detected."
+		end
+
+		-- 5. Validation: Get Sell Price and Check limits
+		local details = CarSellPrices.GetDetails(cleanActualId)
+		if not details or not details.SellPrice then
+			return false, "This item cannot be sold."
+		end
+
+		local sellAmount = details.SellPrice
+		if sellAmount <= 0 or sellAmount >= MAX_AMOUNT_LIMIT then
+			return false, "Invalid sell amount."
+		end
+
+		-- 6. Execution: Remove item via TycoonAdminAPI to ensure full cleanup and anti-wipe protection
+		local removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, cleanActualId, 1)
+		if not removeSuccess then
+			-- Fallback: try removing with exact `actualCarId` just in case
+			removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, actualCarId, 1)
+			if not removeSuccess then
+				return false, "Failed to remove the car from your inventory."
+			end
+		end
+
+		-- 7. Execution: Add Funds
+		local leaderstats = player:FindFirstChild("leaderstats")
+		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
+
+		if not wallet then
+			-- Highly unlikely, but refund if leaderstats is broken
+			TycoonAdminAPI:Invoke("GiveTool", player, actualCarId)
+			return false, "Could not locate wallet."
+		end
+
+		wallet.Value += sellAmount
+		print("💰 Lorraine Sell: " .. player.Name .. " sold " .. cleanActualId .. " for $" .. sellAmount)
+
+		return true, "Success"
+	end)
+
+	-- Release Transaction Lock
+	-- Wait slightly to add a tiny cooldown rate limit
+	task.delay(1, function()
+		activeTransactions[player.UserId] = nil
+	end)
+
+	if not success then
+		warn("⚠️ Lorraine Transaction Error for " .. player.Name .. ": " .. tostring(result))
+		activeTransactions[player.UserId] = nil
+		return false, "System Error"
+	end
+
+	return result, msg
+end
+
+-- Cleanup locks on leave
+Players.PlayerRemoving:Connect(function(player)
+	activeTransactions[player.UserId] = nil
+end)

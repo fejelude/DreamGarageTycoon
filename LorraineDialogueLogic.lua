@@ -1,0 +1,641 @@
+-- Purpose: Handles Client UI and NPC Dialogue for Lorraine (Car Sell System).
+-- Runs on: Client
+-- Location: StarterPlayerScripts.LorraineDialogueLogic
+-- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
+-- Public API: None
+-- Networking: Invokes LorraineSellFunction (Client -> Server)
+-- Security: Client visual and prompt only. Server authorizes all transaction details.
+
+local TweenService = game:GetService("TweenService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local SoundService = game:GetService("SoundService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local CarSellPrices = require(ReplicatedStorage:WaitForChild("CarSellPrices"))
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+local playerGui = player:WaitForChild("PlayerGui")
+
+print("🌸 [LorraineDebug] Script Initializing...")
+
+-- ============================================================================
+-- 🎨 COLOR CONFIGURATION
+-- ============================================================================
+local USER_COLOR = "#55AAFF"
+local LORRAINE_COLOR = "#FF69B4"
+local SUCCESS_COLOR = "#50C878"
+local PRICE_COLOR = "#FFD700"
+
+-- ============================================================================
+-- 🆔 UNIQUE IDENTIFIERS
+-- ============================================================================
+local GUI_ID = "UI_NPC_Lorraine"
+local CONTAINER_ID = "UI_NPC_Lorraine_Frame_Container"
+local TEXT_ID = "Text_Lorraine_Dialogue"
+local BUTTONS_FOLDER = "Buttons"
+
+local BTN_QUESTION_ID = "Btn_Question"
+local BTN_SELL_ID = "Btn_Sell"
+local BTN_LEAVE_ID = "Btn_Leave"
+local ALL_BUTTON_IDS = {BTN_QUESTION_ID, BTN_SELL_ID, BTN_LEAVE_ID}
+
+local TARGET_NPC = "Lorraine"
+local CAMERA_PART = "CameraAimPart"
+local PROMPT_NAME = "TalkPrompt"
+
+local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TYPEWRITER_SPEED = 0.02
+local LEAVE_DELAY = 1.5
+
+local TYPING_SOUND_ID = "rbxassetid://4676738150"
+local HOVER_SOUND_ID = "rbxassetid://6895079853"
+local CLICK_SOUND_ID = "rbxassetid://9083627113"
+
+local HOVER_SCALE = 1.1
+local CLICK_SCALE = 0.9
+local ANIM_SPEED = 0.1
+
+local CONFIRMATION_COLORS = { Sacrifice = "#ff5757", Target = "#63b3ff", Accent = "#f4efe6" }
+
+-- ============================================================================
+-- 🛠️ STATE VARIABLES
+-- ============================================================================
+local isInteracting = false
+local isLeaving = false
+local isProcessingSell = false
+local currentDialogueJob = nil
+local buttonConnections = {}
+local buttonHoverConnections = {}
+local confirmConnections = {}
+local hiddenGuis = {}
+local hiddenObjects = {}
+local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
+
+local SellFunction = ReplicatedStorage:WaitForChild("LorraineSellFunction")
+
+-- ============================================================================
+-- 🔒 FORCE HIDE UI ON LOAD
+-- ============================================================================
+task.spawn(function()
+	local myGui = playerGui:WaitForChild(GUI_ID, 10)
+	if myGui then
+		myGui.Enabled = false
+		local container = myGui:FindFirstChild(CONTAINER_ID, true)
+		if container then container.Visible = false end
+	end
+end)
+
+-- ============================================================================
+-- 🎬 INTERACTION FUNCTIONS
+-- ============================================================================
+local function playSound(id, vol)
+	local s = Instance.new("Sound")
+	s.SoundId = id
+	s.Volume = vol or 0.5
+	s.Parent = SoundService
+	s:Play()
+	game.Debris:AddItem(s, 1)
+end
+
+local function setButtonsState(isActive)
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if not myGui then return end
+	local container = myGui:FindFirstChild(CONTAINER_ID, true)
+	if not container then return end
+	local buttons = container:FindFirstChild(BUTTONS_FOLDER)
+	if not buttons then return end
+
+	for _, btnID in ipairs(ALL_BUTTON_IDS) do
+		local btn = buttons:FindFirstChild(btnID, true)
+		if btn then
+			btn.Visible = isActive
+			btn.Active = isActive
+		end
+	end
+end
+
+local function clearConnections()
+	for _, conn in pairs(buttonConnections) do
+		if conn then conn:Disconnect() end
+	end
+	buttonConnections = {}
+	for _, conn in pairs(buttonHoverConnections) do
+		if conn then conn:Disconnect() end
+	end
+	buttonHoverConnections = {}
+end
+
+local function toggleNamedGuiObjects(shouldHide, objectName)
+	if shouldHide then
+		if #hiddenObjects > 0 then return end
+		for _, obj in pairs(playerGui:GetDescendants()) do
+			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
+				obj.Visible = false
+				table.insert(hiddenObjects, obj)
+			end
+		end
+	else
+		for _, obj in pairs(hiddenObjects) do
+			if obj and obj.Parent and obj:IsA("GuiObject") then
+				obj.Visible = true
+			end
+		end
+		hiddenObjects = {}
+	end
+end
+
+local function toggleOtherGuis(shouldHide)
+	if shouldHide then
+		if #hiddenGuis > 0 then return end
+		hiddenGuis = {}
+		for _, otherGui in pairs(playerGui:GetChildren()) do
+			if otherGui:IsA("ScreenGui")
+				and otherGui.Name ~= GUI_ID
+				and otherGui.Name ~= "Confirmation"
+				and otherGui.Enabled == true
+				and otherGui.Name ~= "Balance Indicator" then
+				otherGui.Enabled = false
+				table.insert(hiddenGuis, otherGui)
+			end
+		end
+	else
+		for _, otherGui in pairs(hiddenGuis) do
+			if otherGui and otherGui.Parent then
+				otherGui.Enabled = true
+			end
+		end
+		hiddenGuis = {}
+	end
+end
+
+local function setFocusMode(active)
+	toggleOtherGuis(active)
+	toggleNamedGuiObjects(active, "FriendBoost")
+end
+
+local function getCleanTextLength(str)
+	local cleanStr = string.gsub(str, "<[^>]+>", "")
+	return utf8.len(cleanStr) or #cleanStr
+end
+
+local function typewrite(label, text, onComplete)
+	if not label then return end
+	label.RichText = true
+
+	if currentDialogueJob then
+		pcall(task.cancel, currentDialogueJob)
+		currentDialogueJob = nil
+	end
+
+	label.Text = text
+	label.MaxVisibleGraphemes = 0
+
+	local len = getCleanTextLength(text)
+
+	currentDialogueJob = task.spawn(function()
+		for i = 1, len do
+			if not isInteracting and not isLeaving then break end
+			label.MaxVisibleGraphemes = i
+			if i % 3 == 0 then
+				local s = Instance.new("Sound", SoundService)
+				s.SoundId = TYPING_SOUND_ID
+				s.Volume = 0.1
+				s.PlayOnRemove = true
+				s:Destroy()
+			end
+			task.wait(TYPEWRITER_SPEED)
+		end
+		label.MaxVisibleGraphemes = -1
+		currentDialogueJob = nil
+
+		if onComplete and isInteracting then
+			task.spawn(onComplete)
+		end
+	end)
+end
+
+local function stopInteraction()
+	if not isInteracting and not isLeaving then return end
+
+	isInteracting = false
+	isLeaving = false
+	isProcessingSell = false
+
+	if currentDialogueJob then
+		pcall(task.cancel, currentDialogueJob)
+		currentDialogueJob = nil
+	end
+
+	clearConnections()
+	setFocusMode(false)
+
+	camera.CameraType = Enum.CameraType.Custom
+	if controls then controls:Enable() end
+
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+		if hrp then hrp.Anchored = false end
+		if humanoid then humanoid.WalkSpeed = 16 end
+	end
+
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if myGui then
+		myGui.Enabled = false
+		local container = myGui:FindFirstChild(CONTAINER_ID, true)
+		if container then container.Visible = false end
+	end
+end
+
+local function animateButton(btn)
+	if not btn:GetAttribute("OriginalSizeX") then
+		btn:SetAttribute("OriginalSizeX", btn.Size.X.Scale)
+		btn:SetAttribute("OriginalSizeXO", btn.Size.X.Offset)
+		btn:SetAttribute("OriginalSizeY", btn.Size.Y.Scale)
+		btn:SetAttribute("OriginalSizeYO", btn.Size.Y.Offset)
+	end
+
+	local origX = btn:GetAttribute("OriginalSizeX")
+	local origXO = btn:GetAttribute("OriginalSizeXO")
+	local origY = btn:GetAttribute("OriginalSizeY")
+	local origYO = btn:GetAttribute("OriginalSizeYO")
+
+	local normalSize = UDim2.new(origX, origXO, origY, origYO)
+	local hoverSize = UDim2.new(origX * HOVER_SCALE, origXO * HOVER_SCALE, origY * HOVER_SCALE, origYO * HOVER_SCALE)
+	local clickSize = UDim2.new(origX * CLICK_SCALE, origXO * CLICK_SCALE, origY * CLICK_SCALE, origYO * CLICK_SCALE)
+
+	if not UserInputService.TouchEnabled then
+		local connEnter = btn.MouseEnter:Connect(function()
+			playSound(HOVER_SOUND_ID, 0.5)
+			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = hoverSize}):Play()
+		end)
+		local connLeave = btn.MouseLeave:Connect(function()
+			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = normalSize}):Play()
+		end)
+		table.insert(buttonHoverConnections, connEnter)
+		table.insert(buttonHoverConnections, connLeave)
+	end
+
+	local connDown = btn.MouseButton1Down:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.05), {Size = clickSize}):Play()
+	end)
+	local connUp = btn.MouseButton1Up:Connect(function()
+		local target = (not UserInputService.TouchEnabled) and hoverSize or normalSize
+		TweenService:Create(btn, TweenInfo.new(ANIM_SPEED, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = target}):Play()
+	end)
+	table.insert(buttonHoverConnections, connDown)
+	table.insert(buttonHoverConnections, connUp)
+end
+
+-- ============================================================================
+-- 🧠 CONFIRMATION UI
+-- ============================================================================
+
+local function clearConfirmationConnections()
+	for _, c in ipairs(confirmConnections) do if c then c:Disconnect() end end
+	confirmConnections = {}
+end
+
+local function addConfirmationConnection(conn)
+	if conn then table.insert(confirmConnections, conn) end
+end
+
+local function resolveConfirmationUi()
+	local cGui  = playerGui:FindFirstChild("Confirmation") or playerGui:WaitForChild("Confirmation", 5)
+	if not cGui then return nil, nil end
+	local cMain = cGui:FindFirstChild("MainFrame") or cGui:WaitForChild("MainFrame", 5)
+	return cGui, cMain
+end
+
+local function resolveGuiButton(target)
+	if not target then return nil end
+	if target:IsA("GuiButton") then return target end
+	for _, d in ipairs(target:GetDescendants()) do
+		if d:IsA("GuiButton") then return d end
+	end
+	return nil
+end
+
+local function resolveNamedConfirmationButton(root, exactName, aliases)
+	if not root then return nil end
+	local direct = resolveGuiButton(root:FindFirstChild(exactName, true))
+	if direct then return direct end
+	local lowered = { string.lower(exactName) }
+	for _, a in ipairs(aliases or {}) do table.insert(lowered, string.lower(a)) end
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("GuiButton") then
+			local bn = string.lower(d.Name)
+			for _, k in ipairs(lowered) do
+				if bn == k or string.find(bn, k, 1, true) then return d end
+			end
+		end
+	end
+	return nil
+end
+
+local function playConfirmationOpenTween(cMain)
+	if not cMain or not cMain:IsA("GuiObject") then return end
+	if not cMain:GetAttribute("BasePosStored") then
+		cMain:SetAttribute("BasePosStored",  true)
+		cMain:SetAttribute("BasePosXScale",  cMain.Position.X.Scale)
+		cMain:SetAttribute("BasePosXOffset", cMain.Position.X.Offset)
+		cMain:SetAttribute("BasePosYScale",  cMain.Position.Y.Scale)
+		cMain:SetAttribute("BasePosYOffset", cMain.Position.Y.Offset)
+	end
+	local bp = UDim2.new(
+		cMain:GetAttribute("BasePosXScale"),  cMain:GetAttribute("BasePosXOffset"),
+		cMain:GetAttribute("BasePosYScale"),  cMain:GetAttribute("BasePosYOffset")
+	)
+	cMain.Position = UDim2.new(bp.X.Scale, bp.X.Offset, bp.Y.Scale, bp.Y.Offset + 18)
+	TweenService:Create(cMain, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Position = bp }):Play()
+end
+
+local function bindConfirmationButton(button, callback)
+	if not button then return end
+	local fired = false
+	local function hp() if fired then return end; fired = true; callback() end
+	addConfirmationConnection(button.Activated:Connect(hp))
+	addConfirmationConnection(button.MouseButton1Click:Connect(hp))
+	addConfirmationConnection(button.TouchTap:Connect(hp))
+end
+
+local function PromptConfirmation(text, callback)
+	local cGui, cMain = resolveConfirmationUi()
+	if not cGui or not cMain then
+		callback(false)
+		return
+	end
+
+	clearConfirmationConnections()
+	local infoLabel = cMain:FindFirstChild("Information", true)
+	local btnYes    = resolveNamedConfirmationButton(cMain, "Yes",  { "Confirm", "Accept", "Okay", "Ok" })
+	local btnNo     = resolveNamedConfirmationButton(cMain, "No",   { "Cancel", "Decline", "Back", "Close" })
+
+	if infoLabel then
+		pcall(function() infoLabel.RichText = true; infoLabel.TextWrapped = true; infoLabel.Text = text end)
+	end
+
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	local container = myGui and myGui:FindFirstChild(CONTAINER_ID, true)
+	if container then container.Visible = false end
+
+	cGui.Enabled = true
+	if cMain:IsA("GuiObject") then cMain.Visible = true; cMain.Active = true end
+	pcall(function()
+		if cGui:IsA("ScreenGui") then
+			cGui.DisplayOrder = math.max(cGui.DisplayOrder, 100)
+		end
+	end)
+	playConfirmationOpenTween(cMain)
+
+	local function finishChoice(confirmed)
+		clearConfirmationConnections()
+		if cMain:IsA("GuiObject") then cMain.Visible = false end
+		cGui.Enabled = false
+		if container then container.Visible = true end
+		callback(confirmed)
+	end
+
+	bindConfirmationButton(btnYes, function() finishChoice(true)  end)
+	bindConfirmationButton(btnNo,  function() finishChoice(false) end)
+end
+
+local function FormatCommas(num)
+	return tostring(num):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
+end
+
+local function escapeRichText(text)
+	text = tostring(text)
+	return text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;")
+end
+
+local function getEquippedCar()
+	if player.Character then
+		for _, child in ipairs(player.Character:GetChildren()) do
+			if child:IsA("Tool") then
+				local toolId = child:GetAttribute("ToolId") or child.Name
+				return toolId
+			end
+		end
+	end
+	return nil
+end
+
+-- ============================================================================
+-- 🗣️ DIALOGUE ACTIONS
+-- ============================================================================
+local function handleQuestion(dialogueLabel)
+	local equippedCarId = getEquippedCar()
+	if not equippedCarId then
+		typewrite(dialogueLabel, "Hmm~ I'd love to help, but darling, you aren't holding anything~ Equip a car first and come back to me! 🌸", function()
+			setButtonsState(true)
+		end)
+		return
+	end
+
+	local details = CarSellPrices.GetDetails(equippedCarId)
+	if not details then
+		typewrite(dialogueLabel, "Oh my~ I'm afraid I don't know the value of that item, darling. Are you sure it's a car? ✨", function()
+			setButtonsState(true)
+		end)
+		return
+	end
+
+	local msg = "Oh how lovely~ That beautiful <b>[" .. details.Name .. "]</b> ✨ I'd be willing to offer you a generous <b><font color='" .. PRICE_COLOR .. "'>$" .. FormatCommas(details.SellPrice) .. "</font></b> for it~ How does that sound, darling? 💎"
+	typewrite(dialogueLabel, msg, function()
+		setButtonsState(true)
+	end)
+end
+
+local function handleSell(dialogueLabel)
+	if isProcessingSell then return end
+
+	local equippedCarId = getEquippedCar()
+	if not equippedCarId then
+		typewrite(dialogueLabel, "Hmm~ I'd love to help, but darling, you aren't holding anything~ Equip a car first and come back to me! 🌸", function()
+			setButtonsState(true)
+		end)
+		return
+	end
+
+	local details = CarSellPrices.GetDetails(equippedCarId)
+	if not details then
+		typewrite(dialogueLabel, "Oh my~ I'm afraid I don't know the value of that item, darling. Are you sure it's a car? ✨", function()
+			setButtonsState(true)
+		end)
+		return
+	end
+
+	isProcessingSell = true
+
+	local confirmText = string.format(
+		"<font color='%s'>Are you absolutely sure, darling~? 💔 You wish to sell your </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>$%s</font></b><font color='%s'>? This cannot be undone~</font>",
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target, escapeRichText(details.Name),
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, FormatCommas(details.SellPrice),
+		CONFIRMATION_COLORS.Accent
+	)
+
+	PromptConfirmation(confirmText, function(confirmed)
+		if not isInteracting then return end
+
+		if not confirmed then
+			isProcessingSell = false
+			typewrite(dialogueLabel, "Oh, changed your mind~? That's perfectly fine, darling 💅 Take all the time you need~", function()
+				setButtonsState(true)
+			end)
+			return
+		end
+
+		-- Confirmed, execute sell via server
+		task.spawn(function()
+			local success, msg = SellFunction:InvokeServer(equippedCarId)
+			isProcessingSell = false
+
+			if not isInteracting then return end
+
+			if success then
+				playSound(CLICK_SOUND_ID, 0.5) -- Optional: Add a success sound here
+				typewrite(dialogueLabel, "Wonderful~ 🌟 It was a pleasure doing business with you, darling! Your wallet is looking quite fabulous now~ ✨", function()
+					setButtonsState(true)
+				end)
+			else
+				typewrite(dialogueLabel, "Oh dear... Something went wrong. " .. (msg or "Try again later.") .. " 💔", function()
+					setButtonsState(true)
+				end)
+			end
+		end)
+	end)
+end
+
+-- ============================================================================
+-- 🟢 MAIN INTERACTION START
+-- ============================================================================
+local function startInteraction(npcModel)
+	if isInteracting or isLeaving then return end
+
+	isInteracting = true
+	isProcessingSell = false
+	clearConnections()
+
+	local camPart = npcModel:FindFirstChild(CAMERA_PART)
+	if not camPart then
+		warn("❌ [LorraineDebug] Error: Missing '" .. CAMERA_PART .. "'")
+		isInteracting = false
+		return
+	end
+
+	if controls then controls:Disable() end
+	setFocusMode(true)
+
+	if player.Character then
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+		if humanoid then humanoid.WalkSpeed = 0 end
+		if hrp then
+			hrp.Velocity = Vector3.zero
+			hrp.Anchored = true
+		end
+	end
+
+	camera.CameraType = Enum.CameraType.Scriptable
+	TweenService:Create(camera, TWEEN_INFO, {CFrame = camPart.CFrame}):Play()
+
+	local myGui = playerGui:WaitForChild(GUI_ID, 5)
+	if not myGui then warn("❌ [LorraineDebug] Missing GUI") stopInteraction() return end
+
+	myGui.Enabled = true
+	local container = myGui:FindFirstChild(CONTAINER_ID, true)
+	if not container then warn("❌ [LorraineDebug] Missing Frame") stopInteraction() return end
+
+	container.Visible = true
+	setButtonsState(false)
+
+	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
+	if dialogueLabel then
+		local greeting = "Oh my~ Welcome, darling! ✨ Looking to part ways with one of your precious automobiles? I do pay handsomely~"
+
+		typewrite(dialogueLabel, greeting, function()
+			setButtonsState(true)
+		end)
+
+		local function connectBtn(btnName, func)
+			local buttons = container:FindFirstChild(BUTTONS_FOLDER)
+			local btn = buttons and buttons:FindFirstChild(btnName, true)
+			if btn and btn:IsA("GuiButton") then
+				animateButton(btn)
+				local conn = btn.MouseButton1Click:Connect(function()
+					playSound(CLICK_SOUND_ID, 0.5)
+					func()
+				end)
+				table.insert(buttonConnections, conn)
+			else
+				warn("⚠️ [LorraineDebug] Warning: Could not find button '" .. btnName .. "' in UI.")
+			end
+		end
+
+		connectBtn(BTN_LEAVE_ID, function()
+			if isLeaving then return end
+			isLeaving = true
+			clearConnections()
+			setButtonsState(false)
+			if dialogueLabel then
+				local goodbyeMsg = "Toodles~! 🌸 Do come back anytime, darling. My doors are always open for a lovely customer like you~ 💖"
+				typewrite(dialogueLabel, goodbyeMsg)
+			end
+			task.wait(LEAVE_DELAY)
+			stopInteraction()
+		end)
+
+		connectBtn(BTN_QUESTION_ID, function()
+			setButtonsState(false)
+			handleQuestion(dialogueLabel)
+		end)
+
+		connectBtn(BTN_SELL_ID, function()
+			setButtonsState(false)
+			handleSell(dialogueLabel)
+		end)
+	else
+		warn("❌ [LorraineDebug] ERROR: Could not find TextLabel named '" .. TEXT_ID .. "' inside Container!")
+		setButtonsState(true)
+	end
+end
+
+-- ============================================================================
+-- 🔌 PROXIMITY PROMPT SETUP
+-- ============================================================================
+local ProximityPromptService = game:GetService("ProximityPromptService")
+
+local function isTargetPrompt(prompt)
+	if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+	return string.lower(prompt.Name) == string.lower(PROMPT_NAME)
+end
+
+local function findTargetNPCFromPrompt(prompt)
+	local current = prompt and prompt.Parent
+	while current do
+		if current:IsA("Model") and string.find(current.Name, TARGET_NPC) then return current end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function setupNPC()
+	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
+		if triggerPlayer == player and isTargetPrompt(prompt) then
+			local npc = findTargetNPCFromPrompt(prompt)
+			if npc and string.find(npc.Name, TARGET_NPC) then
+				startInteraction(npc)
+			end
+		end
+	end)
+end
+
+setupNPC()
+
+player.CharacterAdded:Connect(function()
+	stopInteraction()
+end)
