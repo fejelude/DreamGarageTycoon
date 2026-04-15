@@ -144,9 +144,15 @@ local function setupTablet(plot)
 					nukeConstraints(cpsLabel)
 					local function updateCPS()
 						local currentCPS = plot:GetAttribute("CurrentCPS") or 0
-						cpsLabel.Text = "$ " .. formatNumber(currentCPS) .. "/s"
+						local baseText = "$ " .. formatNumber(currentCPS) .. "/s"
+						if plot:GetAttribute("IsAFK") == true then
+							cpsLabel.Text = baseText .. " (2x)"
+						else
+							cpsLabel.Text = baseText
+						end
 					end
 					plot:GetAttributeChangedSignal("CurrentCPS"):Connect(updateCPS)
+					plot:GetAttributeChangedSignal("IsAFK"):Connect(updateCPS)
 					updateCPS()
 				end
 			end

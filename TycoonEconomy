@@ -174,9 +174,18 @@ task.spawn(function()
 				-- Example: (100 CPS * 1.5 Friend) * 1.25 Gold = 187.5 CPS
 				plotTotalCPS = (plotTotalCPS * friendMultiplier) * skinMultiplier
 
-				-- 3. Accumulate and Payout
+				-- Update attribute so TabletHandler sees the Boosted CPS (before AFK)
+				plot:SetAttribute("CurrentCPS", plotTotalCPS)
+
+				-- 3. AFK Bonus & Accumulate
+				-- If AFK, multiply their earnings payout by 2.
+				local payoutCPS = plotTotalCPS
+				if plot:GetAttribute("IsAFK") == true then
+					payoutCPS = payoutCPS * 2
+				end
+
 				if not profitAccumulator[plot] then profitAccumulator[plot] = 0 end
-				profitAccumulator[plot] = profitAccumulator[plot] + plotTotalCPS
+				profitAccumulator[plot] = profitAccumulator[plot] + payoutCPS
 
 				local payout = math.floor(profitAccumulator[plot])
 
@@ -184,9 +193,6 @@ task.spawn(function()
 					pendingValue.Value = pendingValue.Value + payout
 					profitAccumulator[plot] = profitAccumulator[plot] - payout
 				end
-
-				-- Update attribute so TabletHandler sees the Boosted CPS
-				plot:SetAttribute("CurrentCPS", plotTotalCPS)
 			end
 		end
 	end
