@@ -461,6 +461,7 @@ local function PromptConfirmation(text, callback)
 			cGui.DisplayOrder = math.max(cGui.DisplayOrder, 100)
 		end
 	end)
+	playSound(HOVER_SOUND_ID, 0.5)
 	playConfirmationOpenTween(cMain)
 
 	local function finishChoice(confirmed)

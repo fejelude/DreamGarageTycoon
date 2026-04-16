@@ -552,6 +552,7 @@ local function PromptConfirmation(sessionId, text, callback)
 			cGui.DisplayOrder = math.max(cGui.DisplayOrder, gui.DisplayOrder + 10)
 		end
 	end)
+	Kit.Sound:Play("Hover")
 	playConfirmationOpenTween(cMain)
 	local function finishChoice(confirmed)
 		if myVersion ~= confirmationVersion then return end
