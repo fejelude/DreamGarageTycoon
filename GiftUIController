@@ -259,6 +259,26 @@ local function ensureEmptyFX(label)
 end
 
 -- ============================================================================
+-- 💥 POP ANIMATION
+-- ============================================================================
+local function playConfirmationOpenTween(cMain)
+	if not cMain or not cMain:IsA("GuiObject") then return end
+	if not cMain:GetAttribute("BasePosStored") then
+		cMain:SetAttribute("BasePosStored",  true)
+		cMain:SetAttribute("BasePosXScale",  cMain.Position.X.Scale)
+		cMain:SetAttribute("BasePosXOffset", cMain.Position.X.Offset)
+		cMain:SetAttribute("BasePosYScale",  cMain.Position.Y.Scale)
+		cMain:SetAttribute("BasePosYOffset", cMain.Position.Y.Offset)
+	end
+	local bp = UDim2.new(
+		cMain:GetAttribute("BasePosXScale"),  cMain:GetAttribute("BasePosXOffset"),
+		cMain:GetAttribute("BasePosYScale"),  cMain:GetAttribute("BasePosYOffset")
+	)
+	cMain.Position = UDim2.new(bp.X.Scale, bp.X.Offset, bp.Y.Scale, bp.Y.Offset + 18)
+	TweenService:Create(cMain, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Position = bp }):Play()
+end
+
+-- ============================================================================
 -- 🧠 FOCUS MODE
 -- ============================================================================
 local function setFocusMode(isFocused)
@@ -271,6 +291,7 @@ local function setFocusMode(isFocused)
 	if isFocused then
 		screenGui.Enabled = true
 		mainFrame.Visible = true
+		playConfirmationOpenTween(mainFrame)
 		toggleOtherGuis(true)
 		setMovementLocked(true)
 		tweenFov(openFov)
