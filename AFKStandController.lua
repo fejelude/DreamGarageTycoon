@@ -105,29 +105,21 @@ end
 -- ============================================================================
 -- 👁️ UI VISIBILITY HELPER (Like NPC Dialogue)
 -- ============================================================================
-local function toggleOtherGuis(hide)
-	if hide then
-		if #hiddenGuis > 0 then return end
+local function toggleOtherGuis(shouldHide)
+	local playerGui = player:WaitForChild("PlayerGui")
+	if shouldHide then
 		hiddenGuis = {}
-
-		for _, otherGui in pairs(playerGui:GetChildren()) do
-			if otherGui:IsA("ScreenGui") and otherGui ~= generatingGui and otherGui.Enabled then
-				-- Skip Chat/TopBar components if possible, hide custom interfaces
-				if not string.match(otherGui.Name, "Chat") then
-					otherGui.Enabled = false
-					table.insert(hiddenGuis, otherGui)
-				end
+		for _, gui in ipairs(playerGui:GetChildren()) do
+			if gui:IsA("ScreenGui") and gui.Name ~= "2XMoney" and gui.Enabled == true then
+				gui.Enabled = false
+				table.insert(hiddenGuis, gui)
 			end
 		end
-
-		-- Use StarterGui safely via pcall to avoid errors if CoreGui throws
-		pcall(function() starterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false) end)
 	else
-		for _, otherGui in pairs(hiddenGuis) do
-			if otherGui then otherGui.Enabled = true end
+		for _, gui in ipairs(hiddenGuis) do
+			if gui and gui.Parent then gui.Enabled = true end
 		end
 		hiddenGuis = {}
-		pcall(function() starterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, true) end)
 	end
 end
 

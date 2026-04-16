@@ -23,9 +23,23 @@ if not moneyFolder then
 	return
 end
 
-local cashGenerator = moneyFolder:WaitForChild("CashGenerator", 10)
-local standPart = cashGenerator:WaitForChild("CashGeneratorPart", 10)
-local teleportPad = cashGenerator:WaitForChild("Teleport", 10)
+local cashGenerator = nil
+local standPart = nil
+local teleportPad = nil
+
+if moneyFolder then
+	cashGenerator = moneyFolder:WaitForChild("CashGenerator", 10)
+	if cashGenerator then
+		standPart = cashGenerator:WaitForChild("CashGeneratorPart", 10)
+		teleportPad = cashGenerator:WaitForChild("Teleport", 10)
+	end
+end
+
+if not standPart then
+	warn("⚠️ AFKStandService: 'CashGeneratorPart' not found! AFK Stand will not work.")
+	return
+end
+
 local tycoonsFolder = Workspace:WaitForChild("Tycoons", 10)
 
 local debounce = {}
@@ -69,6 +83,12 @@ standPart.Touched:Connect(function(hit)
 	plot:SetAttribute("IsAFK", true)
 	player:SetAttribute("IsAFK", true)
 
+	-- Security: Anchor player to prevent walking away with the buff
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		hrp.Anchored = true
+	end
+
 	-- Cleanup existing death connections just in case
 	if activeConnections[player.UserId] then
 		activeConnections[player.UserId]:Disconnect()
@@ -94,6 +114,9 @@ end)
 if AFKEvent then
 	AFKEvent.OnServerEvent:Connect(function(player, action)
 		if action == "Exit" then
+			-- Security: Check if player is actually AFK before allowing teleport
+			if player:GetAttribute("IsAFK") ~= true then return end
+
 			local plot = getPlayerPlot(player)
 
 			if plot then
@@ -106,10 +129,14 @@ if AFKEvent then
 				activeConnections[player.UserId] = nil
 			end
 
-			-- Teleport safely
+			-- Teleport safely & Unanchor
 			local character = player.Character
-			if character and character:FindFirstChild("HumanoidRootPart") and teleportPad then
-				character.HumanoidRootPart.CFrame = teleportPad.CFrame * CFrame.new(0, 3, 0)
+			if character then
+				local hrp = character:FindFirstChild("HumanoidRootPart")
+				if hrp and teleportPad then
+					hrp.Anchored = false
+					hrp.CFrame = teleportPad.CFrame * CFrame.new(0, 3, 0)
+				end
 			end
 		end
 	end)
