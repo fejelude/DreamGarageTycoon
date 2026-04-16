@@ -192,6 +192,7 @@ local function RenderCard(card, carName, state)
 	local stockLabel = card:FindFirstChild("StockInformation") 
 	local buyBtn = card:FindFirstChild("BuyButton")
 	local robuxBtn = card:FindFirstChild("RobuxButton") 
+	local giftBtn = card:FindFirstChild("GiftButton")
 	local noStockInd = card:FindFirstChild("NoStockIndicator")
 
 	if carImage and state.Image then carImage.Image = state.Image end
@@ -231,6 +232,11 @@ local function RenderCard(card, carName, state)
 	if robuxBtn then 
 		robuxBtn.Visible = state.CanRobux 
 		robuxBtn.Active = true 
+	end
+
+	if giftBtn then
+		giftBtn.Visible = true
+		giftBtn.Active = true
 	end
 end
 
@@ -343,6 +349,22 @@ local function init()
 					local pid = ROBUX_PRODUCTS[carName]
 					if pid and pid > 0 then 
 						MarketplaceService:PromptProductPurchase(player, pid) 
+					else
+						warn("⚠️ Robux ID is 0 for " .. carName)
+					end
+				end)
+			end
+
+			local giftBtn = card:FindFirstChild("GiftButton")
+			if giftBtn then
+				Kit.Tween:SetupButton(giftBtn, function()
+					local pid = ROBUX_PRODUCTS[carName]
+					if pid and pid > 0 then
+						if not _G.OpenGiftMenu then
+							warn("⚠️ _G.OpenGiftMenu is not ready yet!")
+							return
+						end
+						_G.OpenGiftMenu(pid)
 					else
 						warn("⚠️ Robux ID is 0 for " .. carName)
 					end
