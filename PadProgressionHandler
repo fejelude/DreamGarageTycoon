@@ -67,43 +67,21 @@ local function toggleVisual(obj, isVisible, canTouch)
 	end
 end
 
-local function getLevelFolder(plot, folderName)
-	-- Helper to fetch the folder, either from the plot or if it was moved to ReplicatedStorage
-	local f = plot:FindFirstChild(folderName)
-	if f then return f end
-
-	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-	if dedicatedFolder then
-		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
-		if plotStorage then
-			return plotStorage:FindFirstChild(folderName)
-		end
-	end
-	return nil
-end
-
 local function setLevelVisibility(plot, level1Folder, level2Folder, baseLevel)
-	-- To cull effectively without destroying UI attributes, we move the inactive model to ReplicatedStorage
-	local storageFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-	if not storageFolder then
-		storageFolder = Instance.new("Folder")
-		storageFolder.Name = "TycoonLevelStorage"
-		storageFolder.Parent = ReplicatedStorage
-	end
-
-	local plotStorage = storageFolder:FindFirstChild(plot.Name)
-	if not plotStorage then
-		plotStorage = Instance.new("Folder")
-		plotStorage.Name = plot.Name
-		plotStorage.Parent = storageFolder
-	end
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	local plotStorage = dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name)
 
 	if baseLevel == 1 then
-		if level1Folder and level1Folder.Parent ~= plot then level1Folder.Parent = plot end
-		if level2Folder and level2Folder.Parent ~= plotStorage then level2Folder.Parent = plotStorage end
+		if level1Folder then toggleVisual(level1Folder, true, true) end
+
+		if level2Folder and level2Folder.Parent == plot and plotStorage then
+			level2Folder.Parent = plotStorage
+		end
 	elseif baseLevel == 2 then
-		if level1Folder and level1Folder.Parent ~= plotStorage then level1Folder.Parent = plotStorage end
-		if level2Folder and level2Folder.Parent ~= plot then level2Folder.Parent = plot end
+		if level1Folder then toggleVisual(level1Folder, false, false) end
+		if level2Folder and level2Folder.Parent ~= plot then
+			level2Folder.Parent = plot
+		end
 	end
 end
 
@@ -111,8 +89,14 @@ local function updatePadVisuals(plot, unlockedLevel, baseLevel)
 	unlockedLevel = tonumber(unlockedLevel) or 1
 	baseLevel = tonumber(baseLevel) or 1
 
-	local level1Folder = getLevelFolder(plot, "Level1")
-	local level2Folder = getLevelFolder(plot, "Level2")
+	local level1Folder = plot:FindFirstChild("Level1")
+
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	local level2Folder = nil
+	if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+		level2Folder = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+	end
+	if not level2Folder then level2Folder = plot:FindFirstChild("Level2") end
 
 	setLevelVisibility(plot, level1Folder, level2Folder, baseLevel)
 
@@ -410,12 +394,16 @@ local function setupPlot(plot)
 			end
 		end
 
-		local level1 = getLevelFolder(plot, "Level1")
-		if not level1 then level1 = plot:WaitForChild("Level1", 10) end
+		local level1 = plot:WaitForChild("Level1", 10)
 		setupPadsInFolder(level1)
 
-		local level2 = getLevelFolder(plot, "Level2")
+		local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+		local level2 = nil
+		if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+			level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+		end
 		if not level2 then level2 = plot:FindFirstChild("Level2") end
+
 		setupPadsInFolder(level2)
 
 		local level2BuyButton = plot:WaitForChild("Level2BuyButton", 10)

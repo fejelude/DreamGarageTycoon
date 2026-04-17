@@ -331,20 +331,6 @@ end
 -- ----------------------------------------------------------------------------
 -- 🏗️ LAYOUT RESTORATION
 -- ----------------------------------------------------------------------------
-local function getLevelFolder(plot, folderName)
-	local f = plot:FindFirstChild(folderName)
-	if f then return f end
-
-	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-	if dedicatedFolder then
-		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
-		if plotStorage then
-			return plotStorage:FindFirstChild(folderName)
-		end
-	end
-	return nil
-end
-
 local function acquirePadLock(lockId)
 	if PadLocks[lockId] then return false end
 	PadLocks[lockId] = true
@@ -364,8 +350,7 @@ local function RestoreLayout(player, plot, layoutData)
 
 	local validPads = {}
 
-	local level1 = getLevelFolder(plot, "Level1")
-	if not level1 then level1 = plot:WaitForChild("Level1", 10) end
+	local level1 = plot:WaitForChild("Level1", 10)
 	if level1 then
 		local padsFolder1 = level1:FindFirstChild("Pads")
 		if padsFolder1 then
@@ -373,8 +358,14 @@ local function RestoreLayout(player, plot, layoutData)
 		end
 	end
 
-	local level2 = getLevelFolder(plot, "Level2")
-	if not level2 then level2 = plot:FindFirstChild("Level2") end
+	local level2 = plot:FindFirstChild("Level2")
+	if not level2 then
+		local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+		if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+			level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+		end
+	end
+
 	if level2 then
 		local padsFolder2 = level2:FindFirstChild("Pads")
 		if padsFolder2 then
@@ -776,10 +767,16 @@ local function save(player, isClosing)
 				end
 			end
 
-			local level1 = getLevelFolder(plot, "Level1")
+			local level1 = plot:FindFirstChild("Level1")
 			if level1 then savePadsInFolder(level1:FindFirstChild("Pads")) end
 
-			local level2 = getLevelFolder(plot, "Level2")
+			local level2 = plot:FindFirstChild("Level2")
+			if not level2 then
+				local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+				if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+					level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+				end
+			end
 			if level2 then savePadsInFolder(level2:FindFirstChild("Pads")) end
 		end
 
