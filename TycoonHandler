@@ -23,6 +23,21 @@ if not SaveEvent then
 end
 
 -- 🧹 HELPER: Completely reset a plot
+local function getLevelFolder(plot, folderName)
+	local f = plot:FindFirstChild(folderName)
+	if f then return f end
+
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if dedicatedFolder then
+		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
+		if plotStorage then
+			return plotStorage:FindFirstChild(folderName)
+		end
+	end
+	return nil
+end
+
 local function wipePlot(plot)
 	print("🧹 Wiping Plot: " .. plot.Name)
 	if plot:FindFirstChild("Owner") then plot.Owner.Value = "" end
@@ -37,8 +52,9 @@ local function wipePlot(plot)
 	if plot:FindFirstChild("PlacedCars") then plot.PlacedCars:ClearAllChildren() end
 
 	-- Reset Pads
-	if plot:FindFirstChild("Pads") then
-		for _, padObj in pairs(plot.Pads:GetChildren()) do
+	local function resetPadsInFolder(padsFolder)
+		if not padsFolder then return end
+		for _, padObj in pairs(padsFolder:GetChildren()) do
 			local padPart = padObj:IsA("Model") and (padObj.PrimaryPart or padObj:FindFirstChildWhichIsA("BasePart")) or padObj
 			if padPart then
 				local occupied = padPart:FindFirstChild("IsOccupied")
@@ -53,6 +69,12 @@ local function wipePlot(plot)
 			end
 		end
 	end
+
+	local level1 = getLevelFolder(plot, "Level1")
+	if level1 then resetPadsInFolder(level1:FindFirstChild("Pads")) end
+
+	local level2 = getLevelFolder(plot, "Level2")
+	if level2 then resetPadsInFolder(level2:FindFirstChild("Pads")) end
 end
 
 -- 🏠 ASSIGN PLOT (ASCENDING SEQUENCE FIX)

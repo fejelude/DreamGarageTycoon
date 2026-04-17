@@ -413,34 +413,71 @@ local function setupPad(padObject)
 end
 
 -- Initialize Existing Tycoons
-for _, plot in pairs(TycoonFolder:GetChildren()) do
-	local padsFolder = plot:FindFirstChild("Pads")
+local function initPadsFolder(padsFolder)
 	if padsFolder then
 		for _, pad in pairs(padsFolder:GetChildren()) do setupPad(pad) end
+		padsFolder.ChildAdded:Connect(setupPad)
 	end
+end
+
+local function getLevelFolder(plot, folderName)
+	local f = plot:FindFirstChild(folderName)
+	if f then return f end
+
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if dedicatedFolder then
+		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
+		if plotStorage then
+			return plotStorage:FindFirstChild(folderName)
+		end
+	end
+	return nil
+end
+
+local function setupPlot(plot)
+	local level1 = getLevelFolder(plot, "Level1")
+	if not level1 then level1 = plot:WaitForChild("Level1", 10) end
+	if level1 then initPadsFolder(level1:FindFirstChild("Pads")) end
+
+	local level2 = getLevelFolder(plot, "Level2")
+	if not level2 then level2 = plot:FindFirstChild("Level2") end
+	if level2 then initPadsFolder(level2:FindFirstChild("Pads")) end
+end
+
+for _, plot in pairs(TycoonFolder:GetChildren()) do
+	setupPlot(plot)
 end
 
 -- 🔄 MAINTENANCE LOOP (Updated to check visual state constantly)
 task.spawn(function()
-	while true do
-		task.wait(5) -- Runs every 5 seconds to keep states valid
-		for _, plot in pairs(TycoonFolder:GetChildren()) do
-			local padsFolder = plot:FindFirstChild("Pads")
-			if padsFolder then
-				for _, padObject in pairs(padsFolder:GetChildren()) do
-					local padPart = getMainPart(padObject)
-					if padPart then
-						local occ = padPart:FindFirstChild("IsOccupied")
-						local lnk = padPart:FindFirstChild("LinkedCar")
-						local pl = padPart:FindFirstChild("PlacePrompt")
-						local pk = padPart:FindFirstChild("PickupPrompt")
-						if occ and lnk and pl and pk then
-							-- Checks progression + ghost locks
-							validatePadState(padObject, occ, lnk, pl, pk)
-						end
-					end
+	local function checkPadsInFolder(padsFolder)
+		if not padsFolder then return end
+		for _, padObject in pairs(padsFolder:GetChildren()) do
+			local padPart = getMainPart(padObject)
+			if padPart then
+				local occ = padPart:FindFirstChild("IsOccupied")
+				local lnk = padPart:FindFirstChild("LinkedCar")
+				local pl = padPart:FindFirstChild("PlacePrompt")
+				local pk = padPart:FindFirstChild("PickupPrompt")
+				if occ and lnk and pl and pk then
+					-- Checks progression + ghost locks
+					validatePadState(padObject, occ, lnk, pl, pk)
 				end
 			end
 		end
 	end
+
+	while true do
+		task.wait(5) -- Runs every 5 seconds to keep states valid
+		for _, plot in pairs(TycoonFolder:GetChildren()) do
+			local level1 = getLevelFolder(plot, "Level1")
+			if level1 then checkPadsInFolder(level1:FindFirstChild("Pads")) end
+
+			local level2 = getLevelFolder(plot, "Level2")
+			if level2 then checkPadsInFolder(level2:FindFirstChild("Pads")) end
+		end
+	end
 end)
+
+-- Handle dynamically added plots or pads
+TycoonFolder.ChildAdded:Connect(setupPlot)

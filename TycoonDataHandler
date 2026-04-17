@@ -331,6 +331,20 @@ end
 -- ----------------------------------------------------------------------------
 -- 🏗️ LAYOUT RESTORATION
 -- ----------------------------------------------------------------------------
+local function getLevelFolder(plot, folderName)
+	local f = plot:FindFirstChild(folderName)
+	if f then return f end
+
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if dedicatedFolder then
+		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
+		if plotStorage then
+			return plotStorage:FindFirstChild(folderName)
+		end
+	end
+	return nil
+end
+
 local function acquirePadLock(lockId)
 	if PadLocks[lockId] then return false end
 	PadLocks[lockId] = true
@@ -345,13 +359,29 @@ local function RestoreLayout(player, plot, layoutData)
 	if not layoutData or not plot then return end
 	if #layoutData > MAX_LAYOUT_SIZE then return end
 
-	local padsFolder = plot:WaitForChild("Pads", 10)
-	if not padsFolder then return end
 	local placedCarsFolder = plot:FindFirstChild("PlacedCars") or Instance.new("Folder", plot)
 	placedCarsFolder.Name = "PlacedCars"
 
 	local validPads = {}
-	for _, p in ipairs(padsFolder:GetChildren()) do validPads[p.Name] = true end
+
+	local level1 = getLevelFolder(plot, "Level1")
+	if not level1 then level1 = plot:WaitForChild("Level1", 10) end
+	if level1 then
+		local padsFolder1 = level1:FindFirstChild("Pads")
+		if padsFolder1 then
+			for _, p in ipairs(padsFolder1:GetChildren()) do validPads[p.Name] = true end
+		end
+	end
+
+	local level2 = getLevelFolder(plot, "Level2")
+	if not level2 then level2 = plot:FindFirstChild("Level2") end
+	if level2 then
+		local padsFolder2 = level2:FindFirstChild("Pads")
+		if padsFolder2 then
+			for _, p in ipairs(padsFolder2:GetChildren()) do validPads[p.Name] = true end
+		end
+	end
+
 	local processedPads = {}
 	local restoredCount = 0
 
@@ -363,7 +393,15 @@ local function RestoreLayout(player, plot, layoutData)
 		if not validPads[padName] then continue end
 		if processedPads[padName] then continue end
 
-		local padObject = padsFolder[padName]
+		local padObject = nil
+		if level1 and level1:FindFirstChild("Pads") and level1.Pads:FindFirstChild(padName) then
+			padObject = level1.Pads[padName]
+		elseif level2 and level2:FindFirstChild("Pads") and level2.Pads:FindFirstChild(padName) then
+			padObject = level2.Pads[padName]
+		end
+
+		if not padObject then continue end
+
 		local lockId = padObject:GetFullName()
 
 		if not acquirePadLock(lockId) then
@@ -716,9 +754,9 @@ local function save(player, isClosing)
 			if plot:FindFirstChild("PendingEarnings") then
 				currentPendingInTycoon = plot.PendingEarnings.Value
 			end
-			local pads = plot:FindFirstChild("Pads")
-			if pads then
-				for _, padObject in pairs(pads:GetChildren()) do
+			local function savePadsInFolder(padsFolder)
+				if not padsFolder then return end
+				for _, padObject in pairs(padsFolder:GetChildren()) do
 					local padPart = getMainPart(padObject)
 					if padPart then
 						local linked = padPart:FindFirstChild("LinkedCar")
@@ -737,6 +775,12 @@ local function save(player, isClosing)
 					end
 				end
 			end
+
+			local level1 = getLevelFolder(plot, "Level1")
+			if level1 then savePadsInFolder(level1:FindFirstChild("Pads")) end
+
+			local level2 = getLevelFolder(plot, "Level2")
+			if level2 then savePadsInFolder(level2:FindFirstChild("Pads")) end
 		end
 
 		-- [[ COMMON SHOP SYNC ]]
