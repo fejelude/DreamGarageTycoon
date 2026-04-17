@@ -67,12 +67,22 @@ local function toggleVisual(obj, isVisible, canTouch)
 	end
 end
 
-local function updatePadVisuals(plot, unlockedLevel)
+local function updatePadVisuals(plot, unlockedLevel, baseLevel)
 	unlockedLevel = tonumber(unlockedLevel) or 1
+	baseLevel = tonumber(baseLevel) or 1
 	local padsFolder = plot:FindFirstChild("Pads")
+	local level1Folder = plot:FindFirstChild("Level1")
+	local level2Folder = plot:FindFirstChild("Level2")
 	if not padsFolder then return end 
 
-	for i = 1, 14 do
+	if level1Folder then
+		toggleVisual(level1Folder, baseLevel == 1, baseLevel == 1)
+	end
+	if level2Folder then
+		toggleVisual(level2Folder, baseLevel == 2, baseLevel == 2)
+	end
+
+	for i = 1, 22 do
 		local padName = "Pad" .. i
 		local padModel = padsFolder:FindFirstChild(padName)
 
@@ -80,11 +90,16 @@ local function updatePadVisuals(plot, unlockedLevel)
 			local geometry = padModel:FindFirstChild("Geometry")
 			local buyButton = padModel:FindFirstChild("BuyButton")
 
-			if i <= unlockedLevel then
+			local canBeUnlocked = true
+			if i > 14 and baseLevel < 2 then
+				canBeUnlocked = false
+			end
+
+			if i <= unlockedLevel and canBeUnlocked then
 				-- STATE: OWNED
 				if geometry then toggleVisual(geometry, true, true) end
 				if buyButton then toggleVisual(buyButton, false, false) end
-			elseif i == unlockedLevel + 1 then
+			elseif i == unlockedLevel + 1 and canBeUnlocked then
 				-- STATE: NEXT TO BUY
 				if geometry then toggleVisual(geometry, false, false) end
 				if buyButton then toggleVisual(buyButton, true, true) end
@@ -128,7 +143,7 @@ local function setupBuyButton(plot, padModel, padNumber)
 				-- ✅ SUCCESS: Rich enough!
 				wallet.Value -= cost 
 				player:SetAttribute("HighestUnlockedPad", padNumber)
-				updatePadVisuals(plot, padNumber)
+				updatePadVisuals(plot, padNumber, tonumber(player:GetAttribute("BaseLevel")) or 1)
 				print("✅ " .. player.Name .. " Purchased Pad " .. padNumber)
 
 				-- 🔊 Play Ca-ching!
@@ -180,6 +195,103 @@ local function setupBuyButton(plot, padModel, padNumber)
 	end
 end
 
+local function setupLevel2BuyButton(plot, buyButtonModel)
+	if not buyButtonModel then return end
+
+	local buyButton = buyButtonModel:FindFirstChild("BuyButton")
+	if not buyButton then return end
+
+	if buyButton:GetAttribute("Connected") then return end
+	buyButton:SetAttribute("Connected", true)
+
+	local function attemptBuy(player)
+		if playerPurchaseDebounce[player.UserId] then return end
+		if plot.Owner.Value ~= player.Name then return end
+
+		local currentLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
+		local baseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+
+		if baseLevel >= 2 then return end
+
+		playerPurchaseDebounce[player.UserId] = true
+
+		if currentLevel < 14 then
+			local s = Instance.new("Sound")
+			s.SoundId = ERROR_SOUND_ID
+			s.Volume = 0.5
+			s.Parent = buyButton:IsA("BasePart") and buyButton or buyButton.PrimaryPart
+			s:Play()
+			Debris:AddItem(s, 2)
+			PadUnlockEvent:FireClient(player, false, "Unlock all pads first to upgrade your base!")
+
+			task.delay(1, function()
+				if playerPurchaseDebounce then
+					playerPurchaseDebounce[player.UserId] = nil
+				end
+			end)
+			return
+		end
+
+		local cost = tonumber(buyButtonModel:GetAttribute("Cost")) or 500000
+		local leaderstats = player:FindFirstChild("leaderstats")
+		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
+
+		if wallet then
+			if wallet.Value >= cost then
+				wallet.Value -= cost
+				player:SetAttribute("BaseLevel", 2)
+				updatePadVisuals(plot, currentLevel, 2)
+
+				if buyButtonModel then
+					toggleVisual(buyButtonModel, false, false)
+				end
+
+				print("✅ " .. player.Name .. " Purchased Level 2 Base")
+
+				local s = Instance.new("Sound")
+				s.SoundId = PURCHASE_SOUND_ID
+				s.Volume = PURCHASE_VOLUME
+				s.Parent = buyButton:IsA("BasePart") and buyButton or buyButton.PrimaryPart
+				s:Play()
+				Debris:AddItem(s, 2)
+
+				PadUnlockEvent:FireClient(player, true, "Level 2")
+			else
+				local s = Instance.new("Sound")
+				s.SoundId = ERROR_SOUND_ID
+				s.Volume = 0.5
+				s.Parent = buyButton:IsA("BasePart") and buyButton or buyButton.PrimaryPart
+				s:Play()
+				Debris:AddItem(s, 2)
+
+				PadUnlockEvent:FireClient(player, false, "Not enough money to upgrade your base!")
+			end
+
+			task.delay(1, function()
+				if playerPurchaseDebounce then
+					playerPurchaseDebounce[player.UserId] = nil
+				end
+			end)
+		else
+			playerPurchaseDebounce[player.UserId] = nil
+		end
+	end
+
+	local function onTouch(otherPart)
+		local character = otherPart.Parent
+		local player = Players:GetPlayerFromCharacter(character)
+		if player then attemptBuy(player) end
+	end
+
+	if buyButton:IsA("BasePart") then
+		buyButton.Touched:Connect(onTouch)
+	elseif buyButton:IsA("Model") then
+		for _, part in pairs(buyButton:GetDescendants()) do
+			if part:IsA("BasePart") then part.Touched:Connect(onTouch) end
+		end
+	end
+end
+
 -- ============================================================================
 -- 3. PLOT SETUP
 -- ============================================================================
@@ -192,12 +304,17 @@ local function setupPlot(plot)
 
 		local function onOwnerChange(newOwner)
 			if currentConnection then
-				currentConnection:Disconnect()
+				for _, conn in ipairs(currentConnection) do conn:Disconnect() end
 				currentConnection = nil
 			end
 
 			if newOwner == "" then 
-				updatePadVisuals(plot, 1) 
+				updatePadVisuals(plot, 1, 1)
+
+				local level2BuyButton = plot:FindFirstChild("Level2BuyButton")
+				if level2BuyButton then
+					toggleVisual(level2BuyButton, true, true)
+				end
 			else
 				local player = Players:FindFirstChild(newOwner)
 				local retries = 0
@@ -212,12 +329,30 @@ local function setupPlot(plot)
 
 				if player then
 					local savedLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
-					updatePadVisuals(plot, savedLevel)
+					local savedBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+					updatePadVisuals(plot, savedLevel, savedBaseLevel)
 
-					currentConnection = player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(function()
-						local newLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
-						updatePadVisuals(plot, newLevel)
-					end)
+					local level2BuyButton = plot:FindFirstChild("Level2BuyButton")
+					if level2BuyButton then
+						toggleVisual(level2BuyButton, savedBaseLevel < 2, savedBaseLevel < 2)
+					end
+
+					currentConnection = {
+						player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(function()
+							local newLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
+							local currentBase = tonumber(player:GetAttribute("BaseLevel")) or 1
+							updatePadVisuals(plot, newLevel, currentBase)
+						end),
+						player:GetAttributeChangedSignal("BaseLevel"):Connect(function()
+							local currentLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
+							local newBase = tonumber(player:GetAttribute("BaseLevel")) or 1
+							updatePadVisuals(plot, currentLevel, newBase)
+
+							if level2BuyButton then
+								toggleVisual(level2BuyButton, newBase < 2, newBase < 2)
+							end
+						end)
+					}
 				end
 			end
 		end
@@ -226,13 +361,18 @@ local function setupPlot(plot)
 
 		local pads = plot:WaitForChild("Pads", 30)
 		if pads then
-			for i = 2, 14 do 
+			for i = 2, 22 do
 				local p = pads:WaitForChild("Pad"..i, 5)
 				if p then setupBuyButton(plot, p, i) end
 			end
 		end
 
-		if ownerVal.Value ~= "" then onOwnerChange(ownerVal.Value) else updatePadVisuals(plot, 1) end
+		local level2BuyButton = plot:WaitForChild("Level2BuyButton", 10)
+		if level2BuyButton then
+			setupLevel2BuyButton(plot, level2BuyButton)
+		end
+
+		if ownerVal.Value ~= "" then onOwnerChange(ownerVal.Value) else updatePadVisuals(plot, 1, 1) end
 	end)
 end
 

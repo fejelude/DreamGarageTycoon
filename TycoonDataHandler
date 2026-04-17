@@ -656,6 +656,7 @@ local function save(player, isClosing)
 		print("💾 Saving data for " .. player.Name .. "...")
 
 		local currentUnlockedPad = player:GetAttribute("HighestUnlockedPad") or 1
+		local currentBaseLevel = player:GetAttribute("BaseLevel") or 1
 		local currentOwnedRaw = player:GetAttribute("OwnedBaseSkins") or "[]"
 		local currentOwnedSkins = HttpService:JSONDecode(currentOwnedRaw)
 		local currentEquippedSkin = player:GetAttribute("EquippedSkin") or "Default"
@@ -840,6 +841,7 @@ local function save(player, isClosing)
 					oldData.OwnedBaseSkins    = currentOwnedSkins
 					oldData.EquippedSkin      = currentEquippedSkin
 					oldData.HighestUnlockedPad = currentUnlockedPad
+					oldData.BaseLevel = currentBaseLevel
 					oldData.Rank = currentRank
 
 					oldData.LastUpdated  = os.time()
@@ -962,7 +964,7 @@ local function InitializePlayer(player)
 	if not loadSuccess then player:Kick("Data Load Error. Rejoin.") return end
 
 	data = data or {
-		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1,
+		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1, BaseLevel = 1,
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player"
@@ -978,6 +980,7 @@ local function InitializePlayer(player)
 	data.MythicalShopPurchases  = data.MythicalShopPurchases  or {}
 	data.OwnedBaseSkins         = data.OwnedBaseSkins         or { "Default" }
 	data.EquippedSkin           = data.EquippedSkin           or "Default"
+	data.BaseLevel              = data.BaseLevel              or 1
 	data.Rank                   = data.Rank                   or "Player"
 
 	cash.Value   = data.Bank       or 0
@@ -1007,12 +1010,14 @@ local function InitializePlayer(player)
 	end
 
 	player:SetAttribute("HighestUnlockedPad", data.HighestUnlockedPad or 1)
+	player:SetAttribute("BaseLevel", data.BaseLevel or 1)
 	local ownedJson = HttpService:JSONEncode(data.OwnedBaseSkins)
 	player:SetAttribute("OwnedBaseSkins", ownedJson)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
 	player:SetAttribute("Rank", data.Rank)
 
 	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(setDirty)
+	player:GetAttributeChangedSignal("BaseLevel"):Connect(setDirty)
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
 	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rank"):Connect(setDirty)
