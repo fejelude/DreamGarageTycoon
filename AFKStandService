@@ -44,6 +44,16 @@ end
 
 local tycoonsFolder = Workspace:WaitForChild("Tycoons", 10)
 
+-- How long (seconds) after notifying the client we wait before hard-anchoring.
+-- This window lets the client's animation fade-out (0.2s) finish so there is
+-- no visible snap from "running" to "frozen". Keep this >= ANIM_STOP_FADE + 0.1
+local ANCHOR_DELAY = 0.35
+
+-- Default Humanoid stats to restore on exit so the Animate LocalScript
+-- resumes naturally (it keys off WalkSpeed > 0 to play movement animations).
+local DEFAULT_WALK_SPEED = 16
+local DEFAULT_JUMP_POWER = 50
+
 local debounce = {}
 local activeConnections = {}
 
@@ -62,29 +72,35 @@ local function getPlayerPlot(player)
 end
 
 -- ============================================================================
--- 🔒 HELPER: Safely unanchor and teleport a player's HRP
--- Separated into its own function so it can be called from BOTH the Exit
--- remote handler AND the death handler, ensuring the player can never
--- remain permanently anchored regardless of how AFK mode ends.
+-- 🔒 HELPER: Unanchor, restore movement stats, and teleport
+-- Called for both the normal exit and the stuck-prevention edge case.
+-- Restoring WalkSpeed/JumpPower is what tells the client Animate LocalScript
+-- to resume animations — no extra remote needed.
 -- ============================================================================
-local function unanchorAndTeleport(player)
+local function restoreAndTeleport(player)
 	local character = player.Character
 	if not character then return end
 
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local hrp = character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
 
-	hrp.Anchored = false
+	if humanoid then
+		humanoid.WalkSpeed = DEFAULT_WALK_SPEED
+		humanoid.JumpPower = DEFAULT_JUMP_POWER
+	end
 
-	if teleportPad then
-		hrp.CFrame = teleportPad.CFrame * CFrame.new(0, 3, 0)
+	if hrp then
+		hrp.Anchored = false
+		if teleportPad then
+			hrp.CFrame = teleportPad.CFrame * CFrame.new(0, 3, 0)
+		end
 	end
 end
 
 -- ============================================================================
--- 🚪 HELPER: Full server-side AFK exit cleanup
--- Clears all state and disconnects the death watcher for a given player.
--- Does NOT teleport — callers decide whether to teleport (live exit vs death).
+-- 🗑️ HELPER: Full server-side AFK state cleanup
+-- Clears attributes and disconnects the death watcher. Does NOT teleport —
+-- callers decide that based on whether the character is still alive.
 -- ============================================================================
 local function clearAFKState(player)
 	player:SetAttribute("IsAFK", false)
@@ -110,7 +126,6 @@ standPart.Touched:Connect(function(hit)
 	local player = Players:GetPlayerFromCharacter(character)
 	if not player then return end
 
-	-- Debounce to prevent multiple fires
 	if debounce[player.UserId] then return end
 	debounce[player.UserId] = true
 
@@ -118,40 +133,53 @@ standPart.Touched:Connect(function(hit)
 		debounce[player.UserId] = nil
 	end)
 
-	-- Verify plot ownership
 	local plot = getPlayerPlot(player)
 	if not plot then return end
 
-	-- Ensure not already AFK
 	if plot:GetAttribute("IsAFK") == true then return end
 
-	-- Set State
+	-- Set state
 	plot:SetAttribute("IsAFK", true)
 	player:SetAttribute("IsAFK", true)
 
-	-- Security: Anchor player to prevent walking away with the buff
-	local hrp = character:FindFirstChild("HumanoidRootPart")
-	if hrp then
-		hrp.Anchored = true
+	-- Zero out movement now so the character decelerates cleanly on the client
+	-- before we hard-anchor. The client also fades out animation tracks at the
+	-- same moment it receives the "Enter" event below, so both sides are in sync.
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.WalkSpeed = 0
+		humanoid.JumpPower = 0
 	end
 
-	-- Disconnect any stale death watcher before creating a new one
+	-- Disconnect any stale death watcher
 	if activeConnections[player.UserId] then
 		activeConnections[player.UserId]:Disconnect()
 	end
 
-	-- Handle player death/respawn
-	-- FIX: On death we clear state but do NOT teleport (character is being
-	-- replaced). The client also handles its own cleanup on CharacterAdded
-	-- without firing "Exit", so there is no double-clear race condition.
+	-- Handle death: clear state but do NOT teleport — the old character is being
+	-- replaced and the new one spawns at the normal location automatically.
+	-- The client's own CharacterAdded handler cleans up visuals without firing
+	-- "Exit", so there is no double-clear race condition.
 	activeConnections[player.UserId] = player.CharacterAdded:Connect(function()
 		clearAFKState(player)
-		-- Note: No unanchorAndTeleport here — the old character is gone and the
-		-- new character spawns at the normal spawn location automatically.
 	end)
 
-	-- Notify Client
+	-- Notify client FIRST so it can start its animation fade-out immediately.
 	AFKEvent:FireClient(player, "Enter", plot.Name)
+
+	-- Delay the hard anchor so it lands AFTER the client's 0.2s animation
+	-- fade has finished. The player cannot meaningfully move in this window
+	-- because WalkSpeed is already 0.
+	task.delay(ANCHOR_DELAY, function()
+		-- Guard: player may have died or left during the delay
+		if player:GetAttribute("IsAFK") ~= true then return end
+		local char = player.Character
+		if not char then return end
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			hrp.Anchored = true
+		end
+	end)
 end)
 
 -- ============================================================================
@@ -160,23 +188,17 @@ end)
 AFKEvent.OnServerEvent:Connect(function(player, action)
 	if action ~= "Exit" then return end
 
-	-- FIX: Previously if IsAFK was already false (e.g. cleared by the death
-	-- handler just before the client's "Exit" fired), the server would silently
-	-- do nothing — leaving the player permanently anchored. Now we always
-	-- unanchor and teleport defensively, even if the attribute was already
-	-- cleared, so the player can never get stuck.
 	local wasAFK = player:GetAttribute("IsAFK") == true
 
 	if not wasAFK then
-		-- State was already cleared (race with death handler), but we should
-		-- still unanchor just in case the character is alive and anchored.
-		unanchorAndTeleport(player)
+		-- State was already cleared (race with death handler). Still unanchor
+		-- and restore stats defensively so the player can never get stuck.
+		restoreAndTeleport(player)
 		return
 	end
 
-	-- Normal clean exit flow
 	clearAFKState(player)
-	unanchorAndTeleport(player)
+	restoreAndTeleport(player)
 end)
 
 -- ============================================================================
@@ -185,5 +207,5 @@ end)
 Players.PlayerRemoving:Connect(function(player)
 	debounce[player.UserId] = nil
 	clearAFKState(player)
-	-- No teleport needed — player is leaving the game entirely.
+	-- No teleport — player is leaving the game entirely.
 end)
