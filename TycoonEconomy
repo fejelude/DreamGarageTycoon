@@ -208,6 +208,8 @@ task.spawn(function()
 					pendingValue.Value = pendingValue.Value + payout
 					profitAccumulator[plot] = profitAccumulator[plot] - payout
 				end
+			else
+				if profitAccumulator[plot] then profitAccumulator[plot] = nil end
 			end
 		end
 	end

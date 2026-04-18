@@ -111,10 +111,15 @@ local function PaintPlot(plot, skinName)
 			else
 				-- ✨ SKIN MODE (SILVER, GOLD, DIAMOND, RAINBOW)
 
-				-- Sort: Biggest part first (for Gold/Silver metal base)
+				-- Fix 7: PadSkinManager Color comparison floating-point fragility
+				-- Sort: Biggest part first (for Gold/Silver metal base). Add fallback comparison for equal volumes to prevent sort instability.
 				table.sort(partsToPaint, function(a, b)
 					local volA = a.Size.X * a.Size.Y * a.Size.Z
 					local volB = b.Size.X * b.Size.Y * b.Size.Z
+					-- Use an epsilon check for equality
+					if math.abs(volA - volB) < 0.001 then
+						return a.Name < b.Name
+					end
 					return volA > volB
 				end)
 

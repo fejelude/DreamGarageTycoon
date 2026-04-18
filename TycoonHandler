@@ -49,7 +49,11 @@ local function wipePlot(plot)
 
 				local place = padPart:FindFirstChild("PlacePrompt")
 				local pickup = padPart:FindFirstChild("PickupPrompt")
-				if place then place.Enabled = true end
+
+				-- Fix 4: TycoonPlotManager wipePlot enables prompts on locked pads
+				-- Wipeplot should disable prompts. PadProgressionHandler will re-enable
+				-- the appropriate ones for unlocked pads when the next player claims it.
+				if place then place.Enabled = false end
 				if pickup then pickup.Enabled = false end
 			end
 		end

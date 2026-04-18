@@ -384,11 +384,18 @@ local function RestoreLayout(player, plot, layoutData)
 		if not validPads[padName] then continue end
 		if processedPads[padName] then continue end
 
+		-- Fix 6: TycoonDataHandler Anti-wipe layout detection unreliable
+		-- It should only restore on pads that exist and aren't locked behind a baseLevel the player doesn't have.
 		local padObject = nil
 		if level1 and level1:FindFirstChild("Pads") and level1.Pads:FindFirstChild(padName) then
 			padObject = level1.Pads[padName]
 		elseif level2 and level2:FindFirstChild("Pads") and level2.Pads:FindFirstChild(padName) then
-			padObject = level2.Pads[padName]
+			local playerBaseLevel = player:GetAttribute("BaseLevel") or 1
+			if playerBaseLevel >= 2 then
+				padObject = level2.Pads[padName]
+			else
+				warn("⚠️ RestoreLayout Warning: Cannot restore '" .. toolName .. "' to '" .. padName .. "' because player lacks BaseLevel 2.")
+			end
 		end
 
 		if not padObject then continue end

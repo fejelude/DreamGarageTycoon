@@ -147,6 +147,10 @@ local function setupBuyButton(plot, padModel, padNumber)
 		local currentLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
 		if padNumber ~= (currentLevel + 1) then return end
 
+		-- Fix 2: PadProgressionHandler Pads 15-22 lack BaseLevel server check
+		local baseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+		if padNumber > 14 and baseLevel < 2 then return end
+
 		local cost = tonumber(padModel:GetAttribute("Cost")) or 500
 		local leaderstats = player:FindFirstChild("leaderstats")
 		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
@@ -202,11 +206,14 @@ local function setupBuyButton(plot, padModel, padNumber)
 		if player then attemptBuy(player) end
 	end
 
+	-- Fix 8: PadProgressionHandler Redundant Touched connections
+	-- We only need to connect ONE primary part to prevent lag/spam.
 	if buyButton:IsA("BasePart") then
 		buyButton.Touched:Connect(onTouch)
 	elseif buyButton:IsA("Model") then
-		for _, part in pairs(buyButton:GetDescendants()) do
-			if part:IsA("BasePart") then part.Touched:Connect(onTouch) end
+		local primary = buyButton.PrimaryPart or buyButton:FindFirstChildWhichIsA("BasePart")
+		if primary then
+			primary.Touched:Connect(onTouch)
 		end
 	end
 end
@@ -295,11 +302,14 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 		if player then attemptBuy(player) end
 	end
 
+	-- Fix 8: PadProgressionHandler Redundant Touched connections
+	-- We only need to connect ONE primary part to prevent lag/spam.
 	if buyButton:IsA("BasePart") then
 		buyButton.Touched:Connect(onTouch)
 	elseif buyButton:IsA("Model") then
-		for _, part in pairs(buyButton:GetDescendants()) do
-			if part:IsA("BasePart") then part.Touched:Connect(onTouch) end
+		local primary = buyButton.PrimaryPart or buyButton:FindFirstChildWhichIsA("BasePart")
+		if primary then
+			primary.Touched:Connect(onTouch)
 		end
 	end
 end
@@ -396,6 +406,15 @@ local function setupPlot(plot)
 
 		local level2BuyButton = plot:WaitForChild("Level2BuyButton", 10)
 		if level2BuyButton then
+			-- Fix 5: PadProgressionHandler Level2 buy button visible on unowned plots
+			-- The level2BuyButton should only be visible if it hasn't been bought yet AND someone owns the plot
+			if ownerVal.Value == "" then
+				toggleVisual(level2BuyButton, false, false)
+			else
+				local player = Players:FindFirstChild(ownerVal.Value)
+				local baseLvl = player and tonumber(player:GetAttribute("BaseLevel")) or 1
+				toggleVisual(level2BuyButton, baseLvl < 2, baseLvl < 2)
+			end
 			setupLevel2BuyButton(plot, level2BuyButton)
 		end
 

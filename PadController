@@ -393,11 +393,15 @@ local function setupPad(padObject)
 	-- Initial Validation
 	validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
 
+	-- Fix 3: PadController processingTracks deadlocks on error
+	-- Use a pcall wrapper so state is always released regardless of internal errors.
 	placePrompt.Triggered:Connect(function(player)
 		local userId = player.UserId
 		if processingTracks[userId] then return end
 		processingTracks[userId] = true
-		AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+		pcall(function()
+			AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+		end)
 		task.wait(CONSTANTS.RETRY_DELAY)
 		processingTracks[userId] = nil
 	end)
@@ -406,7 +410,9 @@ local function setupPad(padObject)
 		local userId = player.UserId
 		if processingTracks[userId] then return end
 		processingTracks[userId] = true
-		AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+		pcall(function()
+			AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+		end)
 		task.wait(CONSTANTS.RETRY_DELAY)
 		processingTracks[userId] = nil
 	end)
