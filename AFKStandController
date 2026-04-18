@@ -17,7 +17,6 @@ local SoundService = game:GetService("SoundService")
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 local playerGui = player:WaitForChild("PlayerGui")
-local starterGui = game:GetService("StarterGui")
 
 local AFKEvent = ReplicatedStorage:WaitForChild("AFKStandEvent", 10)
 if not AFKEvent then
@@ -48,9 +47,11 @@ end
 
 local hiddenGuis = {}
 local inAFKMode = false
+-- FIX: Always default to Custom so restoring is always safe even if enterAFKMode
+-- never ran fully. This is overwritten unconditionally inside enterAFKMode now.
 local originalCameraType = Enum.CameraType.Custom
 
--- SFX Configuration (Matching TabletVisuals)
+-- SFX Configuration
 local HOVER_SOUND_ID = "rbxassetid://6895079853"
 local CLICK_SOUND_ID = "rbxassetid://9083627113"
 local HOVER_VOLUME = 0.5
@@ -64,52 +65,31 @@ local function playSound(soundId, volume)
 	game.Debris:AddItem(sound, 1)
 end
 
--- Reset if the player dies/respawns
-player.CharacterAdded:Connect(function()
-	if inAFKMode then
-		-- Fire exit to restore UI and camera without sending the server Exit remote
-		-- because the server already handles death on its own.
-		inAFKMode = false
-
-		if generatingFrame then
-			generatingFrame.Visible = false
-		end
-
-		camera.CameraType = originalCameraType
-		camera.CameraSubject = player.Character and player.Character:WaitForChild("Humanoid", 5)
-
-		toggleOtherGuis(false)
-	end
-end)
-
 -- ============================================================================
 -- 🎨 UI ANIMATION HELPER
 -- ============================================================================
 local function playHoverTween(button, isHovering)
 	if not button then return end
-	if UserInputService.TouchEnabled then return end -- Don't dim hover on mobile
+	if UserInputService.TouchEnabled then return end
 
 	local targetColor = isHovering and Color3.new(0.7, 0.7, 0.7) or Color3.new(1, 1, 1)
-	TweenService:Create(button, TweenInfo.new(0.2), {ImageColor3 = targetColor}):Play()
+	TweenService:Create(button, TweenInfo.new(0.2), { ImageColor3 = targetColor }):Play()
 
 	if isHovering then
 		playSound(HOVER_SOUND_ID, HOVER_VOLUME)
 	end
 end
 
-if exitButton then
-	exitButton.MouseEnter:Connect(function() playHoverTween(exitButton, true) end)
-	exitButton.MouseLeave:Connect(function() playHoverTween(exitButton, false) end)
-end
-
 -- ============================================================================
--- 👁️ UI VISIBILITY HELPER (Like NPC Dialogue)
+-- 👁️ UI VISIBILITY HELPER
+-- FIX: Defined BEFORE CharacterAdded connection so it is never referenced
+-- before it exists, regardless of future script restructuring.
 -- ============================================================================
 local function toggleOtherGuis(shouldHide)
-	local playerGui = player:WaitForChild("PlayerGui")
+	local pg = player:WaitForChild("PlayerGui")
 	if shouldHide then
 		hiddenGuis = {}
-		for _, gui in ipairs(playerGui:GetChildren()) do
+		for _, gui in ipairs(pg:GetChildren()) do
 			if gui:IsA("ScreenGui") and gui.Name ~= "2XMoney" and gui.Enabled == true then
 				gui.Enabled = false
 				table.insert(hiddenGuis, gui)
@@ -117,7 +97,9 @@ local function toggleOtherGuis(shouldHide)
 		end
 	else
 		for _, gui in ipairs(hiddenGuis) do
-			if gui and gui.Parent then gui.Enabled = true end
+			if gui and gui.Parent then
+				gui.Enabled = true
+			end
 		end
 		hiddenGuis = {}
 	end
@@ -131,18 +113,25 @@ local function enterAFKMode(plotName)
 	if inAFKMode then return end
 	inAFKMode = true
 
+	-- FIX: Save originalCameraType unconditionally here, BEFORE the camPart
+	-- check. Previously this was only saved inside the `if camPart` block,
+	-- meaning exitAFKMode would always restore to the module-level default
+	-- (Custom) rather than whatever the player was actually using.
+	originalCameraType = camera.CameraType
+
 	-- 1. Find Camera Part
 	local plotCamFolder = cameraFolder and cameraFolder:FindFirstChild(plotName)
 	local camPart = plotCamFolder and plotCamFolder:FindFirstChild("CameraAimPart")
 
-	-- 2. Move Camera
+	-- 2. Move Camera (only if a valid CameraAimPart exists for this plot)
 	if camPart then
-		originalCameraType = camera.CameraType
 		camera.CameraType = Enum.CameraType.Scriptable
 
 		local tweenInfo = TweenInfo.new(1.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.InOut)
-		local camTween = TweenService:Create(camera, tweenInfo, {CFrame = camPart.CFrame})
+		local camTween = TweenService:Create(camera, tweenInfo, { CFrame = camPart.CFrame })
 		camTween:Play()
+	else
+		warn("⚠️ AFKStandController: No CameraAimPart found for plot '" .. tostring(plotName) .. "'. Camera will not move.")
 	end
 
 	-- 3. Handle UI
@@ -164,7 +153,12 @@ local function exitAFKMode()
 
 	-- 2. Restore Camera
 	camera.CameraType = originalCameraType
-	camera.CameraSubject = player.Character and player.Character:FindFirstChild("Humanoid")
+	if player.Character then
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+		if humanoid then
+			camera.CameraSubject = humanoid
+		end
+	end
 
 	-- 3. Restore UI
 	toggleOtherGuis(false)
@@ -176,9 +170,40 @@ local function exitAFKMode()
 end
 
 -- ============================================================================
+-- 💀 DEATH / RESPAWN HANDLER
+-- FIX: Placed AFTER both helper functions are defined so toggleOtherGuis
+-- is never a forward reference. Previously this block was near the top of the
+-- script while toggleOtherGuis was defined ~30 lines later.
+-- ============================================================================
+player.CharacterAdded:Connect(function(character)
+	if inAFKMode then
+		-- The server already clears AFK state on CharacterAdded, so we only
+		-- need to clean up the client side here — do NOT fire "Exit" to the
+		-- server or it may conflict with the server's own death handler.
+		inAFKMode = false
+
+		if generatingFrame then
+			generatingFrame.Visible = false
+		end
+
+		-- Restore camera to the subject on the new character
+		local humanoid = character:WaitForChild("Humanoid", 5)
+		camera.CameraType = originalCameraType
+		if humanoid then
+			camera.CameraSubject = humanoid
+		end
+
+		toggleOtherGuis(false)
+	end
+end)
+
+-- ============================================================================
 -- 🔗 CONNECTIONS
 -- ============================================================================
 if exitButton then
+	exitButton.MouseEnter:Connect(function() playHoverTween(exitButton, true) end)
+	exitButton.MouseLeave:Connect(function() playHoverTween(exitButton, false) end)
+
 	exitButton.Activated:Connect(function()
 		if not inAFKMode then return end
 		playSound(CLICK_SOUND_ID, 1)
