@@ -128,31 +128,46 @@ task.spawn(function()
 
 		for _, plot in pairs(TycoonFolder:GetChildren()) do
 			local pendingValue = plot:FindFirstChild("PendingEarnings")
-			local padsFolder = plot:FindFirstChild("Pads")
 			local ownerValue = plot:FindFirstChild("Owner") -- Needed to find the player
 
-			if pendingValue and padsFolder then
+			if pendingValue then
 				local plotTotalCPS = 0
 
-				-- 1. Calculate Base Income from Cars
-				for _, pad in pairs(padsFolder:GetChildren()) do
-					local linkedCar = getLinkedCarValue(pad)
+				-- Helper to gather all pads from Level1 and Level2
+				local function processPadsInFolder(padsFolder)
+					if not padsFolder then return end
+					for _, pad in pairs(padsFolder:GetChildren()) do
+						local linkedCar = getLinkedCarValue(pad)
 
-					if linkedCar and linkedCar.Parent then
-						-- [[ AUDIT FIX: O(1) LOOKUP ]]
-						-- Uses the pre-computed CarLookup table instead of linear search
-						local stats = CarLookup[linkedCar.Name]
+						if linkedCar and linkedCar.Parent then
+							-- [[ AUDIT FIX: O(1) LOOKUP ]]
+							local stats = CarLookup[linkedCar.Name]
 
-						if stats then
-							plotTotalCPS = plotTotalCPS + stats.CPS
-						else
-							if not pad:GetAttribute("WarnedMissing") then
-								warn("⚠️ Economy Warning: No stats found for '" .. linkedCar.Name .. "'")
-								pad:SetAttribute("WarnedMissing", true)
+							if stats then
+								plotTotalCPS = plotTotalCPS + stats.CPS
+							else
+								if not pad:GetAttribute("WarnedMissing") then
+									warn("⚠️ Economy Warning: No stats found for '" .. linkedCar.Name .. "'")
+									pad:SetAttribute("WarnedMissing", true)
+								end
 							end
 						end
 					end
 				end
+
+				-- 1. Calculate Base Income from Cars in both Levels
+				local level1 = plot:FindFirstChild("Level1")
+				if level1 then processPadsInFolder(level1:FindFirstChild("Pads")) end
+
+				local ReplicatedStorage = game:GetService("ReplicatedStorage")
+				local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+				local level2 = nil
+				if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+					level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+				end
+				if not level2 then level2 = plot:FindFirstChild("Level2") end
+
+				if level2 then processPadsInFolder(level2:FindFirstChild("Pads")) end
 
 				-- 2. Apply Multipliers (Friends + Skins)
 				local friendMultiplier = 1

@@ -68,20 +68,12 @@ local function toggleVisual(obj, isVisible, canTouch)
 end
 
 local function setLevelVisibility(plot, level1Folder, level2Folder, baseLevel)
-	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-	local plotStorage = dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name)
-
 	if baseLevel == 1 then
 		if level1Folder then toggleVisual(level1Folder, true, true) end
-
-		if level2Folder and level2Folder.Parent == plot and plotStorage then
-			level2Folder.Parent = plotStorage
-		end
+		if level2Folder then toggleVisual(level2Folder, false, false) end
 	elseif baseLevel == 2 then
 		if level1Folder then toggleVisual(level1Folder, false, false) end
-		if level2Folder and level2Folder.Parent ~= plot then
-			level2Folder.Parent = plot
-		end
+		if level2Folder then toggleVisual(level2Folder, true, true) end
 	end
 end
 

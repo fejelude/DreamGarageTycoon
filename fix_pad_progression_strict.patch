@@ -1,0 +1,36 @@
+<<<<<<< SEARCH
+local function setLevelVisibility(plot, level1Folder, level2Folder, baseLevel)
+	if baseLevel == 1 then
+		if level1Folder then toggleVisual(level1Folder, true, true) end
+
+		if level2Folder and level2Folder.Parent == plot then
+			local storageFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+			if not storageFolder then
+				storageFolder = Instance.new("Folder")
+				storageFolder.Name = "TycoonLevelStorage"
+				storageFolder.Parent = ReplicatedStorage
+			end
+			local plotStorage = storageFolder:FindFirstChild(plot.Name)
+			if not plotStorage then
+				plotStorage = Instance.new("Folder")
+				plotStorage.Name = plot.Name
+				plotStorage.Parent = storageFolder
+			end
+			level2Folder.Parent = plotStorage
+		end
+	elseif baseLevel == 2 then
+		if level1Folder then toggleVisual(level1Folder, false, false) end
+		if level2Folder and level2Folder.Parent ~= plot then level2Folder.Parent = plot end
+	end
+end
+=======
+local function setLevelVisibility(plot, level1Folder, level2Folder, baseLevel)
+	if baseLevel == 1 then
+		if level1Folder then toggleVisual(level1Folder, true, true) end
+		if level2Folder then toggleVisual(level2Folder, false, false) end
+	elseif baseLevel == 2 then
+		if level1Folder then toggleVisual(level1Folder, false, false) end
+		if level2Folder then toggleVisual(level2Folder, true, true) end
+	end
+end
+>>>>>>> REPLACE

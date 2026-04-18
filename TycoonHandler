@@ -60,67 +60,18 @@ local function wipePlot(plot)
 
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-	local plotStorage = dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name)
 	local level2 = nil
-	if plotStorage then
-		level2 = plotStorage:FindFirstChild("Level2")
+	if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+		level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
 	end
 	if not level2 then level2 = plot:FindFirstChild("Level2") end
 
 	if level2 then
 		resetPadsInFolder(level2:FindFirstChild("Pads"))
-		if level2.Parent == plot and plotStorage then
-			level2.Parent = plotStorage
-		end
 	end
 end
 
 -- 🏠 ASSIGN PLOT (ASCENDING SEQUENCE FIX)
-local function validateHierarchy()
-	local allGood = true
-	local ReplicatedStorage = game:GetService("ReplicatedStorage")
-	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-
-	if not dedicatedFolder then
-		warn("⚠️ Hierarchy Validator: 'TycoonLevelStorage' missing in ReplicatedStorage! Level 2 bases will fail to load.")
-		allGood = false
-	end
-
-	for i = 1, 6 do
-		local plotName = "Tycoon" .. i
-		local plot = TycoonFolder:FindFirstChild(plotName)
-
-		if not plot then
-			warn("⚠️ Hierarchy Validator: Missing Plot '" .. plotName .. "' in Workspace.Tycoons")
-			allGood = false
-		else
-			if not plot:FindFirstChild("Level1") then
-				warn("⚠️ Hierarchy Validator: Missing 'Level1' in " .. plotName)
-				allGood = false
-			end
-		end
-
-		if dedicatedFolder then
-			local plotStorage = dedicatedFolder:FindFirstChild(plotName)
-			if not plotStorage then
-				warn("⚠️ Hierarchy Validator: Missing '" .. plotName .. "' folder in TycoonLevelStorage")
-				allGood = false
-			else
-				if not plotStorage:FindFirstChild("Level2") then
-					warn("⚠️ Hierarchy Validator: Missing 'Level2' in TycoonLevelStorage." .. plotName)
-					allGood = false
-				end
-			end
-		end
-	end
-
-	if allGood then
-		print("✅ Hierarchy Validator: Tycoon Level structure is perfectly configured.")
-	end
-end
-
-task.spawn(validateHierarchy)
-
 local function assignPlot(player)
 	if player:GetAttribute("OccupiedPlot") then return end -- Already has one
 

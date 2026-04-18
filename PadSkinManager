@@ -62,94 +62,107 @@ local function PaintPlot(plot, skinName)
 
 	if not isDefault and not skinData then return end
 
-	local padsFolder = plot:FindFirstChild("Pads")
-	if not padsFolder then return end
-
 	print("🎨 Updating " .. plot.Name .. " to " .. (skinName or "Default"))
 
-	for _, padModel in pairs(padsFolder:GetChildren()) do
+	local function paintPadsInFolder(padsFolder)
+		if not padsFolder then return end
+		for _, padModel in pairs(padsFolder:GetChildren()) do
 
-		-- 1. GATHER PARTS
-		local partsToPaint = {}
-		if padModel:IsA("BasePart") and not IsIgnored(padModel) then
-			table.insert(partsToPaint, padModel)
-		end
-		for _, part in pairs(padModel:GetDescendants()) do
-			if part:IsA("BasePart") and not IsIgnored(part) then
-				table.insert(partsToPaint, part)
+			-- 1. GATHER PARTS
+			local partsToPaint = {}
+			if padModel:IsA("BasePart") and not IsIgnored(padModel) then
+				table.insert(partsToPaint, padModel)
 			end
-		end
+			for _, part in pairs(padModel:GetDescendants()) do
+				if part:IsA("BasePart") and not IsIgnored(part) then
+					table.insert(partsToPaint, part)
+				end
+			end
 
-		-- 2. SAVE ORIGINALS
-		for _, part in ipairs(partsToPaint) do
-			EnsureOriginalStateSaved(part)
-		end
-
-		-- 3. APPLY OR RESTORE
-		if isDefault then
-			-- 🔙 RESTORE MODE
+			-- 2. SAVE ORIGINALS
 			for _, part in ipairs(partsToPaint) do
-				-- 🛑 CLEANUP: Remove Rainbow Tag (Using CollectionService)
-				if CollectionService:HasTag(part, "RainbowEffect") then
-					CollectionService:RemoveTag(part, "RainbowEffect")
-				end
-
-				local origColor = part:GetAttribute("Skin_OrigColor")
-				local origMat = part:GetAttribute("Skin_OrigMat")
-				local origRef = part:GetAttribute("Skin_OrigRef")
-
-				if origColor and origMat then
-					part.Color = origColor
-					part.Material = Enum.Material[origMat]
-					part.Reflectance = origRef or 0
-				else
-					-- Fallback Fix
-					part.Color = DEFAULT_COLOR
-					part.Material = DEFAULT_MATERIAL
-					part.Reflectance = DEFAULT_REFLECTANCE
-				end
+				EnsureOriginalStateSaved(part)
 			end
-		else
-			-- ✨ SKIN MODE (SILVER, GOLD, DIAMOND, RAINBOW)
 
-			-- Sort: Biggest part first (for Gold/Silver metal base)
-			table.sort(partsToPaint, function(a, b)
-				local volA = a.Size.X * a.Size.Y * a.Size.Z
-				local volB = b.Size.X * b.Size.Y * b.Size.Z
-				return volA > volB 
-			end)
-
-			for i, part in ipairs(partsToPaint) do
-				-- Apply Base Color (Silver, Gold, Cyan, or White)
-				part.Color = skinData.Color 
-
-				-- 🌈 HANDLE RAINBOW (Animated)
-				if skinData.IsRainbow then
-					-- ✅ ADD TAG FOR CLIENT TO DETECT
-					if not CollectionService:HasTag(part, "RainbowEffect") then
-						CollectionService:AddTag(part, "RainbowEffect")
-					end
-
-					part.Material = Enum.Material.Neon
-					part.Reflectance = 0
-				else
-					-- 💎 HANDLE STATIC SKINS (Silver, Gold, Diamond)
+			-- 3. APPLY OR RESTORE
+			if isDefault then
+				-- 🔙 RESTORE MODE
+				for _, part in ipairs(partsToPaint) do
+					-- 🛑 CLEANUP: Remove Rainbow Tag (Using CollectionService)
 					if CollectionService:HasTag(part, "RainbowEffect") then
 						CollectionService:RemoveTag(part, "RainbowEffect")
 					end
 
-					if i == 1 then
-						-- ✅ FIX: Use the Material from Stats (Metal for Silver/Gold, Neon for Diamond)
-						part.Material = skinData.Material or Enum.Material.Metal 
-						part.Reflectance = 0.4
+					local origColor = part:GetAttribute("Skin_OrigColor")
+					local origMat = part:GetAttribute("Skin_OrigMat")
+					local origRef = part:GetAttribute("Skin_OrigRef")
+
+					if origColor and origMat then
+						part.Color = origColor
+						part.Material = Enum.Material[origMat]
+						part.Reflectance = origRef or 0
 					else
-						part.Material = Enum.Material.Neon -- Details are Neon
+						-- Fallback Fix
+						part.Color = DEFAULT_COLOR
+						part.Material = DEFAULT_MATERIAL
+						part.Reflectance = DEFAULT_REFLECTANCE
+					end
+				end
+			else
+				-- ✨ SKIN MODE (SILVER, GOLD, DIAMOND, RAINBOW)
+
+				-- Sort: Biggest part first (for Gold/Silver metal base)
+				table.sort(partsToPaint, function(a, b)
+					local volA = a.Size.X * a.Size.Y * a.Size.Z
+					local volB = b.Size.X * b.Size.Y * b.Size.Z
+					return volA > volB
+				end)
+
+				for i, part in ipairs(partsToPaint) do
+					-- Apply Base Color (Silver, Gold, Cyan, or White)
+					part.Color = skinData.Color
+
+					-- 🌈 HANDLE RAINBOW (Animated)
+					if skinData.IsRainbow then
+						-- ✅ ADD TAG FOR CLIENT TO DETECT
+						if not CollectionService:HasTag(part, "RainbowEffect") then
+							CollectionService:AddTag(part, "RainbowEffect")
+						end
+
+						part.Material = Enum.Material.Neon
 						part.Reflectance = 0
+					else
+						-- 💎 HANDLE STATIC SKINS (Silver, Gold, Diamond)
+						if CollectionService:HasTag(part, "RainbowEffect") then
+							CollectionService:RemoveTag(part, "RainbowEffect")
+						end
+
+						if i == 1 then
+							-- ✅ FIX: Use the Material from Stats (Metal for Silver/Gold, Neon for Diamond)
+							part.Material = skinData.Material or Enum.Material.Metal
+							part.Reflectance = 0.4
+						else
+							part.Material = Enum.Material.Neon -- Details are Neon
+							part.Reflectance = 0
+						end
 					end
 				end
 			end
 		end
 	end
+
+	local level1 = plot:FindFirstChild("Level1")
+	if level1 then paintPadsInFolder(level1:FindFirstChild("Pads")) end
+
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	local level2 = nil
+	if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+		level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+	end
+	if not level2 then level2 = plot:FindFirstChild("Level2") end
+
+	if level2 then paintPadsInFolder(level2:FindFirstChild("Pads")) end
 end
 
 -- 🔄 PLAYER MONITOR
