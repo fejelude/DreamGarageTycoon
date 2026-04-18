@@ -15,6 +15,7 @@ local Players = game:GetService("Players")
 local AFKEvent = ReplicatedStorage:WaitForChild("AFKStandEvent", 10)
 if not AFKEvent then
 	warn("⚠️ AFKStandService: 'AFKStandEvent' RemoteEvent not found in ReplicatedStorage! Please create it.")
+	return
 end
 
 local moneyFolder = Workspace:WaitForChild("2X-Money", 10)
@@ -23,21 +24,22 @@ if not moneyFolder then
 	return
 end
 
-local cashGenerator = nil
-local standPart = nil
-local teleportPad = nil
-
-if moneyFolder then
-	cashGenerator = moneyFolder:WaitForChild("CashGenerator", 10)
-	if cashGenerator then
-		standPart = cashGenerator:WaitForChild("CashGeneratorPart", 10)
-		teleportPad = cashGenerator:WaitForChild("Teleport", 10)
-	end
+local cashGenerator = moneyFolder:WaitForChild("CashGenerator", 10)
+if not cashGenerator then
+	warn("⚠️ AFKStandService: 'CashGenerator' not found inside '2X-Money'!")
+	return
 end
+
+local standPart = cashGenerator:WaitForChild("CashGeneratorPart", 10)
+local teleportPad = cashGenerator:WaitForChild("Teleport", 10)
 
 if not standPart then
 	warn("⚠️ AFKStandService: 'CashGeneratorPart' not found! AFK Stand will not work.")
 	return
+end
+
+if not teleportPad then
+	warn("⚠️ AFKStandService: 'Teleport' pad not found! Players will not be teleported on exit.")
 end
 
 local tycoonsFolder = Workspace:WaitForChild("Tycoons", 10)
@@ -45,8 +47,11 @@ local tycoonsFolder = Workspace:WaitForChild("Tycoons", 10)
 local debounce = {}
 local activeConnections = {}
 
--- Helper to find which plot the player owns
+-- ============================================================================
+-- 🔍 HELPER: Find which plot the player owns
+-- ============================================================================
 local function getPlayerPlot(player)
+	if not tycoonsFolder then return nil end
 	for _, plot in pairs(tycoonsFolder:GetChildren()) do
 		local ownerVal = plot:FindFirstChild("Owner")
 		if ownerVal and ownerVal.Value == player.Name then
@@ -56,7 +61,48 @@ local function getPlayerPlot(player)
 	return nil
 end
 
--- Touched Event (Enter AFK)
+-- ============================================================================
+-- 🔒 HELPER: Safely unanchor and teleport a player's HRP
+-- Separated into its own function so it can be called from BOTH the Exit
+-- remote handler AND the death handler, ensuring the player can never
+-- remain permanently anchored regardless of how AFK mode ends.
+-- ============================================================================
+local function unanchorAndTeleport(player)
+	local character = player.Character
+	if not character then return end
+
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+
+	hrp.Anchored = false
+
+	if teleportPad then
+		hrp.CFrame = teleportPad.CFrame * CFrame.new(0, 3, 0)
+	end
+end
+
+-- ============================================================================
+-- 🚪 HELPER: Full server-side AFK exit cleanup
+-- Clears all state and disconnects the death watcher for a given player.
+-- Does NOT teleport — callers decide whether to teleport (live exit vs death).
+-- ============================================================================
+local function clearAFKState(player)
+	player:SetAttribute("IsAFK", false)
+
+	local plot = getPlayerPlot(player)
+	if plot then
+		plot:SetAttribute("IsAFK", false)
+	end
+
+	if activeConnections[player.UserId] then
+		activeConnections[player.UserId]:Disconnect()
+		activeConnections[player.UserId] = nil
+	end
+end
+
+-- ============================================================================
+-- 👟 TOUCHED EVENT — Enter AFK
+-- ============================================================================
 standPart.Touched:Connect(function(hit)
 	local character = hit.Parent
 	if not character or not character:FindFirstChild("HumanoidRootPart") then return end
@@ -89,68 +135,55 @@ standPart.Touched:Connect(function(hit)
 		hrp.Anchored = true
 	end
 
-	-- Cleanup existing death connections just in case
+	-- Disconnect any stale death watcher before creating a new one
 	if activeConnections[player.UserId] then
 		activeConnections[player.UserId]:Disconnect()
 	end
 
 	-- Handle player death/respawn
+	-- FIX: On death we clear state but do NOT teleport (character is being
+	-- replaced). The client also handles its own cleanup on CharacterAdded
+	-- without firing "Exit", so there is no double-clear race condition.
 	activeConnections[player.UserId] = player.CharacterAdded:Connect(function()
-		plot:SetAttribute("IsAFK", false)
-		player:SetAttribute("IsAFK", false)
-		if activeConnections[player.UserId] then
-			activeConnections[player.UserId]:Disconnect()
-			activeConnections[player.UserId] = nil
-		end
+		clearAFKState(player)
+		-- Note: No unanchorAndTeleport here — the old character is gone and the
+		-- new character spawns at the normal spawn location automatically.
 	end)
 
 	-- Notify Client
-	if AFKEvent then
-		AFKEvent:FireClient(player, "Enter", plot.Name)
-	end
+	AFKEvent:FireClient(player, "Enter", plot.Name)
 end)
 
--- Remote Event (Exit AFK)
-if AFKEvent then
-	AFKEvent.OnServerEvent:Connect(function(player, action)
-		if action == "Exit" then
-			-- Security: Check if player is actually AFK before allowing teleport
-			if player:GetAttribute("IsAFK") ~= true then return end
+-- ============================================================================
+-- 📡 REMOTE EVENT — Exit AFK (fired by client ExitButton)
+-- ============================================================================
+AFKEvent.OnServerEvent:Connect(function(player, action)
+	if action ~= "Exit" then return end
 
-			local plot = getPlayerPlot(player)
+	-- FIX: Previously if IsAFK was already false (e.g. cleared by the death
+	-- handler just before the client's "Exit" fired), the server would silently
+	-- do nothing — leaving the player permanently anchored. Now we always
+	-- unanchor and teleport defensively, even if the attribute was already
+	-- cleared, so the player can never get stuck.
+	local wasAFK = player:GetAttribute("IsAFK") == true
 
-			if plot then
-				plot:SetAttribute("IsAFK", false)
-			end
-			player:SetAttribute("IsAFK", false)
+	if not wasAFK then
+		-- State was already cleared (race with death handler), but we should
+		-- still unanchor just in case the character is alive and anchored.
+		unanchorAndTeleport(player)
+		return
+	end
 
-			if activeConnections[player.UserId] then
-				activeConnections[player.UserId]:Disconnect()
-				activeConnections[player.UserId] = nil
-			end
+	-- Normal clean exit flow
+	clearAFKState(player)
+	unanchorAndTeleport(player)
+end)
 
-			-- Teleport safely & Unanchor
-			local character = player.Character
-			if character then
-				local hrp = character:FindFirstChild("HumanoidRootPart")
-				if hrp and teleportPad then
-					hrp.Anchored = false
-					hrp.CFrame = teleportPad.CFrame * CFrame.new(0, 3, 0)
-				end
-			end
-		end
-	end)
-end
-
+-- ============================================================================
+-- 🚪 PLAYER LEAVING — Cleanup
+-- ============================================================================
 Players.PlayerRemoving:Connect(function(player)
 	debounce[player.UserId] = nil
-	if activeConnections[player.UserId] then
-		activeConnections[player.UserId]:Disconnect()
-		activeConnections[player.UserId] = nil
-	end
-
-	local plot = getPlayerPlot(player)
-	if plot then
-		plot:SetAttribute("IsAFK", false)
-	end
+	clearAFKState(player)
+	-- No teleport needed — player is leaving the game entirely.
 end)
