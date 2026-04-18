@@ -58,25 +58,41 @@ local function setupPlot(plot)
 
 		-- 2. CRITICAL: Wait for the Visuals (Hierarchy)
 		-- Uses timeouts to handle lag/streaming without breaking
-		local garage = plot:WaitForChild(GARAGE_NAME, 60)
-		if not garage then return end 
+		local function setupLabelsForLevel(levelFolder)
+			if not levelFolder then return end
+			local garage = levelFolder:WaitForChild(GARAGE_NAME, 5)
+			if not garage then return end
 
-		local infoPart = garage:WaitForChild(INFO_PART_NAME, 20)
-		if not infoPart then return end
+			local infoPart = garage:WaitForChild(INFO_PART_NAME, 5)
+			if not infoPart then return end
 
-		local gui = infoPart:WaitForChild(GUI_NAME, 20)
-		if not gui then return end
+			local gui = infoPart:WaitForChild(GUI_NAME, 5)
+			if not gui then return end
 
-		local textLabel = gui:WaitForChild(TEXT_LABEL_NAME, 20)
-		if not textLabel then return end
+			local textLabel = gui:WaitForChild(TEXT_LABEL_NAME, 5)
+			if not textLabel then return end
 
-		-- 3. CONNECT LOGIC
-		applyText(textLabel, ownerValue.Value)
+			-- Connect logic
+			applyText(textLabel, ownerValue.Value)
 
-		ownerValue.Changed:Connect(function(newOwnerName)
-			applyText(textLabel, newOwnerName)
-		end)
-		
+			ownerValue.Changed:Connect(function(newOwnerName)
+				applyText(textLabel, newOwnerName)
+			end)
+		end
+
+		local level1 = plot:WaitForChild("Level1", 60)
+		if level1 then setupLabelsForLevel(level1) end
+
+		local ReplicatedStorage = game:GetService("ReplicatedStorage")
+		local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+		if dedicatedFolder then
+			local plotStorage = dedicatedFolder:WaitForChild(plot.Name, 10)
+			if plotStorage then
+				local level2 = plotStorage:WaitForChild("Level2", 10)
+				if level2 then setupLabelsForLevel(level2) end
+			end
+		end
+
 		print("✅ Garage Monitor Active for: " .. plot.Name)
 	end)
 end
