@@ -23,9 +23,10 @@ local BOUNCE_HEIGHT = 1.5
 -- The script will wait for #1. If it times out, it tries #2, etc.
 local TARGET_PATHS = {
 	{ "GarageParts", "Garage Parts", "OwnerIndicator" },    -- 🥇 Your new requested universal part
-	{ "NormalGarage", "Garage Parts", "OwnerIndicator" },   -- 🥈 Legacy fallback
-	{ "NormalGarage", "GarageInformation", "OwnerLabel" },  -- 🥉 Old fallback
-	{ "SpawnPoint" }                                        -- 🏅 Last resort (Always exists)
+	{ "GarageInformation", "OwnerLabel" },                  -- 🥈 Direct Child of Level fallback
+	{ "NormalGarage", "Garage Parts", "OwnerIndicator" },   -- 🥉 Legacy fallback
+	{ "NormalGarage", "GarageInformation", "OwnerLabel" },  -- 🏅 Old fallback
+	{ "SpawnPoint" }                                        -- 💥 Last resort (Always exists)
 }
 
 -- ============================================================================

@@ -61,15 +61,39 @@ local function setupPlot(plot)
 		local function setupLabelsForLevel(levelFolder)
 			if not levelFolder then return end
 
-			-- Try the new GarageParts path first, fallback to GARAGE_NAME
-			local garage = levelFolder:FindFirstChild("GarageParts") or levelFolder:WaitForChild(GARAGE_NAME, 5)
-			if not garage then return end
+			-- Helper to find the GUI cleanly without spamming errors
+			local function findGui()
+				-- 1. Try if GarageInformation is a direct child of Level1/Level2
+				local directInfo = levelFolder:FindFirstChild("GarageInformation")
+				if directInfo then
+					local gui = directInfo:FindFirstChild(GUI_NAME)
+					if gui then return gui end
+				end
 
-			-- Try the old GarageInformation path, or fallback to the new hierarchy ("Garage Parts" folder)
-			local infoPart = garage:FindFirstChild("Garage Parts") or garage:WaitForChild(INFO_PART_NAME, 5)
-			if not infoPart then return end
+				-- 2. Try the "GarageParts" nested path
+				local garageParts = levelFolder:FindFirstChild("GarageParts")
+				if garageParts then
+					local parts = garageParts:FindFirstChild("Garage Parts")
+					if parts then
+						local gui = parts:FindFirstChild(GUI_NAME)
+						if gui then return gui end
+					end
+				end
 
-			local gui = infoPart:WaitForChild(GUI_NAME, 5)
+				-- 3. Fallback to classic NormalGarage
+				local classicGarage = levelFolder:WaitForChild(GARAGE_NAME, 5)
+				if classicGarage then
+					local infoPart = classicGarage:WaitForChild(INFO_PART_NAME, 5)
+					if infoPart then
+						local gui = infoPart:WaitForChild(GUI_NAME, 5)
+						if gui then return gui end
+					end
+				end
+
+				return nil
+			end
+
+			local gui = findGui()
 			if not gui then return end
 
 			local textLabel = gui:WaitForChild(TEXT_LABEL_NAME, 5)
