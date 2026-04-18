@@ -60,10 +60,13 @@ local function setupPlot(plot)
 		-- Uses timeouts to handle lag/streaming without breaking
 		local function setupLabelsForLevel(levelFolder)
 			if not levelFolder then return end
-			local garage = levelFolder:WaitForChild(GARAGE_NAME, 5)
+
+			-- Try the new GarageParts path first, fallback to GARAGE_NAME
+			local garage = levelFolder:FindFirstChild("GarageParts") or levelFolder:WaitForChild(GARAGE_NAME, 5)
 			if not garage then return end
 
-			local infoPart = garage:WaitForChild(INFO_PART_NAME, 5)
+			-- Try the old GarageInformation path, or fallback to the new hierarchy ("Garage Parts" folder)
+			local infoPart = garage:FindFirstChild("Garage Parts") or garage:WaitForChild(INFO_PART_NAME, 5)
 			if not infoPart then return end
 
 			local gui = infoPart:WaitForChild(GUI_NAME, 5)
