@@ -258,10 +258,6 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 				player:SetAttribute("BaseLevel", 2)
 				updatePadVisuals(plot, currentLevel, 2)
 
-				if buyButtonModel then
-					toggleVisual(buyButtonModel, false, false)
-				end
-
 				print("✅ " .. player.Name .. " Purchased Level 2 Base")
 
 				local s = Instance.new("Sound")
