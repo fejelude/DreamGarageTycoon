@@ -255,7 +255,7 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 	local tool = player.Character:FindFirstChildWhichIsA("Tool")
 	if not tool then return end
 
-	-- 🛡️ SECURITY FIX: TRUST ATTRIBUTES, NOT NAMES
+	-- 🛡️ SECURITY FIX: PREVENT SPOOFING
 	-- 1. Must be issued by server
 	if not tool:GetAttribute("IssuedByServer") then return end
 
@@ -266,13 +266,19 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 		return 
 	end
 
-	-- 3. Resolve Model from ID (NOT tool.Name)
-	-- We pass the secure ID to the helper. 
+	-- 3. Validate against spoofing (Hackers can change the ToolId attribute on the client)
+	-- Since the server rigidly sets BOTH Name and ToolId when giving the tool, they must match.
+	if secureToolId ~= tool.Name then
+		warn("⚠️ Security: Player " .. player.Name .. " attempted to spoof ToolId! (" .. tool.Name .. " ~= " .. secureToolId .. ")")
+		return
+	end
+
+	-- 4. Resolve Model from ID
 	local realModelName = FindModelNameFromTool(secureToolId)
 	local realCar = realModelName and safeFindCarModel(realModelName)
 
 	if realCar then
-		local toolName = tool.Name -- Still need name to destroy the instance
+		local toolName = tool.Name
 		local removed = removeToolFromPlayer(player, toolName)
 
 		if removed then
@@ -421,6 +427,8 @@ end
 -- Initialize Existing Tycoons
 local function initPadsFolder(padsFolder)
 	if padsFolder then
+		if padsFolder:GetAttribute("PadControllerConnected") then return end
+		padsFolder:SetAttribute("PadControllerConnected", true)
 		for _, pad in pairs(padsFolder:GetChildren()) do setupPad(pad) end
 		padsFolder.ChildAdded:Connect(setupPad)
 	end
@@ -466,31 +474,20 @@ task.spawn(function()
 	while true do
 		task.wait(5) -- Runs every 5 seconds to keep states valid
 		for _, plot in pairs(TycoonFolder:GetChildren()) do
-			local ownerVal = plot:FindFirstChild("Owner")
-			local playerBaseLevel = 1
-			if ownerVal and ownerVal.Value ~= "" then
-				local player = Players:FindFirstChild(ownerVal.Value)
-				if player then
-					playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
-				end
-			end
-
-			local activeLevelFolder = nil
 			local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 
-			if playerBaseLevel == 1 then
-				activeLevelFolder = plot:FindFirstChild("Level1")
-				if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-					activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level1")
-				end
-			elseif playerBaseLevel == 2 then
-				activeLevelFolder = plot:FindFirstChild("Level2")
-				if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-					activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
-				end
+			local level1 = plot:FindFirstChild("Level1")
+			if not level1 and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+				level1 = dedicatedFolder[plot.Name]:FindFirstChild("Level1")
 			end
 
-			if activeLevelFolder then checkPadsInFolder(activeLevelFolder:FindFirstChild("Pads")) end
+			local level2 = plot:FindFirstChild("Level2")
+			if not level2 and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+				level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+			end
+
+			if level1 then checkPadsInFolder(level1:FindFirstChild("Pads")) end
+			if level2 then checkPadsInFolder(level2:FindFirstChild("Pads")) end
 		end
 	end
 end)

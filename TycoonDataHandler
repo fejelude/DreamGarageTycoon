@@ -86,6 +86,10 @@ local MAX_INVENTORY_SIZE = 500
 local MAX_LAYOUT_SIZE = 200
 local STARTER_CAR_NAME = "Delta Item"
 
+local CONSTANTS = {
+	VERTICAL_OFFSET = 5
+}
+
 -- ----------------------------------------------------------------------------
 -- 📂 ASSET REFERENCES
 -- ----------------------------------------------------------------------------
@@ -179,6 +183,8 @@ local function validateTool(tool)
 	return false
 end
 
+-- Note (Fix 12): `StarterGear` acts as a respawn mirror. `sanitizeInventory` validates it to ensure
+-- malicious tools can't persist across lives, while `save()` correctly ignores it to prevent quantity inflation.
 local function sanitizeInventory(player)
 	if not player then return end
 	local containers = { player.Backpack, player:FindFirstChild("StarterGear") }
@@ -421,7 +427,7 @@ local function RestoreLayout(player, plot, layoutData)
 						for _, p in pairs(newCar:GetDescendants()) do
 							if p:IsA("BasePart") then p.Anchored = true; p.CanCollide = true end
 						end
-						local padTop = padPart.CFrame * CFrame.new(0, (padPart.Size.Y / 2) + 5, 0)
+						local padTop = padPart.CFrame * CFrame.new(0, (padPart.Size.Y / 2) + CONSTANTS.VERTICAL_OFFSET, 0)
 						newCar:PivotTo(padTop)
 						newCar.Parent = placedCarsFolder
 

@@ -93,7 +93,7 @@ local function explodeConfetti()
 				local targetPos = randomTemplate.Position + UDim2.new(0, endX, 0, endY + math.random(50, 150))
 
 				local tweenInfo = TweenInfo.new(
-					math.random(ANIMATION_DURATION * 0.8, ANIMATION_DURATION * 1.2), 
+					math.random(ANIMATION_DURATION * 8, ANIMATION_DURATION * 12) / 10,
 					Enum.EasingStyle.Quad, 
 					Enum.EasingDirection.Out
 				)
@@ -150,8 +150,14 @@ local function playNotification(isSuccess, data)
 		end
 	else
 		padLabel.TextColor3 = COLOR_FAIL
-		local formattedMoney = tostring(data):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
-		baseText = "Insufficient Funds! You need $" .. formattedMoney .. " more."
+
+		local isNumber = tonumber(data)
+		if isNumber then
+			local formattedMoney = tostring(data):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
+			baseText = "Insufficient Funds! You need $" .. formattedMoney .. " more."
+		else
+			baseText = tostring(data)
+		end
 	end
 
 	-- ➕ 3. APPEND MULTIPLIER (If applicable)

@@ -104,18 +104,15 @@ end
 -- 💰 MAIN ECONOMY LOOP
 -- ============================================================================
 
+-- Fix 10: `getLinkedCarValue` three-tier fallback suggests inconsistent pad structure
+-- Standardized to consistently expect the `LinkedCar` value exactly on the pad model's `PrimaryPart`.
 local function getLinkedCarValue(pad)
-	local direct = pad:FindFirstChild("LinkedCar")
-	if direct then return direct.Value end
-
 	if pad:IsA("Model") and pad.PrimaryPart then
-		local prim = pad.PrimaryPart:FindFirstChild("LinkedCar")
-		if prim then return prim.Value end
-	end
-
-	for _, child in pairs(pad:GetChildren()) do
-		local val = child:FindFirstChild("LinkedCar")
-		if val then return val.Value end
+		local lnk = pad.PrimaryPart:FindFirstChild("LinkedCar")
+		if lnk then return lnk.Value end
+	else
+		-- Fallback to error cleanly if pads aren't models with primary parts.
+		warn("⚠️ Economy Error: Pad '" .. pad.Name .. "' is not a Model or has no PrimaryPart!")
 	end
 	return nil
 end

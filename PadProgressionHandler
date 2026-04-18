@@ -272,7 +272,7 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 			PadUnlockEvent:FireClient(player, false, "Unlock all pads first to upgrade your base!")
 
 			task.delay(1, function()
-				if playerPurchaseDebounce then
+				if playerPurchaseDebounce[player.UserId] then
 					playerPurchaseDebounce[player.UserId] = nil
 				end
 			end)
@@ -309,7 +309,16 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 
 									local l1Lnk = l1Primary:FindFirstChild("LinkedCar")
 									local l2Lnk = l2Primary:FindFirstChild("LinkedCar")
-									if l1Lnk and l2Lnk then l2Lnk.Value = l1Lnk.Value end
+									if l1Lnk and l2Lnk then
+										l2Lnk.Value = l1Lnk.Value
+
+										-- Fix 6: Physically snap the car to the new pad's location
+										if l1Lnk.Value and l1Lnk.Value:IsA("Model") then
+											local verticalOffset = 5 -- Use a standard offset height
+											local newCFrame = l2Primary.CFrame * CFrame.new(0, (l2Primary.Size.Y / 2) + verticalOffset, 0)
+											l1Lnk.Value:PivotTo(newCFrame)
+										end
+									end
 								end
 							end
 						end
@@ -345,7 +354,7 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 			end
 
 			task.delay(1, function()
-				if playerPurchaseDebounce then
+				if playerPurchaseDebounce[player.UserId] then
 					playerPurchaseDebounce[player.UserId] = nil
 				end
 			end)
