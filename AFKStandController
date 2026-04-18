@@ -47,8 +47,6 @@ end
 
 local hiddenGuis = {}
 local inAFKMode = false
--- FIX: Always default to Custom so restoring is always safe even if enterAFKMode
--- never ran fully. This is overwritten unconditionally inside enterAFKMode now.
 local originalCameraType = Enum.CameraType.Custom
 
 -- SFX Configuration
@@ -82,8 +80,7 @@ end
 
 -- ============================================================================
 -- 👁️ UI VISIBILITY HELPER
--- FIX: Defined BEFORE CharacterAdded connection so it is never referenced
--- before it exists, regardless of future script restructuring.
+-- Defined before CharacterAdded so it is never a forward reference.
 -- ============================================================================
 local function toggleOtherGuis(shouldHide)
 	local pg = player:WaitForChild("PlayerGui")
@@ -106,6 +103,27 @@ local function toggleOtherGuis(shouldHide)
 end
 
 -- ============================================================================
+-- 🎞️ ANIMATION HELPERS
+-- stopCharacterAnimations fades out all playing tracks immediately so the
+-- character visually comes to a full stop before the server hard-anchors the
+-- HRP (~0.3s later). The Animate LocalScript resumes on its own once the
+-- server restores WalkSpeed/JumpPower on exit — no manual restart needed.
+-- ============================================================================
+local ANIM_STOP_FADE = 0.2
+
+local function stopCharacterAnimations(character)
+	if not character then return end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if not animator then return end
+
+	for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+		track:Stop(ANIM_STOP_FADE)
+	end
+end
+
+-- ============================================================================
 -- 🎥 AFK MODE LOGIC
 -- ============================================================================
 
@@ -113,28 +131,27 @@ local function enterAFKMode(plotName)
 	if inAFKMode then return end
 	inAFKMode = true
 
-	-- FIX: Save originalCameraType unconditionally here, BEFORE the camPart
-	-- check. Previously this was only saved inside the `if camPart` block,
-	-- meaning exitAFKMode would always restore to the module-level default
-	-- (Custom) rather than whatever the player was actually using.
+	-- Save camera type unconditionally BEFORE any conditional blocks so
+	-- exitAFKMode always restores the correct mode regardless of what follows.
 	originalCameraType = camera.CameraType
 
-	-- 1. Find Camera Part
+	-- Stop all animations immediately. The server fires this event first and
+	-- only anchors the HRP after a short delay (~0.3s), so by the time the
+	-- freeze happens the character is already visually stopped — no jarring snap.
+	stopCharacterAnimations(player.Character)
+
+	-- Find Camera Part
 	local plotCamFolder = cameraFolder and cameraFolder:FindFirstChild(plotName)
 	local camPart = plotCamFolder and plotCamFolder:FindFirstChild("CameraAimPart")
 
-	-- 2. Move Camera (only if a valid CameraAimPart exists for this plot)
 	if camPart then
 		camera.CameraType = Enum.CameraType.Scriptable
-
 		local tweenInfo = TweenInfo.new(1.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.InOut)
-		local camTween = TweenService:Create(camera, tweenInfo, { CFrame = camPart.CFrame })
-		camTween:Play()
+		TweenService:Create(camera, tweenInfo, { CFrame = camPart.CFrame }):Play()
 	else
 		warn("⚠️ AFKStandController: No CameraAimPart found for plot '" .. tostring(plotName) .. "'. Camera will not move.")
 	end
 
-	-- 3. Handle UI
 	toggleOtherGuis(true)
 
 	if generatingFrame then
@@ -146,24 +163,23 @@ local function exitAFKMode()
 	if not inAFKMode then return end
 	inAFKMode = false
 
-	-- 1. Hide Frame
 	if generatingFrame then
 		generatingFrame.Visible = false
 	end
 
-	-- 2. Restore Camera
 	camera.CameraType = originalCameraType
 	if player.Character then
-		local humanoid = player.Character:FindFirstChild("Humanoid")
+		local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
 		if humanoid then
 			camera.CameraSubject = humanoid
 		end
 	end
 
-	-- 3. Restore UI
 	toggleOtherGuis(false)
 
-	-- 4. Notify Server
+	-- Notify server. Server will unanchor, teleport, and restore WalkSpeed +
+	-- JumpPower. Restoring WalkSpeed > 0 is what signals the Animate LocalScript
+	-- to resume running/idle animations — no manual animation restart needed here.
 	if AFKEvent then
 		AFKEvent:FireServer("Exit")
 	end
@@ -171,30 +187,24 @@ end
 
 -- ============================================================================
 -- 💀 DEATH / RESPAWN HANDLER
--- FIX: Placed AFTER both helper functions are defined so toggleOtherGuis
--- is never a forward reference. Previously this block was near the top of the
--- script while toggleOtherGuis was defined ~30 lines later.
+-- Placed after all helpers. Does NOT fire "Exit" to the server — the server's
+-- own CharacterAdded watcher clears state on death, avoiding a race condition.
 -- ============================================================================
 player.CharacterAdded:Connect(function(character)
-	if inAFKMode then
-		-- The server already clears AFK state on CharacterAdded, so we only
-		-- need to clean up the client side here — do NOT fire "Exit" to the
-		-- server or it may conflict with the server's own death handler.
-		inAFKMode = false
+	if not inAFKMode then return end
+	inAFKMode = false
 
-		if generatingFrame then
-			generatingFrame.Visible = false
-		end
-
-		-- Restore camera to the subject on the new character
-		local humanoid = character:WaitForChild("Humanoid", 5)
-		camera.CameraType = originalCameraType
-		if humanoid then
-			camera.CameraSubject = humanoid
-		end
-
-		toggleOtherGuis(false)
+	if generatingFrame then
+		generatingFrame.Visible = false
 	end
+
+	local humanoid = character:WaitForChild("Humanoid", 5)
+	camera.CameraType = originalCameraType
+	if humanoid then
+		camera.CameraSubject = humanoid
+	end
+
+	toggleOtherGuis(false)
 end)
 
 -- ============================================================================
