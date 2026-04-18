@@ -67,13 +67,41 @@ local function toggleVisual(obj, isVisible, canTouch)
 	end
 end
 
-local function setLevelVisibility(plot, level1Folder, level2Folder, baseLevel)
+local function getLevelModel(plot, levelName)
+	local model = plot:FindFirstChild(levelName)
+	if model then return model end
+
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if dedicatedFolder then
+		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
+		if plotStorage then
+			return plotStorage:FindFirstChild(levelName)
+		end
+	end
+	return nil
+end
+
+local function setLevelVisibility(plot, level1Model, level2Model, baseLevel)
+	local storageFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if not storageFolder then
+		storageFolder = Instance.new("Folder")
+		storageFolder.Name = "TycoonLevelStorage"
+		storageFolder.Parent = ReplicatedStorage
+	end
+
+	local plotStorage = storageFolder:FindFirstChild(plot.Name)
+	if not plotStorage then
+		plotStorage = Instance.new("Folder")
+		plotStorage.Name = plot.Name
+		plotStorage.Parent = storageFolder
+	end
+
 	if baseLevel == 1 then
-		if level1Folder then toggleVisual(level1Folder, true, true) end
-		if level2Folder then toggleVisual(level2Folder, false, false) end
+		if level1Model and level1Model.Parent ~= plot then level1Model.Parent = plot end
+		if level2Model and level2Model.Parent ~= plotStorage then level2Model.Parent = plotStorage end
 	elseif baseLevel == 2 then
-		if level1Folder then toggleVisual(level1Folder, false, false) end
-		if level2Folder then toggleVisual(level2Folder, true, true) end
+		if level1Model and level1Model.Parent ~= plotStorage then level1Model.Parent = plotStorage end
+		if level2Model and level2Model.Parent ~= plot then level2Model.Parent = plot end
 	end
 end
 
@@ -81,28 +109,24 @@ local function updatePadVisuals(plot, unlockedLevel, baseLevel)
 	unlockedLevel = tonumber(unlockedLevel) or 1
 	baseLevel = tonumber(baseLevel) or 1
 
-	local level1Folder = plot:FindFirstChild("Level1")
+	local level1Model = getLevelModel(plot, "Level1")
+	local level2Model = getLevelModel(plot, "Level2")
 
-	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-	local level2Folder = nil
-	if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-		level2Folder = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
-	end
-	if not level2Folder then level2Folder = plot:FindFirstChild("Level2") end
-
-	setLevelVisibility(plot, level1Folder, level2Folder, baseLevel)
+	setLevelVisibility(plot, level1Model, level2Model, baseLevel)
 
 	for i = 1, 22 do
 		local padName = "Pad" .. i
-		local padModel = nil
 
-		if level1Folder and level1Folder:FindFirstChild("Pads") and level1Folder.Pads:FindFirstChild(padName) then
-			padModel = level1Folder.Pads:FindFirstChild(padName)
-		elseif level2Folder and level2Folder:FindFirstChild("Pads") and level2Folder.Pads:FindFirstChild(padName) then
-			padModel = level2Folder.Pads:FindFirstChild(padName)
+		-- Gather all copies of this pad (might exist in both Level1 and Level2)
+		local padModels = {}
+		if level1Model and level1Model:FindFirstChild("Pads") and level1Model.Pads:FindFirstChild(padName) then
+			table.insert(padModels, level1Model.Pads:FindFirstChild(padName))
+		end
+		if level2Model and level2Model:FindFirstChild("Pads") and level2Model.Pads:FindFirstChild(padName) then
+			table.insert(padModels, level2Model.Pads:FindFirstChild(padName))
 		end
 
-		if padModel then
+		for _, padModel in ipairs(padModels) do
 			local geometry = padModel:FindFirstChild("Geometry")
 			local buyButton = padModel:FindFirstChild("BuyButton")
 
@@ -332,11 +356,6 @@ local function setupPlot(plot)
 
 			if newOwner == "" then 
 				updatePadVisuals(plot, 1, 1)
-
-				local level2BuyButton = plot:FindFirstChild("Level2BuyButton")
-				if level2BuyButton then
-					toggleVisual(level2BuyButton, true, true)
-				end
 			else
 				local player = Players:FindFirstChild(newOwner)
 				local retries = 0
@@ -355,9 +374,6 @@ local function setupPlot(plot)
 					updatePadVisuals(plot, savedLevel, savedBaseLevel)
 
 					local level2BuyButton = plot:FindFirstChild("Level2BuyButton")
-					if level2BuyButton then
-						toggleVisual(level2BuyButton, savedBaseLevel < 2, savedBaseLevel < 2)
-					end
 
 					currentConnection = {
 						player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(function()
@@ -369,10 +385,6 @@ local function setupPlot(plot)
 							local currentLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
 							local newBase = tonumber(player:GetAttribute("BaseLevel")) or 1
 							updatePadVisuals(plot, currentLevel, newBase)
-
-							if level2BuyButton then
-								toggleVisual(level2BuyButton, newBase < 2, newBase < 2)
-							end
 						end)
 					}
 				end
@@ -406,15 +418,6 @@ local function setupPlot(plot)
 
 		local level2BuyButton = plot:WaitForChild("Level2BuyButton", 10)
 		if level2BuyButton then
-			-- Fix 5: PadProgressionHandler Level2 buy button visible on unowned plots
-			-- The level2BuyButton should only be visible if it hasn't been bought yet AND someone owns the plot
-			if ownerVal.Value == "" then
-				toggleVisual(level2BuyButton, false, false)
-			else
-				local player = Players:FindFirstChild(ownerVal.Value)
-				local baseLvl = player and tonumber(player:GetAttribute("BaseLevel")) or 1
-				toggleVisual(level2BuyButton, baseLvl < 2, baseLvl < 2)
-			end
 			setupLevel2BuyButton(plot, level2BuyButton)
 		end
 

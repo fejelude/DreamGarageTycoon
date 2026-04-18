@@ -466,17 +466,31 @@ task.spawn(function()
 	while true do
 		task.wait(5) -- Runs every 5 seconds to keep states valid
 		for _, plot in pairs(TycoonFolder:GetChildren()) do
-			local level1 = plot:FindFirstChild("Level1")
-			if level1 then checkPadsInFolder(level1:FindFirstChild("Pads")) end
-
-			local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-			local level2 = nil
-			if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-				level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+			local ownerVal = plot:FindFirstChild("Owner")
+			local playerBaseLevel = 1
+			if ownerVal and ownerVal.Value ~= "" then
+				local player = Players:FindFirstChild(ownerVal.Value)
+				if player then
+					playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+				end
 			end
-			if not level2 then level2 = plot:FindFirstChild("Level2") end
 
-			if level2 then checkPadsInFolder(level2:FindFirstChild("Pads")) end
+			local activeLevelFolder = nil
+			local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+
+			if playerBaseLevel == 1 then
+				activeLevelFolder = plot:FindFirstChild("Level1")
+				if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+					activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level1")
+				end
+			elseif playerBaseLevel == 2 then
+				activeLevelFolder = plot:FindFirstChild("Level2")
+				if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+					activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+				end
+			end
+
+			if activeLevelFolder then checkPadsInFolder(activeLevelFolder:FindFirstChild("Pads")) end
 		end
 	end
 end)

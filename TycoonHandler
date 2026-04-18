@@ -23,6 +23,21 @@ if not SaveEvent then
 end
 
 -- 🧹 HELPER: Completely reset a plot
+local function getLevelModel(plot, levelName)
+	local model = plot:FindFirstChild(levelName)
+	if model then return model end
+
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if dedicatedFolder then
+		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
+		if plotStorage then
+			return plotStorage:FindFirstChild(levelName)
+		end
+	end
+	return nil
+end
+
 local function wipePlot(plot)
 	print("🧹 Wiping Plot: " .. plot.Name)
 	if plot:FindFirstChild("Owner") then plot.Owner.Value = "" end
@@ -50,28 +65,38 @@ local function wipePlot(plot)
 				local place = padPart:FindFirstChild("PlacePrompt")
 				local pickup = padPart:FindFirstChild("PickupPrompt")
 
-				-- Fix 4: TycoonPlotManager wipePlot enables prompts on locked pads
-				-- Wipeplot should disable prompts. PadProgressionHandler will re-enable
-				-- the appropriate ones for unlocked pads when the next player claims it.
 				if place then place.Enabled = false end
 				if pickup then pickup.Enabled = false end
 			end
 		end
 	end
 
-	local level1 = plot:FindFirstChild("Level1")
+	local level1 = getLevelModel(plot, "Level1")
 	if level1 then resetPadsInFolder(level1:FindFirstChild("Pads")) end
 
-	local ReplicatedStorage = game:GetService("ReplicatedStorage")
-	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-	local level2 = nil
-	if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-		level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
-	end
-	if not level2 then level2 = plot:FindFirstChild("Level2") end
-
+	local level2 = getLevelModel(plot, "Level2")
 	if level2 then
 		resetPadsInFolder(level2:FindFirstChild("Pads"))
+
+		-- Also ensure level 2 gets moved back to storage safely if not there
+		local ReplicatedStorage = game:GetService("ReplicatedStorage")
+		local storageFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+		if not storageFolder then
+			storageFolder = Instance.new("Folder")
+			storageFolder.Name = "TycoonLevelStorage"
+			storageFolder.Parent = ReplicatedStorage
+		end
+
+		local plotStorage = storageFolder:FindFirstChild(plot.Name)
+		if not plotStorage then
+			plotStorage = Instance.new("Folder")
+			plotStorage.Name = plot.Name
+			plotStorage.Parent = storageFolder
+		end
+
+		if level2.Parent ~= plotStorage then
+			level2.Parent = plotStorage
+		end
 	end
 end
 

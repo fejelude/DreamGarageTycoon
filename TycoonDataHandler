@@ -331,6 +331,20 @@ end
 -- ----------------------------------------------------------------------------
 -- 🏗️ LAYOUT RESTORATION
 -- ----------------------------------------------------------------------------
+local function getLevelModel(plot, levelName)
+	local model = plot:FindFirstChild(levelName)
+	if model then return model end
+
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if dedicatedFolder then
+		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
+		if plotStorage then
+			return plotStorage:FindFirstChild(levelName)
+		end
+	end
+	return nil
+end
+
 local function acquirePadLock(lockId)
 	if PadLocks[lockId] then return false end
 	PadLocks[lockId] = true
@@ -349,27 +363,19 @@ local function RestoreLayout(player, plot, layoutData)
 	placedCarsFolder.Name = "PlacedCars"
 
 	local validPads = {}
-
-	local level1 = plot:WaitForChild("Level1", 10)
-	if level1 then
-		local padsFolder1 = level1:FindFirstChild("Pads")
-		if padsFolder1 then
-			for _, p in ipairs(padsFolder1:GetChildren()) do validPads[p.Name] = true end
-		end
+	local playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+	local activeLevelFolder = nil
+	if playerBaseLevel == 1 then
+		activeLevelFolder = getLevelModel(plot, "Level1")
+		if not activeLevelFolder then activeLevelFolder = plot:WaitForChild("Level1", 10) end
+	elseif playerBaseLevel == 2 then
+		activeLevelFolder = getLevelModel(plot, "Level2")
 	end
 
-	local level2 = plot:FindFirstChild("Level2")
-	if not level2 then
-		local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-		if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-			level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
-		end
-	end
-
-	if level2 then
-		local padsFolder2 = level2:FindFirstChild("Pads")
-		if padsFolder2 then
-			for _, p in ipairs(padsFolder2:GetChildren()) do validPads[p.Name] = true end
+	if activeLevelFolder then
+		local padsFolder = activeLevelFolder:FindFirstChild("Pads")
+		if padsFolder then
+			for _, p in ipairs(padsFolder:GetChildren()) do validPads[p.Name] = true end
 		end
 	end
 
@@ -385,17 +391,10 @@ local function RestoreLayout(player, plot, layoutData)
 		if processedPads[padName] then continue end
 
 		-- Fix 6: TycoonDataHandler Anti-wipe layout detection unreliable
-		-- It should only restore on pads that exist and aren't locked behind a baseLevel the player doesn't have.
+		-- It should only restore on pads that exist in the active level folder.
 		local padObject = nil
-		if level1 and level1:FindFirstChild("Pads") and level1.Pads:FindFirstChild(padName) then
-			padObject = level1.Pads[padName]
-		elseif level2 and level2:FindFirstChild("Pads") and level2.Pads:FindFirstChild(padName) then
-			local playerBaseLevel = player:GetAttribute("BaseLevel") or 1
-			if playerBaseLevel >= 2 then
-				padObject = level2.Pads[padName]
-			else
-				warn("⚠️ RestoreLayout Warning: Cannot restore '" .. toolName .. "' to '" .. padName .. "' because player lacks BaseLevel 2.")
-			end
+		if activeLevelFolder and activeLevelFolder:FindFirstChild("Pads") and activeLevelFolder.Pads:FindFirstChild(padName) then
+			padObject = activeLevelFolder.Pads[padName]
 		end
 
 		if not padObject then continue end
@@ -774,17 +773,17 @@ local function save(player, isClosing)
 				end
 			end
 
-			local level1 = plot:FindFirstChild("Level1")
-			if level1 then savePadsInFolder(level1:FindFirstChild("Pads")) end
+			local playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+			local activeLevelFolder = nil
 
-			local level2 = plot:FindFirstChild("Level2")
-			if not level2 then
-				local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-				if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-					level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
-				end
+			if playerBaseLevel == 1 then
+				activeLevelFolder = getLevelModel(plot, "Level1")
+				if not activeLevelFolder then activeLevelFolder = plot:WaitForChild("Level1", 10) end
+			elseif playerBaseLevel == 2 then
+				activeLevelFolder = getLevelModel(plot, "Level2")
 			end
-			if level2 then savePadsInFolder(level2:FindFirstChild("Pads")) end
+
+			if activeLevelFolder then savePadsInFolder(activeLevelFolder:FindFirstChild("Pads")) end
 		end
 
 		-- [[ COMMON SHOP SYNC ]]
