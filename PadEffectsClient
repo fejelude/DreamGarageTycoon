@@ -203,13 +203,6 @@ PadUnlockEvent.OnClientEvent:Connect(function(isSuccess, data)
 		punchFOV() 
 		explodeConfetti() 
 		playNotification(true, data)
-
-		local s = Instance.new("Sound")
-		s.SoundId = "rbxassetid://14810387808" -- Standard success ca-ching
-		s.Volume = 0.6
-		s.Parent = playerGui
-		s:Play()
-		Debris:AddItem(s, 2)
 	else
 		playNotification(false, data)
 	end
