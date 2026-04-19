@@ -6,7 +6,6 @@
 
 local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
-local StarterPack = game:GetService("StarterPack")
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -274,8 +273,9 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 	local realCar = realModelName and safeFindCarModel(realModelName)
 
 	if realCar then
-		local toolName = tool.Name
-		local removed = removeToolFromPlayer(player, toolName)
+		-- Fix 8b: Close `removeToolFromPlayer` Security Gap
+		-- Use secureToolId for removal, not tool.Name (which could be spoofed to steal another item)
+		local removed = removeToolFromPlayer(player, secureToolId)
 
 		if removed then
 			local success, result = pcall(function()

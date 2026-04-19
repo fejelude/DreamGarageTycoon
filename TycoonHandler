@@ -127,6 +127,10 @@ local function assignPlot(player)
 			-- 🛑 WIPE NOW (Safe time to wipe: slot is "ours")
 			wipePlot(plot)
 
+			-- Fix 1.b: wipePlot unconditionally resets the Owner string back to "".
+			-- We must re-assert our ownership after the wipe completes!
+			ownerVal.Value = player.Name
+
 			player:SetAttribute("OccupiedPlot", plot.Name)
 
 			local function onCharacterAdded(character)
