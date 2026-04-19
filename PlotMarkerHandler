@@ -37,12 +37,19 @@ local bounceConnection = nil
 local isSearching = false -- Prevents overlapping searches
 
 -- Helper to safely find a nested part with PATIENCE
+-- Fix 12: findPartByPath Adds Up to 30s of Wait Time
+-- Optimised to non-blocking FindFirstChild for intermediate layers, and a fast 0.5s timeout for final nodes.
 local function findPartByPath(root, pathArray)
 	local current = root
-	for _, name in ipairs(pathArray) do
-		-- 🛡️ CRITICAL FIX: Use WaitForChild with a timeout (2s)
-		-- This gives the game time to load the part if it's streaming in.
-		current = current:WaitForChild(name, 2)
+	for i, name in ipairs(pathArray) do
+		if i == #pathArray then
+			-- Final node: Give it a tiny buffer in case it is actively streaming in
+			current = current:WaitForChild(name, 0.5)
+		else
+			-- Intermediate node: Check instantly
+			current = current:FindFirstChild(name)
+		end
+
 		if not current then return nil end
 	end
 	return current

@@ -120,10 +120,13 @@ local function assignPlot(player)
 
 		-- ✅ CHECK: Only claim if owner string is empty
 		if ownerVal and ownerVal.Value == "" then
-			-- 🛑 WIPE NOW (Safe time to wipe: right before new owner takes it)
+			-- Fix 1: Race Condition in assignPlot
+			-- Claim it atomically immediately before any yielding wipe logic
+			ownerVal.Value = player.Name
+
+			-- 🛑 WIPE NOW (Safe time to wipe: slot is "ours")
 			wipePlot(plot)
 
-			ownerVal.Value = player.Name
 			player:SetAttribute("OccupiedPlot", plot.Name)
 
 			local function onCharacterAdded(character)

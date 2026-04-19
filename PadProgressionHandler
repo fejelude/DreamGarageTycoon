@@ -305,7 +305,9 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 								if l1Primary and l2Primary then
 									local l1Occ = l1Primary:FindFirstChild("IsOccupied")
 									local l2Occ = l2Primary:FindFirstChild("IsOccupied")
-									if l1Occ and l2Occ then l2Occ.Value = l1Occ.Value end
+									if l1Occ and l2Occ then
+										l2Occ.Value = l1Occ.Value
+									end
 
 									local l1Lnk = l1Primary:FindFirstChild("LinkedCar")
 									local l2Lnk = l2Primary:FindFirstChild("LinkedCar")
@@ -319,6 +321,10 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 											l1Lnk.Value:PivotTo(newCFrame)
 										end
 									end
+
+									-- Fix 2: Stale Level 1 Pad States After Base Upgrade
+									if l1Occ then l1Occ.Value = false end
+									if l1Lnk then l1Lnk.Value = nil end
 								end
 							end
 						end

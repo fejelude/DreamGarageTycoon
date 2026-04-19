@@ -266,14 +266,10 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 		return 
 	end
 
-	-- 3. Validate against spoofing (Hackers can change the ToolId attribute on the client)
-	-- Since the server rigidly sets BOTH Name and ToolId when giving the tool, they must match.
-	if secureToolId ~= tool.Name then
-		warn("⚠️ Security: Player " .. player.Name .. " attempted to spoof ToolId! (" .. tool.Name .. " ~= " .. secureToolId .. ")")
-		return
-	end
-
-	-- 4. Resolve Model from ID
+	-- Fix 8: PadController Spoofing Check Circularity
+	-- Note: The check secureToolId ~= tool.Name was circular since a client can spoof both properties.
+	-- The true security layer happens here, where safeFindCarModel strictly validates the given ID
+	-- directly against the real, server-locked ServerStorage hierarchy folders.
 	local realModelName = FindModelNameFromTool(secureToolId)
 	local realCar = realModelName and safeFindCarModel(realModelName)
 
@@ -338,6 +334,12 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 	if not carToRemove then 
 		validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt) 
 		return 
+	end
+
+	-- Fix 9: Missing Ownership Validation in AttemptPickup
+	if carToRemove:GetAttribute("OwnerUserId") ~= player.UserId then
+		warn("⚠️ Security: Player " .. player.Name .. " attempted to pick up a car they do not own!")
+		return
 	end
 
 	local carName = carToRemove.Name
@@ -454,6 +456,8 @@ end
 
 -- 🔄 MAINTENANCE LOOP (Updated to check visual state constantly)
 task.spawn(function()
+	-- Fix 10: Maintenance Loop Scans All Pads Unconditionally
+	-- Optimize to only check occupied pads (this catches both active cars AND ghost locks since occ is true for both).
 	local function checkPadsInFolder(padsFolder)
 		if not padsFolder then return end
 		for _, padObject in pairs(padsFolder:GetChildren()) do
@@ -463,7 +467,7 @@ task.spawn(function()
 				local lnk = padPart:FindFirstChild("LinkedCar")
 				local pl = padPart:FindFirstChild("PlacePrompt")
 				local pk = padPart:FindFirstChild("PickupPrompt")
-				if occ and lnk and pl and pk then
+				if occ and occ.Value == true and lnk and pl and pk then
 					-- Checks progression + ghost locks
 					validatePadState(padObject, occ, lnk, pl, pk)
 				end

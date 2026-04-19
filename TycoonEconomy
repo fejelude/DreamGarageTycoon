@@ -21,6 +21,11 @@ local FriendCache = {} -- [UserId] = { [FriendId] = true }
 local CarLookup = {}
 for id, stats in pairs(CarStats.Cars) do
 	CarLookup[id] = stats -- Key Lookup
+
+	-- Fix 7: Display Name Collision in CarLookup
+	if CarLookup[stats.Name] then
+		warn("⚠️ TycoonEconomy: CarLookup collision on display name: " .. stats.Name)
+	end
 	CarLookup[stats.Name] = stats -- Name Lookup
 end
 
