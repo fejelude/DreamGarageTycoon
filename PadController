@@ -119,9 +119,12 @@ local function getMainPart(obj)
 end
 
 local function getPlotFolder(obj)
+	-- Because plots might be moved to ReplicatedStorage.TycoonLevelStorage (via PadProgressionHandler)
+	-- we must check if it's currently parented there as well!
 	local current = obj
 	while current and current.Parent do
 		if current.Parent == TycoonFolder then return current end
+		if current.Parent.Name == "TycoonLevelStorage" then return current end
 		current = current.Parent
 	end
 	return nil
@@ -467,8 +470,9 @@ task.spawn(function()
 				local lnk = padPart:FindFirstChild("LinkedCar")
 				local pl = padPart:FindFirstChild("PlacePrompt")
 				local pk = padPart:FindFirstChild("PickupPrompt")
-				if occ and occ.Value == true and lnk and pl and pk then
-					-- Checks progression + ghost locks
+				if occ and lnk and pl and pk then
+					-- Fix 10 Correction: We MUST validate ALL pads (even empty ones)
+					-- so their PlacePrompts get enabled when a player claims a plot/unlocks a pad!
 					validatePadState(padObject, occ, lnk, pl, pk)
 				end
 			end
