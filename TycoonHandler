@@ -23,6 +23,21 @@ if not SaveEvent then
 end
 
 -- 🧹 HELPER: Completely reset a plot
+local function getLevelModel(plot, levelName)
+	local model = plot:FindFirstChild(levelName)
+	if model then return model end
+
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if dedicatedFolder then
+		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
+		if plotStorage then
+			return plotStorage:FindFirstChild(levelName)
+		end
+	end
+	return nil
+end
+
 local function wipePlot(plot)
 	print("🧹 Wiping Plot: " .. plot.Name)
 	if plot:FindFirstChild("Owner") then plot.Owner.Value = "" end
@@ -37,8 +52,9 @@ local function wipePlot(plot)
 	if plot:FindFirstChild("PlacedCars") then plot.PlacedCars:ClearAllChildren() end
 
 	-- Reset Pads
-	if plot:FindFirstChild("Pads") then
-		for _, padObj in pairs(plot.Pads:GetChildren()) do
+	local function resetPadsInFolder(padsFolder)
+		if not padsFolder then return end
+		for _, padObj in pairs(padsFolder:GetChildren()) do
 			local padPart = padObj:IsA("Model") and (padObj.PrimaryPart or padObj:FindFirstChildWhichIsA("BasePart")) or padObj
 			if padPart then
 				local occupied = padPart:FindFirstChild("IsOccupied")
@@ -48,9 +64,38 @@ local function wipePlot(plot)
 
 				local place = padPart:FindFirstChild("PlacePrompt")
 				local pickup = padPart:FindFirstChild("PickupPrompt")
-				if place then place.Enabled = true end
+
+				if place then place.Enabled = false end
 				if pickup then pickup.Enabled = false end
 			end
+		end
+	end
+
+	local level1 = getLevelModel(plot, "Level1")
+	if level1 then resetPadsInFolder(level1:FindFirstChild("Pads")) end
+
+	local level2 = getLevelModel(plot, "Level2")
+	if level2 then
+		resetPadsInFolder(level2:FindFirstChild("Pads"))
+
+		-- Also ensure level 2 gets moved back to storage safely if not there
+		local ReplicatedStorage = game:GetService("ReplicatedStorage")
+		local storageFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+		if not storageFolder then
+			storageFolder = Instance.new("Folder")
+			storageFolder.Name = "TycoonLevelStorage"
+			storageFolder.Parent = ReplicatedStorage
+		end
+
+		local plotStorage = storageFolder:FindFirstChild(plot.Name)
+		if not plotStorage then
+			plotStorage = Instance.new("Folder")
+			plotStorage.Name = plot.Name
+			plotStorage.Parent = storageFolder
+		end
+
+		if level2.Parent ~= plotStorage then
+			level2.Parent = plotStorage
 		end
 	end
 end
@@ -75,10 +120,17 @@ local function assignPlot(player)
 
 		-- ✅ CHECK: Only claim if owner string is empty
 		if ownerVal and ownerVal.Value == "" then
-			-- 🛑 WIPE NOW (Safe time to wipe: right before new owner takes it)
+			-- Fix 1: Race Condition in assignPlot
+			-- Claim it atomically immediately before any yielding wipe logic
+			ownerVal.Value = player.Name
+
+			-- 🛑 WIPE NOW (Safe time to wipe: slot is "ours")
 			wipePlot(plot)
 
+			-- Fix 1.b: wipePlot unconditionally resets the Owner string back to "".
+			-- We must re-assert our ownership after the wipe completes!
 			ownerVal.Value = player.Name
+
 			player:SetAttribute("OccupiedPlot", plot.Name)
 
 			local function onCharacterAdded(character)

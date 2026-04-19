@@ -68,8 +68,10 @@ local function explodeConfetti()
 		return
 	end
 
-	for i = 1, CONFETTI_COUNT do
-		task.spawn(function()
+	-- Fix 11: 99 Simultaneous task.spawn Calls for Confetti
+	-- Create particles inline within a single threaded loop and batch yield to preserve framerates.
+	task.spawn(function()
+		for i = 1, CONFETTI_COUNT do
 			local randomTemplate = templates[math.random(1, #templates)]
 
 			if randomTemplate:IsA("ImageLabel") then
@@ -93,7 +95,7 @@ local function explodeConfetti()
 				local targetPos = randomTemplate.Position + UDim2.new(0, endX, 0, endY + math.random(50, 150))
 
 				local tweenInfo = TweenInfo.new(
-					math.random(ANIMATION_DURATION * 0.8, ANIMATION_DURATION * 1.2), 
+					math.random(ANIMATION_DURATION * 8, ANIMATION_DURATION * 12) / 10,
 					Enum.EasingStyle.Quad, 
 					Enum.EasingDirection.Out
 				)
@@ -112,8 +114,10 @@ local function explodeConfetti()
 					clone:Destroy()
 				end)
 			end
-		end)
-	end
+
+			if i % 10 == 0 then task.wait() end
+		end
+	end)
 end
 
 local function playNotification(isSuccess, data)
@@ -150,8 +154,14 @@ local function playNotification(isSuccess, data)
 		end
 	else
 		padLabel.TextColor3 = COLOR_FAIL
-		local formattedMoney = tostring(data):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
-		baseText = "Insufficient Funds! You need $" .. formattedMoney .. " more."
+
+		local isNumber = tonumber(data)
+		if isNumber then
+			local formattedMoney = tostring(data):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
+			baseText = "Insufficient Funds! You need $" .. formattedMoney .. " more."
+		else
+			baseText = tostring(data)
+		end
 	end
 
 	-- ➕ 3. APPEND MULTIPLIER (If applicable)
@@ -178,7 +188,9 @@ local function playNotification(isSuccess, data)
 end
 
 local function punchFOV()
-	local originalFOV = 70 
+	-- Fix 4: Hardcoded FOV in punchFOV
+	-- Read the live setting so custom FOVs aren't snapped to 70
+	local originalFOV = camera.FieldOfView
 	local tPunch = TweenService:Create(camera, TweenInfo.new(FOV_TIME_IN, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
 		FieldOfView = originalFOV + FOV_PUNCH_AMOUNT
 	})
@@ -197,13 +209,6 @@ PadUnlockEvent.OnClientEvent:Connect(function(isSuccess, data)
 		punchFOV() 
 		explodeConfetti() 
 		playNotification(true, data)
-
-		local s = Instance.new("Sound")
-		s.SoundId = "rbxassetid://6042054006"
-		s.Volume = 0.6
-		s.Parent = playerGui
-		s:Play()
-		Debris:AddItem(s, 2)
 	else
 		playNotification(false, data)
 	end

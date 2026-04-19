@@ -58,25 +58,68 @@ local function setupPlot(plot)
 
 		-- 2. CRITICAL: Wait for the Visuals (Hierarchy)
 		-- Uses timeouts to handle lag/streaming without breaking
-		local garage = plot:WaitForChild(GARAGE_NAME, 60)
-		if not garage then return end 
+		local function setupLabelsForLevel(levelFolder)
+			if not levelFolder then return end
 
-		local infoPart = garage:WaitForChild(INFO_PART_NAME, 20)
-		if not infoPart then return end
+			-- Helper to find the GUI cleanly without spamming errors
+			local function findGui()
+				-- 1. Try if GarageInformation is a direct child of Level1/Level2
+				local directInfo = levelFolder:FindFirstChild("GarageInformation")
+				if directInfo then
+					local gui = directInfo:FindFirstChild(GUI_NAME)
+					if gui then return gui end
+				end
 
-		local gui = infoPart:WaitForChild(GUI_NAME, 20)
-		if not gui then return end
+				-- 2. Try the "GarageParts" nested path
+				local garageParts = levelFolder:FindFirstChild("GarageParts")
+				if garageParts then
+					local parts = garageParts:FindFirstChild("Garage Parts")
+					if parts then
+						local gui = parts:FindFirstChild(GUI_NAME)
+						if gui then return gui end
+					end
+				end
 
-		local textLabel = gui:WaitForChild(TEXT_LABEL_NAME, 20)
-		if not textLabel then return end
+				-- 3. Fallback to classic NormalGarage
+				local classicGarage = levelFolder:WaitForChild(GARAGE_NAME, 5)
+				if classicGarage then
+					local infoPart = classicGarage:WaitForChild(INFO_PART_NAME, 5)
+					if infoPart then
+						local gui = infoPart:WaitForChild(GUI_NAME, 5)
+						if gui then return gui end
+					end
+				end
 
-		-- 3. CONNECT LOGIC
-		applyText(textLabel, ownerValue.Value)
+				return nil
+			end
 
-		ownerValue.Changed:Connect(function(newOwnerName)
-			applyText(textLabel, newOwnerName)
-		end)
-		
+			local gui = findGui()
+			if not gui then return end
+
+			local textLabel = gui:WaitForChild(TEXT_LABEL_NAME, 5)
+			if not textLabel then return end
+
+			-- Connect logic
+			applyText(textLabel, ownerValue.Value)
+
+			ownerValue.Changed:Connect(function(newOwnerName)
+				applyText(textLabel, newOwnerName)
+			end)
+		end
+
+		local level1 = plot:WaitForChild("Level1", 60)
+		if level1 then setupLabelsForLevel(level1) end
+
+		local ReplicatedStorage = game:GetService("ReplicatedStorage")
+		local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+		if dedicatedFolder then
+			local plotStorage = dedicatedFolder:WaitForChild(plot.Name, 10)
+			if plotStorage then
+				local level2 = plotStorage:WaitForChild("Level2", 10)
+				if level2 then setupLabelsForLevel(level2) end
+			end
+		end
+
 		print("✅ Garage Monitor Active for: " .. plot.Name)
 	end)
 end

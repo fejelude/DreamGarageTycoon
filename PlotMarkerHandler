@@ -22,9 +22,11 @@ local BOUNCE_HEIGHT = 1.5
 -- 🎯 TARGET PATHS (Priority List)
 -- The script will wait for #1. If it times out, it tries #2, etc.
 local TARGET_PATHS = {
-	{ "NormalGarage", "Garage Parts", "OwnerIndicator" },   -- 🥇 Your requested universal part
-	{ "NormalGarage", "GarageInformation", "OwnerLabel" },  -- 🥈 Old fallback
-	{ "SpawnPoint" }                                        -- 🥉 Last resort (Always exists)
+	{ "GarageParts", "Garage Parts", "OwnerIndicator" },    -- 🥇 Your new requested universal part
+	{ "GarageInformation", "OwnerLabel" },                  -- 🥈 Direct Child of Level fallback
+	{ "NormalGarage", "Garage Parts", "OwnerIndicator" },   -- 🥉 Legacy fallback
+	{ "NormalGarage", "GarageInformation", "OwnerLabel" },  -- 🏅 Old fallback
+	{ "SpawnPoint" }                                        -- 💥 Last resort (Always exists)
 }
 
 -- ============================================================================
@@ -35,12 +37,19 @@ local bounceConnection = nil
 local isSearching = false -- Prevents overlapping searches
 
 -- Helper to safely find a nested part with PATIENCE
+-- Fix 12: findPartByPath Adds Up to 30s of Wait Time
+-- Optimised to non-blocking FindFirstChild for intermediate layers, and a fast 0.5s timeout for final nodes.
 local function findPartByPath(root, pathArray)
 	local current = root
-	for _, name in ipairs(pathArray) do
-		-- 🛡️ CRITICAL FIX: Use WaitForChild with a timeout (2s)
-		-- This gives the game time to load the part if it's streaming in.
-		current = current:WaitForChild(name, 2)
+	for i, name in ipairs(pathArray) do
+		if i == #pathArray then
+			-- Final node: Give it a tiny buffer in case it is actively streaming in
+			current = current:WaitForChild(name, 0.5)
+		else
+			-- Intermediate node: Check instantly
+			current = current:FindFirstChild(name)
+		end
+
 		if not current then return nil end
 	end
 	return current
@@ -77,11 +86,35 @@ local function updateMarker()
 	-- 2. Find Best Target Part (With Waiting)
 	local attachPart = nil
 
-	for i, path in ipairs(TARGET_PATHS) do
-		attachPart = findPartByPath(plot, path)
-		if attachPart then 
-			print("📍 PlotMarker: Found target via Path #" .. i .. " (" .. attachPart.Name .. ")")
-			break 
+	-- Helper to search within a specific level folder
+	local function searchInLevel(levelFolder)
+		if not levelFolder then return nil end
+		for i, path in ipairs(TARGET_PATHS) do
+			local found = findPartByPath(levelFolder, path)
+			if found then
+				print("📍 PlotMarker: Found target via Path #" .. i .. " in " .. levelFolder.Name)
+				return found
+			end
+		end
+		return nil
+	end
+
+	-- Try Level 1
+	attachPart = searchInLevel(plot:FindFirstChild("Level1"))
+
+	-- Try Level 2 (if active)
+	if not attachPart then
+		attachPart = searchInLevel(plot:FindFirstChild("Level2"))
+	end
+
+	-- Try direct plot children (Fallback for SpawnPoint)
+	if not attachPart then
+		for i, path in ipairs(TARGET_PATHS) do
+			attachPart = findPartByPath(plot, path)
+			if attachPart then
+				print("📍 PlotMarker: Found target via Fallback Path #" .. i .. " in " .. plot.Name)
+				break
+			end
 		end
 	end
 

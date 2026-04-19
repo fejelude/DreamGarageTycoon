@@ -21,6 +21,11 @@ local FriendCache = {} -- [UserId] = { [FriendId] = true }
 local CarLookup = {}
 for id, stats in pairs(CarStats.Cars) do
 	CarLookup[id] = stats -- Key Lookup
+
+	-- Fix 7: Display Name Collision in CarLookup
+	if CarLookup[stats.Name] then
+		warn("⚠️ TycoonEconomy: CarLookup collision on display name: " .. stats.Name)
+	end
 	CarLookup[stats.Name] = stats -- Name Lookup
 end
 
@@ -128,31 +133,58 @@ task.spawn(function()
 
 		for _, plot in pairs(TycoonFolder:GetChildren()) do
 			local pendingValue = plot:FindFirstChild("PendingEarnings")
-			local padsFolder = plot:FindFirstChild("Pads")
 			local ownerValue = plot:FindFirstChild("Owner") -- Needed to find the player
 
-			if pendingValue and padsFolder then
+			if pendingValue then
 				local plotTotalCPS = 0
 
-				-- 1. Calculate Base Income from Cars
-				for _, pad in pairs(padsFolder:GetChildren()) do
-					local linkedCar = getLinkedCarValue(pad)
+				-- Helper to gather all pads from Level1 and Level2
+				local function processPadsInFolder(padsFolder)
+					if not padsFolder then return end
+					for _, pad in pairs(padsFolder:GetChildren()) do
+						local linkedCar = getLinkedCarValue(pad)
 
-					if linkedCar and linkedCar.Parent then
-						-- [[ AUDIT FIX: O(1) LOOKUP ]]
-						-- Uses the pre-computed CarLookup table instead of linear search
-						local stats = CarLookup[linkedCar.Name]
+						if linkedCar and linkedCar.Parent then
+							-- [[ AUDIT FIX: O(1) LOOKUP ]]
+							local stats = CarLookup[linkedCar.Name]
 
-						if stats then
-							plotTotalCPS = plotTotalCPS + stats.CPS
-						else
-							if not pad:GetAttribute("WarnedMissing") then
-								warn("⚠️ Economy Warning: No stats found for '" .. linkedCar.Name .. "'")
-								pad:SetAttribute("WarnedMissing", true)
+							if stats then
+								plotTotalCPS = plotTotalCPS + stats.CPS
+							else
+								if not pad:GetAttribute("WarnedMissing") then
+									warn("⚠️ Economy Warning: No stats found for '" .. linkedCar.Name .. "'")
+									pad:SetAttribute("WarnedMissing", true)
+								end
 							end
 						end
 					end
 				end
+
+				-- 1. Calculate Base Income from ACTIVE Level Only
+				local playerBaseLevel = 1
+				if ownerValue and ownerValue.Value ~= "" then
+					local player = Players:FindFirstChild(ownerValue.Value)
+					if player then
+						playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+					end
+				end
+
+				local activeLevelFolder = nil
+				local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+
+				if playerBaseLevel == 1 then
+					activeLevelFolder = plot:FindFirstChild("Level1")
+					if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level1")
+					end
+				elseif playerBaseLevel == 2 then
+					activeLevelFolder = plot:FindFirstChild("Level2")
+					if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+					end
+				end
+
+				if activeLevelFolder then processPadsInFolder(activeLevelFolder:FindFirstChild("Pads")) end
 
 				-- 2. Apply Multipliers (Friends + Skins)
 				local friendMultiplier = 1
@@ -193,6 +225,8 @@ task.spawn(function()
 					pendingValue.Value = pendingValue.Value + payout
 					profitAccumulator[plot] = profitAccumulator[plot] - payout
 				end
+			else
+				if profitAccumulator[plot] then profitAccumulator[plot] = nil end
 			end
 		end
 	end

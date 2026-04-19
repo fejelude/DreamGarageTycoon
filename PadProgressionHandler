@@ -67,24 +67,79 @@ local function toggleVisual(obj, isVisible, canTouch)
 	end
 end
 
-local function updatePadVisuals(plot, unlockedLevel)
+local function getLevelModel(plot, levelName)
+	local model = plot:FindFirstChild(levelName)
+	if model then return model end
+
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if dedicatedFolder then
+		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
+		if plotStorage then
+			return plotStorage:FindFirstChild(levelName)
+		end
+	end
+	return nil
+end
+
+local function setLevelVisibility(plot, level1Model, level2Model, baseLevel)
+	local storageFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if not storageFolder then
+		storageFolder = Instance.new("Folder")
+		storageFolder.Name = "TycoonLevelStorage"
+		storageFolder.Parent = ReplicatedStorage
+	end
+
+	local plotStorage = storageFolder:FindFirstChild(plot.Name)
+	if not plotStorage then
+		plotStorage = Instance.new("Folder")
+		plotStorage.Name = plot.Name
+		plotStorage.Parent = storageFolder
+	end
+
+	if baseLevel == 1 then
+		if level1Model and level1Model.Parent ~= plot then level1Model.Parent = plot end
+		if level2Model and level2Model.Parent ~= plotStorage then level2Model.Parent = plotStorage end
+	elseif baseLevel == 2 then
+		if level1Model and level1Model.Parent ~= plotStorage then level1Model.Parent = plotStorage end
+		if level2Model and level2Model.Parent ~= plot then level2Model.Parent = plot end
+	end
+end
+
+local function updatePadVisuals(plot, unlockedLevel, baseLevel)
 	unlockedLevel = tonumber(unlockedLevel) or 1
-	local padsFolder = plot:FindFirstChild("Pads")
-	if not padsFolder then return end 
+	baseLevel = tonumber(baseLevel) or 1
 
-	for i = 1, 14 do
+	local level1Model = getLevelModel(plot, "Level1")
+	local level2Model = getLevelModel(plot, "Level2")
+
+	setLevelVisibility(plot, level1Model, level2Model, baseLevel)
+
+	for i = 1, 22 do
 		local padName = "Pad" .. i
-		local padModel = padsFolder:FindFirstChild(padName)
 
-		if padModel then
+		-- Gather all copies of this pad (might exist in both Level1 and Level2)
+		local padModels = {}
+		if level1Model and level1Model:FindFirstChild("Pads") and level1Model.Pads:FindFirstChild(padName) then
+			table.insert(padModels, level1Model.Pads:FindFirstChild(padName))
+		end
+		if level2Model and level2Model:FindFirstChild("Pads") and level2Model.Pads:FindFirstChild(padName) then
+			table.insert(padModels, level2Model.Pads:FindFirstChild(padName))
+		end
+
+		for _, padModel in ipairs(padModels) do
 			local geometry = padModel:FindFirstChild("Geometry")
 			local buyButton = padModel:FindFirstChild("BuyButton")
 
-			if i <= unlockedLevel then
+			local canBeUnlocked = true
+			if i > 14 and baseLevel < 2 then
+				canBeUnlocked = false
+			end
+
+			if i <= unlockedLevel and canBeUnlocked then
 				-- STATE: OWNED
 				if geometry then toggleVisual(geometry, true, true) end
 				if buyButton then toggleVisual(buyButton, false, false) end
-			elseif i == unlockedLevel + 1 then
+			elseif i == unlockedLevel + 1 and canBeUnlocked then
 				-- STATE: NEXT TO BUY
 				if geometry then toggleVisual(geometry, false, false) end
 				if buyButton then toggleVisual(buyButton, true, true) end
@@ -116,6 +171,10 @@ local function setupBuyButton(plot, padModel, padNumber)
 		local currentLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
 		if padNumber ~= (currentLevel + 1) then return end
 
+		-- Fix 2: PadProgressionHandler Pads 15-22 lack BaseLevel server check
+		local baseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+		if padNumber > 14 and baseLevel < 2 then return end
+
 		local cost = tonumber(padModel:GetAttribute("Cost")) or 500
 		local leaderstats = player:FindFirstChild("leaderstats")
 		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
@@ -128,7 +187,7 @@ local function setupBuyButton(plot, padModel, padNumber)
 				-- ✅ SUCCESS: Rich enough!
 				wallet.Value -= cost 
 				player:SetAttribute("HighestUnlockedPad", padNumber)
-				updatePadVisuals(plot, padNumber)
+				updatePadVisuals(plot, padNumber, tonumber(player:GetAttribute("BaseLevel")) or 1)
 				print("✅ " .. player.Name .. " Purchased Pad " .. padNumber)
 
 				-- 🔊 Play Ca-ching!
@@ -171,11 +230,159 @@ local function setupBuyButton(plot, padModel, padNumber)
 		if player then attemptBuy(player) end
 	end
 
+	-- Fix 8: PadProgressionHandler Redundant Touched connections
+	-- We only need to connect ONE primary part to prevent lag/spam.
 	if buyButton:IsA("BasePart") then
 		buyButton.Touched:Connect(onTouch)
 	elseif buyButton:IsA("Model") then
-		for _, part in pairs(buyButton:GetDescendants()) do
-			if part:IsA("BasePart") then part.Touched:Connect(onTouch) end
+		local primary = buyButton.PrimaryPart or buyButton:FindFirstChildWhichIsA("BasePart")
+		if primary then
+			primary.Touched:Connect(onTouch)
+		end
+	end
+end
+
+local function setupLevel2BuyButton(plot, buyButtonModel)
+	if not buyButtonModel then return end
+
+	local buyButton = buyButtonModel:FindFirstChild("BuyButton")
+	if not buyButton then return end
+
+	if buyButton:GetAttribute("Connected") then return end
+	buyButton:SetAttribute("Connected", true)
+
+	local function attemptBuy(player)
+		if playerPurchaseDebounce[player.UserId] then return end
+		if plot.Owner.Value ~= player.Name then return end
+
+		local currentLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
+		local baseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+
+		if baseLevel >= 2 then return end
+
+		playerPurchaseDebounce[player.UserId] = true
+
+		if currentLevel < 14 then
+			local s = Instance.new("Sound")
+			s.SoundId = ERROR_SOUND_ID
+			s.Volume = 0.5
+			s.Parent = buyButton:IsA("BasePart") and buyButton or buyButton.PrimaryPart
+			s:Play()
+			Debris:AddItem(s, 2)
+			PadUnlockEvent:FireClient(player, false, "Unlock all pads first to upgrade your base!")
+
+			task.delay(1, function()
+				if playerPurchaseDebounce[player.UserId] then
+					playerPurchaseDebounce[player.UserId] = nil
+				end
+			end)
+			return
+		end
+
+		local cost = tonumber(buyButtonModel:GetAttribute("Cost")) or 500000
+		local leaderstats = player:FindFirstChild("leaderstats")
+		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
+
+		if wallet then
+			if wallet.Value >= cost then
+				wallet.Value -= cost
+
+				-- MIGRATE CAR STATES FROM LEVEL 1 TO LEVEL 2 PADS
+				local level1 = getLevelModel(plot, "Level1")
+				local level2 = getLevelModel(plot, "Level2")
+				if level1 and level2 then
+					local l1Pads = level1:FindFirstChild("Pads")
+					local l2Pads = level2:FindFirstChild("Pads")
+					if l1Pads and l2Pads then
+						for _, l1PadObj in pairs(l1Pads:GetChildren()) do
+							local padNum = l1PadObj.Name:match("Pad(%d+)")
+							local l2PadObj = l2Pads:FindFirstChild("Pad" .. tostring(padNum))
+
+							if l2PadObj then
+								local l1Primary = l1PadObj:IsA("Model") and (l1PadObj.PrimaryPart or l1PadObj:FindFirstChildWhichIsA("BasePart")) or l1PadObj
+								local l2Primary = l2PadObj:IsA("Model") and (l2PadObj.PrimaryPart or l2PadObj:FindFirstChildWhichIsA("BasePart")) or l2PadObj
+
+								if l1Primary and l2Primary then
+									local l1Occ = l1Primary:FindFirstChild("IsOccupied")
+									local l2Occ = l2Primary:FindFirstChild("IsOccupied")
+									if l1Occ and l2Occ then
+										l2Occ.Value = l1Occ.Value
+									end
+
+									local l1Lnk = l1Primary:FindFirstChild("LinkedCar")
+									local l2Lnk = l2Primary:FindFirstChild("LinkedCar")
+									if l1Lnk and l2Lnk then
+										l2Lnk.Value = l1Lnk.Value
+
+										-- Fix 6: Physically snap the car to the new pad's location
+										if l1Lnk.Value and l1Lnk.Value:IsA("Model") then
+											local verticalOffset = 5 -- Use a standard offset height
+											local newCFrame = l2Primary.CFrame * CFrame.new(0, (l2Primary.Size.Y / 2) + verticalOffset, 0)
+											l1Lnk.Value:PivotTo(newCFrame)
+										end
+									end
+
+									-- Fix 2: Stale Level 1 Pad States After Base Upgrade
+									if l1Occ then l1Occ.Value = false end
+									if l1Lnk then l1Lnk.Value = nil end
+								end
+							end
+						end
+					end
+				end
+
+				player:SetAttribute("BaseLevel", 2)
+				updatePadVisuals(plot, currentLevel, 2)
+
+				if buyButtonModel then
+					toggleVisual(buyButtonModel, false, false)
+				end
+
+				print("✅ " .. player.Name .. " Purchased Level 2 Base")
+
+				local s = Instance.new("Sound")
+				s.SoundId = PURCHASE_SOUND_ID
+				s.Volume = PURCHASE_VOLUME
+				s.Parent = buyButton:IsA("BasePart") and buyButton or buyButton.PrimaryPart
+				s:Play()
+				Debris:AddItem(s, 2)
+
+				PadUnlockEvent:FireClient(player, true, "Level 2")
+			else
+				local s = Instance.new("Sound")
+				s.SoundId = ERROR_SOUND_ID
+				s.Volume = 0.5
+				s.Parent = buyButton:IsA("BasePart") and buyButton or buyButton.PrimaryPart
+				s:Play()
+				Debris:AddItem(s, 2)
+
+				PadUnlockEvent:FireClient(player, false, "Not enough money to upgrade your base!")
+			end
+
+			task.delay(1, function()
+				if playerPurchaseDebounce[player.UserId] then
+					playerPurchaseDebounce[player.UserId] = nil
+				end
+			end)
+		else
+			playerPurchaseDebounce[player.UserId] = nil
+		end
+	end
+
+	local function onTouch(otherPart)
+		local character = otherPart.Parent
+		local player = Players:GetPlayerFromCharacter(character)
+		if player then attemptBuy(player) end
+	end
+
+	-- Fix 8: PadProgressionHandler Redundant Touched connections
+	-- We only need to connect ONE primary part to prevent lag/spam.
+	if buyButton:IsA("BasePart") then
+		buyButton.Touched:Connect(onTouch)
+	elseif buyButton:IsA("Model") then
+		local primary = buyButton.PrimaryPart or buyButton:FindFirstChildWhichIsA("BasePart")
+		if primary then
+			primary.Touched:Connect(onTouch)
 		end
 	end
 end
@@ -192,12 +399,17 @@ local function setupPlot(plot)
 
 		local function onOwnerChange(newOwner)
 			if currentConnection then
-				currentConnection:Disconnect()
+				for _, conn in ipairs(currentConnection) do conn:Disconnect() end
 				currentConnection = nil
 			end
 
 			if newOwner == "" then 
-				updatePadVisuals(plot, 1) 
+				updatePadVisuals(plot, 1, 1)
+
+				local level2BuyButton = plot:FindFirstChild("Level2BuyButton")
+				if level2BuyButton then
+					toggleVisual(level2BuyButton, false, false)
+				end
 			else
 				local player = Players:FindFirstChild(newOwner)
 				local retries = 0
@@ -212,27 +424,71 @@ local function setupPlot(plot)
 
 				if player then
 					local savedLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
-					updatePadVisuals(plot, savedLevel)
+					local savedBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+					updatePadVisuals(plot, savedLevel, savedBaseLevel)
 
-					currentConnection = player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(function()
-						local newLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
-						updatePadVisuals(plot, newLevel)
-					end)
+					local level2BuyButton = plot:FindFirstChild("Level2BuyButton")
+					if level2BuyButton then
+						toggleVisual(level2BuyButton, savedBaseLevel < 2, savedBaseLevel < 2)
+					end
+
+					currentConnection = {
+						player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(function()
+							local newLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
+							local currentBase = tonumber(player:GetAttribute("BaseLevel")) or 1
+							updatePadVisuals(plot, newLevel, currentBase)
+						end),
+						player:GetAttributeChangedSignal("BaseLevel"):Connect(function()
+							local currentLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
+							local newBase = tonumber(player:GetAttribute("BaseLevel")) or 1
+							updatePadVisuals(plot, currentLevel, newBase)
+							if level2BuyButton then
+								toggleVisual(level2BuyButton, newBase < 2, newBase < 2)
+							end
+						end)
+					}
 				end
 			end
 		end
 
 		ownerVal.Changed:Connect(onOwnerChange)
 
-		local pads = plot:WaitForChild("Pads", 30)
-		if pads then
-			for i = 2, 14 do 
-				local p = pads:WaitForChild("Pad"..i, 5)
-				if p then setupBuyButton(plot, p, i) end
+		local function setupPadsInFolder(folder)
+			if not folder then return end
+			local pads = folder:WaitForChild("Pads", 10)
+			if pads then
+				for i = 2, 22 do
+					local p = pads:FindFirstChild("Pad"..i)
+					if p then setupBuyButton(plot, p, i) end
+				end
 			end
 		end
 
-		if ownerVal.Value ~= "" then onOwnerChange(ownerVal.Value) else updatePadVisuals(plot, 1) end
+		local level1 = plot:WaitForChild("Level1", 10)
+		setupPadsInFolder(level1)
+
+		local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+		local level2 = nil
+		if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+			level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+		end
+		if not level2 then level2 = plot:FindFirstChild("Level2") end
+
+		setupPadsInFolder(level2)
+
+		local level2BuyButton = plot:WaitForChild("Level2BuyButton", 10)
+		if level2BuyButton then
+			if ownerVal.Value == "" then
+				toggleVisual(level2BuyButton, false, false)
+			else
+				local player = Players:FindFirstChild(ownerVal.Value)
+				local baseLvl = player and tonumber(player:GetAttribute("BaseLevel")) or 1
+				toggleVisual(level2BuyButton, baseLvl < 2, baseLvl < 2)
+			end
+			setupLevel2BuyButton(plot, level2BuyButton)
+		end
+
+		if ownerVal.Value ~= "" then onOwnerChange(ownerVal.Value) else updatePadVisuals(plot, 1, 1) end
 	end)
 end
 

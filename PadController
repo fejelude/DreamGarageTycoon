@@ -6,7 +6,6 @@
 
 local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
-local StarterPack = game:GetService("StarterPack")
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -255,7 +254,7 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 	local tool = player.Character:FindFirstChildWhichIsA("Tool")
 	if not tool then return end
 
-	-- 🛡️ SECURITY FIX: TRUST ATTRIBUTES, NOT NAMES
+	-- 🛡️ SECURITY FIX: PREVENT SPOOFING
 	-- 1. Must be issued by server
 	if not tool:GetAttribute("IssuedByServer") then return end
 
@@ -266,14 +265,17 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 		return 
 	end
 
-	-- 3. Resolve Model from ID (NOT tool.Name)
-	-- We pass the secure ID to the helper. 
+	-- Fix 8: PadController Spoofing Check Circularity
+	-- Note: The check secureToolId ~= tool.Name was circular since a client can spoof both properties.
+	-- The true security layer happens here, where safeFindCarModel strictly validates the given ID
+	-- directly against the real, server-locked ServerStorage hierarchy folders.
 	local realModelName = FindModelNameFromTool(secureToolId)
 	local realCar = realModelName and safeFindCarModel(realModelName)
 
 	if realCar then
-		local toolName = tool.Name -- Still need name to destroy the instance
-		local removed = removeToolFromPlayer(player, toolName)
+		-- Fix 8b: Close `removeToolFromPlayer` Security Gap
+		-- Use secureToolId for removal, not tool.Name (which could be spoofed to steal another item)
+		local removed = removeToolFromPlayer(player, secureToolId)
 
 		if removed then
 			local success, result = pcall(function()
@@ -332,6 +334,12 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 	if not carToRemove then 
 		validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt) 
 		return 
+	end
+
+	-- Fix 9: Missing Ownership Validation in AttemptPickup
+	if carToRemove:GetAttribute("OwnerUserId") ~= player.UserId then
+		warn("⚠️ Security: Player " .. player.Name .. " attempted to pick up a car they do not own!")
+		return
 	end
 
 	local carName = carToRemove.Name
@@ -393,11 +401,15 @@ local function setupPad(padObject)
 	-- Initial Validation
 	validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
 
+	-- Fix 3: PadController processingTracks deadlocks on error
+	-- Use a pcall wrapper so state is always released regardless of internal errors.
 	placePrompt.Triggered:Connect(function(player)
 		local userId = player.UserId
 		if processingTracks[userId] then return end
 		processingTracks[userId] = true
-		AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+		pcall(function()
+			AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+		end)
 		task.wait(CONSTANTS.RETRY_DELAY)
 		processingTracks[userId] = nil
 	end)
@@ -406,41 +418,83 @@ local function setupPad(padObject)
 		local userId = player.UserId
 		if processingTracks[userId] then return end
 		processingTracks[userId] = true
-		AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+		pcall(function()
+			AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+		end)
 		task.wait(CONSTANTS.RETRY_DELAY)
 		processingTracks[userId] = nil
 	end)
 end
 
 -- Initialize Existing Tycoons
-for _, plot in pairs(TycoonFolder:GetChildren()) do
-	local padsFolder = plot:FindFirstChild("Pads")
+local function initPadsFolder(padsFolder)
 	if padsFolder then
+		if padsFolder:GetAttribute("PadControllerConnected") then return end
+		padsFolder:SetAttribute("PadControllerConnected", true)
 		for _, pad in pairs(padsFolder:GetChildren()) do setupPad(pad) end
+		padsFolder.ChildAdded:Connect(setupPad)
 	end
+end
+
+local function setupPlot(plot)
+	local level1 = plot:WaitForChild("Level1", 10)
+	if level1 then initPadsFolder(level1:FindFirstChild("Pads")) end
+
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	local level2 = nil
+	if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+		level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+	end
+	if not level2 then level2 = plot:FindFirstChild("Level2") end
+
+	if level2 then initPadsFolder(level2:FindFirstChild("Pads")) end
+end
+
+for _, plot in pairs(TycoonFolder:GetChildren()) do
+	setupPlot(plot)
 end
 
 -- 🔄 MAINTENANCE LOOP (Updated to check visual state constantly)
 task.spawn(function()
-	while true do
-		task.wait(5) -- Runs every 5 seconds to keep states valid
-		for _, plot in pairs(TycoonFolder:GetChildren()) do
-			local padsFolder = plot:FindFirstChild("Pads")
-			if padsFolder then
-				for _, padObject in pairs(padsFolder:GetChildren()) do
-					local padPart = getMainPart(padObject)
-					if padPart then
-						local occ = padPart:FindFirstChild("IsOccupied")
-						local lnk = padPart:FindFirstChild("LinkedCar")
-						local pl = padPart:FindFirstChild("PlacePrompt")
-						local pk = padPart:FindFirstChild("PickupPrompt")
-						if occ and lnk and pl and pk then
-							-- Checks progression + ghost locks
-							validatePadState(padObject, occ, lnk, pl, pk)
-						end
-					end
+	-- Fix 10: Maintenance Loop Scans All Pads Unconditionally
+	-- Optimize to only check occupied pads (this catches both active cars AND ghost locks since occ is true for both).
+	local function checkPadsInFolder(padsFolder)
+		if not padsFolder then return end
+		for _, padObject in pairs(padsFolder:GetChildren()) do
+			local padPart = getMainPart(padObject)
+			if padPart then
+				local occ = padPart:FindFirstChild("IsOccupied")
+				local lnk = padPart:FindFirstChild("LinkedCar")
+				local pl = padPart:FindFirstChild("PlacePrompt")
+				local pk = padPart:FindFirstChild("PickupPrompt")
+				if occ and occ.Value == true and lnk and pl and pk then
+					-- Checks progression + ghost locks
+					validatePadState(padObject, occ, lnk, pl, pk)
 				end
 			end
 		end
 	end
+
+	while true do
+		task.wait(5) -- Runs every 5 seconds to keep states valid
+		for _, plot in pairs(TycoonFolder:GetChildren()) do
+			local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+
+			local level1 = plot:FindFirstChild("Level1")
+			if not level1 and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+				level1 = dedicatedFolder[plot.Name]:FindFirstChild("Level1")
+			end
+
+			local level2 = plot:FindFirstChild("Level2")
+			if not level2 and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+				level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+			end
+
+			if level1 then checkPadsInFolder(level1:FindFirstChild("Pads")) end
+			if level2 then checkPadsInFolder(level2:FindFirstChild("Pads")) end
+		end
+	end
 end)
+
+-- Handle dynamically added plots or pads
+TycoonFolder.ChildAdded:Connect(setupPlot)

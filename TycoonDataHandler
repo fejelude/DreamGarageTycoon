@@ -86,6 +86,10 @@ local MAX_INVENTORY_SIZE = 500
 local MAX_LAYOUT_SIZE = 200
 local STARTER_CAR_NAME = "Delta Item"
 
+local CONSTANTS = {
+	VERTICAL_OFFSET = 5
+}
+
 -- ----------------------------------------------------------------------------
 -- 📂 ASSET REFERENCES
 -- ----------------------------------------------------------------------------
@@ -179,6 +183,8 @@ local function validateTool(tool)
 	return false
 end
 
+-- Note (Fix 12): `StarterGear` acts as a respawn mirror. `sanitizeInventory` validates it to ensure
+-- malicious tools can't persist across lives, while `save()` correctly ignores it to prevent quantity inflation.
 local function sanitizeInventory(player)
 	if not player then return end
 	local containers = { player.Backpack, player:FindFirstChild("StarterGear") }
@@ -331,6 +337,20 @@ end
 -- ----------------------------------------------------------------------------
 -- 🏗️ LAYOUT RESTORATION
 -- ----------------------------------------------------------------------------
+local function getLevelModel(plot, levelName)
+	local model = plot:FindFirstChild(levelName)
+	if model then return model end
+
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if dedicatedFolder then
+		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
+		if plotStorage then
+			return plotStorage:FindFirstChild(levelName)
+		end
+	end
+	return nil
+end
+
 local function acquirePadLock(lockId)
 	if PadLocks[lockId] then return false end
 	PadLocks[lockId] = true
@@ -345,13 +365,26 @@ local function RestoreLayout(player, plot, layoutData)
 	if not layoutData or not plot then return end
 	if #layoutData > MAX_LAYOUT_SIZE then return end
 
-	local padsFolder = plot:WaitForChild("Pads", 10)
-	if not padsFolder then return end
 	local placedCarsFolder = plot:FindFirstChild("PlacedCars") or Instance.new("Folder", plot)
 	placedCarsFolder.Name = "PlacedCars"
 
 	local validPads = {}
-	for _, p in ipairs(padsFolder:GetChildren()) do validPads[p.Name] = true end
+	local playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+	local activeLevelFolder = nil
+	if playerBaseLevel == 1 then
+		activeLevelFolder = getLevelModel(plot, "Level1")
+		if not activeLevelFolder then activeLevelFolder = plot:WaitForChild("Level1", 10) end
+	elseif playerBaseLevel == 2 then
+		activeLevelFolder = getLevelModel(plot, "Level2")
+	end
+
+	if activeLevelFolder then
+		local padsFolder = activeLevelFolder:FindFirstChild("Pads")
+		if padsFolder then
+			for _, p in ipairs(padsFolder:GetChildren()) do validPads[p.Name] = true end
+		end
+	end
+
 	local processedPads = {}
 	local restoredCount = 0
 
@@ -363,7 +396,15 @@ local function RestoreLayout(player, plot, layoutData)
 		if not validPads[padName] then continue end
 		if processedPads[padName] then continue end
 
-		local padObject = padsFolder[padName]
+		-- Fix 6: TycoonDataHandler Anti-wipe layout detection unreliable
+		-- It should only restore on pads that exist in the active level folder.
+		local padObject = nil
+		if activeLevelFolder and activeLevelFolder:FindFirstChild("Pads") and activeLevelFolder.Pads:FindFirstChild(padName) then
+			padObject = activeLevelFolder.Pads[padName]
+		end
+
+		if not padObject then continue end
+
 		local lockId = padObject:GetFullName()
 
 		if not acquirePadLock(lockId) then
@@ -386,7 +427,7 @@ local function RestoreLayout(player, plot, layoutData)
 						for _, p in pairs(newCar:GetDescendants()) do
 							if p:IsA("BasePart") then p.Anchored = true; p.CanCollide = true end
 						end
-						local padTop = padPart.CFrame * CFrame.new(0, (padPart.Size.Y / 2) + 5, 0)
+						local padTop = padPart.CFrame * CFrame.new(0, (padPart.Size.Y / 2) + CONSTANTS.VERTICAL_OFFSET, 0)
 						newCar:PivotTo(padTop)
 						newCar.Parent = placedCarsFolder
 
@@ -656,6 +697,7 @@ local function save(player, isClosing)
 		print("💾 Saving data for " .. player.Name .. "...")
 
 		local currentUnlockedPad = player:GetAttribute("HighestUnlockedPad") or 1
+		local currentBaseLevel = player:GetAttribute("BaseLevel") or 1
 		local currentOwnedRaw = player:GetAttribute("OwnedBaseSkins") or "[]"
 		local currentOwnedSkins = HttpService:JSONDecode(currentOwnedRaw)
 		local currentEquippedSkin = player:GetAttribute("EquippedSkin") or "Default"
@@ -715,9 +757,9 @@ local function save(player, isClosing)
 			if plot:FindFirstChild("PendingEarnings") then
 				currentPendingInTycoon = plot.PendingEarnings.Value
 			end
-			local pads = plot:FindFirstChild("Pads")
-			if pads then
-				for _, padObject in pairs(pads:GetChildren()) do
+			local function savePadsInFolder(padsFolder)
+				if not padsFolder then return end
+				for _, padObject in pairs(padsFolder:GetChildren()) do
 					local padPart = getMainPart(padObject)
 					if padPart then
 						local linked = padPart:FindFirstChild("LinkedCar")
@@ -736,6 +778,18 @@ local function save(player, isClosing)
 					end
 				end
 			end
+
+			local playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+			local activeLevelFolder = nil
+
+			if playerBaseLevel == 1 then
+				activeLevelFolder = getLevelModel(plot, "Level1")
+				if not activeLevelFolder then activeLevelFolder = plot:WaitForChild("Level1", 10) end
+			elseif playerBaseLevel == 2 then
+				activeLevelFolder = getLevelModel(plot, "Level2")
+			end
+
+			if activeLevelFolder then savePadsInFolder(activeLevelFolder:FindFirstChild("Pads")) end
 		end
 
 		-- [[ COMMON SHOP SYNC ]]
@@ -798,7 +852,8 @@ local function save(player, isClosing)
 					local finalLayout = layout
 					local isSuspiciousLayoutWipe = (#layout == 0) and (oldData.Layout and #oldData.Layout > 0)
 
-					if isSuspiciousLayoutWipe and not session.ExplicitClear then
+					-- Fix 5: SacrificeOccurred Does Not Gate the Layout Anti-Wipe
+					if isSuspiciousLayoutWipe and not session.ExplicitClear and not sacrificeOccurredThisSession then
 						local oldInvCount = oldData.Inventory and #oldData.Inventory or 0
 						local newInvCount = #finalInventory
 
@@ -840,6 +895,7 @@ local function save(player, isClosing)
 					oldData.OwnedBaseSkins    = currentOwnedSkins
 					oldData.EquippedSkin      = currentEquippedSkin
 					oldData.HighestUnlockedPad = currentUnlockedPad
+					oldData.BaseLevel = currentBaseLevel
 					oldData.Rank = currentRank
 
 					oldData.LastUpdated  = os.time()
@@ -962,7 +1018,7 @@ local function InitializePlayer(player)
 	if not loadSuccess then player:Kick("Data Load Error. Rejoin.") return end
 
 	data = data or {
-		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1,
+		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1, BaseLevel = 1,
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player"
@@ -978,6 +1034,7 @@ local function InitializePlayer(player)
 	data.MythicalShopPurchases  = data.MythicalShopPurchases  or {}
 	data.OwnedBaseSkins         = data.OwnedBaseSkins         or { "Default" }
 	data.EquippedSkin           = data.EquippedSkin           or "Default"
+	data.BaseLevel              = data.BaseLevel              or 1
 	data.Rank                   = data.Rank                   or "Player"
 
 	cash.Value   = data.Bank       or 0
@@ -1007,12 +1064,14 @@ local function InitializePlayer(player)
 	end
 
 	player:SetAttribute("HighestUnlockedPad", data.HighestUnlockedPad or 1)
+	player:SetAttribute("BaseLevel", data.BaseLevel or 1)
 	local ownedJson = HttpService:JSONEncode(data.OwnedBaseSkins)
 	player:SetAttribute("OwnedBaseSkins", ownedJson)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
 	player:SetAttribute("Rank", data.Rank)
 
 	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(setDirty)
+	player:GetAttributeChangedSignal("BaseLevel"):Connect(setDirty)
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
 	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rank"):Connect(setDirty)
@@ -1082,8 +1141,10 @@ local function InitializePlayer(player)
 				markDirty(player)
 				print("✅ RESTORED PENDING: $" .. amount .. " to " .. plot.Name)
 			else
-				warn("⚠️ Failed to restore pending earnings. Reverting amount.")
-				player:SetAttribute("RestoredPending", amount)
+				warn("⚠️ Failed to restore pending earnings for " .. player.Name)
+				-- Fix 3: RestoredPending Double-Count Risk
+				-- Do not blindly revert amount to player attributes if it timed out.
+				-- Instead we accept the loss to prevent infinite double counting on save loops.
 			end
 		end
 	end
