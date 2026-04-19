@@ -1,99 +1,102 @@
--- Purpose: Functional Loading Screen + Swoop + Blink + Colored Text (Fixed Pacing)
--- Runs on: Client (ReplicatedFirst)
--- Location: ReplicatedFirst
--- Dependencies: StarterGui (LoadingScreenGui), ReplicatedStorage (PreloadAssets)
--- Networking: None (Client-side logic only)
--- Security: Handles nil instances, safeguards loops, localizes variables.
--- Performance: Disconnects events, destroys UI on finish, optimized tweens.
+-- ============================================================
+-- LoadingScreen
+-- Purpose  : Functional loading screen with swoop + blink exit.
+-- Runs on  : Client (ReplicatedFirst)
+-- Deps     : StarterGui.LoadingScreenGui, ReplicatedStorage.PreloadAssets
+-- Security : Nil-safe, disconnects all events, destroys UI on finish.
+-- ============================================================
 
-local ReplicatedFirst = game:GetService("ReplicatedFirst")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
-local Players = game:GetService("Players")
-local StarterGui = game:GetService("StarterGui")
-local TweenService = game:GetService("TweenService")
-local ContentProvider = game:GetService("ContentProvider")
+local ReplicatedFirst      = game:GetService("ReplicatedFirst")
+local RunService           = game:GetService("RunService")
+local Workspace            = game:GetService("Workspace")
+local Players              = game:GetService("Players")
+local StarterGui           = game:GetService("StarterGui")
+local TweenService         = game:GetService("TweenService")
+local ContentProvider      = game:GetService("ContentProvider")
 local ContextActionService = game:GetService("ContextActionService")
-local Lighting = game:GetService("Lighting")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting             = game:GetService("Lighting")
+local ReplicatedStorage    = game:GetService("ReplicatedStorage")
 
 ReplicatedFirst:RemoveDefaultLoadingScreen()
 
--- =====================
+-- ============================================================
 -- CONFIG
--- =====================
-local VIEW_PART_NAME = "LoadingViewPart"
-local VIEW_PART_TIMEOUT = 10 -- Reduced slightly for responsiveness
+-- ============================================================
+
+local VIEW_PART_NAME      = "LoadingViewPart"
+local VIEW_PART_TIMEOUT   = 10
 local PRELOAD_FOLDER_NAME = "PreloadAssets"
+local LOADING_TEXT_START  = " Loading "
 
-local LOADING_TEXT_START = " Loading " -- Text to show before numbers appear
-
--- [[ Colored Text Config ]]
 local DONE_OPTIONS = {
-	{ Text = "Done",      Color = Color3.fromRGB(85, 255, 127) },  -- Bright Green
-	{ Text = "Ready!",    Color = Color3.fromRGB(0, 255, 255) },   -- Cyan
-	{ Text = "Let's Go",  Color = Color3.fromRGB(255, 170, 0) },   -- Gold/Orange
-	{ Text = "Finally",   Color = Color3.fromRGB(255, 105, 180) }, -- Hot Pink
-	{ Text = "Loaded",    Color = Color3.fromRGB(170, 255, 0) },   -- Lime
-	{ Text = "Success",   Color = Color3.fromRGB(100, 149, 237) }  -- Cornflower Blue
+	{ Text = "Done",      Color = Color3.fromRGB(85,  255, 127) },
+	{ Text = "Ready!",    Color = Color3.fromRGB(0,   255, 255) },
+	{ Text = "Let's Go",  Color = Color3.fromRGB(0, 255, 128) },  -- Neon Mint / Electric Green
+	{ Text = "Finally",   Color = Color3.fromRGB(255, 105, 180) },
+	{ Text = "Loaded",    Color = Color3.fromRGB(170, 255,   0) },
+	{ Text = "Success",   Color = Color3.fromRGB(100, 149, 237) },
 }
 
--- [[ ANIMATION CONFIG ]]
-local ANIMATION_DURATION = 5.5 
-local BLUR_SIZE = 20
-local BLUR_IN_TIME = 0.6 
-local BLUR_OUT_TIME = 3.0 
+local ANIMATION_DURATION     = 5.5
+local BLUR_SIZE               = 20
+local BLUR_IN_TIME            = 0.6
+local BLUR_OUT_TIME           = 3.0
+local SWOOP_DURATION          = 1.8
+local FADE_OUT_TIME           = 0.4
+local FADE_IN_TIME            = 0.8
+local EXTRA_HOLD_SECONDS      = 2.0
+local FAILSAFE_TOTAL_SECONDS  = 35
 
-local SWOOP_DURATION = 1.8 
-local FADE_OUT_TIME = 0.4 
-local FADE_IN_TIME = 0.8  
-
-local EXTRA_HOLD_SECONDS = 2.0 
-local FAILSAFE_TOTAL_SECONDS = 35
-
-local LOCK_NAME = "LoadingScreenCameraLock"
+local LOCK_NAME    = "LoadingScreenCameraLock"
 local FREEZE_ACTION = "LoadingScreenFreeze"
 
--- Progress ranges
-local PHASE_GAME_LOADED_TO = 0.20 -- Boosted slightly
+local PHASE_GAME_LOADED_TO   = 0.20
 local PHASE_VIEWPART_READY_TO = 0.40
-local PHASE_PRELOAD_TO = 0.90
-local PHASE_FINISH_TO = 1.00
+local PHASE_PRELOAD_TO        = 0.90
+local PHASE_FINISH_TO         = 1.00
 
--- =====================
+-- ============================================================
 -- BASICS
--- =====================
-local player = Players.LocalPlayer
+-- ============================================================
+
+local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local camera = Workspace.CurrentCamera or Workspace:WaitForChild("Camera")
+local camera    = Workspace.CurrentCamera or Workspace:WaitForChild("Camera")
+
 playerGui:SetAttribute("LoadingScreenActive", true)
 
--- =====================
--- LOAD UI SETUP
--- =====================
+-- ============================================================
+-- UI SETUP
+-- ============================================================
+
 local sourceGui = StarterGui:WaitForChild("LoadingScreenGui", 10)
-if not sourceGui then warn("❌ LoadingScreenGui missing!") return end
+if not sourceGui then
+	warn("❌ LoadingScreenGui missing from StarterGui!")
+	playerGui:SetAttribute("LoadingScreenActive", false)
+	return
+end
 
-local loadingGui = sourceGui:Clone()
-loadingGui.Name = "ActiveLoadingScreen"
-loadingGui.ResetOnSpawn = false
-loadingGui.Enabled = true
-loadingGui.IgnoreGuiInset = true 
-loadingGui.DisplayOrder = 999 
-loadingGui.Parent = playerGui
+local loadingGui               = sourceGui:Clone()
+loadingGui.Name                = "ActiveLoadingScreen"
+loadingGui.ResetOnSpawn        = false
+loadingGui.Enabled             = true
+loadingGui.IgnoreGuiInset      = true
+loadingGui.DisplayOrder        = 999
+loadingGui.Parent              = playerGui
 
--- [[ Transition Frame for Blink ]]
-local transitionFrame = Instance.new("Frame")
-transitionFrame.Name = "TransitionFrame"
-transitionFrame.Size = UDim2.fromScale(1, 1)
-transitionFrame.BackgroundColor3 = Color3.new(0, 0, 0) -- Pure Black
-transitionFrame.BackgroundTransparency = 1 -- Start invisible
-transitionFrame.ZIndex = 2000 -- Ensure it's on top of everything
-transitionFrame.Parent = loadingGui
+-- Full-screen black frame used for the blink transition
+local transitionFrame                    = Instance.new("Frame")
+transitionFrame.Name                     = "TransitionFrame"
+transitionFrame.Size                     = UDim2.fromScale(1, 1)
+transitionFrame.BackgroundColor3         = Color3.new(0, 0, 0)
+transitionFrame.BackgroundTransparency   = 1   -- invisible until the blink
+transitionFrame.ZIndex                   = 2000
+transitionFrame.Parent                   = loadingGui
 
--- =====================
--- UTIL
--- =====================
+-- ============================================================
+-- UTILITIES
+-- ============================================================
+
 local function safeTween(instance, info, goals)
 	local t = TweenService:Create(instance, info, goals)
 	t:Play()
@@ -101,8 +104,8 @@ local function safeTween(instance, info, goals)
 end
 
 local function waitForNamedChild(parent, childName, timeout)
-	local start = os.clock()
-	while os.clock() - start < timeout do
+	local deadline = os.clock() + timeout
+	while os.clock() < deadline do
 		local child = parent:FindFirstChild(childName)
 		if child then return child end
 		RunService.Heartbeat:Wait()
@@ -110,24 +113,26 @@ local function waitForNamedChild(parent, childName, timeout)
 	return nil
 end
 
--- =====================
+-- ============================================================
 -- BLUR
--- =====================
+-- ============================================================
+
 local blur = Lighting:FindFirstChild("LoadingScreenBlur")
 if not blur then
-	blur = Instance.new("BlurEffect")
-	blur.Name = "LoadingScreenBlur"
-	blur.Size = 0
-	blur.Parent = Lighting
+	blur          = Instance.new("BlurEffect")
+	blur.Name     = "LoadingScreenBlur"
+	blur.Size     = 0
+	blur.Parent   = Lighting
 end
 
 local function blurTo(size, duration)
 	return safeTween(blur, TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), { Size = size })
 end
 
--- =====================
+-- ============================================================
 -- INPUT LOCKS
--- =====================
+-- ============================================================
+
 local function lockControls()
 	ContextActionService:BindAction(
 		FREEZE_ACTION,
@@ -147,17 +152,16 @@ local function applyMovementLock(char)
 	if not movementLock.active or not char then return end
 	local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
 	if not hum then return end
-
 	if not movementLock.original[hum] then
 		movementLock.original[hum] = {
-			WalkSpeed = hum.WalkSpeed,
-			JumpPower = hum.JumpPower,
+			WalkSpeed  = hum.WalkSpeed,
+			JumpPower  = hum.JumpPower,
 			JumpHeight = hum.JumpHeight,
 			AutoRotate = hum.AutoRotate,
 		}
 	end
-	hum.WalkSpeed = 0
-	hum.JumpPower = 0
+	hum.WalkSpeed  = 0
+	hum.JumpPower  = 0
 	hum.JumpHeight = 0
 	hum.AutoRotate = false
 	pcall(function() hum:Move(Vector3.zero, true) end)
@@ -174,8 +178,8 @@ local function disableMovementLock()
 	if movementLock.conn then movementLock.conn:Disconnect() movementLock.conn = nil end
 	for hum, original in pairs(movementLock.original) do
 		if hum and hum.Parent then
-			hum.WalkSpeed = original.WalkSpeed or 16
-			hum.JumpPower = original.JumpPower or 50
+			hum.WalkSpeed  = original.WalkSpeed  or 16
+			hum.JumpPower  = original.JumpPower  or 50
 			hum.JumpHeight = original.JumpHeight or 7.2
 			hum.AutoRotate = (original.AutoRotate ~= nil) and original.AutoRotate or true
 		end
@@ -183,97 +187,158 @@ local function disableMovementLock()
 	table.clear(movementLock.original)
 end
 
+-- ============================================================
+-- CAMERA
+-- ============================================================
+
 local function lockCameraTo(part)
 	if not (part and part:IsA("BasePart")) then return end
 	camera.CameraType = Enum.CameraType.Scriptable
-	camera.CFrame = part.CFrame
+	camera.CFrame     = part.CFrame
 	RunService:BindToRenderStep(LOCK_NAME, Enum.RenderPriority.Camera.Value + 1, function()
 		if part and part.Parent then camera.CFrame = part.CFrame end
-		if camera.CameraType ~= Enum.CameraType.Scriptable then camera.CameraType = Enum.CameraType.Scriptable end
+		if camera.CameraType ~= Enum.CameraType.Scriptable then
+			camera.CameraType = Enum.CameraType.Scriptable
+		end
 	end)
 end
 
--- [[ SWOOP + BLINK TRANSITION ]]
 local function unlockCameraToPlayer()
 	pcall(function() RunService:UnbindFromRenderStep(LOCK_NAME) end)
 
 	local char = player.Character or player.CharacterAdded:Wait()
-	local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 10)
+	local hum  = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 10)
 	local root = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("HumanoidRootPart", 10)
 
 	if root and hum then
 		camera.CameraType = Enum.CameraType.Scriptable
 
-		-- 1. Swoop Calculation
-		local offset = CFrame.new(0, 5, 12) 
-		local targetCFrame = root.CFrame:ToWorldSpace(offset)
-		targetCFrame = CFrame.lookAt(targetCFrame.Position, root.Position + Vector3.new(0, 2, 0))
+		-- Swoop: glide camera to behind the player
+		local offset      = CFrame.new(0, 5, 12)
+		local targetCF    = root.CFrame:ToWorldSpace(offset)
+		targetCF          = CFrame.lookAt(targetCF.Position, root.Position + Vector3.new(0, 2, 0))
 
-		-- 2. Play Swoop
 		local swoopInfo = TweenInfo.new(SWOOP_DURATION, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-		local tween = TweenService:Create(camera, swoopInfo, { CFrame = targetCFrame })
+		local tween     = TweenService:Create(camera, swoopInfo, { CFrame = targetCF })
 		tween:Play()
-		tween.Completed:Wait() -- Wait for camera to arrive behind player
+		tween.Completed:Wait()
 
-		-- 3. Blink: Fade Out (Black)
-		local fadeOut = TweenService:Create(transitionFrame, TweenInfo.new(FADE_OUT_TIME, Enum.EasingStyle.Sine), { BackgroundTransparency = 0 })
+		-- Blink out (fade to black)
+		local fadeOut = TweenService:Create(
+			transitionFrame,
+			TweenInfo.new(FADE_OUT_TIME, Enum.EasingStyle.Sine),
+			{ BackgroundTransparency = 0 }
+		)
 		fadeOut:Play()
-		fadeOut.Completed:Wait() -- Wait for total darkness
+		fadeOut.Completed:Wait()
 
-		-- 4. Switch Camera safely
+		-- Switch camera mode safely under darkness
 		camera.CameraSubject = hum
-		camera.CameraType = Enum.CameraType.Custom
+		camera.CameraType    = Enum.CameraType.Custom
 
-		-- 5. Blink: Fade In (Clear)
-		local fadeIn = TweenService:Create(transitionFrame, TweenInfo.new(FADE_IN_TIME, Enum.EasingStyle.Sine), { BackgroundTransparency = 1 })
+		-- Blink in (fade back to clear)
+		local fadeIn = TweenService:Create(
+			transitionFrame,
+			TweenInfo.new(FADE_IN_TIME, Enum.EasingStyle.Sine),
+			{ BackgroundTransparency = 1 }
+		)
 		fadeIn:Play()
 	else
+		-- Fallback: no character found, just release the camera
 		camera.CameraType = Enum.CameraType.Custom
 	end
 end
 
--- =====================
--- UI LOGIC
--- =====================
-local clickShield = Instance.new("Frame")
-clickShield.Name = "ClickShield"
-clickShield.Size = UDim2.new(1, 0, 1, 0)
-clickShield.BackgroundTransparency = 1
-clickShield.Active = true 
-clickShield.ZIndex = -1
-clickShield.Parent = loadingGui
+-- ============================================================
+-- UI — CLICK SHIELD & PROGRESS BAR
+-- ============================================================
+
+local clickShield                    = Instance.new("Frame")
+clickShield.Name                     = "ClickShield"
+clickShield.Size                     = UDim2.new(1, 0, 1, 0)
+clickShield.BackgroundTransparency   = 1
+clickShield.Active                   = true
+clickShield.ZIndex                   = -1
+clickShield.Parent                   = loadingGui
 
 local bgFrame = loadingGui:WaitForChild("Frame", 5)
-if not bgFrame then loadingGui:Destroy() return end
-bgFrame.Visible = false 
+if not bgFrame then
+	loadingGui:Destroy()
+	playerGui:SetAttribute("LoadingScreenActive", false)
+	return
+end
+bgFrame.Visible = false
 
 local barContainer = bgFrame:FindFirstChild("ProgressBarContainer")
-local barFill = barContainer and barContainer:FindFirstChild("ProgressBar")
+local barFill      = barContainer and barContainer:FindFirstChild("ProgressBar")
 local progressText = barContainer and barContainer:FindFirstChild("ProgressText")
 local progressValue = Instance.new("NumberValue")
 progressValue.Value = 0
 
 local MAX_X_SCALE, MAX_X_OFFSET, Y_SCALE, Y_OFFSET
 
+-- ── Rainbow helpers ──────────────────────────────────────────────────────────
+-- Converts a Color3 to a "#RRGGBB" hex string for RichText font tags.
+local function color3ToHex(c: Color3): string
+	return string.format("#%02X%02X%02X",
+		math.floor(c.R * 255 + 0.5),
+		math.floor(c.G * 255 + 0.5),
+		math.floor(c.B * 255 + 0.5)
+	)
+end
+
+-- Maps the progress value directly to a colour across the visible spectrum:
+--   1%  → red
+--   ~15% → orange
+--   ~30% → yellow
+--   ~50% → green
+--   ~65% → cyan
+--   ~80% → blue
+--   99% → violet
+-- No time loop — every percentage number has its own fixed rainbow colour.
+local function progressToRainbowHex(clamped: number): string
+	local t   = math.clamp((clamped - 0.05) / (0.99 - 0.05), 0, 1)
+	local hue = t * 0.85  -- 0 (red) → 0.85 (violet); avoids looping back to red
+	return color3ToHex(Color3.fromHSV(hue, 1, 1))
+end
+-- ─────────────────────────────────────────────────────────────────────────────
+
 local function updateProgressBar(v)
 	if not barFill then return end
 	local clamped = math.clamp(v, 0, 1)
-	barFill.Size = UDim2.new(MAX_X_SCALE * clamped, MAX_X_OFFSET * clamped, Y_SCALE, Y_OFFSET)
+	barFill.Size  = UDim2.new(
+		MAX_X_SCALE * clamped, MAX_X_OFFSET * clamped,
+		Y_SCALE, Y_OFFSET
+	)
 
 	if progressText and progressText:IsA("TextLabel") then
 		if clamped <= 0.05 then
-			-- [[ FIX: Force "Loading" text at start ]]
-			progressText.Text = LOADING_TEXT_START
+			-- "Loading …" — plain text, no RichText needed
+			progressText.RichText   = false
+			progressText.Text       = LOADING_TEXT_START
+			progressText.TextColor3 = Color3.new(1, 1, 1)
+
 		elseif clamped >= 0.99 then
+			-- Done label — coloured plain text
 			if not progressText:GetAttribute("DoneMsgSet") then
-				-- [[ Random Colored Text ]]
-				local choice = DONE_OPTIONS[math.random(1, #DONE_OPTIONS)]
-				progressText.Text = choice.Text
+				progressText.RichText   = false
+				local choice            = DONE_OPTIONS[math.random(1, #DONE_OPTIONS)]
+				progressText.Text       = choice.Text
 				progressText.TextColor3 = choice.Color
 				progressText:SetAttribute("DoneMsgSet", true)
 			end
+
 		else
-			progressText.Text = string.format("%d%%", math.floor(clamped * 100 + 0.5))
+			-- Active percentage — colour is driven by the progress value itself.
+			-- 1% → red, ~50% → green/cyan, 99% → violet. The % sign stays white.
+			progressText.RichText   = true
+			progressText.TextColor3 = Color3.new(1, 1, 1)
+			local hexColor = progressToRainbowHex(clamped)
+			local num      = math.floor(clamped * 100 + 0.5)
+			progressText.Text = string.format(
+				'<font color="%s">%d</font><font color="#FFFFFF">%%</font>',
+				hexColor, num
+			)
 		end
 	end
 end
@@ -281,40 +346,64 @@ end
 if barFill then
 	MAX_X_SCALE = barFill.Size.X.Scale
 	MAX_X_OFFSET = barFill.Size.X.Offset
-	Y_SCALE = barFill.Size.Y.Scale
-	Y_OFFSET = barFill.Size.Y.Offset
-	
-	-- [[ FIX: Initialize immediately before any tweening ]]
-	barFill.Size = UDim2.new(0, 0, Y_SCALE, Y_OFFSET)
-	updateProgressBar(0) 
+	Y_SCALE      = barFill.Size.Y.Scale
+	Y_OFFSET     = barFill.Size.Y.Offset
 
+	barFill.Size = UDim2.new(0, 0, Y_SCALE, Y_OFFSET)
+	updateProgressBar(0)
 	progressValue.Changed:Connect(updateProgressBar)
 end
 
 local function tweenProgress(toValue, duration)
-	-- [[ FIX: Ensure we clamp inputs to avoid overshooting ]]
 	local goal = math.clamp(toValue, 0, 1)
-	local t = safeTween(progressValue, TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), { Value = goal })
-	return t
+	return safeTween(
+		progressValue,
+		TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+		{ Value = goal }
+	)
 end
 
--- =====================
--- RECURSIVE HIDER
--- =====================
-local hiddenFrames = {}
-local visualScannerConn = nil
+-- ============================================================
+-- VISIBILITY MANAGER
+--
+--   KEY FIX: Any GuiObject tagged with the attribute
+--   "ExternallyManaged" = true is completely skipped.
+--   This prevents the loading screen from stomping on
+--   GuiObjects whose visibility is controlled by other scripts
+--   (e.g. the restock notification frame).
+-- ============================================================
 
-local function scanAndHide(parent)
+local hiddenFrames: { [GuiObject]: true } = {}
+local scanThread: thread? = nil
+
+local function isExternallyManaged(obj: Instance): boolean
+	-- Walk up the hierarchy; if any ancestor is managed, respect it.
+	local cur: Instance? = obj
+	while cur do
+		if cur:GetAttribute("ExternallyManaged") == true then
+			return true
+		end
+		cur = cur.Parent
+	end
+	return false
+end
+
+local function scanAndHide(parent: Instance)
 	if not parent then return end
 	for _, child in ipairs(parent:GetChildren()) do
 		if child == loadingGui then continue end
+
 		if child:IsA("GuiObject") then
+			-- Skip any frame managed by an external script
+			if isExternallyManaged(child) then continue end
+
 			if child.Visible then
 				hiddenFrames[child] = true
-				child.Visible = false
-				continue 
+				child.Visible       = false
+				continue -- Don't recurse into a hidden frame's children
 			end
 		end
+
 		if child:IsA("Folder") or child:IsA("ScreenGui") or child:IsA("GuiObject") then
 			scanAndHide(child)
 		end
@@ -323,7 +412,7 @@ end
 
 local function startHidingVisuals()
 	scanAndHide(playerGui)
-	visualScannerConn = task.spawn(function()
+	scanThread = task.spawn(function()
 		while playerGui:GetAttribute("LoadingScreenActive") do
 			scanAndHide(playerGui)
 			task.wait(0.2)
@@ -332,178 +421,253 @@ local function startHidingVisuals()
 end
 
 local function restoreVisuals()
-	if visualScannerConn then task.cancel(visualScannerConn) visualScannerConn = nil end
-	for item, _ in pairs(hiddenFrames) do
-		if item and item.Parent then
+	if scanThread then
+		task.cancel(scanThread)
+		scanThread = nil
+	end
+	for item in pairs(hiddenFrames) do
+		-- Only restore if the item is NOT externally managed.
+		-- (Belt-and-suspenders: the item shouldn't be in hiddenFrames
+		--  at all if we scanned correctly, but guard anyway.)
+		if item and item.Parent and not isExternallyManaged(item) then
 			item.Visible = true
 		end
 	end
 	table.clear(hiddenFrames)
 end
 
--- =====================
--- LOADING SCREEN FADE
--- =====================
-local studioProps = {}
-local function recordProps(inst)
-	local props, changed = {}, false
-	if inst:IsA("GuiObject") and inst.BackgroundTransparency < 1 then props.BackgroundTransparency = inst.BackgroundTransparency changed = true end
-	if (inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox")) and inst.TextTransparency < 1 then props.TextTransparency = inst.TextTransparency changed = true end
-	if (inst:IsA("ImageLabel") or inst:IsA("ImageButton")) and inst.ImageTransparency < 1 then props.ImageTransparency = inst.ImageTransparency changed = true end
-	if inst:IsA("UIStroke") and inst.Transparency < 1 then props.Transparency = inst.Transparency changed = true end
+-- ============================================================
+-- LOADING SCREEN TRANSPARENCY FADE
+-- ============================================================
+
+local studioProps: { [Instance]: { [string]: number } } = {}
+
+local function recordProps(inst: Instance)
+	local props: { [string]: number } = {}
+	local changed = false
+
+	if inst:IsA("GuiObject") and inst.BackgroundTransparency < 1 then
+		props.BackgroundTransparency = inst.BackgroundTransparency
+		changed = true
+	end
+	if (inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox"))
+		and inst.TextTransparency < 1 then
+		props.TextTransparency = inst.TextTransparency
+		changed = true
+	end
+	if (inst:IsA("ImageLabel") or inst:IsA("ImageButton"))
+		and inst.ImageTransparency < 1 then
+		props.ImageTransparency = inst.ImageTransparency
+		changed = true
+	end
+	if inst:IsA("UIStroke") and inst.Transparency < 1 then
+		props.Transparency = inst.Transparency
+		changed = true
+	end
 	if changed then studioProps[inst] = props end
 end
 
-local function setInvisible(inst)
+local function setInvisible(inst: Instance)
 	local props = studioProps[inst]
 	if not props then return end
-	if inst:IsA("GuiObject") and props.BackgroundTransparency ~= nil then inst.BackgroundTransparency = 1 end
-	if (inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox")) and props.TextTransparency ~= nil then inst.TextTransparency = 1 end
-	if (inst:IsA("ImageLabel") or inst:IsA("ImageButton")) and props.ImageTransparency ~= nil then inst.ImageTransparency = 1 end
-	if inst:IsA("UIStroke") and props.Transparency ~= nil then inst.Transparency = 1 end
+	if inst:IsA("GuiObject") and props.BackgroundTransparency ~= nil then
+		inst.BackgroundTransparency = 1
+	end
+	if (inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox"))
+		and props.TextTransparency ~= nil then
+		inst.TextTransparency = 1
+	end
+	if (inst:IsA("ImageLabel") or inst:IsA("ImageButton"))
+		and props.ImageTransparency ~= nil then
+		inst.ImageTransparency = 1
+	end
+	if inst:IsA("UIStroke") and props.Transparency ~= nil then
+		inst.Transparency = 1
+	end
 end
 
-local function fadeToRecorded(duration)
+local function fadeToRecorded(duration: number)
 	local info = TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
-	for inst, goals in pairs(studioProps) do if inst and inst.Parent then safeTween(inst, info, goals) end end
+	for inst, goals in pairs(studioProps) do
+		if inst and inst.Parent then safeTween(inst, info, goals) end
+	end
 end
 
-local function fadeToInvisible(duration)
+local function fadeToInvisible(duration: number)
 	local info = TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.In)
 	for inst, props in pairs(studioProps) do
 		if inst and inst.Parent then
-			local goals = {}
-			if inst:IsA("GuiObject") and props.BackgroundTransparency ~= nil then goals.BackgroundTransparency = 1 end
-			if (inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox")) and props.TextTransparency ~= nil then goals.TextTransparency = 1 end
-			if (inst:IsA("ImageLabel") or inst:IsA("ImageButton")) and props.ImageTransparency ~= nil then goals.ImageTransparency = 1 end
-			if inst:IsA("UIStroke") and props.Transparency ~= nil then goals.Transparency = 1 end
+			local goals: { [string]: number } = {}
+			if inst:IsA("GuiObject") and props.BackgroundTransparency ~= nil then
+				goals.BackgroundTransparency = 1
+			end
+			if (inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox"))
+				and props.TextTransparency ~= nil then
+				goals.TextTransparency = 1
+			end
+			if (inst:IsA("ImageLabel") or inst:IsA("ImageButton"))
+				and props.ImageTransparency ~= nil then
+				goals.ImageTransparency = 1
+			end
+			if inst:IsA("UIStroke") and props.Transparency ~= nil then
+				goals.Transparency = 1
+			end
 			if next(goals) then safeTween(inst, info, goals) end
 		end
 	end
 end
 
+-- Record initial transparency values, then make everything invisible
 for _, inst in ipairs(loadingGui:GetDescendants()) do recordProps(inst) end
-for inst, _ in pairs(studioProps) do setInvisible(inst) end
+for inst in pairs(studioProps) do setInvisible(inst) end
 
--- =====================
--- EXECUTION
--- =====================
+-- ============================================================
+-- MAIN EXECUTION
+-- ============================================================
+
 local finished = false
+
 local function cleanup()
 	if finished then return end
 	finished = true
 
-	-- 1. Swoop Camera + Blink (This yields for Swoop + FadeOut)
+	-- 1. Swoop camera back to the player + blink transition (yields)
 	unlockCameraToPlayer()
 
-	-- 2. Unlock Controls & Visuals
+	-- 2. Release input locks
 	unlockControls()
 	disableMovementLock()
-	pcall(function() playerGui:SetAttribute("LoadingScreenActive", false) end)
-	restoreVisuals() 
 
-	pcall(function() if blur and blur.Parent then blur.Size = 0 blur:Destroy() end end)
+	-- 3. Signal other scripts that the loading screen is done
+	pcall(function() playerGui:SetAttribute("LoadingScreenActive", false) end)
+
+	-- 4. Restore any hidden GUIs (safe — externally-managed frames are skipped)
+	restoreVisuals()
+
+	-- 5. Remove blur
+	pcall(function()
+		if blur and blur.Parent then
+			blur.Size = 0
+			blur:Destroy()
+		end
+	end)
+
+	-- 6. Destroy loading screen UI and temporary values
 	pcall(function() loadingGui:Destroy() end)
 	pcall(function() progressValue:Destroy() end)
 end
 
--- Failsafe timeout
+-- Failsafe: force cleanup after a maximum total time
 task.spawn(function()
-	local start = os.clock()
-	while not finished and (os.clock() - start) < FAILSAFE_TOTAL_SECONDS do task.wait(1) end
-	if not finished then cleanup() end
+	local deadline = os.clock() + FAILSAFE_TOTAL_SECONDS
+	while not finished and os.clock() < deadline do
+		task.wait(1)
+	end
+	if not finished then
+		warn("[LoadingScreen] Failsafe triggered — forcing cleanup.")
+		cleanup()
+	end
 end)
 
--- Main Sequence
+-- Main sequence
 task.spawn(function()
 	local ok, err = xpcall(function()
+
 		lockControls()
 		enableMovementLock()
 		startHidingVisuals()
 		blurTo(BLUR_SIZE, BLUR_IN_TIME)
 
-		bgFrame.Visible = true
-		local finalPos = bgFrame.Position
-		local startPos = UDim2.new(finalPos.X.Scale, finalPos.X.Offset, finalPos.Y.Scale + 1.5, finalPos.Y.Offset)
-		bgFrame.Position = startPos
+		-- Slide the loading frame in from below
+		bgFrame.Visible    = true
+		local finalPos     = bgFrame.Position
+		local startPos     = UDim2.new(
+			finalPos.X.Scale, finalPos.X.Offset,
+			finalPos.Y.Scale + 1.5, finalPos.Y.Offset
+		)
+		bgFrame.Position   = startPos
 
-		safeTween(bgFrame, TweenInfo.new(ANIMATION_DURATION, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Position = finalPos })
+		safeTween(
+			bgFrame,
+			TweenInfo.new(ANIMATION_DURATION, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+			{ Position = finalPos }
+		)
 		fadeToRecorded(ANIMATION_DURATION)
 
-		-- Give the UI a moment to appear
-		task.wait(ANIMATION_DURATION * 0.3)
+		task.wait(ANIMATION_DURATION * 0.3) -- let UI settle before incrementing progress
 
-		-- [[ PHASE 1: GAME LOAD ]]
-		-- We allow this tween to run, but we check Game Loaded
+		-- ── PHASE 1: Wait for game to finish loading ─────────────────
 		local t1 = tweenProgress(PHASE_GAME_LOADED_TO, 1.5)
-		if not game:IsLoaded() then 
-			game.Loaded:Wait() 
+		if not game:IsLoaded() then
+			game.Loaded:Wait()
 		else
-			-- If already loaded, wait briefly to show visual progress (Fixes instant jump)
-			t1.Completed:Wait() 
+			t1.Completed:Wait()
 		end
 
-		-- [[ PHASE 2: VIEW PART ]]
+		-- ── PHASE 2: Find & lock the loading view part ───────────────
 		local viewPart = waitForNamedChild(Workspace, VIEW_PART_NAME, VIEW_PART_TIMEOUT)
 		if viewPart then
 			pcall(function() ContentProvider:PreloadAsync({ viewPart }) end)
 			lockCameraTo(viewPart)
 		end
-		
-		-- Smoothly tween to Phase 2 (Wait for it to finish visually)
 		tweenProgress(PHASE_VIEWPART_READY_TO, 1.2).Completed:Wait()
 
-		-- [[ PHASE 3: ASSETS PRELOAD ]]
-		local folder = ReplicatedStorage:FindFirstChild(PRELOAD_FOLDER_NAME)
-		local preloadList = { loadingGui } -- Ensure list isn't empty
-		if folder then for _, inst in ipairs(folder:GetDescendants()) do table.insert(preloadList, inst) end end
+		-- ── PHASE 3: Preload assets ───────────────────────────────────
+		local folder      = ReplicatedStorage:FindFirstChild(PRELOAD_FOLDER_NAME)
+		local preloadList = { loadingGui } -- ensure list is never empty
+		if folder then
+			for _, inst in ipairs(folder:GetDescendants()) do
+				table.insert(preloadList, inst)
+			end
+		end
 		if viewPart then table.insert(preloadList, viewPart) end
 
-		if #preloadList == 0 then
-			tweenProgress(PHASE_PRELOAD_TO, 1.0).Completed:Wait()
-		else
-			-- Calculate step size. If list is small, we add a minimum wait
-			local startVal = progressValue.Value
-			local dist = PHASE_PRELOAD_TO - startVal
-			
-			for i, asset in ipairs(preloadList) do
-				pcall(function() ContentProvider:PreloadAsync({ asset }) end)
-				
-				local alpha = i / #preloadList
-				local target = startVal + (dist * alpha)
-				
-				-- Tween slightly to the new target
-				tweenProgress(target, 0.1) 
-				
-				-- [[ FIX: Force a small wait so the bar doesn't zip instantly ]]
-				if #preloadList < 20 then
-					task.wait(0.05) 
-				else
-					RunService.Heartbeat:Wait()
-				end
+		local startVal = progressValue.Value
+		local dist     = PHASE_PRELOAD_TO - startVal
+
+		for i, asset in ipairs(preloadList) do
+			pcall(function() ContentProvider:PreloadAsync({ asset }) end)
+
+			local alpha  = i / #preloadList
+			local target = startVal + (dist * alpha)
+			tweenProgress(target, 0.1)
+
+			-- Small forced wait so the bar moves visibly on short lists
+			if #preloadList < 20 then
+				task.wait(0.05)
+			else
+				RunService.Heartbeat:Wait()
 			end
 		end
 
-		-- [[ PHASE 4: FINISH ]]
-		-- Tween to 100% and WAIT for it to visually get there
+		-- ── PHASE 4: Finish ───────────────────────────────────────────
 		tweenProgress(PHASE_FINISH_TO, 1.0).Completed:Wait()
-		
 		task.wait(0.25)
 		task.wait(EXTRA_HOLD_SECONDS)
 
-		local exitPos = UDim2.new(finalPos.X.Scale, finalPos.X.Offset, finalPos.Y.Scale - 1.5, finalPos.Y.Offset)
-		safeTween(bgFrame, TweenInfo.new(ANIMATION_DURATION, Enum.EasingStyle.Quart, Enum.EasingDirection.In), { Position = exitPos })
+		-- Slide loading frame out upwards
+		local exitPos = UDim2.new(
+			finalPos.X.Scale, finalPos.X.Offset,
+			finalPos.Y.Scale - 1.5, finalPos.Y.Offset
+		)
+		safeTween(
+			bgFrame,
+			TweenInfo.new(ANIMATION_DURATION, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+			{ Position = exitPos }
+		)
 		fadeToInvisible(ANIMATION_DURATION)
 
-		-- [[ FADE BLUR OUT BEFORE SWOOP STARTS ]]
-		blurTo(0, BLUR_OUT_TIME) 
+		-- Start fading the blur before the swoop begins
+		blurTo(0, BLUR_OUT_TIME)
 
-		-- Wait for UI to be gone
+		-- Wait for the UI exit animation to finish, then hand off to cleanup
 		task.wait(ANIMATION_DURATION)
-
-		-- Run cleanup (Contains the Camera Swoop + Blink)
 		cleanup()
+
 	end, debug.traceback)
 
-	if not ok then warn(err) cleanup() end
+	if not ok then
+		warn("[LoadingScreen] Error in main sequence:\n", err)
+		cleanup()
+	end
 end)
