@@ -209,3 +209,4 @@ Players.PlayerRemoving:Connect(function(player)
 	clearAFKState(player)
 	-- No teleport — player is leaving the game entirely.
 end)
+
