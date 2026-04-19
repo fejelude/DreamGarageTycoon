@@ -8,8 +8,8 @@ local BaseSkinStats = {
 		Description = "Shiny Silver. 2x Earnings!",
 
 		-- 💰 PRICES
-		PriceCash = 1000000,   -- $1 Million
-		PriceRobux = 99,       -- 99 Robux
+		PriceCash = 5000000000,   -- $5B
+		PriceRobux = 149,       -- 99 Robux
 		ProductId = 3538995092, -- ✅ Silver Dev Product ID
 
 		-- 🎨 VISUALS
@@ -28,8 +28,8 @@ local BaseSkinStats = {
 		Description = "Goldify your Base. 3x Earnings!", 
 
 		-- 💰 PRICES
-		PriceCash = 7500000,   -- $7.5 Million
-		PriceRobux = 149,      -- 149 Robux
+		PriceCash = 677000000000,   -- $677B
+		PriceRobux = 449,      -- 149 Robux
 		ProductId = 3537433998,         
 
 		-- 🎨 VISUALS
@@ -48,8 +48,8 @@ local BaseSkinStats = {
 		Description = "Cyan Neon. 4x Earnings!",
 
 		-- 💰 PRICES
-		PriceCash = 45000000,  -- $45 Million
-		PriceRobux = 459,      -- 459 Robux
+		PriceCash = 6700000000000,  -- $6.7T
+		PriceRobux = 1199,      -- 459 Robux
 		ProductId = 3538539066, 
 
 		-- 🎨 VISUALS
@@ -68,8 +68,8 @@ local BaseSkinStats = {
 		Description = "The Final Upgrade. 5x Earnings!",
 
 		-- 💰 PRICES
-		PriceCash = 110000000,  -- $110 Million
-		PriceRobux = 1199,      -- 1,199 Robux
+		PriceCash = 12000000000000,  --12T $
+		PriceRobux = 2199,      -- 1,199 Robux
 		ProductId = 3538565378, 
 
 		-- 🎨 VISUALS
