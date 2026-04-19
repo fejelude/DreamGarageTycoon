@@ -8,6 +8,7 @@
 -- Performance: Cached UserId and Headshot lookups, early-exit validation on remotes.
 -- Notes: DevProduct receipt handling is moved to ReceiptRouter. ProcessReceipt is omitted here.
 -- FIX: Cash is now read from HiddenStats instead of leaderstats to match the new data structure.
+-- UPDATE: 2x AFK multiplier is applied at claim time when plot.IsAFK == true.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -20,15 +21,15 @@ local DEV_PRODUCT_ID = 3509697462
 local TYCOON_FOLDER_NAME = "Tycoons"
 local CLAIM_COOLDOWN = 1.5
 local PROMPT_COOLDOWN_TIME = 2.5 -- 🛡️ SECURITY: DevProduct prompt rate limit
-local MAX_CLAIM_DISTANCE = 20 -- 🛡️ SECURITY: Max studs away to claim
+local MAX_CLAIM_DISTANCE = 20    -- 🛡️ SECURITY: Max studs away to claim
 
 -- 🔊 SOUND CONFIGURATION
 local SUCCESS_SOUND = "rbxassetid://140072726814802"
-local FAIL_SOUND = "rbxassetid://3779045779"
+local FAIL_SOUND    = "rbxassetid://3779045779"
 
 -- 📂 REFERENCES
 local TycoonFolder = Workspace:WaitForChild(TYCOON_FOLDER_NAME)
-local TabletEvent = ReplicatedStorage:FindFirstChild("TabletEvent")
+local TabletEvent  = ReplicatedStorage:FindFirstChild("TabletEvent")
 
 if not TabletEvent then
 	TabletEvent = Instance.new("RemoteEvent")
@@ -37,11 +38,11 @@ if not TabletEvent then
 end
 
 -- 🛡️ STATE MANAGEMENT
-local playerCooldowns = {}
-local promptCooldowns = {} -- 🛡️ SECURITY: State tracking for API abuse prevention
-local nameToUserIdCache = {}
-local thumbnailCache = {}
-local pendingUserIdRequests = {}
+local playerCooldowns          = {}
+local promptCooldowns          = {}
+local nameToUserIdCache        = {}
+local thumbnailCache           = {}
+local pendingUserIdRequests    = {}
 local pendingThumbnailRequests = {}
 
 local function getUserIdCached(playerName)
@@ -144,11 +145,11 @@ local function setupTablet(plot)
 					nukeConstraints(cpsLabel)
 					local function updateCPS()
 						local currentCPS = plot:GetAttribute("CurrentCPS") or 0
-						local baseText = "$ " .. formatNumber(currentCPS) .. "/s"
 						if plot:GetAttribute("IsAFK") == true then
-							cpsLabel.Text = baseText .. " (2x)"
+							-- Show the actual doubled rate so the number matches reality
+							cpsLabel.Text = "$ " .. formatNumber(currentCPS * 2) .. "/s (2x)"
 						else
-							cpsLabel.Text = baseText
+							cpsLabel.Text = "$ " .. formatNumber(currentCPS) .. "/s"
 						end
 					end
 					plot:GetAttributeChangedSignal("CurrentCPS"):Connect(updateCPS)
@@ -158,16 +159,16 @@ local function setupTablet(plot)
 			end
 		end
 
-		local mainPart = model:WaitForChild("Earnings", 10)
+		local mainPart  = model:WaitForChild("Earnings", 10)
 		local claimPart = model:WaitForChild("ClaimPart", 10)
 		if not mainPart or not claimPart then return end
 
 		-- Anchor Parts
-		mainPart.Anchored = true; mainPart.CanCollide = true; mainPart.Velocity = Vector3.zero
+		mainPart.Anchored  = true; mainPart.CanCollide  = true; mainPart.Velocity  = Vector3.zero
 		claimPart.Anchored = true; claimPart.CanCollide = true; claimPart.Velocity = Vector3.zero
 
 		-- 2. GET AVATAR & USERNAME GUIS
-		local avatarGui = mainPart:WaitForChild("AvatarGUI", 10)
+		local avatarGui   = mainPart:WaitForChild("AvatarGUI", 10)
 		local usernameGui = mainPart:WaitForChild("UsernameGUI", 10)
 
 		-- Get Revenue GUI
@@ -179,11 +180,11 @@ local function setupTablet(plot)
 		if not (avatarGui and usernameGui and revenueGui) then return end
 
 		-- 3. GET LABELS & VALUES
-		local avatarLabel = avatarGui:WaitForChild("Avatar-Label")
+		local avatarLabel   = avatarGui:WaitForChild("Avatar-Label")
 		local usernameLabel = usernameGui:WaitForChild("Username")
-		local revenueLabel = revenueGui:WaitForChild("Total-Revenue")
+		local revenueLabel  = revenueGui:WaitForChild("Total-Revenue")
 
-		local ownerVal = plot:WaitForChild("Owner", 10)
+		local ownerVal   = plot:WaitForChild("Owner", 10)
 		local pendingVal = plot:WaitForChild("PendingEarnings", 10)
 
 		nukeConstraints(revenueLabel)
@@ -221,23 +222,24 @@ local function setupTablet(plot)
 			if playerName and playerName ~= "" then
 				usernameLabel.Text = playerName
 
-				-- Prefer online player UserId first, then fall back to cached lookup.
 				local onlinePlayer = Players:FindFirstChild(playerName)
 				local userId = onlinePlayer and onlinePlayer.UserId or getUserIdCached(playerName)
 				avatarLabel.Image = getHeadshotCached(userId)
 			else
 				usernameLabel.Text = "Vacant"
-				avatarLabel.Image = ""
+				avatarLabel.Image  = ""
 			end
 		end
 
 		local function updateRevenue()
-			revenueLabel.Text = formatNumber(pendingVal.Value)
+			local multiplier = plot:GetAttribute("IsAFK") == true and 2 or 1
+			revenueLabel.Text = formatNumber(pendingVal.Value * multiplier)
 		end
 
 		-- 5. LISTENERS
 		ownerVal.Changed:Connect(updateOwnerInfo)
 		pendingVal.Changed:Connect(updateRevenue)
+		plot:GetAttributeChangedSignal("IsAFK"):Connect(updateRevenue) -- instantly refresh display on AFK toggle
 
 		updateOwnerInfo()
 		updateRevenue()
@@ -274,8 +276,8 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 	end
 
 	local pendingVal = plot:FindFirstChild("PendingEarnings")
-	local model = plot:FindFirstChild("ClaimEarnings")
-	local claimPart = nil
+	local model      = plot:FindFirstChild("ClaimEarnings")
+	local claimPart  = nil
 	if model then claimPart = model:FindFirstChild("ClaimPart") end
 
 	if not pendingVal or not claimPart then
@@ -308,15 +310,21 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 		if amount > 0 then
 			pendingVal.Value = 0
 
+			-- 💰 2x AFK MULTIPLIER: Double the payout if the player is on the AFK stand.
+			-- The plot's IsAFK attribute is set/cleared by AFKStandService, so this is
+			-- server-authoritative and cannot be spoofed by the client.
+			local multiplier = plot:GetAttribute("IsAFK") == true and 2 or 1
+			local finalAmount = amount * multiplier
+
 			-- ✅ FIX: Cash now lives in HiddenStats, not leaderstats
 			local hs = player:FindFirstChild("HiddenStats")
 			if hs and hs:FindFirstChild("Cash") then
-				hs.Cash.Value += amount
+				hs.Cash.Value += finalAmount
 			end
 
 			playerCooldowns[player.UserId] = os.clock()
 			playSound(claimPart, SUCCESS_SOUND, 1.0)
-			respondClaim(true, amount)
+			respondClaim(true, finalAmount) -- Send the actual credited amount back to the client
 		else
 			playerCooldowns[player.UserId] = os.clock()
 			playSound(claimPart, FAIL_SOUND, 0.8)
@@ -334,7 +342,6 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 		local amount = pendingVal.Value
 		if amount <= 0 then return end
 
-		-- Use pcall in case MarketplaceService fails internally
 		pcall(function()
 			MarketplaceService:PromptProductPurchase(player, DEV_PRODUCT_ID)
 		end)
