@@ -1,0 +1,87 @@
+-- Purpose: Shared utilities for standard UI buttons (hover animations, sounds, debouncing).
+-- Runs on: Client
+-- Location: ReplicatedStorage > UIButtonUtils
+-- Dependencies: TweenService
+-- Public API: SetupStandardButton
+-- Networking: None
+-- Security: Client side visuals only.
+
+local TweenService = game:GetService("TweenService")
+
+local UIButtonUtils = {}
+
+local HOVER_SOUND_ID = "rbxassetid://6895079853"
+local CLICK_SOUND_ID = "rbxassetid://9083627113"
+
+-- Ensure we only create the sounds once per button if needed, but it's simpler
+-- to just attach them per button if they don't exist.
+local function getOrCreateSound(button, name, soundId)
+	local sound = button:FindFirstChild(name)
+	if not sound then
+		sound = Instance.new("Sound")
+		sound.Name = name
+		sound.SoundId = soundId
+		sound.Parent = button
+	end
+	return sound
+end
+
+function UIButtonUtils.SetupStandardButton(button, informationFrame, onClickCallback)
+	local hoverSound = getOrCreateSound(button, "HoverSound", HOVER_SOUND_ID)
+	local clickSound = getOrCreateSound(button, "ClickSound", CLICK_SOUND_ID)
+
+	if informationFrame then
+		informationFrame.Visible = false
+	end
+
+	local hoverColor = Color3.new(0.7, 0.7, 0.7)
+	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+	local hoverEnterTween = TweenService:Create(button, tweenInfo, {ImageColor3 = hoverColor})
+
+	-- Capture originalColor safely after loading delay so we don't pick up
+	-- mid-tween values if the mouse enters/leaves rapidly
+	local originalColor = Color3.new(1, 1, 1)
+	task.defer(function()
+		originalColor = button.ImageColor3
+	end)
+
+	button.MouseEnter:Connect(function()
+		if not hoverSound.IsPlaying then
+			hoverSound:Play()
+		end
+
+		if informationFrame then
+			informationFrame.Visible = true
+		end
+
+		hoverEnterTween:Play()
+	end)
+
+	button.MouseLeave:Connect(function()
+		if informationFrame then
+			informationFrame.Visible = false
+		end
+
+		local hoverLeaveTween = TweenService:Create(button, tweenInfo, {ImageColor3 = originalColor})
+		hoverLeaveTween:Play()
+	end)
+
+	local isDebouncing = false
+	button.Activated:Connect(function()
+		if isDebouncing then return end
+		isDebouncing = true
+
+		clickSound:Play()
+
+		-- Use pcall/task.spawn in the callback if it yields
+		if onClickCallback then
+			onClickCallback()
+		end
+
+		task.wait(1)
+		isDebouncing = false
+	end)
+end
+
+return UIButtonUtils

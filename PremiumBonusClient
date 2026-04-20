@@ -1,7 +1,7 @@
 -- Purpose: Handles UI logic for the new PremiumBonus feature.
 -- Runs on: Client
 -- Location: StarterGui > PremiumBonus
--- Dependencies: TweenService, MarketplaceService
+-- Dependencies: MarketplaceService, UIButtonUtils
 -- Public API: None
 -- Networking: None
 -- Security: Client side visuals only. Actual premium multiplier is calculated securely on the server.
@@ -9,8 +9,10 @@
 -- Notes: Follows standardized UI button patterns.
 
 local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 
 local player = Players.LocalPlayer
 local gui = script.Parent -- PremiumBonus Frame/ScreenGui
@@ -18,41 +20,12 @@ local button = gui:WaitForChild("Button")
 local information = button:WaitForChild("Information")
 local addedBonusLabel = gui:WaitForChild("AddedBonus")
 
--- Sounds
-local HOVER_SOUND_ID = "rbxassetid://6895079853"
-local CLICK_SOUND_ID = "rbxassetid://9083627113"
+-- Setup UI behavior
+UIButtonUtils.SetupStandardButton(button, information, function()
+	if player.MembershipType == Enum.MembershipType.Premium then
+		return -- don't prompt if already premium
+	end
 
-local hoverSound = Instance.new("Sound")
-hoverSound.SoundId = HOVER_SOUND_ID
-hoverSound.Parent = button
-
-local clickSound = Instance.new("Sound")
-clickSound.SoundId = CLICK_SOUND_ID
-clickSound.Parent = button
-
--- Initial UI State
-information.Visible = false
-
-local originalColor = button.ImageColor3
-local hoverColor = Color3.new(0.7, 0.7, 0.7)
-local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-
-local hoverEnterTween = TweenService:Create(button, tweenInfo, {ImageColor3 = hoverColor})
-local hoverLeaveTween = TweenService:Create(button, tweenInfo, {ImageColor3 = originalColor})
-
-button.MouseEnter:Connect(function()
-	hoverSound:Play()
-	information.Visible = true
-	hoverEnterTween:Play()
-end)
-
-button.MouseLeave:Connect(function()
-	information.Visible = false
-	hoverLeaveTween:Play()
-end)
-
-button.Activated:Connect(function()
-	clickSound:Play()
 	local success, err = pcall(function()
 		MarketplaceService:PromptPremiumPurchase(player)
 	end)
@@ -61,5 +34,16 @@ button.Activated:Connect(function()
 	end
 end)
 
--- The text is static as requested (+50%). We only show it.
-addedBonusLabel.Text = "+50%"
+local function updatePremiumState()
+	if player.MembershipType == Enum.MembershipType.Premium then
+		addedBonusLabel.Text = "+50% (Active!)"
+		-- We can keep the button interactable if we want, or disable it
+		-- but standard practice for Roblox premium is to let the prompt handle it
+		-- However, the prompt fails visually if already owned, so we block it in the callback
+	else
+		addedBonusLabel.Text = "+50%"
+	end
+end
+
+player:GetPropertyChangedSignal("MembershipType"):Connect(updatePremiumState)
+updatePremiumState() -- Initialize
