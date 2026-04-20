@@ -1,0 +1,84 @@
+-- Purpose: Handles UI logic for the new FriendBonus feature.
+-- Runs on: Client
+-- Location: StarterGui > FriendBonus
+-- Dependencies: TweenService, SocialService, SoundService
+-- Public API: None
+-- Networking: None
+-- Security: Friend detection for UI display is based on server-provided attributes.
+-- Performance: Lightweight attribute change listener and localized UI tweens.
+-- Notes: Follows standardized UI button patterns.
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local SocialService = game:GetService("SocialService")
+local SoundService = game:GetService("SoundService")
+
+local player = Players.LocalPlayer
+local gui = script.Parent -- FriendBonus Frame/ScreenGui
+local button = gui:WaitForChild("Button")
+local information = button:WaitForChild("Information")
+local addedBonusLabel = gui:WaitForChild("AddedBonus")
+
+-- Sounds
+local HOVER_SOUND_ID = "rbxassetid://6895079853"
+local CLICK_SOUND_ID = "rbxassetid://9083627113"
+
+local hoverSound = Instance.new("Sound")
+hoverSound.SoundId = HOVER_SOUND_ID
+hoverSound.Parent = button
+
+local clickSound = Instance.new("Sound")
+clickSound.SoundId = CLICK_SOUND_ID
+clickSound.Parent = button
+
+-- Initial UI State
+information.Visible = false
+
+local originalColor = button.ImageColor3
+local hoverColor = Color3.new(0.7, 0.7, 0.7)
+local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+local hoverEnterTween = TweenService:Create(button, tweenInfo, {ImageColor3 = hoverColor})
+local hoverLeaveTween = TweenService:Create(button, tweenInfo, {ImageColor3 = originalColor})
+
+button.MouseEnter:Connect(function()
+	hoverSound:Play()
+	information.Visible = true
+	hoverEnterTween:Play()
+end)
+
+button.MouseLeave:Connect(function()
+	information.Visible = false
+	hoverLeaveTween:Play()
+end)
+
+button.Activated:Connect(function()
+	clickSound:Play()
+	local success, err = pcall(function()
+		SocialService:PromptGameInvite(player)
+	end)
+	if not success then
+		warn("Failed to prompt game invite: " .. tostring(err))
+	end
+end)
+
+local function updateBonusText()
+	local friendsCount = player:GetAttribute("ActiveFriends") or 0
+	if friendsCount == 1 then
+		addedBonusLabel.Text = "+10%  ( 1 friend in the game )"
+	elseif friendsCount == 2 then
+		addedBonusLabel.Text = "+25%  ( 2 friends in the game )"
+	elseif friendsCount == 3 then
+		addedBonusLabel.Text = "+50%  ( 3 friends in the game )"
+	elseif friendsCount == 4 then
+		addedBonusLabel.Text = "+75%  ( 4 friends in the game )"
+	elseif friendsCount >= 5 then
+		addedBonusLabel.Text = "+100% ( 5 friends in the game )"
+	else
+		-- fallback when 0 friends or not yet initialized
+		addedBonusLabel.Text = "+0%  ( 0 friends in the game )"
+	end
+end
+
+player:GetAttributeChangedSignal("ActiveFriends"):Connect(updateBonusText)
+updateBonusText() -- Initialize

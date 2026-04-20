@@ -36,7 +36,22 @@ local function updateMultiplier(player)
 	for _ in pairs(FriendCache[player.UserId]) do count += 1 end
 
 	local clamped = math.min(count, 5)
-	local mult = 1 + (clamped * 0.10)
+
+	-- 1 friend = 10%, 2 = 25%, 3 = 50%, 4 = 75%, 5 = 100%
+	local friendBoostPercentages = {
+		[1] = 0.10,
+		[2] = 0.25,
+		[3] = 0.50,
+		[4] = 0.75,
+		[5] = 1.00
+	}
+
+	local boost = 0
+	if clamped > 0 then
+		boost = friendBoostPercentages[clamped] or 0
+	end
+
+	local mult = 1 + boost
 
 	player:SetAttribute("ActiveFriends", count)
 	player:SetAttribute("FriendMultiplier", mult)
@@ -182,8 +197,9 @@ task.spawn(function()
 
 				if activeLevelFolder then processPadsInFolder(activeLevelFolder:FindFirstChild("Pads")) end
 
-				-- 2. Apply Multipliers (Friends + Skins)
+				-- 2. Apply Multipliers (Friends + Premium + Skins)
 				local friendMultiplier = 1
+				local premiumMultiplier = 1
 				local skinMultiplier = 1
 
 				if ownerValue and ownerValue.Value ~= "" then
@@ -193,14 +209,19 @@ task.spawn(function()
 						local bonus = player:GetAttribute("FriendMultiplier")
 						if bonus then friendMultiplier = bonus end
 
-						-- B. Skin Bonus (Gold Upgrade) ✅ NEW
+						-- B. Premium Bonus
+						if player.MembershipType == Enum.MembershipType.Premium then
+							premiumMultiplier = 1.5 -- +50% bonus
+						end
+
+						-- C. Skin Bonus (Gold Upgrade) ✅ NEW
 						skinMultiplier = GetSkinMultiplier(player)
 					end
 				end
 
-				-- Apply the bonuses: (Base * Friend) * Skin
-				-- Example: (100 CPS * 1.5 Friend) * 1.25 Gold = 187.5 CPS
-				plotTotalCPS = (plotTotalCPS * friendMultiplier) * skinMultiplier
+				-- Apply the bonuses: (((Base * Friend) * Premium) * Skin)
+				-- Example: (((100 CPS * 1.5 Friend) * 1.5 Premium) * 1.25 Gold)
+				plotTotalCPS = ((plotTotalCPS * friendMultiplier) * premiumMultiplier) * skinMultiplier
 
 				-- Update attribute so TabletHandler sees the Boosted CPS (before AFK)
 				plot:SetAttribute("CurrentCPS", plotTotalCPS)
