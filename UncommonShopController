@@ -429,11 +429,14 @@ local function init()
 				local target = currentState and currentState.NextRestock
 				if target then
 					local secondsLeft = math.max(target - now, 0)
-					timerLabel.Text = string.format(
-						"New Cars will restock at : %02d:%02d",
-						math.floor(secondsLeft / 60),
-						secondsLeft % 60
-					)
+					local hoursLeft = math.floor(secondsLeft / 3600)
+					local minsLeft  = math.floor((secondsLeft % 3600) / 60)
+					local secsLeft  = secondsLeft % 60
+					if hoursLeft > 0 then
+						timerLabel.Text = string.format("New Cars will restock at : %02d:%02d:%02d", hoursLeft, minsLeft, secsLeft)
+					else
+						timerLabel.Text = string.format("New Cars will restock at : %02d:%02d", minsLeft, secsLeft)
+					end
 				end
 			end
 		end

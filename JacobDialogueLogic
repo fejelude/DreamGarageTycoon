@@ -87,7 +87,7 @@ local function formatMoney(n)
 	n = tonumber(n) or 0
 	if n < 1000 then return tostring(math.floor(n)) .. "$" end
 	local i = math.floor(math.log(n, 1000))
-	local v = math.pow(1000, i)
+	local v = 1000 ^ i
 	local suffix = SUFFIXES[i] or "?"
 	return string.format("%.2f%s$", n / v, suffix)
 end
@@ -219,7 +219,7 @@ local function typewrite(label, text, onComplete)
 	if not label then return end
 	label.RichText = true
 
-	if currentDialogueJob then task.cancel(currentDialogueJob); currentDialogueJob = nil end
+	if currentDialogueJob then pcall(task.cancel, currentDialogueJob); currentDialogueJob = nil end
 
 	label.Text = text
 	label.MaxVisibleGraphemes = 0
@@ -268,7 +268,7 @@ local function stopInteraction()
 	if not isInteracting then return end
 	isInteracting = false
 
-	if currentDialogueJob then task.cancel(currentDialogueJob) end
+	if currentDialogueJob then pcall(task.cancel, currentDialogueJob) end
 	clearConnections()
 	setFocusMode(false)
 
@@ -345,7 +345,7 @@ local function startInteraction(npcModel)
 			end)
 			table.insert(buttonConnections, deathConn)
 		end
-		if hrp then hrp.Velocity = Vector3.zero; hrp.Anchored = true end
+		if hrp then hrp.AssemblyLinearVelocity = Vector3.zero; hrp.Anchored = true end
 	end
 
 	local myGui = playerGui:WaitForChild(GUI_ID, 5)

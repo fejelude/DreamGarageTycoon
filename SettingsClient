@@ -97,14 +97,14 @@ local function setOtherGuisEnabled(enabled)
 	for _, gui in ipairs(playerGui:GetDescendants()) do
 		if gui:IsA("ScreenGui") and gui ~= screenGui and gui.Name ~= "TouchGui" then
 			if enabled == false then
-				if gui:GetAttribute("WasEnabled") == nil then
-					gui:SetAttribute("WasEnabled", gui.Enabled)
+				if gui.Enabled == true then
+					gui:SetAttribute("WasEnabled", true)
+					gui.Enabled = false
 				end
-				gui.Enabled = false
 			else
-				local was = gui:GetAttribute("WasEnabled")
-				if was ~= nil then
-					gui.Enabled = was
+				local wasEnabled = gui:GetAttribute("WasEnabled")
+				if wasEnabled ~= nil then
+					gui.Enabled = wasEnabled
 					gui:SetAttribute("WasEnabled", nil)
 				end
 			end

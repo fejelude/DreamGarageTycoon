@@ -642,7 +642,7 @@ local function startInteraction(npcModel)
 		local humanoid = player.Character:FindFirstChild("Humanoid")
 		if humanoid then humanoid.WalkSpeed = 0 end
 		if hrp then
-			hrp.Velocity = Vector3.zero
+			hrp.AssemblyLinearVelocity = Vector3.zero
 			hrp.Anchored = true
 		end
 	end

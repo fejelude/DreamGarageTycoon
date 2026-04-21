@@ -178,7 +178,7 @@ local function typewrite(label, text, onComplete)
 	label.RichText = true
 
 	if currentDialogueJob then
-		task.cancel(currentDialogueJob)
+		pcall(task.cancel, currentDialogueJob)
 		currentDialogueJob = nil
 	end
 
@@ -216,7 +216,7 @@ local function stopInteraction()
 	isInteracting = false
 	isLeaving = false
 
-	if currentDialogueJob then task.cancel(currentDialogueJob) end
+	if currentDialogueJob then pcall(task.cancel, currentDialogueJob) end
 	clearConnections()
 	setFocusMode(false)
 
@@ -305,7 +305,7 @@ local function startInteraction(npcModel)
 
 		if humanoid then humanoid.WalkSpeed = 0 end
 		if hrp then
-			hrp.Velocity = Vector3.zero
+			hrp.AssemblyLinearVelocity = Vector3.zero
 			hrp.Anchored = true
 		end
 	end

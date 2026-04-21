@@ -46,7 +46,7 @@ local function formatMoney(n)
 	n = tonumber(n) or 0
 	if n < 1000 then return tostring(math.floor(n)) .. "$" end
 	local i = math.floor(math.log(n, 1000))
-	local v = math.pow(1000, i)
+	local v = 1000 ^ i
 	local suffix = SUFFIXES[i] or "?"
 	-- ✅ FIX: math.floor to 2 decimal places to prevent rounding up
 	-- e.g. 199,999 → 199.99K$ instead of incorrectly rounding to 200.00K$
