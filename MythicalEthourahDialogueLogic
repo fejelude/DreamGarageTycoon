@@ -166,7 +166,7 @@ local function toggleOtherGuis(shouldHide)
 	if shouldHide then
 		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
-		for _, otherGui in pairs(playerGui:GetChildren()) do
+		for _, otherGui in pairs(playerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui")
 				and otherGui.Name ~= GUI_ID
 				and otherGui.Name ~= "MythicalCarsEthourahUi"

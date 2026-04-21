@@ -174,7 +174,7 @@ end
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
 		hiddenGuis = {}
-		for _, otherGui in pairs(playerGui:GetChildren()) do
+		for _, otherGui in pairs(playerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui") and otherGui.Name ~= GUI_ID and otherGui.Enabled == true and otherGui.Name ~= "Balance Indicator" then
 				otherGui.Enabled = false
 				table.insert(hiddenGuis, otherGui)

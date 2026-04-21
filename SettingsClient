@@ -94,7 +94,7 @@ window.Position = UDim2.new(0.5, 0, 0.5, 0)
 
 -- 🟢 HIDE/RESTORE OTHER GUIS
 local function setOtherGuisEnabled(enabled)
-	for _, gui in ipairs(playerGui:GetChildren()) do
+	for _, gui in ipairs(playerGui:GetDescendants()) do
 		if gui:IsA("ScreenGui") and gui ~= screenGui and gui.Name ~= "TouchGui" then
 			if enabled == false then
 				if gui:GetAttribute("WasEnabled") == nil then
