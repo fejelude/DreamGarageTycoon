@@ -7,14 +7,13 @@
 -- Security: Client side visuals only.
 
 local TweenService = game:GetService("TweenService")
-
 local UIButtonUtils = {}
 
 local HOVER_SOUND_ID = "rbxassetid://6895079853"
 local CLICK_SOUND_ID = "rbxassetid://9083627113"
 
--- Ensure we only create the sounds once per button if needed, but it's simpler
--- to just attach them per button if they don't exist.
+local activeInfoFrame = nil -- ✅ Tracks which info frame is currently shown
+
 local function getOrCreateSound(button, name, soundId)
 	local sound = button:FindFirstChild(name)
 	if not sound then
@@ -36,11 +35,8 @@ function UIButtonUtils.SetupStandardButton(button, informationFrame, onClickCall
 
 	local hoverColor = Color3.new(0.7, 0.7, 0.7)
 	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-
 	local hoverEnterTween = TweenService:Create(button, tweenInfo, {ImageColor3 = hoverColor})
 
-	-- Capture originalColor safely after loading delay so we don't pick up
-	-- mid-tween values if the mouse enters/leaves rapidly
 	local originalColor = Color3.new(1, 1, 1)
 	task.defer(function()
 		originalColor = button.ImageColor3
@@ -51,8 +47,14 @@ function UIButtonUtils.SetupStandardButton(button, informationFrame, onClickCall
 			hoverSound:Play()
 		end
 
+		-- ✅ Hide the previously active info frame before showing this one
+		if activeInfoFrame and activeInfoFrame ~= informationFrame then
+			activeInfoFrame.Visible = false
+		end
+
 		if informationFrame then
 			informationFrame.Visible = true
+			activeInfoFrame = informationFrame
 		end
 
 		hoverEnterTween:Play()
@@ -61,6 +63,10 @@ function UIButtonUtils.SetupStandardButton(button, informationFrame, onClickCall
 	button.MouseLeave:Connect(function()
 		if informationFrame then
 			informationFrame.Visible = false
+			-- ✅ Clear the tracker if this was the active one
+			if activeInfoFrame == informationFrame then
+				activeInfoFrame = nil
+			end
 		end
 
 		local hoverLeaveTween = TweenService:Create(button, tweenInfo, {ImageColor3 = originalColor})
@@ -74,7 +80,6 @@ function UIButtonUtils.SetupStandardButton(button, informationFrame, onClickCall
 
 		clickSound:Play()
 
-		-- Use pcall/task.spawn in the callback if it yields
 		if onClickCallback then
 			onClickCallback()
 		end
