@@ -1,0 +1,52 @@
+-- Purpose: Handles UI logic for the new FriendBonus feature.
+-- Runs on: Client
+-- Location: StarterGui > FriendBonus
+-- Dependencies: SocialService, UIButtonUtils
+-- Public API: None
+-- Networking: None
+-- Security: Friend detection for UI display is based on server-provided attributes.
+-- Performance: Lightweight attribute change listener.
+-- Notes: Follows standardized UI button patterns.
+
+local Players = game:GetService("Players")
+local SocialService = game:GetService("SocialService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+
+local player = Players.LocalPlayer
+local gui = script.Parent -- FriendBonus Frame/ScreenGui
+local button = gui:WaitForChild("Button")
+local information = button:WaitForChild("Information")
+local addedBonusLabel = gui:WaitForChild("AddedBonus")
+
+-- Setup UI behavior
+UIButtonUtils.SetupStandardButton(button, information, function()
+	local success, err = pcall(function()
+		SocialService:PromptGameInvite(player)
+	end)
+	if not success then
+		warn("Failed to prompt game invite: " .. tostring(err))
+	end
+end)
+
+local function updateBonusText()
+	local friendsCount = player:GetAttribute("ActiveFriends") or 0
+	if friendsCount == 1 then
+		addedBonusLabel.Text = "+10%  ( 1 friend in the game )"
+	elseif friendsCount == 2 then
+		addedBonusLabel.Text = "+25%  ( 2 friends in the game )"
+	elseif friendsCount == 3 then
+		addedBonusLabel.Text = "+50%  ( 3 friends in the game )"
+	elseif friendsCount == 4 then
+		addedBonusLabel.Text = "+75%  ( 4 friends in the game )"
+	elseif friendsCount >= 5 then
+		addedBonusLabel.Text = "+100% ( 5 friends in the game )"
+	else
+		-- fallback when 0 friends or not yet initialized
+		addedBonusLabel.Text = "+0%  ( 0 friends in the game )"
+	end
+end
+
+player:GetAttributeChangedSignal("ActiveFriends"):Connect(updateBonusText)
+updateBonusText() -- Initialize

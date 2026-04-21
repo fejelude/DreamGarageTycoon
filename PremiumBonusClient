@@ -1,0 +1,49 @@
+-- Purpose: Handles UI logic for the new PremiumBonus feature.
+-- Runs on: Client
+-- Location: StarterGui > PremiumBonus
+-- Dependencies: MarketplaceService, UIButtonUtils
+-- Public API: None
+-- Networking: None
+-- Security: Client side visuals only. Actual premium multiplier is calculated securely on the server.
+-- Performance: Lightweight event listeners.
+-- Notes: Follows standardized UI button patterns.
+
+local Players = game:GetService("Players")
+local MarketplaceService = game:GetService("MarketplaceService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+
+local player = Players.LocalPlayer
+local gui = script.Parent -- PremiumBonus Frame/ScreenGui
+local button = gui:WaitForChild("Button")
+local information = button:WaitForChild("Information")
+local addedBonusLabel = gui:WaitForChild("AddedBonus")
+
+-- Setup UI behavior
+UIButtonUtils.SetupStandardButton(button, information, function()
+	if player.MembershipType == Enum.MembershipType.Premium then
+		return -- don't prompt if already premium
+	end
+
+	local success, err = pcall(function()
+		MarketplaceService:PromptPremiumPurchase(player)
+	end)
+	if not success then
+		warn("Failed to prompt premium purchase: " .. tostring(err))
+	end
+end)
+
+local function updatePremiumState()
+	if player.MembershipType == Enum.MembershipType.Premium then
+		addedBonusLabel.Text = "+50% (Active!)"
+		-- We can keep the button interactable if we want, or disable it
+		-- but standard practice for Roblox premium is to let the prompt handle it
+		-- However, the prompt fails visually if already owned, so we block it in the callback
+	else
+		addedBonusLabel.Text = "+50%"
+	end
+end
+
+player:GetPropertyChangedSignal("MembershipType"):Connect(updatePremiumState)
+updatePremiumState() -- Initialize

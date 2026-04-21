@@ -11,6 +11,8 @@ local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats")) -- ✅ Added Module
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
+local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+
 local PAY_INTERVAL = 1
 local profitAccumulator = {} 
 local FriendCache = {} -- [UserId] = { [FriendId] = true }
@@ -36,7 +38,22 @@ local function updateMultiplier(player)
 	for _ in pairs(FriendCache[player.UserId]) do count += 1 end
 
 	local clamped = math.min(count, 5)
-	local mult = 1 + (clamped * 0.10)
+
+	-- 1 friend = 10%, 2 = 25%, 3 = 50%, 4 = 75%, 5 = 100%
+	local friendBoostPercentages = {
+		[1] = 0.10,
+		[2] = 0.25,
+		[3] = 0.50,
+		[4] = 0.75,
+		[5] = 1.00
+	}
+
+	local boost = 0
+	if clamped > 0 then
+		boost = friendBoostPercentages[clamped] or 0
+	end
+
+	local mult = 1 + boost
 
 	player:SetAttribute("ActiveFriends", count)
 	player:SetAttribute("FriendMultiplier", mult)
@@ -105,6 +122,12 @@ end
 -- 💰 MAIN ECONOMY LOOP
 -- ============================================================================
 
+TycoonFolder.ChildRemoved:Connect(function(plot)
+	if profitAccumulator[plot] then
+		profitAccumulator[plot] = nil
+	end
+end)
+
 local function getLinkedCarValue(pad)
 	local direct = pad:FindFirstChild("LinkedCar")
 	if direct then return direct.Value end
@@ -121,6 +144,31 @@ local function getLinkedCarValue(pad)
 	return nil
 end
 
+-- Helper to gather all pads from a Level Folder
+local function processPadsInFolder(padsFolder)
+	local folderCPS = 0
+	if not padsFolder then return folderCPS end
+
+	for _, pad in pairs(padsFolder:GetChildren()) do
+		local linkedCar = getLinkedCarValue(pad)
+
+		if linkedCar and linkedCar.Parent then
+			-- [[ AUDIT FIX: O(1) LOOKUP ]]
+			local stats = CarLookup[linkedCar.Name]
+
+			if stats then
+				folderCPS = folderCPS + stats.CPS
+			else
+				if not pad:GetAttribute("WarnedMissing") then
+					warn("⚠️ Economy Warning: No stats found for '" .. linkedCar.Name .. "'")
+					pad:SetAttribute("WarnedMissing", true)
+				end
+			end
+		end
+	end
+	return folderCPS
+end
+
 task.spawn(function()
 	print("💰 TycoonEconomy: System Active & Monitoring...")
 
@@ -134,28 +182,6 @@ task.spawn(function()
 			if pendingValue then
 				local plotTotalCPS = 0
 
-				-- Helper to gather all pads from Level1 and Level2
-				local function processPadsInFolder(padsFolder)
-					if not padsFolder then return end
-					for _, pad in pairs(padsFolder:GetChildren()) do
-						local linkedCar = getLinkedCarValue(pad)
-
-						if linkedCar and linkedCar.Parent then
-							-- [[ AUDIT FIX: O(1) LOOKUP ]]
-							local stats = CarLookup[linkedCar.Name]
-
-							if stats then
-								plotTotalCPS = plotTotalCPS + stats.CPS
-							else
-								if not pad:GetAttribute("WarnedMissing") then
-									warn("⚠️ Economy Warning: No stats found for '" .. linkedCar.Name .. "'")
-									pad:SetAttribute("WarnedMissing", true)
-								end
-							end
-						end
-					end
-				end
-
 				-- 1. Calculate Base Income from ACTIVE Level Only
 				local playerBaseLevel = 1
 				if ownerValue and ownerValue.Value ~= "" then
@@ -166,7 +192,6 @@ task.spawn(function()
 				end
 
 				local activeLevelFolder = nil
-				local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 
 				if playerBaseLevel == 1 then
 					activeLevelFolder = plot:FindFirstChild("Level1")
@@ -178,12 +203,17 @@ task.spawn(function()
 					if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
 						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
 					end
+				else
+					warn("⚠️ TycoonEconomy: Unhandled BaseLevel " .. tostring(playerBaseLevel) .. " for plot " .. plot.Name)
 				end
 
-				if activeLevelFolder then processPadsInFolder(activeLevelFolder:FindFirstChild("Pads")) end
+				if activeLevelFolder then
+					plotTotalCPS = plotTotalCPS + processPadsInFolder(activeLevelFolder:FindFirstChild("Pads"))
+				end
 
-				-- 2. Apply Multipliers (Friends + Skins)
+				-- 2. Apply Multipliers (Friends + Premium + Skins)
 				local friendMultiplier = 1
+				local premiumMultiplier = 1
 				local skinMultiplier = 1
 
 				if ownerValue and ownerValue.Value ~= "" then
@@ -193,14 +223,19 @@ task.spawn(function()
 						local bonus = player:GetAttribute("FriendMultiplier")
 						if bonus then friendMultiplier = bonus end
 
-						-- B. Skin Bonus (Gold Upgrade) ✅ NEW
+						-- B. Premium Bonus
+						if player.MembershipType == Enum.MembershipType.Premium then
+							premiumMultiplier = 1.5 -- +50% bonus
+						end
+
+						-- C. Skin Bonus (Gold Upgrade) ✅ NEW
 						skinMultiplier = GetSkinMultiplier(player)
 					end
 				end
 
-				-- Apply the bonuses: (Base * Friend) * Skin
-				-- Example: (100 CPS * 1.5 Friend) * 1.25 Gold = 187.5 CPS
-				plotTotalCPS = (plotTotalCPS * friendMultiplier) * skinMultiplier
+				-- Apply the bonuses: (((Base * Friend) * Premium) * Skin)
+				-- Example: (((100 CPS * 1.5 Friend) * 1.5 Premium) * 1.25 Gold)
+				plotTotalCPS = ((plotTotalCPS * friendMultiplier) * premiumMultiplier) * skinMultiplier
 
 				-- Update attribute so TabletHandler sees the Boosted CPS (before AFK)
 				plot:SetAttribute("CurrentCPS", plotTotalCPS)
