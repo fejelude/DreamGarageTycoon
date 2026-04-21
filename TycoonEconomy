@@ -207,8 +207,8 @@ task.spawn(function()
 					warn("⚠️ TycoonEconomy: Unhandled BaseLevel " .. tostring(playerBaseLevel) .. " for plot " .. plot.Name)
 				end
 
-				if activeLevelFolder then
-					plotTotalCPS = plotTotalCPS + processPadsInFolder(activeLevelFolder:FindFirstChild("Pads"))
+				if activeLevelFolder then 
+					plotTotalCPS = plotTotalCPS + processPadsInFolder(activeLevelFolder:FindFirstChild("Pads")) 
 				end
 
 				-- 2. Apply Multipliers (Friends + Premium + Skins)
