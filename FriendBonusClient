@@ -11,16 +11,14 @@
 local Players = game:GetService("Players")
 local SocialService = game:GetService("SocialService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 
 local player = Players.LocalPlayer
-local gui = script.Parent -- FriendBonus Frame/ScreenGui
+local gui = script.Parent
 local button = gui:WaitForChild("Button")
 local information = button:WaitForChild("Information")
 local addedBonusLabel = gui:WaitForChild("AddedBonus")
 
--- Setup UI behavior
 UIButtonUtils.SetupStandardButton(button, information, function()
 	local success, err = pcall(function()
 		SocialService:PromptGameInvite(player)
@@ -33,20 +31,19 @@ end)
 local function updateBonusText()
 	local friendsCount = player:GetAttribute("ActiveFriends") or 0
 	if friendsCount == 1 then
-		addedBonusLabel.Text = "+10%  ( 1 friend in the game )"
+		addedBonusLabel.Text = "+10%"
 	elseif friendsCount == 2 then
-		addedBonusLabel.Text = "+25%  ( 2 friends in the game )"
+		addedBonusLabel.Text = "+25%"
 	elseif friendsCount == 3 then
-		addedBonusLabel.Text = "+50%  ( 3 friends in the game )"
+		addedBonusLabel.Text = "+50%"
 	elseif friendsCount == 4 then
-		addedBonusLabel.Text = "+75%  ( 4 friends in the game )"
+		addedBonusLabel.Text = "+75%"
 	elseif friendsCount >= 5 then
-		addedBonusLabel.Text = "+100% ( 5 friends in the game )"
+		addedBonusLabel.Text = "+100%"
 	else
-		-- fallback when 0 friends or not yet initialized
-		addedBonusLabel.Text = "+0%  ( 0 friends in the game )"
+		addedBonusLabel.Text = "+0%"
 	end
 end
 
 player:GetAttributeChangedSignal("ActiveFriends"):Connect(updateBonusText)
-updateBonusText() -- Initialize
+updateBonusText()
