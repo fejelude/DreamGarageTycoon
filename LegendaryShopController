@@ -736,6 +736,7 @@ end
 local function UpdateDisplay()
 	if not currentState then return end
 	if activeCarFocus then UpdateCraftingUI(activeCarFocus) end
+	UpdateActiveCraftPanel()
 end
 
 -- ============================================================================
@@ -875,7 +876,7 @@ end
 -- ============================================================================
 -- 🔨  CRAFT
 -- ============================================================================
-local function AttemptCraft(carName)
+local function AttemptCraft(carName, isPremium)
 	if isProcessingPurchase then return end
 	if not isShopOpen or activeCarFocus ~= carName then return end
 	if not currentState or not currentState.CompletedCrafts then return end
@@ -982,12 +983,23 @@ local function AttemptCraft(carName)
 
 	-- Start craft
 	local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
-	local confirmText = string.format(
-		"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
-		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
-		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
-		CONFIRMATION_COLORS.Accent
-	)
+
+	local confirmText = ""
+	if isPremium then
+		confirmText = string.format(
+			"<font color='%s'>Instantly forge </font><b><font color='%s'>%s</font></b><font color='%s'>? You will skip the </font><b><font color='%s'>%s hours</font></b><font color='%s'> wait time using Robux.</font>",
+			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
+			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
+			CONFIRMATION_COLORS.Accent
+		)
+	else
+		confirmText = string.format(
+			"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
+			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
+			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
+			CONFIRMATION_COLORS.Accent
+		)
+	end
 
 	local requestSessionId   = shopSessionId
 	local requestViewVersion = shopViewVersion
@@ -1303,6 +1315,16 @@ local function init()
 		UpdateDisplay()
 	end)
 end
+
+-- Fast loop to update TimeRemainingLabel
+task.spawn(function()
+	while true do
+		task.wait(1)
+		if isShopOpen and gui.Enabled then
+			UpdateActiveCraftPanel()
+		end
+	end
+end)
 
 player.CharacterAdded:Connect(function()
 	closeShopUI(true)

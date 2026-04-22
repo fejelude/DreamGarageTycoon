@@ -734,6 +734,7 @@ end
 local function UpdateDisplay()
 	if not currentState then return end
 	if activeCarFocus then UpdateCraftingUI(activeCarFocus) end
+	UpdateActiveCraftPanel()
 end
 
 -- ============================================================================
@@ -1301,6 +1302,16 @@ local function init()
 		UpdateDisplay()
 	end)
 end
+
+-- Fast loop to update TimeRemainingLabel
+task.spawn(function()
+	while true do
+		task.wait(1)
+		if isShopOpen and gui.Enabled then
+			UpdateActiveCraftPanel()
+		end
+	end
+end)
 
 player.CharacterAdded:Connect(function()
 	closeShopUI(true)
