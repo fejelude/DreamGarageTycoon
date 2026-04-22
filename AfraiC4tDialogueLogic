@@ -69,7 +69,7 @@ local function formatNumber(n)
 	n = tonumber(n) or 0
 	if n < 1000 then return tostring(math.floor(n)) end
 	local i = math.floor(math.log(n, 1000))
-	local v = math.pow(1000, i)
+	local v = 1000 ^ i
 	local suffix = SUFFIXES[i] or "?"
 	return string.format("%.2f%s", n / v, suffix)
 end
@@ -176,7 +176,7 @@ end
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
 		hiddenGuis = {}
-		for _, otherGui in pairs(playerGui:GetChildren()) do
+		for _, otherGui in pairs(playerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui")
 				and otherGui.Name ~= GUI_ID
 				and otherGui.Enabled == true
@@ -215,7 +215,7 @@ local function typewrite(label, text, onComplete)
 	label.RichText = true
 
 	if currentDialogueJob then 
-		task.cancel(currentDialogueJob) 
+		pcall(task.cancel, currentDialogueJob)
 		currentDialogueJob = nil 
 	end
 
@@ -250,7 +250,7 @@ local function stopInteraction()
 	isInteracting = false
 	isLeaving = false
 
-	if currentDialogueJob then task.cancel(currentDialogueJob) end
+	if currentDialogueJob then pcall(task.cancel, currentDialogueJob) end
 	clearConnections() 
 	setFocusMode(false)
 
@@ -338,7 +338,7 @@ local function startInteraction(npcModel)
 
 		if humanoid then humanoid.WalkSpeed = 0 end
 		if hrp then
-			hrp.Velocity = Vector3.zero 
+			hrp.AssemblyLinearVelocity = Vector3.zero
 			hrp.Anchored = true 
 		end
 	end
@@ -424,6 +424,10 @@ local function startInteraction(npcModel)
 		end)
 
 		connectBtn(BTN_WITHDRAW_ID, function()
+			local currentATM = 0
+			if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("ATMBalance") then
+				currentATM = player.leaderstats.ATMBalance.Value
+			end
 			if currentATM <= 0 then
 				setButtonsState(false)
 				local brokeMsgs = {

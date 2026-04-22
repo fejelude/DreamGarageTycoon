@@ -610,7 +610,7 @@ local function toggleOtherGuis(shouldHide)
 	if shouldHide then
 		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
-		for _, g2 in pairs(PlayerGui:GetChildren()) do
+		for _, g2 in pairs(PlayerGui:GetDescendants()) do
 			if g2:IsA("ScreenGui") and g2 ~= gui and g2 ~= cGui
 				and g2.Name ~= NPC_GUI_ID
 				and g2.Enabled == true

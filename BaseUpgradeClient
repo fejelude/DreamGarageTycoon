@@ -182,7 +182,7 @@ local function toggleOtherGuis(shouldHide)
 	local myGui = PlayerGui:FindFirstChild(UI_NAME)
 	if shouldHide then
 		hiddenGuis = {}
-		for _, otherGui in pairs(PlayerGui:GetChildren()) do
+		for _, otherGui in pairs(PlayerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui") 
 				and otherGui ~= myGui 
 				and otherGui.Enabled == true 

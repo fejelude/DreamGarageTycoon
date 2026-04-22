@@ -94,7 +94,7 @@ local function toggleOtherGuis(shouldHide)
 		-- Prevent overwriting if already populated
 		if #hiddenGuis > 0 then return end
 
-		for _, otherGui in pairs(playerGui:GetChildren()) do
+		for _, otherGui in pairs(playerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui")
 				and otherGui.Name ~= GUI_ID
 				and otherGui.Enabled == true
@@ -193,7 +193,7 @@ local function startInteraction(npcModel)
 
 		if humanoid then humanoid.WalkSpeed = 0 end
 		if hrp then
-			hrp.Velocity = Vector3.zero
+			hrp.AssemblyLinearVelocity = Vector3.zero
 			hrp.Anchored = true
 		end
 	end

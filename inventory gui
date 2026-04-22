@@ -175,7 +175,7 @@ local function toggleOtherGuis(shouldHide)
 	local playerGui = player:WaitForChild("PlayerGui")
 	if shouldHide then
 		hiddenGuis = {}
-		for _, gui in ipairs(playerGui:GetChildren()) do
+		for _, gui in ipairs(playerGui:GetDescendants()) do
 			if gui:IsA("ScreenGui") and gui ~= myScreenGui and gui.Enabled == true then
 				gui.Enabled = false
 				table.insert(hiddenGuis, gui)

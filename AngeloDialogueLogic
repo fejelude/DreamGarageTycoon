@@ -134,11 +134,10 @@ end
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
 		hiddenGuis = {}
-		for _, otherGui in pairs(playerGui:GetChildren()) do
+		for _, otherGui in pairs(playerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui")
 				and otherGui.Name ~= GUI_ID
-				and otherGui.Enabled == true
-				and otherGui.Name ~= "Balance Indicator" then
+				and otherGui.Enabled == true then
 
 				otherGui.Enabled = false
 				table.insert(hiddenGuis, otherGui)
@@ -178,7 +177,7 @@ local function typewrite(label, text, onComplete)
 	label.RichText = true
 
 	if currentDialogueJob then
-		task.cancel(currentDialogueJob)
+		pcall(task.cancel, currentDialogueJob)
 		currentDialogueJob = nil
 	end
 
@@ -216,7 +215,7 @@ local function stopInteraction()
 	isInteracting = false
 	isLeaving = false
 
-	if currentDialogueJob then task.cancel(currentDialogueJob) end
+	if currentDialogueJob then pcall(task.cancel, currentDialogueJob) end
 	clearConnections()
 	setFocusMode(false)
 
@@ -305,7 +304,7 @@ local function startInteraction(npcModel)
 
 		if humanoid then humanoid.WalkSpeed = 0 end
 		if hrp then
-			hrp.Velocity = Vector3.zero
+			hrp.AssemblyLinearVelocity = Vector3.zero
 			hrp.Anchored = true
 		end
 	end

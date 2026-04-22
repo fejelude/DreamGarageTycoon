@@ -26,7 +26,7 @@ local function formatNumber(n)
 	if not n then return "0" end
 	if n < 1000 then return tostring(math.floor(n)) end
 	local i = math.floor(math.log(n, 1000))
-	local v = math.pow(1000, i)
+	local v = 1000 ^ i
 	local suffix = SUFFIXES[i] or "?"
 	return string.format("%.2f%s", n / v, suffix)
 end
