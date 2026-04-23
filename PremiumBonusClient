@@ -1,13 +1,3 @@
--- Purpose: Handles UI logic for the new PremiumBonus feature.
--- Runs on: Client
--- Location: StarterGui > PremiumBonus
--- Dependencies: MarketplaceService, UIButtonUtils
--- Public API: None
--- Networking: None
--- Security: Client side visuals only. Actual premium multiplier is calculated securely on the server.
--- Performance: Lightweight event listeners.
--- Notes: Follows standardized UI button patterns.
-
 local Players = game:GetService("Players")
 local MarketplaceService = game:GetService("MarketplaceService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -17,7 +7,7 @@ local player = Players.LocalPlayer
 local gui = script.Parent
 local button = gui:WaitForChild("Button")
 local information = button:WaitForChild("Information")
-local addedBonusLabel = gui:WaitForChild("AddedBonus")
+local addedBonusLabel = button:WaitForChild("AddedBonus") -- ✅ moved under button
 
 UIButtonUtils.SetupStandardButton(button, information, function()
 	if player.MembershipType == Enum.MembershipType.Premium then

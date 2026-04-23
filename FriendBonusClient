@@ -1,13 +1,3 @@
--- Purpose: Handles UI logic for the new FriendBonus feature.
--- Runs on: Client
--- Location: StarterGui > FriendBonus
--- Dependencies: SocialService, UIButtonUtils
--- Public API: None
--- Networking: None
--- Security: Friend detection for UI display is based on server-provided attributes.
--- Performance: Lightweight attribute change listener.
--- Notes: Follows standardized UI button patterns.
-
 local Players = game:GetService("Players")
 local SocialService = game:GetService("SocialService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -17,7 +7,7 @@ local player = Players.LocalPlayer
 local gui = script.Parent
 local button = gui:WaitForChild("Button")
 local information = button:WaitForChild("Information")
-local addedBonusLabel = gui:WaitForChild("AddedBonus")
+local addedBonusLabel = button:WaitForChild("AddedBonus") -- ✅ moved under button
 
 UIButtonUtils.SetupStandardButton(button, information, function()
 	local success, err = pcall(function()

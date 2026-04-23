@@ -22,7 +22,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService      = game:GetService("SoundService")
 local Lighting          = game:GetService("Lighting")
 local TweenService      = game:GetService("TweenService")
-local UserInputService  = game:GetService("UserInputService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
 local player    = Players.LocalPlayer
@@ -33,7 +32,6 @@ local mainFrame = gui:WaitForChild("Mainframe")
 mainFrame.Visible = true
 gui.Enabled       = false
 
-local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local Kit      = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 
 -- ============================================================================
@@ -195,6 +193,10 @@ local TYPEWRITER_SPEED = 0.02
 
 local activeAngeloJob = nil
 local angeloJobId     = 0   -- incremented on every new speak or cancel
+local typingSound = Instance.new("Sound")
+typingSound.SoundId = TYPING_SOUND_ID
+typingSound.Volume = 0.1
+typingSound.Parent = SoundService
 
 -- Returns (npcGui, container, label) — any may be nil if not found
 local function getNpcUI()
@@ -267,11 +269,11 @@ local function angeloSpeak(msg, onDone)
 			label.MaxVisibleGraphemes = i
 
 			if i % 3 == 0 then
-				local s = Instance.new("Sound", SoundService)
-				s.SoundId    = TYPING_SOUND_ID
-				s.Volume     = 0.1
-				s.PlayOnRemove = true
-				s:Destroy()
+				typingSound:Play()
+
+
+
+
 			end
 
 			task.wait(TYPEWRITER_SPEED)
@@ -383,11 +385,13 @@ local function resolveNamedConfirmationButton(root, exactName, aliases)
 	return nil
 end
 
+local _confirmationGui = nil
 local function resolveConfirmationUi()
-	local cGui  = PlayerGui:FindFirstChild("Confirmation") or PlayerGui:WaitForChild("Confirmation", 5)
-	if not cGui then return nil, nil end
-	local cMain = cGui:FindFirstChild("MainFrame") or cGui:WaitForChild("MainFrame", 5)
-	return cGui, cMain
+	if _confirmationGui and _confirmationGui.Parent then return _confirmationGui, _confirmationGui:FindFirstChild("MainFrame") end
+	_confirmationGui = PlayerGui:FindFirstChild("Confirmation") or PlayerGui:WaitForChild("Confirmation", 5)
+	if not _confirmationGui then return nil, nil end
+	local cMain = _confirmationGui:FindFirstChild("MainFrame") or _confirmationGui:WaitForChild("MainFrame", 5)
+	return _confirmationGui, cMain
 end
 
 local function prepareConfirmationButton(b)
@@ -636,7 +640,7 @@ local function setFocusMode(active)
 	local char = player.Character
 	if char and char:FindFirstChild("Humanoid") then
 		char.Humanoid.WalkSpeed = active and 0 or 16
-		char.Humanoid.JumpPower = active and 0 or 50
+		char.Humanoid.JumpHeight = active and 0 or 7.2
 	end
 end
 
@@ -673,11 +677,11 @@ local function UpdateCraftingUI(carName)
 	if not recipe then return end
 
 	local progress   = currentState.CraftProgress[carName] or {}
-	local isCrafting = currentState.ActiveCrafts[carName] ~= nil
-	local allComplete = true
+
+
 
 	for ingredient, requiredAmount in pairs(recipe) do
-		if ingredient == "TargetCar" then continue end
+		if ingredient == "TargetCar" or ingredient == "CraftTime" then continue end
 		local reqFrame = sacrificeItems:FindFirstChild(ingredient)
 		if reqFrame then
 			local details   = reqFrame:FindFirstChild("Details")
@@ -713,7 +717,7 @@ local function UpdateCraftingUI(carName)
 			else
 				if sacBtn  then sacBtn.Visible  = true  end
 				if doneBtn then doneBtn.Visible = false end
-				allComplete = false
+
 			end
 		end
 	end
@@ -733,9 +737,62 @@ local function UpdateCraftingUI(carName)
 	end
 end
 
+
+
+
+
+
+
+
+
+local function UpdateActiveCraftPanel()
+	local panel = gui:FindFirstChild("ActiveCraftPanel")
+	if not panel then return end
+
+	local activeCar, endTime = nil, nil
+	if currentState and currentState.ActiveCrafts then
+		for c, e in pairs(currentState.ActiveCrafts) do
+			activeCar, endTime = c, e
+			break
+		end
+	end
+
+	if activeCar and endTime then
+		local delta = math.max(0, endTime - os.time())
+		local h = math.floor(delta / 3600)
+		local m = math.floor((delta % 3600) / 60)
+		local s = math.floor(delta % 60)
+		panel.Visible = true
+
+		local nameLabel = panel:FindFirstChild("CarNameLabel")
+		if nameLabel then nameLabel.Text = getDisplayCarName(activeCar) end
+
+		local label = panel:FindFirstChild("TimeRemainingLabel")
+		if label then label.Text = string.format("%02d:%02d:%02d", h, m, s) end
+
+		local statusLabel = panel:FindFirstChild("StatusLabel")
+		if statusLabel then statusLabel.Text = "Crafting in progress..." end
+
+		local skipBtn = panel:FindFirstChild("SkipButton")
+		if skipBtn and not skipBtn:GetAttribute("Connected") then
+			skipBtn:SetAttribute("Connected", true)
+			Kit.Tween:SetupButton(skipBtn, function()
+				if skipBtn.Visible and skipBtn.Active and isShopOpen then
+					if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[activeCar] then
+						MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
+					end
+				end
+			end)
+		end
+	else
+		panel.Visible = false
+	end
+end
+
 local function UpdateDisplay()
 	if not currentState then return end
 	if activeCarFocus then UpdateCraftingUI(activeCarFocus) end
+	UpdateActiveCraftPanel()
 end
 
 -- ============================================================================
@@ -811,14 +868,14 @@ local function AttemptSacrifice(carName, ingredient)
 			UpdateDisplay()
 
 			-- Recalculate remaining
-			local allComplete = true
+
 			local itemsLeft   = 0
 			for ing, req in pairs(recipe) do
 				if ing ~= "TargetCar" and ing ~= "CraftTime" then
 					local p = (currentState.CraftProgress[carName]
 						and currentState.CraftProgress[carName][ing]) or 0
 					if p < req then
-						allComplete = false
+
 						-- FIX: Treat Cash as exactly 1 requirement so it doesn't inflate the number.
 						if ing == "Cash" then
 							itemsLeft = itemsLeft + 1
@@ -828,6 +885,7 @@ local function AttemptSacrifice(carName, ingredient)
 					end
 				end
 			end
+			local allComplete = (itemsLeft == 0)
 
 			-- Helper: restores the correct frame after Angelo finishes speaking
 			local craftGui = gui:FindFirstChild(carName .. "Crafting")
@@ -982,6 +1040,7 @@ local function AttemptCraft(carName)
 
 	-- Start craft
 	local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
+
 	local confirmText = string.format(
 		"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
 		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
@@ -1102,7 +1161,6 @@ local function OpenCraftingMenu(carName)
 			if premiumCraftBtn.Visible and premiumCraftBtn.Active
 				and activeCarFocus == carName and isShopOpen then
 				if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
-					-- Found active craft, prompt purchase
 					MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
 				else
 					angeloSpeak(pickRandom({
@@ -1116,7 +1174,7 @@ local function OpenCraftingMenu(carName)
 
 			if sacrificeItems then
 				for ingredient, _ in pairs(RECIPES[carName]) do
-					if ingredient == "TargetCar" then continue end
+					if ingredient == "TargetCar" or ingredient == "CraftTime" then continue end
 					local reqFrame = sacrificeItems:FindFirstChild(ingredient)
 					if reqFrame then
 						local sacBtn = reqFrame:FindFirstChild("SacrificeButton")
@@ -1198,40 +1256,7 @@ local function init()
 		currentState = realState
 		UpdateDisplay()
 
-		-- Check Mythical state for cross-tier lock
-		local mythicalRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes") and ReplicatedStorage.ShopRemotes:FindFirstChild("MythicalShop")
-		local getMythicalState = mythicalRemotes and mythicalRemotes:FindFirstChild("GetMythicalShopState")
-		local mythicState = getMythicalState and getMythicalState:InvokeServer() or {}
 
-		local myCraft, myCraftEnd
-		for c, e in pairs(currentState.ActiveCrafts or {}) do myCraft, myCraftEnd = c, e; break end
-
-		local otherCraft
-		for c, _ in pairs(mythicState.ActiveCrafts or {}) do otherCraft = c; break end
-
-		if myCraft then
-			local delta = math.max(0, myCraftEnd - os.time())
-			local timeStr = string.format("%02d:%02d:%02d",
-				math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
-
-			angeloSpeak(pickRandom({
-				"You are already building the <font color='#00E5FF'>" .. getDisplayCarName(myCraft) .. "</font>! It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-				"The forge is occupied making your <font color='#00E5FF'>" .. getDisplayCarName(myCraft) .. "</font>. Wait <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			}), function()
-				if not isActiveShopSession(sessionId) then return end
-				task.wait(3.5)
-				if not isActiveShopSession(sessionId) then return end
-				closeShopUI(true)
-				MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
-			end)
-			return
-		elseif otherCraft then
-			angeloSpeak("You are already busy crafting a Mythical car. Come back when you are finished there.", function()
-				if not isActiveShopSession(sessionId) then return end
-				closeShopUI(true)
-			end)
-			return
-		end
 
 		-- Check for unacknowledged completed crafts
 		local recentCompletedCar = nil
@@ -1303,6 +1328,16 @@ local function init()
 		UpdateDisplay()
 	end)
 end
+
+-- Fast loop to update TimeRemainingLabel
+task.spawn(function()
+	while true do
+		task.wait(1)
+		if isShopOpen and gui.Enabled then
+			UpdateActiveCraftPanel()
+		end
+	end
+end)
 
 player.CharacterAdded:Connect(function()
 	closeShopUI(true)

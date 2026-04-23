@@ -106,7 +106,7 @@ local function showNotification(message: string)
 	currentNotifId += 1
 	local myId = currentNotifId
 
-	notifText.Text    = message
+	notifText.Text     = message
 	notifFrame.Visible = true
 	playRestockSound()
 
@@ -136,7 +136,7 @@ local function buildMessage(arg1: string, arg2: any): string?
 		else
 			return string.format(
 				[[🔒 <font color="%s"><b>%s</b></font> Shop has restocked!! ]] ..
-				[[(Unlock at <font color="#FF4444">%s</font>)]],
+					[[(Unlock at <font color="#FF4444">%s</font>)]],
 				color, rarity, requiredRank
 			)
 		end
@@ -164,7 +164,7 @@ local function buildMessage(arg1: string, arg2: any): string?
 
 			return string.format(
 				[[<font color="%s"><b>%s Car</b></font> has been restocked to the ]] ..
-				[[<font color="%s"><b>%s</b></font> Shop!]],
+					[[<font color="%s"><b>%s</b></font> Shop!]],
 				color, nameStr, color, rarity
 			)
 		else
@@ -183,6 +183,11 @@ end
 --   hold the latest message and display it once the screen clears.
 --   Only the most recent message is kept — stale restocks aren't
 --   worth showing after a 30-second load.
+--
+--   FIX: watchLoadingEnd is now also called from the event handler
+--   whenever a message is queued, so the watcher is guaranteed to
+--   exist regardless of startup-timing races. A duplicate-connection
+--   guard (loadingWatchConn check) prevents double-firing.
 -- ============================================================
 
 local pendingMessage: string? = nil
@@ -191,10 +196,10 @@ local function isLoadingActive(): boolean
 	return playerGui:GetAttribute("LoadingScreenActive") == true
 end
 
--- Watch for the loading screen to finish
 local loadingWatchConn: RBXScriptConnection? = nil
 local function watchLoadingEnd()
-	if not isLoadingActive() then return end -- Already done
+	if not isLoadingActive() then return end
+	if loadingWatchConn then return end  -- already watching, don't stack connections
 
 	loadingWatchConn = playerGui:GetAttributeChangedSignal("LoadingScreenActive"):Connect(function()
 		if not isLoadingActive() then
@@ -212,7 +217,7 @@ local function watchLoadingEnd()
 	end)
 end
 
-watchLoadingEnd()
+watchLoadingEnd() -- best-effort attempt at startup
 
 -- ============================================================
 -- EVENT HANDLER
@@ -230,6 +235,7 @@ RestockNotificationEvent.OnClientEvent:Connect(function(arg1, arg2)
 	if isLoadingActive() then
 		-- Loading screen is up — queue it (overwrite any older pending msg)
 		pendingMessage = result
+		watchLoadingEnd() -- ensure watcher is active regardless of startup timing
 	else
 		showNotification(result)
 	end
