@@ -195,6 +195,10 @@ local TYPEWRITER_SPEED = 0.02
 
 local activeAngeloJob = nil
 local angeloJobId     = 0   -- incremented on every new speak or cancel
+local typingSound = Instance.new("Sound")
+typingSound.SoundId = TYPING_SOUND_ID
+typingSound.Volume = 0.1
+typingSound.Parent = SoundService
 
 -- Returns (npcGui, container, label) — any may be nil if not found
 local function getNpcUI()
@@ -267,11 +271,11 @@ local function angeloSpeak(msg, onDone)
 			label.MaxVisibleGraphemes = i
 
 			if i % 3 == 0 then
-				local s = Instance.new("Sound", SoundService)
-				s.SoundId    = TYPING_SOUND_ID
-				s.Volume     = 0.1
-				s.PlayOnRemove = true
-				s:Destroy()
+				typingSound:Play()
+
+
+
+
 			end
 
 			task.wait(TYPEWRITER_SPEED)
@@ -383,11 +387,13 @@ local function resolveNamedConfirmationButton(root, exactName, aliases)
 	return nil
 end
 
+local _confirmationGui = nil
 local function resolveConfirmationUi()
-	local cGui  = PlayerGui:FindFirstChild("Confirmation") or PlayerGui:WaitForChild("Confirmation", 5)
-	if not cGui then return nil, nil end
-	local cMain = cGui:FindFirstChild("MainFrame") or cGui:WaitForChild("MainFrame", 5)
-	return cGui, cMain
+	if _confirmationGui and _confirmationGui.Parent then return _confirmationGui, _confirmationGui:FindFirstChild("MainFrame") end
+	_confirmationGui = PlayerGui:FindFirstChild("Confirmation") or PlayerGui:WaitForChild("Confirmation", 5)
+	if not _confirmationGui then return nil, nil end
+	local cMain = _confirmationGui:FindFirstChild("MainFrame") or _confirmationGui:WaitForChild("MainFrame", 5)
+	return _confirmationGui, cMain
 end
 
 local function prepareConfirmationButton(b)
@@ -636,7 +642,7 @@ local function setFocusMode(active)
 	local char = player.Character
 	if char and char:FindFirstChild("Humanoid") then
 		char.Humanoid.WalkSpeed = active and 0 or 16
-		char.Humanoid.JumpPower = active and 0 or 50
+		char.Humanoid.JumpHeight = active and 0 or 7.2
 	end
 end
 
@@ -673,11 +679,11 @@ local function UpdateCraftingUI(carName)
 	if not recipe then return end
 
 	local progress   = currentState.CraftProgress[carName] or {}
-	local isCrafting = currentState.ActiveCrafts[carName] ~= nil
-	local allComplete = true
+
+
 
 	for ingredient, requiredAmount in pairs(recipe) do
-		if ingredient == "TargetCar" then continue end
+		if ingredient == "TargetCar" or ingredient == "CraftTime" then continue end
 		local reqFrame = sacrificeItems:FindFirstChild(ingredient)
 		if reqFrame then
 			local details   = reqFrame:FindFirstChild("Details")
@@ -713,7 +719,7 @@ local function UpdateCraftingUI(carName)
 			else
 				if sacBtn  then sacBtn.Visible  = true  end
 				if doneBtn then doneBtn.Visible = false end
-				allComplete = false
+
 			end
 		end
 	end
@@ -812,14 +818,14 @@ local function AttemptSacrifice(carName, ingredient)
 			UpdateDisplay()
 
 			-- Recalculate remaining
-			local allComplete = true
+
 			local itemsLeft   = 0
 			for ing, req in pairs(recipe) do
 				if ing ~= "TargetCar" and ing ~= "CraftTime" then
 					local p = (currentState.CraftProgress[carName]
 						and currentState.CraftProgress[carName][ing]) or 0
 					if p < req then
-						allComplete = false
+
 						-- FIX: Treat Cash as exactly 1 requirement so it doesn't inflate the number.
 						if ing == "Cash" then
 							itemsLeft = itemsLeft + 1
@@ -1128,7 +1134,7 @@ local function OpenCraftingMenu(carName)
 
 			if sacrificeItems then
 				for ingredient, _ in pairs(RECIPES[carName]) do
-					if ingredient == "TargetCar" then continue end
+					if ingredient == "TargetCar" or ingredient == "CraftTime" then continue end
 					local reqFrame = sacrificeItems:FindFirstChild(ingredient)
 					if reqFrame then
 						local sacBtn = reqFrame:FindFirstChild("SacrificeButton")

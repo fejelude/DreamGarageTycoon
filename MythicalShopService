@@ -29,7 +29,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage     = game:GetService("ServerStorage")
 local Players           = game:GetService("Players")
-local HttpService       = game:GetService("HttpService")
+
 
 -- =========================
 -- MYTHICAL CONFIG (END-GAME RARITY)
@@ -80,7 +80,7 @@ local OPEN_REQUEST_COOLDOWN_SECONDS = 1
 -- =========================
 -- MODULES
 -- =========================
-local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
 
 -- =========================
 -- REMOTES (ISOLATED)
@@ -173,7 +173,7 @@ local function safeInvoke(bindable, timeout, ...)
 
 	local start = os.clock()
 	while not finished and (os.clock() - start) < timeout do
-		task.wait()
+		task.wait(0.05)
 	end
 
 	if not finished       then return false, "Timeout" end
@@ -317,6 +317,99 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	local ethourahRoot = ethourah and ethourah:FindFirstChild("HumanoidRootPart")
 	if not ethourahRoot then return false, "NPC missing" end
 
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
 	local recipe = RECIPES[carName]
 	if not recipe              then return false, "Invalid Mythical Car" end
 	if not recipe[ingredient]  then return false, "Invalid Ingredient"    end
@@ -328,7 +421,8 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 
 	local pOk, logicOk, msg = pcall(function()
 		local session        = getSession(player)
-		local progress       = session.CraftProgress[carName] or {}
+		if not session.CraftProgress[carName] then session.CraftProgress[carName] = {} end
+		local progress       = session.CraftProgress[carName]
 		local requiredAmount = recipe[ingredient]
 		local currentAmount  = progress[ingredient] or 0
 
@@ -386,6 +480,99 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 	local ethourah     = npcs and npcs:FindFirstChild("ethourah")
 	local ethourahRoot = ethourah and ethourah:FindFirstChild("HumanoidRootPart")
 	if not ethourahRoot then return false, "NPC missing" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
+
+	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
+	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
 
 	local recipe = RECIPES[carName]
 	if not recipe then return false, "Invalid Mythical Car" end
@@ -505,7 +692,7 @@ task.spawn(function()
 					else
 						warn("⚠️ [MythicalShop] Failed to grant " .. realToolName .. " to " .. player.Name)
 						-- Revert so the loop retries on the next tick
-						session.ActiveCrafts[carName]   = endTime
+						session.ActiveCrafts[carName] = os.time() + 30
 						session.CompletedCrafts[carName] = nil
 					end
 				end
