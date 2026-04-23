@@ -22,7 +22,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService      = game:GetService("SoundService")
 local Lighting          = game:GetService("Lighting")
 local TweenService      = game:GetService("TweenService")
-local UserInputService  = game:GetService("UserInputService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
 local player    = Players.LocalPlayer
@@ -33,7 +32,6 @@ local mainFrame = gui:WaitForChild("Mainframe")
 mainFrame.Visible = true
 gui.Enabled       = false
 
-local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local Kit      = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 
 -- ============================================================================
@@ -739,6 +737,72 @@ local function UpdateCraftingUI(carName)
 	end
 end
 
+
+local function UpdateActiveCraftPanel()
+	local panel = gui:FindFirstChild("ActiveCraftPanel")
+	if not panel then return end
+
+	local activeCar, endTime = nil, nil
+	if currentState and currentState.ActiveCrafts then
+		for c, e in pairs(currentState.ActiveCrafts) do
+			activeCar, endTime = c, e
+			break
+		end
+	end
+
+	if activeCar and endTime then
+		local delta = math.max(0, endTime - os.time())
+		local h = math.floor(delta / 3600)
+		local m = math.floor((delta % 3600) / 60)
+		local s = math.floor(delta % 60)
+		panel.Visible = true
+
+		local nameLabel = panel:FindFirstChild("CarNameLabel")
+		if nameLabel then nameLabel.Text = getDisplayCarName(activeCar) end
+
+		local label = panel:FindFirstChild("TimeRemainingLabel")
+		if label then label.Text = string.format("%02d:%02d:%02d", h, m, s) end
+
+		local statusLabel = panel:FindFirstChild("StatusLabel")
+		if statusLabel then statusLabel.Text = "Crafting in progress..." end
+	else
+		panel.Visible = false
+	end
+end
+
+
+local function UpdateActiveCraftPanel()
+	local panel = gui:FindFirstChild("ActiveCraftPanel")
+	if not panel then return end
+
+	local activeCar, endTime = nil, nil
+	if currentState and currentState.ActiveCrafts then
+		for c, e in pairs(currentState.ActiveCrafts) do
+			activeCar, endTime = c, e
+			break
+		end
+	end
+
+	if activeCar and endTime then
+		local delta = math.max(0, endTime - os.time())
+		local h = math.floor(delta / 3600)
+		local m = math.floor((delta % 3600) / 60)
+		local s = math.floor(delta % 60)
+		panel.Visible = true
+
+		local nameLabel = panel:FindFirstChild("CarNameLabel")
+		if nameLabel then nameLabel.Text = getDisplayCarName(activeCar) end
+
+		local label = panel:FindFirstChild("TimeRemainingLabel")
+		if label then label.Text = string.format("%02d:%02d:%02d", h, m, s) end
+
+		local statusLabel = panel:FindFirstChild("StatusLabel")
+		if statusLabel then statusLabel.Text = "Crafting in progress..." end
+	else
+		panel.Visible = false
+	end
+end
+
 local function UpdateDisplay()
 	if not currentState then return end
 	if activeCarFocus then UpdateCraftingUI(activeCarFocus) end
@@ -835,6 +899,7 @@ local function AttemptSacrifice(carName, ingredient)
 					end
 				end
 			end
+			local allComplete = (itemsLeft == 0)
 
 			-- Helper: restores the correct frame after Angelo finishes speaking
 			local craftGui = gui:FindFirstChild(carName .. "Crafting")
@@ -990,22 +1055,12 @@ local function AttemptCraft(carName, isPremium)
 	-- Start craft
 	local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
 
-	local confirmText = ""
-	if isPremium then
-		confirmText = string.format(
-			"<font color='%s'>Instantly forge </font><b><font color='%s'>%s</font></b><font color='%s'>? You will skip the </font><b><font color='%s'>%s hours</font></b><font color='%s'> wait time using Robux.</font>",
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
-			CONFIRMATION_COLORS.Accent
-		)
-	else
-		confirmText = string.format(
-			"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
-			CONFIRMATION_COLORS.Accent
-		)
-	end
+	local confirmText = string.format(
+		"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
+		CONFIRMATION_COLORS.Accent
+	)
 
 	local requestSessionId   = shopSessionId
 	local requestViewVersion = shopViewVersion
@@ -1029,19 +1084,24 @@ local function AttemptCraft(carName, isPremium)
 			if success then
 				Kit.Sound:Play("BuySuccess")
 				showFeedback("Crafting Started!", FEEDBACK_COLORS.Success)
-				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
-					local timeStr = "..."
-					if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
-						local delta = math.max(0, currentState.ActiveCrafts[carName] - os.time())
-						timeStr = string.format("%02d:%02d:%02d",
-							math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
-					end
-					angeloSpeak(pickRandom({
-						"Alright im working on making your <font color='#B652FF'>" .. displayName .. "</font>, be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-						"Crafting underway homie. The <font color='#B652FF'>" .. displayName .. "</font> will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-					}), restoreToCraftingFrame)
+				if isPremium then
+					MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
+					restoreToCraftingFrame()
 				else
-					mainFrame.Visible = true
+					if requestViewVersion == shopViewVersion and activeCarFocus == carName then
+						local timeStr = "..."
+						if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
+							local delta = math.max(0, currentState.ActiveCrafts[carName] - os.time())
+							timeStr = string.format("%02d:%02d:%02d",
+								math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
+						end
+						angeloSpeak(pickRandom({
+							"Alright im working on making your <font color='#B652FF'>" .. displayName .. "</font>, be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+							"Crafting underway homie. The <font color='#B652FF'>" .. displayName .. "</font> will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+						}), restoreToCraftingFrame)
+					else
+						mainFrame.Visible = true
+					end
 				end
 			else
 				Kit.Sound:Play("BuyFail")
@@ -1119,15 +1179,7 @@ local function OpenCraftingMenu(carName)
 		Kit.Tween:SetupButton(premiumCraftBtn, function()
 			if premiumCraftBtn.Visible and premiumCraftBtn.Active
 				and activeCarFocus == carName and isShopOpen then
-				if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
-					-- Found active craft, prompt purchase
-					MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
-				else
-					angeloSpeak(pickRandom({
-						"You don't have an active build for the <font color='#00E5FF'>" .. getDisplayCarName(carName) .. "</font> yet.",
-						"Start the build before trying to speed it up.",
-					}))
-				end
+				AttemptCraft(carName, true)
 			end
 		end)
 	end
