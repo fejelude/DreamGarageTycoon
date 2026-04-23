@@ -393,11 +393,11 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 
 		-- Cross-tier lock (Mythical Check)
 		local mythicalRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes") and ReplicatedStorage.ShopRemotes:FindFirstChild("MythicalShop")
-		local getMythicalState = mythicalRemotes and mythicalRemotes:FindFirstChild("GetMythicalShopState")
-		if getMythicalState then
-			local mythicState = getMythicalState:InvokeServer(player)
-			if mythicState and type(mythicState) == "table" and mythicState.ActiveCrafts and next(mythicState.ActiveCrafts) ~= nil then
-				return false, "You are already busy crafting a Mythical car."
+		local MythicalPersistenceBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
+		if MythicalPersistenceBindable then
+			local ok, mythicSession = safeInvoke(MythicalPersistenceBindable, 2, "Get", player)
+			if ok and mythicSession and mythicSession.ActiveCrafts and next(mythicSession.ActiveCrafts) ~= nil then
+				return false, "You are already crafting a Mythical car!"
 			end
 		end
 
@@ -439,15 +439,27 @@ SkipCraftFunc.OnInvoke = function(player)
 	if not player then return false, "No player provided" end
 	local session = getSession(player)
 
+	local activeCars = {}
+	for carName in pairs(session.ActiveCrafts) do
+		table.insert(activeCars, carName)
+	end
+
 	local foundActive = false
-	for carName, endTime in pairs(session.ActiveCrafts) do
+	for _, carName in ipairs(activeCars) do
 		session.ActiveCrafts[carName] = nil
 		session.CompletedCrafts[carName] = os.time()
 		local realToolName = RECIPES[carName].TargetCar
-		safeInvoke(LegendaryInventoryBindable, 3, "GiveTool", player, realToolName)
-		pushUpdate(player, session, "Skipped")
-		safeInvoke(LegendaryInventoryBindable, 2, "MarkDirty", player)
-		foundActive = true
+		local invokeOk, giveResult = safeInvoke(LegendaryInventoryBindable, 3, "GiveTool", player, realToolName)
+
+		if invokeOk and giveResult ~= false then
+			pushUpdate(player, session, "Skipped")
+			safeInvoke(LegendaryInventoryBindable, 2, "MarkDirty", player)
+			foundActive = true
+		else
+			warn("⚠️ [LegendaryShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name)
+			session.ActiveCrafts[carName] = os.time() + 60
+			session.CompletedCrafts[carName] = nil
+		end
 	end
 
 	if not foundActive then

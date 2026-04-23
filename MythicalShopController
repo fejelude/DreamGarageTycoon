@@ -736,37 +736,11 @@ local function UpdateCraftingUI(carName)
 end
 
 
-local function UpdateActiveCraftPanel()
-	local panel = gui:FindFirstChild("ActiveCraftPanel")
-	if not panel then return end
 
-	local activeCar, endTime = nil, nil
-	if currentState and currentState.ActiveCrafts then
-		for c, e in pairs(currentState.ActiveCrafts) do
-			activeCar, endTime = c, e
-			break
-		end
-	end
 
-	if activeCar and endTime then
-		local delta = math.max(0, endTime - os.time())
-		local h = math.floor(delta / 3600)
-		local m = math.floor((delta % 3600) / 60)
-		local s = math.floor(delta % 60)
-		panel.Visible = true
 
-		local nameLabel = panel:FindFirstChild("CarNameLabel")
-		if nameLabel then nameLabel.Text = getDisplayCarName(activeCar) end
 
-		local label = panel:FindFirstChild("TimeRemainingLabel")
-		if label then label.Text = string.format("%02d:%02d:%02d", h, m, s) end
 
-		local statusLabel = panel:FindFirstChild("StatusLabel")
-		if statusLabel then statusLabel.Text = "Crafting in progress..." end
-	else
-		panel.Visible = false
-	end
-end
 
 
 local function UpdateActiveCraftPanel()
@@ -796,6 +770,18 @@ local function UpdateActiveCraftPanel()
 
 		local statusLabel = panel:FindFirstChild("StatusLabel")
 		if statusLabel then statusLabel.Text = "Crafting in progress..." end
+
+		local skipBtn = panel:FindFirstChild("SkipButton")
+		if skipBtn and not skipBtn:GetAttribute("Connected") then
+			skipBtn:SetAttribute("Connected", true)
+			Kit.Tween:SetupButton(skipBtn, function()
+				if skipBtn.Visible and skipBtn.Active and isShopOpen then
+					if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[activeCar] then
+						MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
+					end
+				end
+			end)
+		end
 	else
 		panel.Visible = false
 	end
@@ -945,7 +931,7 @@ end
 -- ============================================================================
 -- 🔨  CRAFT
 -- ============================================================================
-local function AttemptCraft(carName, isPremium)
+local function AttemptCraft(carName)
 	if isProcessingPurchase then return end
 	if not isShopOpen or activeCarFocus ~= carName then return end
 	if not currentState or not currentState.CompletedCrafts then return end
@@ -1052,22 +1038,12 @@ local function AttemptCraft(carName, isPremium)
 
 	-- Start craft
 	local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
-	local confirmText = ""
-	if isPremium then
-		confirmText = string.format(
-			"<font color='%s'>Instantly forge </font><b><font color='%s'>%s</font></b><font color='%s'>? You will skip the </font><b><font color='%s'>%s hours</font></b><font color='%s'> wait time using Robux.</font>",
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
-			CONFIRMATION_COLORS.Accent
-		)
-	else
-		confirmText = string.format(
-			"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
-			CONFIRMATION_COLORS.Accent
-		)
-	end
+	local confirmText = string.format(
+		"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
+		CONFIRMATION_COLORS.Accent
+	)
 
 	local requestSessionId   = shopSessionId
 	local requestViewVersion = shopViewVersion
@@ -1091,24 +1067,19 @@ local function AttemptCraft(carName, isPremium)
 			if success then
 				Kit.Sound:Play("BuySuccess")
 				showFeedback("Crafting Started!", FEEDBACK_COLORS.Success)
-				if isPremium then
-					MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
-					restoreToCraftingFrame()
-				else
-					if requestViewVersion == shopViewVersion and activeCarFocus == carName then
-						local timeStr = "..."
-						if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
-							local delta = math.max(0, currentState.ActiveCrafts[carName] - os.time())
-							timeStr = string.format("%02d:%02d:%02d",
-								math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
-						end
-						ethourahSpeak(pickRandom({
-							"Alright im working on making your <font color='#B652FF'>" .. displayName .. "</font>, be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-							"Crafting underway homie. The <font color='#B652FF'>" .. displayName .. "</font> will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-						}), restoreToCraftingFrame)
-					else
-						mainFrame.Visible = true
+				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
+					local timeStr = "..."
+					if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
+						local delta = math.max(0, currentState.ActiveCrafts[carName] - os.time())
+						timeStr = string.format("%02d:%02d:%02d",
+							math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
 					end
+					ethourahSpeak(pickRandom({
+						"Alright im working on making your <font color='#B652FF'>" .. displayName .. "</font>, be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+						"Crafting underway homie. The <font color='#B652FF'>" .. displayName .. "</font> will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+					}), restoreToCraftingFrame)
+				else
+					mainFrame.Visible = true
 				end
 			else
 				Kit.Sound:Play("BuyFail")
@@ -1186,7 +1157,14 @@ local function OpenCraftingMenu(carName)
 		Kit.Tween:SetupButton(premiumCraftBtn, function()
 			if premiumCraftBtn.Visible and premiumCraftBtn.Active
 				and activeCarFocus == carName and isShopOpen then
-				AttemptCraft(carName, true)
+				if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
+					MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
+				else
+					ethourahSpeak(pickRandom({
+						"You don't have an active build for the <font color='#00E5FF'>" .. getDisplayCarName(carName) .. "</font> yet.",
+						"Start the build before trying to speed it up.",
+					}))
+				end
 			end
 		end)
 	end
