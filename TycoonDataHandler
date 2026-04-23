@@ -674,12 +674,13 @@ local function save(player, isClosing)
 	if session.IsSaving then
 		if isClosing then
 			local s = os.clock()
-			while session.IsSaving and (os.clock() - s < 4) do
-				task.wait(0.1)
+			while session.IsSaving and (os.clock() - s < 5) do
+				task.wait(0.05)
 			end
 			if session.IsSaving then
-				warn("⚠️ Save Lock timed out. Forcing save.")
+				warn("⚠️ [Save] Closing save aborted — autosave still running for " .. player.Name)
 				session.IsSaving = false
+				return
 			end
 		else
 			return
@@ -693,7 +694,23 @@ local function save(player, isClosing)
 
 	local saveSucceeded = false
 
-	local function executeSave()
+	local function safeShopGet(bindable, player)
+	if not bindable then return {} end
+	local result = {}
+	local finished = false
+	task.spawn(function()
+		local ok, data = pcall(function() return bindable:Invoke("Get", player) end)
+		if ok and type(data) == "table" then result = data end
+		finished = true
+	end)
+	local start = os.clock()
+	while not finished and (os.clock() - start) < 3 do
+		task.wait(0.05)
+	end
+	return result
+end
+
+local function executeSave()
 		print("💾 Saving data for " .. player.Name .. "...")
 
 		local currentUnlockedPad = player:GetAttribute("HighestUnlockedPad") or 1
@@ -795,35 +812,35 @@ local function save(player, isClosing)
 		-- [[ COMMON SHOP SYNC ]]
 		local shopBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
 		local currentShopData = {}
-		if shopBindable then currentShopData = shopBindable:Invoke("Get", player) or {} end
+		if shopBindable then currentShopData = safeShopGet(shopBindable, player) end
 
 		-- [[ 🟢 UNCOMMON SHOP SYNC ]]
 		local uncommonShopBindable = ServerStorage:FindFirstChild("UncommonShopPersistenceFunction")
 		local currentUncommonShopData = {}
-		if uncommonShopBindable then currentUncommonShopData = uncommonShopBindable:Invoke("Get", player) or {} end
+		if uncommonShopBindable then currentUncommonShopData = safeShopGet(uncommonShopBindable, player) end
 
 		-- [[ 🟣 RARE SHOP SYNC ]]
 		local rareShopBindable = ServerStorage:FindFirstChild("RareShopPersistenceFunction")
 		local currentRareShopData = {}
-		if rareShopBindable then currentRareShopData = rareShopBindable:Invoke("Get", player) or {} end
+		if rareShopBindable then currentRareShopData = safeShopGet(rareShopBindable, player) end
 
 		-- [[ 🟠 EPIC SHOP SYNC ]]
 		local epicShopBindable = ServerStorage:FindFirstChild("EpicShopPersistenceFunction")
 		local currentEpicShopData = {}
-		if epicShopBindable then currentEpicShopData = epicShopBindable:Invoke("Get", player) or {} end
+		if epicShopBindable then currentEpicShopData = safeShopGet(epicShopBindable, player) end
 
 		-- [[ 🟡 LEGENDARY SHOP SYNC ]]
 		local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
 		local currentLegendaryShopData = {}
 		if legendaryShopBindable then
-			currentLegendaryShopData = legendaryShopBindable:Invoke("Get", player) or {}
+			currentLegendaryShopData = safeShopGet(legendaryShopBindable, player)
 		end
 
 		-- [[ 🔴 MYTHICAL SHOP SYNC ]]
 		local mythicalShopBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
 		local currentMythicalShopData = {}
 		if mythicalShopBindable then
-			currentMythicalShopData = mythicalShopBindable:Invoke("Get", player) or {}
+			currentMythicalShopData = safeShopGet(mythicalShopBindable, player)
 		end
 
 		local sacrificeOccurredThisSession = session.SacrificeOccurred == true
@@ -853,7 +870,7 @@ local function save(player, isClosing)
 					local isSuspiciousLayoutWipe = (#layout == 0) and (oldData.Layout and #oldData.Layout > 0)
 
 					-- Fix 5: SacrificeOccurred Does Not Gate the Layout Anti-Wipe
-					if isSuspiciousLayoutWipe and not session.ExplicitClear and not sacrificeOccurredThisSession then
+					if isSuspiciousLayoutWipe and not session.ExplicitClear then
 						local oldInvCount = oldData.Inventory and #oldData.Inventory or 0
 						local newInvCount = #finalInventory
 
@@ -924,6 +941,7 @@ local function save(player, isClosing)
 	if saveSucceeded then
 		session.IsDirty = false
 		session.LastSave = os.time()
+		session.SacrificeOccurred = false
 	end
 
 	if isClosing then
@@ -1006,10 +1024,6 @@ local function InitializePlayer(player)
 	atm.Changed:Connect(setDirty)
 
 	local gear = player:WaitForChild("StarterGear", 10)
-	if gear then
-		gear.ChildAdded:Connect(setDirty)
-		gear.ChildRemoved:Connect(setDirty)
-	end
 
 	local key = "User_V27_" .. player.UserId
 	local data
