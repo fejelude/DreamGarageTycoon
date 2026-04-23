@@ -392,27 +392,7 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 		local session = getSession(player)
 
 		-- Cross-tier lock (Mythical Check)
-		local mythicalRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes") and ReplicatedStorage.ShopRemotes:FindFirstChild("MythicalShop")
-		local MythicalPersistenceBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
-		if MythicalPersistenceBindable then
-			local ok, mythicSession = safeInvoke(MythicalPersistenceBindable, 2, "Get", player)
-			if ok and mythicSession and mythicSession.ActiveCrafts and next(mythicSession.ActiveCrafts) ~= nil then
-				return false, "You are already crafting a Mythical car!"
-			end
-		end
 
-		if session.ActiveCrafts[carName]   then return false, "Crafting already in progress!" end
-		if session.CompletedCrafts[carName] then return false, "You already crafted this!"    end
-
-		local progress = session.CraftProgress[carName] or {}
-
-		for ingredient, requiredAmount in pairs(recipe) do
-			if ingredient == "TargetCar" or ingredient == "CraftTime" then continue end
-			local currentAmount = progress[ingredient] or 0
-			if currentAmount < requiredAmount then
-				return false, "Missing requirements!"
-			end
-		end
 
 		session.ActiveCrafts[carName] = os.time() + recipe.CraftTime
 

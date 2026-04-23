@@ -1253,40 +1253,7 @@ local function init()
 		currentState = realState
 		UpdateDisplay()
 
-		-- Check Legendary state for cross-tier lock
-		local legendaryRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes") and ReplicatedStorage.ShopRemotes:FindFirstChild("LegendaryShop")
-		local getLegendaryState = legendaryRemotes and legendaryRemotes:FindFirstChild("GetLegendaryShopState")
-		local legState = getLegendaryState and getLegendaryState:InvokeServer() or {}
 
-		local myCraft, myCraftEnd
-		for c, e in pairs(currentState.ActiveCrafts or {}) do myCraft, myCraftEnd = c, e; break end
-
-		local otherCraft
-		for c, _ in pairs(legState.ActiveCrafts or {}) do otherCraft = c; break end
-
-		if myCraft then
-			local delta = math.max(0, myCraftEnd - os.time())
-			local timeStr = string.format("%02d:%02d:%02d",
-				math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
-
-			ethourahSpeak(pickRandom({
-				"You are already building the <font color='#00E5FF'>" .. getDisplayCarName(myCraft) .. "</font>! It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-				"The forge is occupied making your <font color='#00E5FF'>" .. getDisplayCarName(myCraft) .. "</font>. Wait <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			}), function()
-				if not isActiveShopSession(sessionId) then return end
-				task.wait(3.5)
-				if not isActiveShopSession(sessionId) then return end
-				closeShopUI(true)
-				MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
-			end)
-			return
-		elseif otherCraft then
-			ethourahSpeak("You are already busy crafting a Legendary car. Come back when you are finished there.", function()
-				if not isActiveShopSession(sessionId) then return end
-				closeShopUI(true)
-			end)
-			return
-		end
 
 		-- Check for unacknowledged completed crafts
 		local recentCompletedCar = nil
