@@ -770,8 +770,6 @@ local function UpdateActiveCraftPanel()
 		local label = panel:FindFirstChild("TimeRemainingLabel")
 		if label then label.Text = string.format("%02d:%02d:%02d", h, m, s) end
 
-		local statusLabel = panel:FindFirstChild("StatusLabel")
-		if statusLabel then statusLabel.Text = "Crafting in progress..." end
 
 		local skipBtn = panel:FindFirstChild("SkipButton")
 		if skipBtn and not skipBtn:GetAttribute("Connected") then
@@ -781,6 +779,16 @@ local function UpdateActiveCraftPanel()
 					if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[activeCar] then
 						MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
 					end
+				end
+			end)
+		end
+
+		local exitBtn = panel:FindFirstChild("ExitButton") or panel:FindFirstChild("CloseButton")
+		if exitBtn and not exitBtn:GetAttribute("Connected") then
+			exitBtn:SetAttribute("Connected", true)
+			Kit.Tween:SetupButton(exitBtn, function()
+				if isShopOpen then
+					closeShopUI(true)
 				end
 			end)
 		end
