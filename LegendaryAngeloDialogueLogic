@@ -871,5 +871,3 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	end)
 end)
 
-
-
