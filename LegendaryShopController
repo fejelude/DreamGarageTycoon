@@ -783,7 +783,7 @@ local function UpdateActiveCraftPanel()
 			end)
 		end
 
-		local exitBtn = panel:FindFirstChild("ExitButton") or panel:FindFirstChild("CloseButton")
+		local exitBtn = panel:FindFirstChild("ExitButton", true) or panel:FindFirstChild("CloseButton", true)
 		if exitBtn and not exitBtn:GetAttribute("Connected") then
 			exitBtn:SetAttribute("Connected", true)
 			Kit.Tween:SetupButton(exitBtn, function()

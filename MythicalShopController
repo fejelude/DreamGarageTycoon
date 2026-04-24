@@ -781,7 +781,7 @@ local function UpdateActiveCraftPanel()
 			end)
 		end
 
-		local exitBtn = panel:FindFirstChild("ExitButton") or panel:FindFirstChild("CloseButton")
+		local exitBtn = panel:FindFirstChild("ExitButton", true) or panel:FindFirstChild("CloseButton", true)
 		if exitBtn and not exitBtn:GetAttribute("Connected") then
 			exitBtn:SetAttribute("Connected", true)
 			Kit.Tween:SetupButton(exitBtn, function()
@@ -1053,29 +1053,10 @@ local function AttemptCraft(carName, isPremium)
 	end
 
 	-- Start craft
-	local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
-	local confirmText = ""
-	if isPremium then
-		confirmText = string.format(
-			"<font color='%s'>Instantly forge </font><b><font color='%s'>%s</font></b><font color='%s'>? You will skip the </font><b><font color='%s'>%s hours</font></b><font color='%s'> wait time using Robux.</font>",
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
-			CONFIRMATION_COLORS.Accent
-		)
-	else
-		confirmText = string.format(
-			"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
-			CONFIRMATION_COLORS.Accent
-		)
-	end
-
 	local requestSessionId   = shopSessionId
 	local requestViewVersion = shopViewVersion
 
-	PromptConfirmation(requestSessionId, confirmText, function(confirmed)
-		if not confirmed then return end
+	local function executeCraft()
 		if not isActiveShopSession(requestSessionId) or requestViewVersion ~= shopViewVersion then return end
 		if isProcessingPurchase then return end
 		isProcessingPurchase = true
@@ -1118,7 +1099,22 @@ local function AttemptCraft(carName, isPremium)
 				restoreToCraftingFrame()
 			end
 		end)
-	end)
+	end
+
+	if isPremium then
+		executeCraft()
+	else
+		local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
+		local confirmText = string.format(
+			"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
+			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
+			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
+			CONFIRMATION_COLORS.Accent
+		)
+		PromptConfirmation(requestSessionId, confirmText, function(confirmed)
+			if confirmed then executeCraft() end
+		end)
+	end
 end
 
 -- ============================================================================
