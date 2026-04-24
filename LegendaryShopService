@@ -394,6 +394,19 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 		-- Cross-tier lock (Mythical Check)
 
 
+				if session.ActiveCrafts[carName]   then return false, "Crafting already in progress!" end
+		if session.CompletedCrafts[carName] then return false, "You already crafted this!"    end
+
+		local progress = session.CraftProgress[carName] or {}
+
+		for ingredient, requiredAmount in pairs(recipe) do
+			if ingredient == "TargetCar" or ingredient == "CraftTime" then continue end
+			local currentAmount = progress[ingredient] or 0
+			if currentAmount < requiredAmount then
+				return false, "Missing requirements!"
+			end
+		end
+
 		session.ActiveCrafts[carName] = os.time() + recipe.CraftTime
 
 		pushUpdate(player, session, "Craft")

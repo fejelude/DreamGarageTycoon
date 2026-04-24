@@ -1023,8 +1023,6 @@ local function InitializePlayer(player)
 	wallet.Changed:Connect(setDirty)
 	atm.Changed:Connect(setDirty)
 
-	local gear = player:WaitForChild("StarterGear", 10)
-
 	local key = "User_V27_" .. player.UserId
 	local data
 	local loadSuccess, loadErr = pcall(function() data = PlayerDataStore:GetAsync(key) end)
