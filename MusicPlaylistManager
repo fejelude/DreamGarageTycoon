@@ -17,11 +17,7 @@ local MASTER_VOLUME = 0.5           -- The volume for your background music
 
 -- 🎵 YOUR PLAYLIST (Only the 5 IDs you requested)
 local PLAYLIST = {
-	"rbxassetid://1842150151",      
-	"rbxassetid://1836009208",      
-	"rbxassetid://9045765634",      
-	"rbxassetid://132702954752503", 
-	"rbxassetid://1848062261"      
+	"rbxassetid://1846088038",        
 }
 
 -- ============================================================================
