@@ -768,8 +768,6 @@ local function UpdateActiveCraftPanel()
 		local label = panel:FindFirstChild("TimeRemainingLabel")
 		if label then label.Text = string.format("%02d:%02d:%02d", h, m, s) end
 
-		local statusLabel = panel:FindFirstChild("StatusLabel")
-		if statusLabel then statusLabel.Text = "Crafting in progress..." end
 
 		local skipBtn = panel:FindFirstChild("SkipButton")
 		if skipBtn and not skipBtn:GetAttribute("Connected") then
@@ -779,6 +777,16 @@ local function UpdateActiveCraftPanel()
 					if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[activeCar] then
 						MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
 					end
+				end
+			end)
+		end
+
+		local exitBtn = panel:FindFirstChild("ExitButton", true) or panel:FindFirstChild("CloseButton", true)
+		if exitBtn and not exitBtn:GetAttribute("Connected") then
+			exitBtn:SetAttribute("Connected", true)
+			Kit.Tween:SetupButton(exitBtn, function()
+				if isShopOpen then
+					closeShopUI(true)
 				end
 			end)
 		end
@@ -826,7 +834,7 @@ local function AttemptSacrifice(carName, ingredient)
 			and ("$" .. FormatCommas(requiredAmount - currentAmount) .. " cash")
 			or ingredient
 		ethourahSpeak(pickRandom({
-			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. itemLabel .. "</font> in your garage.",
+			"Don't waste my time. You don't have the <font color='#00E5FF'>" .. itemLabel .. "</font> in your Inventory.",
 			"Dude, you dont even have the <font color='#00E5FF'>" .. itemLabel .. "</font>. Come back when you actually have it.",
 			"You are short on resources. I need the <font color='#00E5FF'>" .. itemLabel .. "</font> to proceed.",
 			"I don't work for free. Bring me the <font color='#00E5FF'>" .. itemLabel .. "</font> first.",
@@ -931,7 +939,7 @@ end
 -- ============================================================================
 -- 🔨  CRAFT
 -- ============================================================================
-local function AttemptCraft(carName)
+local function AttemptCraft(carName, isPremium)
 	if isProcessingPurchase then return end
 	if not isShopOpen or activeCarFocus ~= carName then return end
 	if not currentState or not currentState.CompletedCrafts then return end
@@ -961,7 +969,15 @@ local function AttemptCraft(carName)
 			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. displayName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more time, come back later alright?",
 			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
-		}), restoreToCraftingFrame)
+		}), function()
+			task.wait(2)
+			local panel = gui:FindFirstChild("ActiveCraftPanel")
+			if panel then
+				panel.Visible = true
+				UpdateActiveCraftPanel()
+			end
+			restoreToCraftingFrame()
+		end)
 		return
 	end
 
@@ -1037,19 +1053,10 @@ local function AttemptCraft(carName)
 	end
 
 	-- Start craft
-	local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
-	local confirmText = string.format(
-		"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
-		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
-		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
-		CONFIRMATION_COLORS.Accent
-	)
-
 	local requestSessionId   = shopSessionId
 	local requestViewVersion = shopViewVersion
 
-	PromptConfirmation(requestSessionId, confirmText, function(confirmed)
-		if not confirmed then return end
+	local function executeCraft()
 		if not isActiveShopSession(requestSessionId) or requestViewVersion ~= shopViewVersion then return end
 		if isProcessingPurchase then return end
 		isProcessingPurchase = true
@@ -1067,19 +1074,24 @@ local function AttemptCraft(carName)
 			if success then
 				Kit.Sound:Play("BuySuccess")
 				showFeedback("Crafting Started!", FEEDBACK_COLORS.Success)
-				if requestViewVersion == shopViewVersion and activeCarFocus == carName then
-					local timeStr = "..."
-					if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
-						local delta = math.max(0, currentState.ActiveCrafts[carName] - os.time())
-						timeStr = string.format("%02d:%02d:%02d",
-							math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
-					end
-					ethourahSpeak(pickRandom({
-						"Alright im working on making your <font color='#B652FF'>" .. displayName .. "</font>, be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-						"Crafting underway homie. The <font color='#B652FF'>" .. displayName .. "</font> will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-					}), restoreToCraftingFrame)
+				if isPremium then
+					MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
+					restoreToCraftingFrame()
 				else
-					mainFrame.Visible = true
+					if requestViewVersion == shopViewVersion and activeCarFocus == carName then
+						local timeStr = "..."
+						if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
+							local delta = math.max(0, currentState.ActiveCrafts[carName] - os.time())
+							timeStr = string.format("%02d:%02d:%02d",
+								math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
+						end
+						ethourahSpeak(pickRandom({
+							"Alright im working on making your <font color='#B652FF'>" .. displayName .. "</font>, be back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+							"Crafting underway homie. The <font color='#B652FF'>" .. displayName .. "</font> will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+						}), restoreToCraftingFrame)
+					else
+						mainFrame.Visible = true
+					end
 				end
 			else
 				Kit.Sound:Play("BuyFail")
@@ -1087,7 +1099,22 @@ local function AttemptCraft(carName)
 				restoreToCraftingFrame()
 			end
 		end)
-	end)
+	end
+
+	if isPremium then
+		executeCraft()
+	else
+		local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
+		local confirmText = string.format(
+			"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
+			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
+			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
+			CONFIRMATION_COLORS.Accent
+		)
+		PromptConfirmation(requestSessionId, confirmText, function(confirmed)
+			if confirmed then executeCraft() end
+		end)
+	end
 end
 
 -- ============================================================================
@@ -1137,10 +1164,10 @@ local function OpenCraftingMenu(carName)
 			if not mainCraftBtn then
 				mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
 			end
-	local premiumCraftBtn
-	if mainCraftBtn then
-		premiumCraftBtn = mainCraftBtn.Parent:FindFirstChild("PremiumCraft")
-	end
+			local premiumCraftBtn
+			if mainCraftBtn then
+				premiumCraftBtn = mainCraftBtn.Parent:FindFirstChild("PremiumCraft")
+			end
 
 			if mainCraftBtn and not mainCraftBtn:GetAttribute("Connected") then
 				mainCraftBtn:SetAttribute("Connected", true)
@@ -1152,22 +1179,15 @@ local function OpenCraftingMenu(carName)
 				end)
 			end
 
-	if premiumCraftBtn and not premiumCraftBtn:GetAttribute("Connected") then
-		premiumCraftBtn:SetAttribute("Connected", true)
-		Kit.Tween:SetupButton(premiumCraftBtn, function()
-			if premiumCraftBtn.Visible and premiumCraftBtn.Active
-				and activeCarFocus == carName and isShopOpen then
-				if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
-					MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
-				else
-					ethourahSpeak(pickRandom({
-						"You don't have an active build for the <font color='#00E5FF'>" .. getDisplayCarName(carName) .. "</font> yet.",
-						"Start the build before trying to speed it up.",
-					}))
-				end
+			if premiumCraftBtn and not premiumCraftBtn:GetAttribute("Connected") then
+				premiumCraftBtn:SetAttribute("Connected", true)
+				Kit.Tween:SetupButton(premiumCraftBtn, function()
+					if premiumCraftBtn.Visible and premiumCraftBtn.Active
+						and activeCarFocus == carName and isShopOpen then
+						AttemptCraft(carName, true)
+					end
+				end)
 			end
-		end)
-	end
 
 			if sacrificeItems then
 				for ingredient, _ in pairs(RECIPES[carName]) do
