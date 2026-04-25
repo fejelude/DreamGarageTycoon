@@ -934,6 +934,10 @@ local function AttemptCraft(carName, isPremium)
 
 	-- ── Already crafting ─────────────────────────────────────────────────────
 	if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
+			if isPremium then
+				MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
+				return
+			end
 		local delta   = math.max(0, currentState.ActiveCrafts[carName] - os.time())
 		local timeStr = string.format("%02d:%02d:%02d",
 			math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
