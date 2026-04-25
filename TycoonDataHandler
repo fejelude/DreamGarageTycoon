@@ -697,16 +697,8 @@ local function save(player, isClosing)
 	local function safeShopGet(bindable, player)
 		if not bindable then return {} end
 		local result = {}
-		local finished = false
-		task.spawn(function()
 			local ok, data = pcall(function() return bindable:Invoke("Get", player) end)
 			if ok and type(data) == "table" then result = data end
-			finished = true
-		end)
-		local start = os.clock()
-		while not finished and (os.clock() - start) < 3 do
-			task.wait(0.05)
-		end
 		return result
 	end
 
@@ -931,7 +923,7 @@ local function save(player, isClosing)
 		error("UpdateAsync failed after retries")
 	end
 
-	local ok, saveErr = pcall(executeSave)
+		local ok, saveErr = pcall(executeSave)
 	if not ok then
 		warn("❌ Save Failed " .. player.Name .. ": " .. tostring(saveErr))
 	elseif isClosing then

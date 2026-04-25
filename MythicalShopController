@@ -795,6 +795,17 @@ local function UpdateActiveCraftPanel()
 	end
 end
 
+
+-- FIX: Sole gatekeeper for showing the Active Craft panel.
+local function ShowActiveCraftPanel()
+	local panel = gui:FindFirstChild("ActiveCraftPanel")
+	if not panel then return end
+	if currentState and currentState.ActiveCrafts and next(currentState.ActiveCrafts) then
+		panel.Visible = true
+		UpdateActiveCraftPanel()
+	end
+end
+
 local function UpdateDisplay()
 	if not currentState then return end
 	if activeCarFocus then UpdateCraftingUI(activeCarFocus) end
