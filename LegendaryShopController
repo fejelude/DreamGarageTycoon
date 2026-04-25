@@ -1103,6 +1103,34 @@ local function OpenCraftingMenu(carName)
 	isProcessingPurchase  = false
 	activeCarFocus        = carName
 
+	-- ALREADY CRAFTING INTERCEPT
+	if currentState and currentState.ActiveCrafts and next(currentState.ActiveCrafts) then
+		local activeCar, endTime
+		for c, e in pairs(currentState.ActiveCrafts) do
+			activeCar, endTime = c, e
+			break
+		end
+
+		local displayName = getDisplayCarName(activeCar)
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local delta   = math.max(0, endTime - os.time())
+		local timeStr = string.format("%02d:%02d:%02d", math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
+
+		angeloSpeak(pickRandom({
+			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. displayName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. displayName .. "</font>. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. displayName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more time, come back later alright?",
+			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
+		}), function()
+			task.wait(3)
+			mainFrame.Visible = true
+			ShowActiveCraftPanel()
+		end)
+		return
+	end
+
+
 	local craftGui = gui:FindFirstChild(carName .. "Crafting")
 	dismissConfirmation()
 	hideAllCraftingMenus()
