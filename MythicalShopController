@@ -6,16 +6,22 @@
 -- Networking: Invokes ShopRemotes.MythicalShop (Client -> Server)
 -- Security: Purely visual client-side checks; server remains authoritative for all transactions.
 -- Performance: Uses coroutines for typewriter effect; cancels stale jobs to prevent UI corruption.
--- Notes: Fixes the bug where missing cash inflates the "sacrifices left" dialogue.
 
--- FIXES (v2):
---   • ethourahSpeak now hides ALL shop frames (mainFrame + crafting) before showing the
---     NPC speech bubble — eliminates UI stacking/overlay.
---   • Added a job-ID generation counter so stale onDone callbacks from cancelled
---     typewriter jobs can never fire and corrupt UI state.
---   • getNpcUI / hideNpcUI helpers eliminate repeated FindFirstChild chains.
---   • cancelEthourahSpeak now correctly invalidates any in-flight job.
---   • Minor: cleaned up redundant pcall patterns and added inline comments.
+-- FIXES (v3):
+--   • UpdateActiveCraftPanel no longer sets panel.Visible = true on every tick.
+--     The 1-second fast loop was the root cause of the panel appearing immediately
+--     after any craft started — it would auto-show on the very next tick.
+--   • UpdateActiveCraftPanel now only updates label content when the panel is
+--     already visible (matching the Legendary controller's correct behaviour).
+--   • ShowActiveCraftPanel is now the SOLE gatekeeper for showing the panel,
+--     and it also hides the mainFrame and all crafting menus before revealing it,
+--     preventing conflicting frames from being visible at the same time.
+--   • ExitButton in the Active Craft panel now returns the player to the main
+--     shop menu (hides panel, shows mainFrame) instead of closing the shop entirely.
+--   • Active Craft panel is NOT shown on shop open or after a successful craft start.
+--     It only appears when the player attempts to interact with a car while another
+--     craft is already in progress.
+--   • All previous v2 fixes retained.
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -46,9 +52,7 @@ local RECIPES   = {
 }
 local BLUR_SIZE = 24
 
--- How long (seconds) the completed dialogue stays on screen before the
--- next UI frame opens. Raise this if players can't finish reading.
-local POST_SPEAK_DELAY = 2.5  -- ← adjust this value freely
+local POST_SPEAK_DELAY = 2.5
 
 local FEEDBACK_COLORS = {
 	Success   = Color3.fromRGB(80,  200, 120),
@@ -69,7 +73,6 @@ local FuncGetState     = MythicalRemotes:WaitForChild("GetMythicalShopState")
 local FuncCraftCar     = MythicalRemotes:WaitForChild("CraftMythicalCar")
 local FuncSacrifice    = MythicalRemotes:WaitForChild("SacrificeMythicalIngredient")
 
--- Used only to fire ForceClose at the original dialogue script
 local DialogueEvent = nil
 task.spawn(function()
 	local ps = player:WaitForChild("PlayerScripts")
@@ -166,22 +169,7 @@ local function escapeRichText(text)
 end
 
 -- ============================================================================
--- 💬  ETHOURAH SPEAK  — v2 (stacking / stale-callback fix)
---
--- Design:
---   • hideAllShopFrames()    — called at the START of every speak; ensures no
---                              crafting frame or mainFrame is visible while the
---                              NPC speech bubble is on screen. This is the
---                              primary fix for the overlay/stacking bug.
---   • ethourahJobId counter   — every new speak increments the counter and
---                              captures a local copy. The typewriter coroutine
---                              checks its copy against the global after every
---                              character; if they differ the job was superseded
---                              and it exits without calling onDone. This
---                              prevents stale callbacks from restoring the
---                              wrong frame after cancellation.
---   • getNpcUI / hideNpcUI  — thin helpers; avoid repeated FindFirstChild
---                              chains scattered across functions.
+-- 💬  ETHOURAH SPEAK  — v2
 -- ============================================================================
 local NPC_GUI_ID       = "UI_NPC_ethourah"
 local NPC_CONTAINER_ID = "Frame_Ethourah_Container"
@@ -190,13 +178,12 @@ local TYPING_SOUND_ID  = "rbxassetid://4676738150"
 local TYPEWRITER_SPEED = 0.02
 
 local activeEthourahJob = nil
-local ethourahJobId     = 0   -- incremented on every new speak or cancel
+local ethourahJobId     = 0
 local typingSound = Instance.new("Sound")
 typingSound.SoundId = TYPING_SOUND_ID
 typingSound.Volume = 0.1
 typingSound.Parent = SoundService
 
--- Returns (npcGui, container, label) — any may be nil if not found
 local function getNpcUI()
 	local npcGui    = PlayerGui:FindFirstChild(NPC_GUI_ID)
 	local container = npcGui and npcGui:FindFirstChild(NPC_CONTAINER_ID, true)
@@ -204,15 +191,12 @@ local function getNpcUI()
 	return npcGui, container, label
 end
 
--- Unconditionally hide the speech bubble
 local function hideNpcUI()
 	local npcGui, container = getNpcUI()
 	if npcGui    then npcGui.Enabled    = false end
 	if container then container.Visible = false end
 end
 
--- FIX: hides every shop-owned frame so the NPC bubble is the sole visible UI.
--- Previously only mainFrame was hidden, leaving crafting frames visible.
 local function hideAllShopFrames()
 	mainFrame.Visible = false
 	for _, n in ipairs(SHOP_CARS) do
@@ -227,11 +211,9 @@ local function cleanTextLength(str)
 end
 
 local function ethourahSpeak(msg, onDone)
-	-- Invalidate any previous job before starting a new one
 	ethourahJobId += 1
 	local myJobId = ethourahJobId
 
-	-- Cancel the running coroutine (best-effort; the ID guard is the true safety)
 	if activeEthourahJob then
 		pcall(task.cancel, activeEthourahJob)
 		activeEthourahJob = nil
@@ -240,16 +222,13 @@ local function ethourahSpeak(msg, onDone)
 	local npcGui, container, label = getNpcUI()
 
 	if not label then
-		-- NPC GUI is missing; restore immediately
 		hideNpcUI()
 		if onDone then task.spawn(onDone) else mainFrame.Visible = true end
 		return
 	end
 
-	-- ── Step 1: Hide ALL shop frames before showing the speech bubble ─────
 	hideAllShopFrames()
 
-	-- ── Step 2: Prepare and show the speech bubble from a clean state ─────
 	npcGui.Enabled            = true
 	container.Visible         = true
 	label.RichText            = true
@@ -258,44 +237,23 @@ local function ethourahSpeak(msg, onDone)
 
 	local len = cleanTextLength(msg)
 
-	-- ── Step 3: Typewriter coroutine with job-ID guard ────────────────────
 	activeEthourahJob = task.spawn(function()
 		for i = 1, len do
-			-- Bail out if this job has been superseded
 			if ethourahJobId ~= myJobId then return end
-
 			label.MaxVisibleGraphemes = i
-
-			if i % 3 == 0 then
-				typingSound:Play()
-
-
-
-
-			end
-
+			if i % 3 == 0 then typingSound:Play() end
 			task.wait(TYPEWRITER_SPEED)
 		end
 
-		-- Final check after loop completes
 		if ethourahJobId ~= myJobId then return end
-
 		label.MaxVisibleGraphemes = -1
 		activeEthourahJob = nil
 
-		-- ── Step 4: Hold the completed message so the player can read it ─
-		if POST_SPEAK_DELAY > 0 then
-			task.wait(POST_SPEAK_DELAY)
-		end
-
-		-- Guard again: a new speak or cancelEthourahSpeak may have fired
-		-- during the delay — if so, let that job own the UI.
+		if POST_SPEAK_DELAY > 0 then task.wait(POST_SPEAK_DELAY) end
 		if ethourahJobId ~= myJobId then return end
 
-		-- ── Step 5: Hide the speech bubble ───────────────────────────────
 		hideNpcUI()
 
-		-- ── Step 6: Restore UI — caller supplies onDone, else mainFrame ──
 		if onDone then
 			task.spawn(onDone)
 		else
@@ -304,10 +262,8 @@ local function ethourahSpeak(msg, onDone)
 	end)
 end
 
--- Cancel any active speak and ensure the speech bubble is hidden.
--- Does NOT restore any shop frame — callers are responsible for that.
 local function cancelEthourahSpeak()
-	ethourahJobId += 1   -- invalidates the running job's callback
+	ethourahJobId += 1
 	if activeEthourahJob then
 		pcall(task.cancel, activeEthourahJob)
 		activeEthourahJob = nil
@@ -648,9 +604,11 @@ local function closeShopUI(forceDialogueClose)
 	isProcessingPurchase  = false
 	activeCarFocus        = nil
 	confirmationRestoreState = nil
-	cancelEthourahSpeak()         -- cancels job + hides bubble; no restore needed here
+	cancelEthourahSpeak()
 	dismissConfirmation()
 	hideAllCraftingMenus()
+	local _panel = gui:FindFirstChild("ActiveCraftPanel")
+	if _panel then _panel.Visible = false end
 	mainFrame.Visible = true
 	gui.Enabled       = false
 	setFocusMode(false)
@@ -674,9 +632,7 @@ local function UpdateCraftingUI(carName)
 	local recipe = RECIPES[carName]
 	if not recipe then return end
 
-	local progress   = currentState.CraftProgress[carName] or {}
-
-
+	local progress = currentState.CraftProgress[carName] or {}
 
 	for ingredient, requiredAmount in pairs(recipe) do
 		if ingredient == "TargetCar" or ingredient == "CraftTime" then continue end
@@ -715,7 +671,6 @@ local function UpdateCraftingUI(carName)
 			else
 				if sacBtn  then sacBtn.Visible  = true  end
 				if doneBtn then doneBtn.Visible = false end
-
 			end
 		end
 	end
@@ -729,20 +684,23 @@ local function UpdateCraftingUI(carName)
 		mainCraftBtn = carFrame:FindFirstChild("CraftButton", true) or carFrame:FindFirstChild("Craft", true)
 	end
 	if mainCraftBtn then
-		-- Always visible so players can click it at any time.
-		-- AttemptCraft handles the "not ready yet" response from Ethourah.
 		mainCraftBtn.Visible = true
 	end
 end
 
-
-
-
-
-
-
-
-
+-- ============================================================================
+-- 📊  ACTIVE CRAFT PANEL
+--
+-- UpdateActiveCraftPanel — refreshes timer text and wires buttons.
+--   Does NOT set panel.Visible = true. Hides the panel only when there is no
+--   active craft. The 1-second fast loop calls this; it must never auto-show
+--   the panel or the frame appears immediately after every craft start.
+--
+-- ShowActiveCraftPanel — the ONLY function that shows the panel.
+--   Called ONLY when the player attempts to interact with a car while another
+--   craft is already in progress. Also hides mainFrame and crafting menus
+--   before revealing the panel to prevent conflicting frames.
+-- ============================================================================
 local function UpdateActiveCraftPanel()
 	local panel = gui:FindFirstChild("ActiveCraftPanel")
 	if not panel then return end
@@ -760,15 +718,19 @@ local function UpdateActiveCraftPanel()
 		local h = math.floor(delta / 3600)
 		local m = math.floor((delta % 3600) / 60)
 		local s = math.floor(delta % 60)
-		panel.Visible = true
 
-		local nameLabel = panel:FindFirstChild("CarNameLabel")
-		if nameLabel then nameLabel.Text = getDisplayCarName(activeCar) end
+		-- FIX: Only update label content when the panel is already visible.
+		-- Do NOT set panel.Visible = true here — that caused the panel to
+		-- appear on the very next tick after any craft started.
+		if panel.Visible then
+			local nameLabel = panel:FindFirstChild("CarNameLabel")
+			if nameLabel then nameLabel.Text = getDisplayCarName(activeCar) end
 
-		local label = panel:FindFirstChild("TimeRemainingLabel")
-		if label then label.Text = string.format("%02d:%02d:%02d", h, m, s) end
+			local label = panel:FindFirstChild("TimeRemainingLabel")
+			if label then label.Text = string.format("%02d:%02d:%02d", h, m, s) end
+		end
 
-
+		-- Wire the Skip button (once).
 		local skipBtn = panel:FindFirstChild("SkipButton")
 		if skipBtn and not skipBtn:GetAttribute("Connected") then
 			skipBtn:SetAttribute("Connected", true)
@@ -781,26 +743,37 @@ local function UpdateActiveCraftPanel()
 			end)
 		end
 
+		-- Wire the Exit button (once).
+		-- FIX: Returns to the main shop menu instead of closing the shop entirely.
 		local exitBtn = panel:FindFirstChild("ExitButton", true) or panel:FindFirstChild("CloseButton", true)
 		if exitBtn and not exitBtn:GetAttribute("Connected") then
 			exitBtn:SetAttribute("Connected", true)
 			Kit.Tween:SetupButton(exitBtn, function()
 				if isShopOpen then
-					closeShopUI(true)
+					panel.Visible        = false
+					shopViewVersion     += 1
+					isProcessingPurchase = false
+					activeCarFocus       = nil
+					dismissConfirmation()
+					hideAllCraftingMenus()
+					mainFrame.Visible    = true
 				end
 			end)
 		end
 	else
+		-- No active craft — always hide the panel.
 		panel.Visible = false
 	end
 end
 
-
--- FIX: Sole gatekeeper for showing the Active Craft panel.
+-- Sole gatekeeper for showing the Active Craft panel.
+-- Hides conflicting frames before revealing the panel.
 local function ShowActiveCraftPanel()
 	local panel = gui:FindFirstChild("ActiveCraftPanel")
 	if not panel then return end
 	if currentState and currentState.ActiveCrafts and next(currentState.ActiveCrafts) then
+		mainFrame.Visible = false
+		hideAllCraftingMenus()
 		panel.Visible = true
 		UpdateActiveCraftPanel()
 	end
@@ -809,7 +782,7 @@ end
 local function UpdateDisplay()
 	if not currentState then return end
 	if activeCarFocus then UpdateCraftingUI(activeCarFocus) end
-	UpdateActiveCraftPanel()
+	UpdateActiveCraftPanel()   -- refreshes timer / hides if craft finished; never auto-shows
 end
 
 -- ============================================================================
@@ -829,7 +802,6 @@ local function AttemptSacrifice(carName, ingredient)
 	local displayName    = getDisplayCarName(carName)
 	local coloredName    = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 
-	-- Already satisfied
 	if currentAmount >= requiredAmount then
 		ethourahSpeak(pickRandom({
 			"We already have enough of that.",
@@ -839,7 +811,6 @@ local function AttemptSacrifice(carName, ingredient)
 		return
 	end
 
-	-- No item: skip confirmation, Ethourah speaks immediately
 	if not playerHasIngredient(ingredient, requiredAmount, currentAmount) then
 		local itemLabel = ingredient == "Cash"
 			and ("$" .. FormatCommas(requiredAmount - currentAmount) .. " cash")
@@ -853,7 +824,6 @@ local function AttemptSacrifice(carName, ingredient)
 		return
 	end
 
-	-- Has item: confirm then sacrifice
 	local sacrificeText = ingredient == "Cash"
 		and ("$" .. FormatCommas(requiredAmount - currentAmount))
 		or  ("1 " .. ingredient)
@@ -884,16 +854,12 @@ local function AttemptSacrifice(carName, ingredient)
 			currentState = FuncGetState:InvokeServer()
 			UpdateDisplay()
 
-			-- Recalculate remaining
-
-			local itemsLeft   = 0
+			local itemsLeft = 0
 			for ing, req in pairs(recipe) do
 				if ing ~= "TargetCar" and ing ~= "CraftTime" then
 					local p = (currentState.CraftProgress[carName]
 						and currentState.CraftProgress[carName][ing]) or 0
 					if p < req then
-
-						-- FIX: Treat Cash as exactly 1 requirement so it doesn't inflate the number.
 						if ing == "Cash" then
 							itemsLeft = itemsLeft + 1
 						else
@@ -904,7 +870,6 @@ local function AttemptSacrifice(carName, ingredient)
 			end
 			local allComplete = (itemsLeft == 0)
 
-			-- Helper: restores the correct frame after Ethourah finishes speaking
 			local craftGui = gui:FindFirstChild(carName .. "Crafting")
 			local function restoreToCraftingFrame()
 				if activeCarFocus == carName and isShopOpen and craftGui then
@@ -969,12 +934,12 @@ local function AttemptCraft(carName, isPremium)
 		end
 	end
 
-	-- Already crafting
+	-- ── Already crafting ─────────────────────────────────────────────────────
 	if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
-			if isPremium then
-				MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
-				return
-			end
+		if isPremium then
+			MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
+			return
+		end
 		local delta   = math.max(0, currentState.ActiveCrafts[carName] - os.time())
 		local timeStr = string.format("%02d:%02d:%02d",
 			math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
@@ -985,14 +950,14 @@ local function AttemptCraft(carName, isPremium)
 			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
 		}), function()
+			-- After NPC finishes: show the Active Craft panel (not the crafting frame).
 			task.wait(2)
-				ShowActiveCraftPanel()
-			restoreToCraftingFrame()
+			ShowActiveCraftPanel()
 		end)
 		return
 	end
 
-	-- Already completed
+	-- ── Already completed ────────────────────────────────────────────────────
 	if currentState.CompletedCrafts[carName] then
 		ethourahSpeak(pickRandom({
 			"It is finished. The <font color='#B652FF'>" .. displayName .. "</font> is a true work of art. It should be in your inventory already.",
@@ -1003,8 +968,6 @@ local function AttemptCraft(carName, isPremium)
 	end
 
 	-- ── Requirements check ────────────────────────────────────────────────────
-	-- If the player clicks Confirm before all sacrifices are done, Ethourah
-	-- tells them exactly what's still missing in rich coloured text.
 	local missingItems  = {}
 	local totalMissing  = 0
 	local progress      = currentState.CraftProgress[carName] or {}
@@ -1027,32 +990,21 @@ local function AttemptCraft(carName, isPremium)
 	end
 
 	if #missingItems > 0 then
-		-- Build a compact inline list:  "3x Riva, 2x Kingston, $50,000,000 Cash"
 		local listStr = table.concat(missingItems, "<font color='#AAAAAA'>, </font>")
-
 		ethourahSpeak(pickRandom({
-			-- Stern / blunt
 			"<font color='#FF4C4C'>Not yet.</font> You are still missing: "
 				.. listStr
 				.. "<font color='#f4efe6'>. Come back when the tribute is complete.</font>",
-
-			-- Disappointed mentor
 			"<font color='#FFD700'>Seriously?</font> The forge cannot be lit. You still owe me "
 				.. listStr
 				.. "<font color='#f4efe6'>. Don't waste my time until you have it all.</font>",
-
-			-- Cold and professional
 			"<font color='#00E5FF'>Incomplete.</font> The ritual requires "
 				.. listStr
 				.. "<font color='#f4efe6'>. Every piece matters — bring them all before you dare press that button again.</font>",
-
-			-- Slightly theatrical
 			"The <font color='#B652FF'>" .. displayName .. "</font>"
 				.. "<font color='#f4efe6'> is a myth. Myths demand sacrifice. You are short </font>"
 				.. listStr
 				.. "<font color='#f4efe6'>. Return when the debt is paid.</font>",
-
-			-- Direct and dismissive
 			coloredName
 				.. "<font color='#f4efe6'> you are </font><font color='#FF4C4C'>"
 				.. totalMissing .. " sacrifice" .. (totalMissing == 1 and "" or "s")
@@ -1063,7 +1015,7 @@ local function AttemptCraft(carName, isPremium)
 		return
 	end
 
-	-- Start craft
+	-- ── Start craft ───────────────────────────────────────────────────────────
 	local requestSessionId   = shopSessionId
 	local requestViewVersion = shopViewVersion
 
@@ -1086,9 +1038,13 @@ local function AttemptCraft(carName, isPremium)
 				Kit.Sound:Play("BuySuccess")
 				showFeedback("Crafting Started!", FEEDBACK_COLORS.Success)
 				if isPremium then
+					-- Premium: fire Robux prompt immediately; return to crafting frame.
 					MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
 					restoreToCraftingFrame()
 				else
+					-- Normal craft started: Ethourah confirms, then return to crafting frame.
+					-- The Active Craft panel is NOT shown here — the player can continue
+					-- browsing normally. It only appears if they try to start another craft.
 					if requestViewVersion == shopViewVersion and activeCarFocus == carName then
 						local timeStr = "..."
 						if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
@@ -1149,6 +1105,9 @@ local function OpenCraftingMenu(carName)
 	activeCarFocus        = carName
 
 	-- ALREADY CRAFTING INTERCEPT
+	-- Player selected a car from the main menu while a craft is in progress.
+	-- Ethourah speaks, then the Active Craft panel is shown after a brief delay.
+	-- The player is NOT allowed into the crafting menu until the current craft finishes.
 	if currentState and currentState.ActiveCrafts and next(currentState.ActiveCrafts) then
 		local activeCar, endTime
 		for c, e in pairs(currentState.ActiveCrafts) do
@@ -1168,20 +1127,19 @@ local function OpenCraftingMenu(carName)
 			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
 		}), function()
-			task.wait(3)
-			mainFrame.Visible = true
+			-- After NPC finishes: show Active Craft panel.
+			-- ShowActiveCraftPanel handles hiding mainFrame / crafting menus internally.
+			task.wait(2)
 			ShowActiveCraftPanel()
 		end)
 		return
 	end
-
 
 	local craftGui = gui:FindFirstChild(carName .. "Crafting")
 	dismissConfirmation()
 	hideAllCraftingMenus()
 	mainFrame.Visible = false
 
-	-- Wire up buttons once (guarded by the "Connected" attribute)
 	if craftGui then
 		UpdateCraftingUI(carName)
 		local carFrame = craftGui:FindFirstChild(carName)
@@ -1249,7 +1207,6 @@ local function OpenCraftingMenu(carName)
 		end
 	end
 
-	-- Ethourah speaks first; crafting menu only appears after he finishes
 	local displayName = getDisplayCarName(carName)
 	ethourahSpeak(pickRandom({
 		"Ah, the <font color='#00E5FF'>" .. displayName .. "</font>. A beautiful choice.",
@@ -1300,7 +1257,7 @@ local function init()
 		setFocusMode(true)
 		Kit.Sound:Play("Open")
 		gui.Enabled          = true
-		mainFrame.Visible    = false -- wait for dialogue/logic
+		mainFrame.Visible    = false
 		activeCarFocus       = nil
 		isProcessingPurchase = false
 		confirmationRestoreState = nil
@@ -1311,8 +1268,6 @@ local function init()
 		if not isActiveShopSession(sessionId) then return end
 		currentState = realState
 		UpdateDisplay()
-
-
 
 		-- Check for unacknowledged completed crafts
 		local recentCompletedCar = nil
@@ -1338,7 +1293,8 @@ local function init()
 			return
 		end
 
-		-- Default open
+		-- Default open: show main menu only. Players can browse freely.
+		-- The Active Craft panel only appears if they attempt to start another craft.
 		mainFrame.Visible = true
 	end)
 
@@ -1352,7 +1308,6 @@ local function init()
 		end
 
 		if not carName then
-			-- Fallback: find the car that was just actively crafting but is now gone
 			if currentState and currentState.ActiveCrafts then
 				for n, _ in pairs(currentState.ActiveCrafts) do
 					if not newState.ActiveCrafts or not newState.ActiveCrafts[n] then
@@ -1385,7 +1340,8 @@ local function init()
 	end)
 end
 
--- Fast loop to update TimeRemainingLabel
+-- Fast loop: only refreshes the timer text when the panel is already visible.
+-- Never forces the panel to appear — that was the root cause of the bug.
 task.spawn(function()
 	while true do
 		task.wait(1)
