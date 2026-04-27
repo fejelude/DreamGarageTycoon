@@ -490,40 +490,6 @@ local function startInteraction(npcModel)
 				return
 			end
 
-			-- PRE-CHECK ACTIVE CRAFT: Do not show "pick a chassis" if already crafting
-			local FuncGetState = MythicalRemotes:FindFirstChild("GetMythicalShopState")
-			local currentState = FuncGetState and FuncGetState:InvokeServer() or {}
-
-			local activeCar, endTime
-			if currentState and currentState.ActiveCrafts then
-				for c, e in pairs(currentState.ActiveCrafts) do
-					activeCar = c
-					endTime = e
-					break
-				end
-			end
-
-			if activeCar and endTime then
-				local delta = math.max(0, endTime - os.time())
-				local timeStr = string.format("%02d:%02d:%02d",
-					math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
-
-				local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
-				local busyMsgs = {
-					"Bro I'm already putting in work on your <font color='#B652FF'>" .. activeCar .. "</font>. Give me <font color='#FF4C4C'>" .. timeStr .. "</font> and it's yours.",
-					"You can't rush me " .. coloredName .. ". The <font color='#B652FF'>" .. activeCar .. "</font> is gonna take another <font color='#FF4C4C'>" .. timeStr .. "</font>. Chill.",
-					"I'm literally building the <font color='#B652FF'>" .. activeCar .. "</font> right now. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font> fr.",
-					"The forge is hot and I'm busy. The <font color='#B652FF'>" .. activeCar .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font>."
-				}
-
-				local responseText = busyMsgs[math.random(1, #busyMsgs)]
-				typewrite(dialogueLabel, responseText, function()
-					task.wait(2.5)
-					stopInteraction()
-				end)
-				return
-			end
-
 			isOpeningShop = true
 			local openGeneration = interactionGeneration
 
