@@ -99,15 +99,20 @@ local function ShowFeedback(message, statusType)
 	feedbackLbl.TextTransparency = 1
 	feedbackLbl.Visible = true
 	feedbackLbl.ZIndex = 10
+	-- FIX: Sync UIStroke with parent TextLabel fade
+	local fbStroke = feedbackLbl:FindFirstChildOfClass("UIStroke")
+	if fbStroke then fbStroke.Transparency = 1 end
 
 	local fadeIn = TweenService:Create(feedbackLbl, TweenInfo.new(0.3), {TextTransparency = 0})
 	fadeIn:Play()
+	if fbStroke then TweenService:Create(fbStroke, TweenInfo.new(0.3), {Transparency = 0}):Play() end
 	fadeIn.Completed:Wait()
 
 	task.wait(1.5)
 
 	local fadeOut = TweenService:Create(feedbackLbl, TweenInfo.new(0.5), {TextTransparency = 1})
 	fadeOut:Play()
+	if fbStroke then TweenService:Create(fbStroke, TweenInfo.new(0.5), {Transparency = 1}):Play() end
 	fadeOut.Completed:Connect(function()
 		feedbackLbl.Visible = false
 		feedbackDebounce = false
@@ -461,3 +466,4 @@ task.spawn(function()
 	end
 	SetupShop()
 end)
+
