@@ -39,7 +39,8 @@ local SFX_MAP = {
 		}
 	}, 
 
-	AutoRestock = "rbxassetid://134952684776633"
+	AutoRestock = "rbxassetid://134952684776633",
+	Restock     = "rbxassetid://134952684776633"  -- Alias so Kit.Sound:Play("Restock") works
 }
 
 local function playInstance(id, vol, pitch, variance)
@@ -132,6 +133,9 @@ function TweenCtrl:SetupButton(btn, onClick)
 
 	btn.AutoButtonColor = false
 	btn.Active = true
+	-- FIX: Ensure button is selectable and interactable for mobile/gamepad
+	btn.Selectable = true
+	pcall(function() btn.Interactable = true end)
 
 	local originalBg = btn.BackgroundColor3
 	local originalImg = btn:IsA("ImageButton") and btn.ImageColor3 or nil
@@ -167,10 +171,20 @@ function TweenCtrl:SetupButton(btn, onClick)
 		end
 	end)
 
-	btn.Activated:Connect(function()
+	-- FIX: Triple-bind click handler with debounce so mobile Touch input always
+	-- reaches the callback, even if Activated doesn't fire due to UI layering.
+	local clickFired = false
+	local function handleClick()
+		if clickFired then return end
+		clickFired = true
 		Kit.Sound:Play("Click")
 		if onClick then onClick() end
-	end)
+		task.delay(0.3, function() clickFired = false end)
+	end
+
+	btn.Activated:Connect(handleClick)
+	btn.MouseButton1Click:Connect(handleClick)
+	btn.TouchTap:Connect(handleClick)
 end
 
 function TweenCtrl:Shake(guiObject)
@@ -181,8 +195,59 @@ function TweenCtrl:Shake(guiObject)
 end
 Kit.Tween = TweenCtrl
 
-local ToastCtrl = {} 
-function ToastCtrl:Show(msg, color) end
+local ToastCtrl = {}
+function ToastCtrl:Show(msg, color)
+	-- FIX: Actually display the toast message to the player.
+	local pg = player and player:FindFirstChild("PlayerGui")
+	if not pg then return end
+
+	-- Reuse or create a screen gui for toasts
+	local toastGui = pg:FindFirstChild("_ToastGui")
+	if not toastGui then
+		toastGui = Instance.new("ScreenGui")
+		toastGui.Name = "_ToastGui"
+		toastGui.DisplayOrder = 999
+		toastGui.ResetOnSpawn = false
+		toastGui.Parent = pg
+	end
+
+	-- Remove previous toast if any
+	local prev = toastGui:FindFirstChild("ToastLabel")
+	if prev then prev:Destroy() end
+
+	local label = Instance.new("TextLabel")
+	label.Name = "ToastLabel"
+	label.Size = UDim2.new(0.5, 0, 0, 36)
+	label.Position = UDim2.new(0.25, 0, 0.12, 0)
+	label.AnchorPoint = Vector2.new(0, 0)
+	label.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	label.BackgroundTransparency = 0.25
+	label.BorderSizePixel = 0
+	label.Text = msg or ""
+	label.TextColor3 = color or Color3.new(1, 1, 1)
+	label.TextScaled = true
+	label.Font = Enum.Font.GothamBold
+	label.TextTransparency = 0
+	label.Parent = toastGui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = label
+
+	-- Fade out after 2 seconds
+	task.delay(2, function()
+		if label and label.Parent then
+			local t = TweenService:Create(label, TweenInfo.new(0.5), {TextTransparency = 1, BackgroundTransparency = 1})
+			t:Play()
+			-- FIX: Sync UIStroke fade-out with toast label
+			local toastStroke = label:FindFirstChildOfClass("UIStroke")
+			if toastStroke then TweenService:Create(toastStroke, TweenInfo.new(0.5), {Transparency = 1}):Play() end
+			t.Completed:Connect(function()
+				if label and label.Parent then label:Destroy() end
+			end)
+		end
+	end)
+end
 Kit.Toast = ToastCtrl
 
 local InvCtrl = {} 
