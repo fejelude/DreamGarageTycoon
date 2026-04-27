@@ -932,26 +932,36 @@ local function AttemptCraft(carName, isPremium)
 		end
 	end
 
-	-- ── Already crafting ─────────────────────────────────────────────────────
-	if currentState.ActiveCrafts and currentState.ActiveCrafts[carName] then
-			if isPremium then
-				MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
-				return
-			end
-		local delta   = math.max(0, currentState.ActiveCrafts[carName] - os.time())
+	-- ── Already crafting (ANY car, not just this one) ──────────────────────
+	if currentState.ActiveCrafts and next(currentState.ActiveCrafts) then
+		-- Find the active car to display info
+		local activeCar, activeEndTime
+		for c, e in pairs(currentState.ActiveCrafts) do
+			activeCar, activeEndTime = c, e
+			break
+		end
+
+		if isPremium and currentState.ActiveCrafts[carName] then
+			-- Premium skip on the specific car being crafted
+			MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
+			return
+		end
+
+		local activeDisplayName = getDisplayCarName(activeCar)
+		local delta   = math.max(0, activeEndTime - os.time())
 		local timeStr = string.format("%02d:%02d:%02d",
 			math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
 		angeloSpeak(pickRandom({
-			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. displayName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. displayName .. "</font>. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. displayName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more time, come back later alright?",
+			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. activeDisplayName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. activeDisplayName .. "</font>. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. activeDisplayName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more time, come back later alright?",
 			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
 		}), function()
-			-- FIX: Show the Active Craft panel 2 s after Angelo finishes speaking.
-			task.wait(2)
+			-- FIX: Standardized 3s wait, then show Active Craft panel.
+			-- Do NOT call restoreToCraftingFrame — panel's Exit button handles return.
+			task.wait(3)
 			ShowActiveCraftPanel()
-			restoreToCraftingFrame()
 		end)
 		return
 	end
@@ -1123,8 +1133,9 @@ local function OpenCraftingMenu(carName)
 			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
 		}), function()
+			-- FIX: Standardized 3s wait, then show Active Craft panel.
+			-- ShowActiveCraftPanel hides mainFrame/crafting menus internally.
 			task.wait(3)
-			mainFrame.Visible = true
 			ShowActiveCraftPanel()
 		end)
 		return
@@ -1289,10 +1300,10 @@ local function init()
 			return
 		end
 
-		-- FIX: Default open — show main menu, then show Active Craft panel only if
-		-- a craft is currently in progress.
+		-- FIX: Default open — show main menu only. Players can browse freely.
+		-- The Active Craft panel only appears when they attempt to start another craft.
+		-- (Matches Mythical controller behavior — no ShowActiveCraftPanel on open.)
 		mainFrame.Visible = true
-		ShowActiveCraftPanel()
 	end)
 
 	RemoteUpdate.OnClientEvent:Connect(function(newState)
