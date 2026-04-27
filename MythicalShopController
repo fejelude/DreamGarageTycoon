@@ -960,8 +960,7 @@ local function AttemptCraft(carName, isPremium)
 			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
 		}), function()
-			-- FIX: Standardized 3s wait, then show Active Craft panel.
-			-- ShowActiveCraftPanel hides mainFrame/crafting menus internally.
+
 			task.wait(3)
 			ShowActiveCraftPanel()
 		end)
@@ -1138,8 +1137,7 @@ local function OpenCraftingMenu(carName)
 			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
 		}), function()
-			-- FIX: Standardized 3s wait, then show Active Craft panel.
-			-- ShowActiveCraftPanel hides mainFrame/crafting menus internally.
+
 			task.wait(3)
 			ShowActiveCraftPanel()
 		end)
