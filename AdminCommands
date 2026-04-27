@@ -276,7 +276,7 @@ Players.PlayerAdded:Connect(function(player)
 		local args = message:split(" ")
 		local command = args[1]:lower()
 
-		-- 🟢 /give [player] [item]
+		-- 🟢 /give [player] [item] [amount]
 		if command == "/give" then
 			local selector = args[2]
 			local itemName = table.concat(args, " ", 3)
@@ -284,16 +284,28 @@ Players.PlayerAdded:Connect(function(player)
 
 			local targets = getTargets(player, selector)
 
-			-- ✅ SPECIAL LOGIC: /give [player] all
+			-- Parse optional trailing amount (e.g. "/give @s Maverick 10" or "/give @s all 5")
+			local amount = 1
+			local trailingNumber = itemName:match("%s(%d+)$")
+			if trailingNumber then
+				amount = tonumber(trailingNumber) or 1
+				if amount < 1 then amount = 1 end
+				-- Strip the trailing number from itemName
+				itemName = itemName:sub(1, -(#trailingNumber + 2)) -- remove " <number>"
+			end
+
+			-- ✅ SPECIAL LOGIC: /give [player] all [amount]
 			if itemName:lower() == "all" then
 				local allTools = getAllTools()
 				for _, t in pairs(targets) do
 					local count = 0
 					for _, tool in pairs(allTools) do
-						local success, _ = Action_Give(t, tool, false)
-						if success then count = count + 1 end
+						for i = 1, amount do
+							local success, _ = Action_Give(t, tool, true)
+							if success then count = count + 1 end
+						end
 					end
-					print(string.format("🎁 [Admin] Given %d NEW items to %s", count, t.Name))
+					print(string.format("🎁 [Admin] Given %d items (x%d each) to %s", count, amount, t.Name))
 				end
 				return
 			end
@@ -307,11 +319,17 @@ Players.PlayerAdded:Connect(function(player)
 			end
 
 			for _, t in pairs(targets) do
-				local success, reason = Action_Give(t, tool, false)
-				if success then
-					print(string.format("✅ Given [%s] to %s", tool.Name, t.Name))
-				else
-					print(string.format("⚠️ Failed to give [%s] to %s: %s", tool.Name, t.Name, reason))
+				local givenCount = 0
+				for i = 1, amount do
+					local success, reason = Action_Give(t, tool, true)
+					if success then
+						givenCount = givenCount + 1
+					else
+						print(string.format("⚠️ Failed to give [%s] to %s: %s", tool.Name, t.Name, reason))
+					end
+				end
+				if givenCount > 0 then
+					print(string.format("✅ Given [%s] x%d to %s", tool.Name, givenCount, t.Name))
 				end
 			end
 

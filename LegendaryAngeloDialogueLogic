@@ -498,22 +498,11 @@ local function startInteraction(npcModel)
 			end
 
 			if activeCar and endTime then
-				local delta = math.max(0, endTime - os.time())
-				local timeStr = string.format("%02d:%02d:%02d",
-					math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
-
-				local busyMsgs = {
-					"I am already forging your <font color='#B652FF'>" .. activeCar .. "</font>. It will require another <font color='#FF4C4C'>" .. timeStr .. "</font> to cool.",
-					"Patience. Your <font color='#B652FF'>" .. activeCar .. "</font> is still under construction. Return in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-					"The forge is lit and your <font color='#B652FF'>" .. activeCar .. "</font> is taking shape. Do not disturb me for another <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-					"Greatness takes time. The <font color='#B652FF'>" .. activeCar .. "</font> will be finished in <font color='#FF4C4C'>" .. timeStr .. "</font>."
-				}
-
-				local responseText = busyMsgs[math.random(1, #busyMsgs)]
-				typewrite(dialogueLabel, responseText, function()
-					task.wait(2.5)
-					stopInteraction()
-				end)
+				-- FIX: Don't block the player with a dialogue. Skip directly to
+				-- opening the shop so they can access the Active Craft panel (with skip button).
+				isOpeningShop = true
+				releaseInteractionForShop()
+				RemoteOpen:FireServer()
 				return
 			end
 

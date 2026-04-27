@@ -1,32 +1,37 @@
--- Purpose: Manages the specific playlist of 5 songs and respects UI mute state globally.
+-- Purpose: Manages day/night music with fade transitions and respects UI mute state globally.
 -- Runs on: Client
 -- Location: StarterPlayerScripts / PlayerGui
--- Dependencies: SoundService
+-- Dependencies: SoundService, Lighting, TweenService
 -- Public API: None
 -- Networking: None
 -- Security: Client-side audio only.
--- Performance: Minimal footprint, uses event-based song progression.
+-- Performance: Uses event-based mute sync and periodic time checks.
 -- Notes: Checks the global "MusicMuted" attribute set by SettingsClient.
+--        Swaps between daytime and nighttime tracks at 6:00 AM / 6:00 PM with fade transitions.
 
 local SoundService = game:GetService("SoundService")
+local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
 
 -- ⚙️ CONFIGURATION
 local GAME_THEME_NAME = "GameTheme" -- MUST match the name used in your Inventory/Bank scripts
-local SHUFFLE_MODE = true           -- Set true to pick random songs, false to play in order
 local MASTER_VOLUME = 0.5           -- The volume for your background music
+local FADE_DURATION = 2.0           -- Duration of crossfade in seconds
 
--- 🎵 YOUR PLAYLIST (Only the 5 IDs you requested)
-local PLAYLIST = {
-	"rbxassetid://1846088038",        
-}
+-- 🎵 TRACKS
+local DAY_TRACK_ID   = "rbxassetid://1846088038"        -- Current daytime music
+local NIGHT_TRACK_ID = "rbxassetid://9045766377"         -- Nighttime track
+
+-- 🕐 TIME THRESHOLDS (in-game hours, 0-24)
+local DAY_START_HOUR   = 6   -- 6:00 AM
+local NIGHT_START_HOUR = 18  -- 6:00 PM
 
 -- ============================================================================
 -- 🛠️ LOGIC
 -- ============================================================================
 
--- 1. Find or Create the Main Sound Object
+-- 1. Find or Create the Main Sound Object (used by other scripts like inventory)
 local musicObject = SoundService:FindFirstChild(GAME_THEME_NAME)
-
 if not musicObject then
 	musicObject = Instance.new("Sound")
 	musicObject.Name = GAME_THEME_NAME
@@ -34,73 +39,192 @@ if not musicObject then
 	musicObject.Volume = MASTER_VOLUME
 end
 
--- Crucial: Loop must be FALSE so the 'Ended' event fires to let us play the next song.
-musicObject.Looped = false 
+-- Crucial: Loop must be TRUE for continuous background music within a period
+musicObject.Looped = true
 
-local currentTrackIndex = 0
+-- ============================================================================
+-- 🔇 MUTE MANAGEMENT
+-- ============================================================================
 
--- 2. Function to Pick the Next Song
-local function getNextTrackId()
-	if #PLAYLIST == 0 then return nil end
+local function isMuted()
+	return SoundService:GetAttribute("MusicMuted") == true
+end
 
-	if SHUFFLE_MODE then
-		-- Pick a random song distinct from the last one (if possible)
-		local newIndex = math.random(1, #PLAYLIST)
-		if #PLAYLIST > 1 then
-			while newIndex == currentTrackIndex do
-				newIndex = math.random(1, #PLAYLIST)
-			end
-		end
-		currentTrackIndex = newIndex
-		return PLAYLIST[newIndex]
+local function getTargetVolume()
+	if isMuted() then
+		return 0
+	end
+	return MASTER_VOLUME
+end
+
+-- React immediately when the player toggles mute in settings
+SoundService:GetAttributeChangedSignal("MusicMuted"):Connect(function()
+	if isMuted() then
+		-- Immediately silence the music
+		musicObject.Volume = 0
 	else
-		-- Sequential Order
-		currentTrackIndex = currentTrackIndex + 1
-		if currentTrackIndex > #PLAYLIST then
-			currentTrackIndex = 1 -- Loop back to start
+		-- Restore volume if music is playing
+		if musicObject.IsPlaying then
+			musicObject.Volume = MASTER_VOLUME
 		end
-		return PLAYLIST[currentTrackIndex]
+	end
+end)
+
+-- ============================================================================
+-- 🌅 DAY/NIGHT DETECTION
+-- ============================================================================
+
+local function isDaytime()
+	local clockTime = Lighting.ClockTime
+	return clockTime >= DAY_START_HOUR and clockTime < NIGHT_START_HOUR
+end
+
+local function getTrackForTime()
+	if isDaytime() then
+		return DAY_TRACK_ID
+	else
+		return NIGHT_TRACK_ID
 	end
 end
 
--- 3. Function to Play Music
-local function playNextSong()
-	local nextId = getNextTrackId()
-	if not nextId then 
-		warn("⚠️ MusicPlaylistManager: No songs in PLAYLIST table!")
-		return 
+-- ============================================================================
+-- 🎶 TRACK SWITCHING WITH FADE
+-- ============================================================================
+
+local currentFadeOut = nil
+local currentFadeIn = nil
+local currentTrackId = nil
+
+local function cancelActiveTweens()
+	if currentFadeOut then
+		currentFadeOut:Cancel()
+		currentFadeOut = nil
 	end
+	if currentFadeIn then
+		currentFadeIn:Cancel()
+		currentFadeIn = nil
+	end
+end
 
-	print("🎵 Now Playing: " .. nextId)
-
-	-- Update the ID on the SAME object
-	musicObject.SoundId = nextId
-	musicObject.TimePosition = 0
-
-	-- ✅ STRICT FIX: Check the global mute attribute instead of guessing based on current volume
-	if SoundService:GetAttribute("MusicMuted") == true then
-		musicObject.Volume = 0
+local function switchTrack(newTrackId)
+	if currentTrackId == newTrackId then return end
+	
+	cancelActiveTweens()
+	
+	local targetVol = getTargetVolume()
+	currentTrackId = newTrackId
+	
+	if musicObject.IsPlaying and musicObject.Volume > 0 and not isMuted() then
+		-- Fade out current track
+		currentFadeOut = TweenService:Create(
+			musicObject,
+			TweenInfo.new(FADE_DURATION / 2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ Volume = 0 }
+		)
+		currentFadeOut:Play()
+		currentFadeOut.Completed:Connect(function(state)
+			if state ~= Enum.PlaybackState.Completed then return end
+			
+			-- Switch to new track
+			musicObject.SoundId = newTrackId
+			musicObject.TimePosition = 0
+			
+			if not musicObject.IsLoaded then
+				musicObject.Loaded:Wait()
+			end
+			
+			musicObject:Play()
+			
+			-- Fade in new track (only if not muted)
+			if not isMuted() then
+				musicObject.Volume = 0
+				currentFadeIn = TweenService:Create(
+					musicObject,
+					TweenInfo.new(FADE_DURATION / 2, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+					{ Volume = MASTER_VOLUME }
+				)
+				currentFadeIn:Play()
+			end
+		end)
 	else
-		musicObject.Volume = MASTER_VOLUME 
+		-- No music playing or muted — just switch directly
+		musicObject.SoundId = newTrackId
+		musicObject.TimePosition = 0
+		musicObject.Volume = targetVol
+		
+		if not musicObject.IsLoaded then
+			musicObject.Loaded:Wait()
+		end
+		
+		musicObject:Play()
+		
+		-- If not muted, fade in from zero
+		if not isMuted() and targetVol > 0 then
+			musicObject.Volume = 0
+			currentFadeIn = TweenService:Create(
+				musicObject,
+				TweenInfo.new(FADE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+				{ Volume = MASTER_VOLUME }
+			)
+			currentFadeIn:Play()
+		end
 	end
+end
 
-	-- Preload to prevent silence gaps
-	if not musicObject.IsLoaded then
-		musicObject.Loaded:Wait()
-	end
+-- ============================================================================
+-- 🔄 PERIODIC CHECK FOR TIME-OF-DAY CHANGES
+-- ============================================================================
 
+local lastWasDaytime = nil
+
+local function checkTimeAndSwitch()
+	local nowDay = isDaytime()
+	
+	-- Only switch if the period actually changed
+	if lastWasDaytime == nowDay then return end
+	lastWasDaytime = nowDay
+	
+	local targetTrack = getTrackForTime()
+	print("🎵 Time period changed to " .. (nowDay and "Day" or "Night") .. " — switching track")
+	switchTrack(targetTrack)
+end
+
+-- ============================================================================
+-- 🚀 START THE SYSTEM
+-- ============================================================================
+
+task.wait(2) -- Wait for game to load
+
+-- Initial track setup
+lastWasDaytime = isDaytime()
+currentTrackId = getTrackForTime()
+musicObject.SoundId = currentTrackId
+musicObject.TimePosition = 0
+musicObject.Volume = getTargetVolume()
+
+if not musicObject.IsLoaded then
+	musicObject.Loaded:Wait()
+end
+
+if not musicObject.IsPlaying then
 	musicObject:Play()
 end
 
--- 4. Listen for Song End
--- When the current song finishes, this event fires automatically.
-musicObject.Ended:Connect(function()
-	task.wait(1) -- Small pause between songs
-	playNextSong()
-end)
-
--- 5. Start the System
-task.wait(2) -- Wait for game to load
-if not musicObject.IsPlaying then
-	playNextSong()
+-- If not muted, fade in from zero for a smooth start
+if not isMuted() then
+	musicObject.Volume = 0
+	local startFade = TweenService:Create(
+		musicObject,
+		TweenInfo.new(FADE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ Volume = MASTER_VOLUME }
+	)
+	startFade:Play()
 end
+
+-- Check for time-of-day changes every 2 seconds
+task.spawn(function()
+	while true do
+		task.wait(2)
+		checkTimeAndSwitch()
+	end
+end)

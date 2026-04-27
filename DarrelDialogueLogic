@@ -407,6 +407,9 @@ end
 -- 📣 POST-PURCHASE REACTION EVENT LOGIC
 -- ============================================================================
 purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux)
+	-- FIX: 0.8s delay before NPC speaks after purchase
+	task.wait(0.8)
+
 	local carData = CarStats.Cars[carId]
 	if not carData then return end
 
