@@ -498,11 +498,33 @@ local function startInteraction(npcModel)
 			end
 
 			if activeCar and endTime then
-				-- FIX: Don't block the player with a dialogue. Skip directly to
-				-- opening the shop so they can access the Active Craft panel (with skip button).
+				-- NPC speaks about active craft, then opens the shop after a short pause.
 				isOpeningShop = true
-				releaseInteractionForShop()
-				RemoteOpen:FireServer()
+				local openGeneration = interactionGeneration
+
+				local busyMsgs = {
+					"You can't forge another car yet. Wait until the current one is complete.",
+					"Patience. I am still working on your current build. Come back when it is finished.",
+					"One at a time. I need to finish what is already on the anvil first.",
+					"The forge is still occupied. You will have to wait until I am done with your current order.",
+					"I only have two hands. Let me finish what I started before you ask for more.",
+				}
+				local responseText = busyMsgs[math.random(1, #busyMsgs)]
+
+				typewrite(dialogueLabel, responseText, function()
+					if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
+
+					if pendingShopOpenTask then
+						pcall(task.cancel, pendingShopOpenTask)
+					end
+
+					pendingShopOpenTask = task.spawn(function()
+						task.wait(1)
+						if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
+						releaseInteractionForShop()
+						RemoteOpen:FireServer()
+					end)
+				end)
 				return
 			end
 
@@ -859,4 +881,3 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		end
 	end)
 end)
-
