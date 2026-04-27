@@ -309,16 +309,6 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	end
 	if not player or not player.Parent then return false, "Player missing" end
 
-	local char = player.Character
-	if not char or not char.PrimaryPart then return false, "Character missing" end
-
-	local npcs       = workspace:FindFirstChild("NPCS")
-	local ethourah     = npcs and npcs:FindFirstChild("ethourah")
-	local ethourahRoot = ethourah and ethourah:FindFirstChild("HumanoidRootPart")
-	if not ethourahRoot then return false, "NPC missing" end
-
-	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
-	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
 
 
 
@@ -413,16 +403,7 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 	if typeof(carName) ~= "string" then return false, "Invalid Request" end
 	if not player or not player.Parent then return false, "Player missing" end
 
-	local char = player.Character
-	if not char or not char.PrimaryPart then return false, "Character missing" end
 
-	local npcs       = workspace:FindFirstChild("NPCS")
-	local ethourah     = npcs and npcs:FindFirstChild("ethourah")
-	local ethourahRoot = ethourah and ethourah:FindFirstChild("HumanoidRootPart")
-	if not ethourahRoot then return false, "NPC missing" end
-
-	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
-	if distance > MAX_INTERACTION_DISTANCE then return false, "Too far away" end
 
 
 
@@ -590,3 +571,4 @@ end)
 -- Session cleanup is handled exclusively by PersistenceBindable "Close",
 -- which the data handler calls after a successful save. This guarantees
 -- "Get" always sees live session data before the session is torn down.
+
