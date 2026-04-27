@@ -572,6 +572,18 @@ local function handleSell(dialogueLabel)
 
 		-- Confirmed, execute sell via server with a timeout protection
 		task.spawn(function()
+			-- FIX (Stale Car ID): Re-read equipped car in case the player
+			-- switched tools while the confirmation dialog was open.
+			local freshCarId = getEquippedCar()
+			if not freshCarId or CarSellPrices.CleanId(freshCarId) ~= CarSellPrices.CleanId(equippedCarId) then
+				typewrite(dialogueLabel, "Oh my~ It seems you changed what you're holding, darling. Let's start over~ 🌸", function()
+					isProcessingSell = false
+					task.wait(2)
+					stopInteraction()
+				end)
+				return
+			end
+
 			local success, msg
 			local invokeCompleted = false
 
