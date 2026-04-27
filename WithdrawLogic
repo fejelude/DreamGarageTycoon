@@ -73,6 +73,9 @@ local function animateResult(uiObject)
 	uiObject.ZIndex = 20 
 	if uiObject:IsA("ImageLabel") then uiObject.ImageTransparency = 0 end
 	if uiObject:IsA("TextLabel") then uiObject.TextTransparency = 0 end
+	-- FIX: Sync UIStroke on show
+	local stroke = uiObject:FindFirstChildOfClass("UIStroke")
+	if stroke then stroke.Transparency = 0 end
 
 	-- 2. Wait
 	task.wait(2)
@@ -84,6 +87,8 @@ local function animateResult(uiObject)
 
 	local tweenOut = TweenService:Create(uiObject, TweenInfo.new(0.5), goals)
 	tweenOut:Play()
+	-- FIX: Fade UIStroke in sync with parent
+	if stroke then TweenService:Create(stroke, TweenInfo.new(0.5), {Transparency = 1}):Play() end
 	tweenOut.Completed:Wait()
 
 	uiObject.Visible = false
@@ -105,6 +110,9 @@ local function startVerifying()
 		VerifyLabel.TextTransparency = 1 
 		goals.TextTransparency = 0 
 	end
+	-- FIX: Sync UIStroke during verify pulse
+	local vStroke = VerifyLabel:FindFirstChildOfClass("UIStroke")
+	if vStroke then vStroke.Transparency = 1 end
 
 	currentVerifyTween = TweenService:Create(VerifyLabel, pulseInfo, goals)
 	currentVerifyTween:Play()
