@@ -4,9 +4,6 @@
 -- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
 -- Public API: UpdateMythicalEthourahDialogue (BindableEvent), EthourahShopSpeak (BindableEvent)
 -- Networking: Fires ShopRemotes.MythicalShop.RequestOpenShop (Client -> Server)
--- Security: Purely visual client-side transitions; no server authority bypass possible here.
--- Performance: Uses callback chaining instead of parallel yielding, preventing race conditions.
--- Notes: Fixes premature UI closing on Leave by waiting for typewriting to finish before starting the leave delay.
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
@@ -438,6 +435,7 @@ local function startInteraction(npcModel)
 			end
 		end
 
+		-- ✅ CHANGE 1: Leave button — delay runs alongside typewrite (matches Angelo behaviour)
 		connectBtn(BTN_LEAVE_ID, function()
 			if isLeaving then return end
 			isLeaving = true
@@ -446,13 +444,10 @@ local function startInteraction(npcModel)
 			if dialogueLabel then
 				local coloredRedName = "<font color='" .. ETHOURAH_COLOR .. "'>" .. player.DisplayName .. "</font>"
 				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Aight slide out then. Come back when you ready to get serious </font>" .. coloredRedName .. "."
-				typewrite(dialogueLabel, goodbyeMsg, function()
-					task.wait(LEAVE_DELAY)
-					stopInteraction()
-				end)
-			else
-				stopInteraction()
+				typewrite(dialogueLabel, goodbyeMsg)
 			end
+			task.wait(LEAVE_DELAY)
+			stopInteraction()
 		end)
 
 		connectBtn(BTN_INQUIRY_ID, function()
@@ -486,6 +481,50 @@ local function startInteraction(npcModel)
 				typewrite(dialogueLabel, responseText, function()
 					task.wait(2.0)
 					stopInteraction()
+				end)
+				return
+			end
+
+			-- ✅ CHANGE 2: Active craft pre-check (matches Angelo behaviour)
+			local FuncGetState = MythicalRemotes:FindFirstChild("GetMythicalShopState")
+			local currentState = FuncGetState and FuncGetState:InvokeServer() or {}
+
+			local activeCar, endTime
+			if currentState and currentState.ActiveCrafts then
+				for c, e in pairs(currentState.ActiveCrafts) do
+					activeCar = c
+					endTime = e
+					break
+				end
+			end
+
+			if activeCar and endTime then
+				-- NPC speaks about active craft, then opens the shop after a short pause.
+				isOpeningShop = true
+				local openGeneration = interactionGeneration
+
+				local busyMsgs = {
+					"Chill bro I'm already working on your car. Wait until the current one is done.",
+					"You can't just stack orders on me like that. Come back when I finish what's on the forge.",
+					"One at a time fam. I need to wrap up your current build first.",
+					"The forge is occupied. Pull up again once I'm done with what you already ordered.",
+					"Bro I only got two hands. Let me finish before you come asking for more.",
+				}
+				local responseText = busyMsgs[math.random(1, #busyMsgs)]
+
+				typewrite(dialogueLabel, responseText, function()
+					if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
+
+					if pendingShopOpenTask then
+						pcall(task.cancel, pendingShopOpenTask)
+					end
+
+					pendingShopOpenTask = task.spawn(function()
+						task.wait(1)
+						if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
+						releaseInteractionForShop()
+						RemoteOpen:FireServer()
+					end)
 				end)
 				return
 			end
@@ -524,7 +563,7 @@ end
 
 -- ============================================================================
 -- 📡 UpdateDialogueEvent — original handler, untouched.
--- Only handles ForceClose now since all shop events route through AngeloShopSpeak.
+-- Only handles ForceClose now since all shop events route through EthourahShopSpeak.
 -- ============================================================================
 UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	if actionType == "ForceClose" then
@@ -668,7 +707,7 @@ player.CharacterAdded:Connect(function()
 end)
 
 -- ============================================================================
--- 🛒 EthourahShopSpeak — NEW dedicated BindableEvent for all shop-driven dialogue.
+-- 🛒 EthourahShopSpeak — dedicated BindableEvent for all shop-driven dialogue.
 -- ============================================================================
 local EthourahShopSpeak = Instance.new("BindableEvent")
 EthourahShopSpeak.Name = "EthourahShopSpeak"
