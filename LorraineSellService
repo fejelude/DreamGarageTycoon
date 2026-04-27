@@ -100,9 +100,11 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 			return false, "Invalid sell amount."
 		end
 
-		-- 6. Execution: Remove item via TycoonAdminAPI & manual destroy to guarantee anti-wipe + UI updates
-		-- TycoonDataHandler's `RemoveTool` loops Backpack -> StarterGear -> Character and stops when `requestedAmount` is reached.
-		-- We MUST call TycoonAdminAPI BEFORE destroying actualTool so the API can safely scan and process the inventory removal logic first.
+		-- 6. Execution: Remove item via TycoonAdminAPI & clean up all instances
+		-- TycoonDataHandler's `RemoveTool` scans Backpack → StarterGear → Character
+		-- and stops after destroying `requestedAmount` matches.
+		-- We request 1 removal, then manually clean up any remaining instances
+		-- (the held tool in Character, or a lingering StarterGear clone).
 
 		local removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, cleanActualId, 1)
 		if not removeSuccess then
@@ -116,10 +118,27 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 			return false, "Failed to remove the car from your inventory. Transaction aborted."
 		end
 
-		-- API removed one instance (likely the StarterGear clone or the Backpack clone).
-		-- Now we explicitly destroy the held tool in the character to guarantee it leaves the player's hands.
+		-- FIX (Double Removal): Only destroy the held tool if RemoveTool didn't already get it.
+		-- RemoveTool scans Backpack first, so it usually destroys a Backpack/StarterGear clone
+		-- and leaves the Character tool alive. We clean it up here without double-counting.
 		if actualTool and actualTool.Parent then
 			actualTool:Destroy()
+		end
+
+		-- FIX: Also clean up any remaining StarterGear clone so the sold car
+		-- doesn't respawn into the player's inventory on death.
+		local starterGear = player:FindFirstChild("StarterGear")
+		if starterGear then
+			for _, child in ipairs(starterGear:GetChildren()) do
+				if child:IsA("Tool") then
+					local childId = child:GetAttribute("ToolId") or child.Name
+					local cleanChildId = CarSellPrices.CleanId(childId)
+					if cleanChildId == cleanActualId then
+						child:Destroy()
+						break
+					end
+				end
+			end
 		end
 
 		-- 7. Execution: Add Funds
@@ -138,16 +157,18 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 		return true, "Success"
 	end)
 
-	-- Release Transaction Lock
-	task.delay(5, function()
-		activeTransactions[player.UserId] = nil
-	end)
-
+	-- FIX (Transaction Lock): Release immediately after completion with a brief
+	-- anti-spam cooldown. The old 5-second fixed delay conflicted with the
+	-- immediate release in the error path, and blocked legitimate retries too long.
 	if not success then
 		warn("⚠️ Lorraine Transaction Error for " .. player.Name .. ": " .. tostring(result))
 		activeTransactions[player.UserId] = nil
 		return false, "System Error"
 	end
+
+	task.delay(1, function()
+		activeTransactions[player.UserId] = nil
+	end)
 
 	return result, msg
 end
