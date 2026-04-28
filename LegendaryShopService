@@ -107,6 +107,7 @@ local RemoteUpdate      = getRemote("LegendaryShopUpdate",         "RemoteEvent"
 local FuncGetState      = getRemote("GetLegendaryShopState",       "RemoteFunction")
 local FuncCraftCar      = getRemote("CraftLegendaryCar",           "RemoteFunction")
 local FuncSacrifice     = getRemote("SacrificeLegendaryIngredient","RemoteFunction")
+local FuncAcknowledge   = getRemote("AcknowledgeLegendaryCraft",   "RemoteFunction")
 
 -- =========================
 -- BINDABLES
@@ -358,7 +359,7 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	return logicOk, msg
 end
 
-FuncCraftCar.OnServerInvoke = function(player, carName)
+FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 	if typeof(carName) ~= "string" then return false, "Invalid Request" end
 	if not player or not player.Parent then return false, "Player missing" end
 
@@ -403,6 +404,11 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 			end
 		end
 
+		if isPremiumRequest then
+			session.PendingPremiumCraft = carName
+			return true, "PendingPremium"
+		end
+
 		session.ActiveCrafts[carName] = os.time() + recipe.CraftTime
 
 		pushUpdate(player, session, "Craft")
@@ -422,6 +428,21 @@ FuncCraftCar.OnServerInvoke = function(player, carName)
 end
 
 -- =========================
+-- ACKNOWLEDGE CRAFT
+-- =========================
+FuncAcknowledge.OnServerInvoke = function(player, carName)
+	if typeof(carName) ~= "string" then return false end
+	local session = getSession(player)
+	if session.CompletedCrafts[carName] then
+		session.CompletedCrafts[carName] = nil
+		pushUpdate(player, session, "Acknowledge")
+		safeInvoke(LegendaryInventoryBindable, 2, "MarkDirty", player)
+		return true
+	end
+	return false
+end
+
+-- =========================
 -- SKIP CRAFTING BINDABLE (FROM RECEIPT ROUTER)
 -- =========================
 SkipCraftFunc.OnInvoke = function(player)
@@ -429,14 +450,20 @@ SkipCraftFunc.OnInvoke = function(player)
 	local session = getSession(player)
 
 	local activeCars = {}
-	for carName in pairs(session.ActiveCrafts) do
-		table.insert(activeCars, carName)
+	if session.PendingPremiumCraft then
+		table.insert(activeCars, session.PendingPremiumCraft)
+		session.PendingPremiumCraft = nil
+	else
+		for carName in pairs(session.ActiveCrafts) do
+			table.insert(activeCars, carName)
+		end
 	end
 
 	local foundActive = false
 	for _, carName in ipairs(activeCars) do
 		session.ActiveCrafts[carName] = nil
 		session.CompletedCrafts[carName] = os.time()
+		session.CraftProgress[carName] = {}
 		local realToolName = RECIPES[carName].TargetCar
 		local invokeOk, giveResult = safeInvoke(LegendaryInventoryBindable, 3, "GiveTool", player, realToolName)
 
@@ -476,6 +503,7 @@ task.spawn(function()
 				if now >= endTime then
 					session.ActiveCrafts[carName]   = nil
 					session.CompletedCrafts[carName] = now
+					session.CraftProgress[carName] = {}
 
 					local realToolName           = RECIPES[carName].TargetCar
 					local invokeOk, giveResult   =
@@ -500,3 +528,4 @@ task.spawn(function()
 		end
 	end
 end)
+
