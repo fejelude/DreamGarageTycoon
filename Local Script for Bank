@@ -83,10 +83,10 @@ local SOUND_ID = "rbxassetid://9083627113"
 local hiddenGuis = {}
 
 -- 4. MONEY VARIABLES
-local leaderstats = player:WaitForChild("leaderstats", 10)
+local hiddenStats = player:WaitForChild("HiddenStats", 10)
 local cash = nil
-if leaderstats then
-	cash = leaderstats:WaitForChild("Cash", 10)
+if hiddenStats then
+	cash = hiddenStats:WaitForChild("Cash", 10)
 end
 
 -- ============================================================================
