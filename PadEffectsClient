@@ -33,8 +33,10 @@ local EXPLOSION_RADIUS = 550    -- 🎯 More concentrated explosion
 local ANIMATION_DURATION = 3.0  
 
 -- 🎨 COLORS
-local COLOR_SUCCESS = Color3.fromRGB(85, 255, 127) 
-local COLOR_FAIL    = Color3.fromRGB(255, 85, 85)  
+local COLOR_SUCCESS_TEXT   = Color3.fromRGB(0, 255, 0)     -- Lime Green
+local COLOR_SUCCESS_STROKE = Color3.fromRGB(0, 150, 0)     -- Darker Lime
+local COLOR_FAIL_TEXT      = Color3.fromRGB(255, 120, 120) -- Lighter Red
+local COLOR_FAIL_STROKE    = Color3.fromRGB(150, 0, 0)     -- Darker Red
 
 -- ============================================================================
 -- 1. GET YOUR EXISTING GUI
@@ -149,7 +151,8 @@ local function playNotification(isSuccess, data)
 	-- 📝 2. BASE TEXT FORMATTING
 	local baseText = ""
 	if isSuccess then
-		padLabel.TextColor3 = COLOR_SUCCESS
+		padLabel.TextColor3 = COLOR_SUCCESS_TEXT
+		if uiStroke then uiStroke.Color = COLOR_SUCCESS_STROKE end
 		local isNumber = tonumber(data)
 
 		if isNumber then
@@ -160,7 +163,8 @@ local function playNotification(isSuccess, data)
 			baseText = "You finally own " .. cleanName .. " pads!"
 		end
 	else
-		padLabel.TextColor3 = COLOR_FAIL
+		padLabel.TextColor3 = COLOR_FAIL_TEXT
+		if uiStroke then uiStroke.Color = COLOR_FAIL_STROKE end
 
 		local isNumber = tonumber(data)
 		if isNumber then
@@ -220,4 +224,3 @@ PadUnlockEvent.OnClientEvent:Connect(function(isSuccess, data)
 		playNotification(false, data)
 	end
 end)
-
