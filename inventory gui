@@ -42,6 +42,9 @@ local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 local openButton = script.Parent
 
+-- Utility
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+
 -- Controls
 local PlayerModule = require(player.PlayerScripts:WaitForChild("PlayerModule"))
 local Controls = PlayerModule:GetControls()
@@ -72,6 +75,7 @@ local myScreenGui = openButton:FindFirstAncestorWhichIsA("ScreenGui")
 local mainWindow = myScreenGui:WaitForChild("InventoryWindow", 10)
 local itemsContainer = mainWindow:WaitForChild("ItemContainer", 10)
 local closeButton = mainWindow:WaitForChild("CloseButton", 10)
+local unequipButton = mainWindow:FindFirstChild("Unequip")
 
 local tierFrame = mainWindow:WaitForChild("TierFrame", 10)
 local tierContainer = tierFrame:WaitForChild("TierContainer", 10)
@@ -81,6 +85,7 @@ local emptyIndicatorLabel = mainWindow:FindFirstChild("Indicator-v2", true)
 -- Startup UI state
 if mainWindow then mainWindow.Visible = false end
 if tierFrame then tierFrame.Visible = false end
+if unequipButton then unequipButton.Visible = false end
 openButton.Visible = true
 if openButton:IsA("ImageButton") then
 	openButton.ImageColor3 = CONFIG.Colors.Normal
@@ -196,15 +201,15 @@ end
 -- called more than once on the same button via the attribute
 -- "__HoverBound", preventing tween accumulation on pool reuse.
 -- =========================================================
-local function addButtonEffects(btn, scaleOnly, getBaseBg)
+local function addButtonEffects(btn, getBaseBg)
 	-- FIX #4: skip if already bound; connections are still alive from last use
 	if btn:GetAttribute("__HoverBound") then
 		return {}
 	end
 	btn:SetAttribute("__HoverBound", true)
 
-	local scale = btn:FindFirstChild("UIScale") or Instance.new("UIScale", btn)
 	local baseZ = btn.ZIndex
+	local isHovering = false
 
 	-- FIX #1: collect connections to return
 	local connections = {}
@@ -212,31 +217,28 @@ local function addButtonEffects(btn, scaleOnly, getBaseBg)
 	if UserInputService.TouchEnabled then return connections end
 
 	table.insert(connections, btn.MouseEnter:Connect(function()
+		isHovering = true
 		playSfx(SFX.Hover)
 		btn.ZIndex = baseZ + 20
-		TweenService:Create(scale, TweenInfo.new(0.2), { Scale = 1.1 }):Play()
 
-		if not scaleOnly then
-			local goals = { BackgroundColor3 = CONFIG.Colors.Dim }
-			if btn:IsA("ImageButton") or btn:IsA("ImageLabel") then
-				goals.ImageColor3 = CONFIG.Colors.Dim
-			end
-			TweenService:Create(btn, TweenInfo.new(0.2), goals):Play()
+		local hoverColor = Color3.new(0.7, 0.7, 0.7) -- Match UIButtonUtils
+		local goals = { BackgroundColor3 = hoverColor }
+		if btn:IsA("ImageButton") or btn:IsA("ImageLabel") or btn:IsA("TextButton") then
+			goals.ImageColor3 = hoverColor
 		end
+		TweenService:Create(btn, TweenInfo.new(0.2), goals):Play()
 	end))
 
 	table.insert(connections, btn.MouseLeave:Connect(function()
+		isHovering = false
 		btn.ZIndex = baseZ
-		TweenService:Create(scale, TweenInfo.new(0.2), { Scale = 1 }):Play()
 
-		if not scaleOnly then
-			local bg = getBaseBg and getBaseBg() or btn.BackgroundColor3
-			local goals = { BackgroundColor3 = bg }
-			if btn:IsA("ImageButton") or btn:IsA("ImageLabel") then
-				goals.ImageColor3 = CONFIG.Colors.Normal
-			end
-			TweenService:Create(btn, TweenInfo.new(0.2), goals):Play()
+		local bg = getBaseBg and getBaseBg() or btn.BackgroundColor3
+		local goals = { BackgroundColor3 = bg }
+		if btn:IsA("ImageButton") or btn:IsA("ImageLabel") or btn:IsA("TextButton") then
+			goals.ImageColor3 = CONFIG.Colors.Normal
 		end
+		TweenService:Create(btn, TweenInfo.new(0.2), goals):Play()
 	end))
 
 	return connections  -- FIX #1: caller merges these into buttonCons
@@ -246,9 +248,10 @@ local function addOpenButtonHover(btn)
 	if UserInputService.TouchEnabled then return end
 	if not btn:IsA("ImageButton") then return end
 
+	local hoverColor = Color3.new(0.7, 0.7, 0.7) -- Match UIButtonUtils
 	btn.MouseEnter:Connect(function()
 		playSfx(SFX.Hover)
-		TweenService:Create(btn, TweenInfo.new(0.2), { ImageColor3 = CONFIG.Colors.Dim }):Play()
+		TweenService:Create(btn, TweenInfo.new(0.2), { ImageColor3 = hoverColor }):Play()
 	end)
 	btn.MouseLeave:Connect(function()
 		TweenService:Create(btn, TweenInfo.new(0.2), { ImageColor3 = CONFIG.Colors.Normal }):Play()
@@ -596,8 +599,14 @@ local function renderCurrentTab()
 
 	releaseAllButtons()
 
-	local renderedAny = false
 	local char = player.Character
+
+	if unequipButton then
+		local equippedTool = char and char:FindFirstChildOfClass("Tool")
+		unequipButton.Visible = equippedTool ~= nil
+	end
+
+	local renderedAny = false
 
 	for carName, count in pairs(counts) do
 		local stats = CarStats.Cars[carName]
@@ -668,7 +677,7 @@ local function renderCurrentTab()
 			local cons = {}
 			buttonCons[btn] = cons
 
-			local hoverCons = addButtonEffects(btn, false, function() return baseBg end)
+			local hoverCons = addButtonEffects(btn, function() return baseBg end)
 			for _, c in ipairs(hoverCons) do
 				table.insert(cons, c)
 			end
@@ -822,10 +831,11 @@ local function performClose()
 	end
 end
 
-closeButton.MouseButton1Click:Connect(function()
-	playSfx(SFX.Click)
-	performClose()
-end)
+-- Handled by UIButtonUtils.SetupStandardButton
+-- closeButton.MouseButton1Click:Connect(function()
+-- 	playSfx(SFX.Click)
+-- 	performClose()
+-- end)
 
 openButton.MouseButton1Click:Connect(function()
 	playSfx(SFX.Click)
@@ -861,12 +871,45 @@ openButton.MouseButton1Click:Connect(function()
 end)
 
 addOpenButtonHover(openButton)
-addButtonEffects(closeButton, false, function() return closeButton.BackgroundColor3 end)
+UIButtonUtils.SetupStandardButton(closeButton, nil, performClose)
+
+if unequipButton then
+	addButtonEffects(unequipButton, function() return unequipButton.BackgroundColor3 end)
+	unequipButton.MouseButton1Click:Connect(function()
+		playSfx(SFX.Click)
+		local char = player.Character
+		if char then
+			local hum = char:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum:UnequipTools()
+			end
+		end
+	end)
+end
 
 if tierContainer then
+	local layout = tierContainer:FindFirstChildOfClass("UIGridLayout")
 	for _, btn in ipairs(tierContainer:GetChildren()) do
 		if btn:IsA("GuiButton") then
-			addButtonEffects(btn, true)
+			-- Requirement: Smooth scale from center with UIGridLayout
+			if layout then
+				btn.AnchorPoint = Vector2.new(0.5, 0.5)
+				btn.Position = UDim2.new(0.5, 0, 0.5, 0)
+				
+				-- Wrap in a frame so UIGridLayout positions the wrapper, allowing the button to scale from center
+				if not btn.Parent:IsA("Frame") or not btn.Parent.Name:match("_Wrapper$") then
+					local wrapper = Instance.new("Frame")
+					wrapper.Name = btn.Name .. "_Wrapper"
+					wrapper.BackgroundTransparency = 1
+					wrapper.Size = btn.Size
+					wrapper.LayoutOrder = btn.LayoutOrder
+					wrapper.Parent = tierContainer
+					btn.Parent = wrapper
+					btn.Size = UDim2.new(1, 0, 1, 0)
+				end
+			end
+
+			addButtonEffects(btn, function() return btn.BackgroundColor3 end)
 			btn.MouseButton1Click:Connect(function()
 				if btn.Name == "Mythic" then
 					playSfx(SFX.Mythic)
@@ -880,3 +923,4 @@ if tierContainer then
 		end
 	end
 end
+
