@@ -44,6 +44,7 @@ local openButton = script.Parent
 
 -- Utility
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- Controls
 local PlayerModule = require(player.PlayerScripts:WaitForChild("PlayerModule"))
@@ -55,9 +56,7 @@ local CONFIG = {
 	Zoom = { Min = 0.5, Max = 128 },
 	Tween = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out),
 	Audio = {
-		Click = "rbxassetid://9083627113",
 		Equip = "rbxassetid://4676738150",
-		Hover = "rbxassetid://6895079853",
 		Mythic = "rbxassetid://9120048710",
 		ShopMusic = "rbxassetid://83777726264435",
 		GameThemeName = "GameTheme"
@@ -71,8 +70,12 @@ local CONFIG = {
 }
 
 -- UI refs
-local myScreenGui = openButton:FindFirstAncestorWhichIsA("ScreenGui")
-local mainWindow = myScreenGui:WaitForChild("InventoryWindow", 10)
+-- Note: openButton moved to MainButtons > Buttons > Inventory, so we search playerGui
+-- for InventoryWindow directly rather than via the button's ancestor ScreenGui.
+local playerGui   = player:WaitForChild("PlayerGui")
+local mainWindow  = playerGui:FindFirstChild("InventoryWindow", true)
+-- Derive the ScreenGui that actually owns InventoryWindow (NOT MainButtons)
+local inventoryScreenGui = mainWindow and mainWindow:FindFirstAncestorWhichIsA("ScreenGui")
 local itemsContainer = mainWindow:WaitForChild("ItemContainer", 10)
 local closeButton = mainWindow:WaitForChild("CloseButton", 10)
 local unequipButton = mainWindow:FindFirstChild("Unequip")
@@ -91,41 +94,8 @@ if openButton:IsA("ImageButton") then
 	openButton.ImageColor3 = CONFIG.Colors.Normal
 end
 
--- Sounds
-local function makeSound(id, vol, looped)
-	local s = Instance.new("Sound")
-	s.SoundId = id
-	s.Volume = vol or 0.5
-	s.Looped = looped or false
-	s.Parent = SoundService
-	return s
-end
-
-local SFX = {
-	Click = makeSound(CONFIG.Audio.Click, 0.5, false),
-	Equip = makeSound(CONFIG.Audio.Equip, 0.5, false),
-	Hover = makeSound(CONFIG.Audio.Hover, 0.3, false),
-	Mythic = makeSound(CONFIG.Audio.Mythic, 1, false),
-}
-
-local gameThemeSound = SoundService:FindFirstChild(CONFIG.Audio.GameThemeName)
-local shopMusic = SoundService:FindFirstChild("ShopMusic_Internal")
-if not shopMusic then
-	shopMusic = makeSound(CONFIG.Audio.ShopMusic, 0.5, true)
-	shopMusic.Name = "ShopMusic_Internal"
-end
-
-local function playSfx(soundObj)
-	if not soundObj then return end
-	if soundObj.IsPlaying then
-		local c = soundObj:Clone()
-		c.Parent = SoundService
-		c:Play()
-		game:GetService("Debris"):AddItem(c, 3)
-	else
-		soundObj:Play()
-	end
-end
+-- 🔇 All inventory sounds have been removed.
+-- Hover feedback is handled by UIAudioConfig.PlayHover() inside addButtonEffects.
 
 -- Disable Roblox backpack
 pcall(function()
@@ -181,7 +151,7 @@ local function toggleOtherGuis(shouldHide)
 	if shouldHide then
 		hiddenGuis = {}
 		for _, gui in ipairs(playerGui:GetDescendants()) do
-			if gui:IsA("ScreenGui") and gui ~= myScreenGui and gui.Enabled == true then
+			if gui:IsA("ScreenGui") and gui ~= inventoryScreenGui and gui.Enabled == true then
 				gui.Enabled = false
 				table.insert(hiddenGuis, gui)
 			end
@@ -210,51 +180,102 @@ local function addButtonEffects(btn, getBaseBg)
 
 	local baseZ = btn.ZIndex
 	local isHovering = false
+	local isPressed = false
 
 	-- FIX #1: collect connections to return
 	local connections = {}
 
-	if UserInputService.TouchEnabled then return connections end
+	local uiScale = btn:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale       = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = btn
+	end
+
+	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local function updateScale()
+		local target = 1.0
+		if isPressed      then target = 0.95
+		elseif isHovering then target = 1.05
+		end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+	end
 
 	table.insert(connections, btn.MouseEnter:Connect(function()
 		isHovering = true
-		playSfx(SFX.Hover)
+		UIAudioConfig.PlayHover()
 		btn.ZIndex = baseZ + 20
 
-		local hoverColor = Color3.new(0.7, 0.7, 0.7) -- Match UIButtonUtils
-		local goals = { BackgroundColor3 = hoverColor }
-		if btn:IsA("ImageButton") or btn:IsA("ImageLabel") or btn:IsA("TextButton") then
-			goals.ImageColor3 = hoverColor
-		end
-		TweenService:Create(btn, TweenInfo.new(0.2), goals):Play()
+		updateScale()
 	end))
 
 	table.insert(connections, btn.MouseLeave:Connect(function()
 		isHovering = false
+		isPressed = false
 		btn.ZIndex = baseZ
 
-		local bg = getBaseBg and getBaseBg() or btn.BackgroundColor3
-		local goals = { BackgroundColor3 = bg }
-		if btn:IsA("ImageButton") or btn:IsA("ImageLabel") or btn:IsA("TextButton") then
-			goals.ImageColor3 = CONFIG.Colors.Normal
+		updateScale()
+	end))
+
+	table.insert(connections, btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
 		end
-		TweenService:Create(btn, TweenInfo.new(0.2), goals):Play()
+	end))
+
+	table.insert(connections, btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
 	end))
 
 	return connections  -- FIX #1: caller merges these into buttonCons
 end
 
 local function addOpenButtonHover(btn)
-	if UserInputService.TouchEnabled then return end
 	if not btn:IsA("ImageButton") then return end
 
-	local hoverColor = Color3.new(0.7, 0.7, 0.7) -- Match UIButtonUtils
+	local uiScale = btn:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale       = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = btn
+	end
+
+	local isHovering = false
+	local isPressed  = false
+	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local function updateScale()
+		local target = 1.0
+		if isPressed      then target = 0.95
+		elseif isHovering then target = 1.05
+		end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+	end
+
 	btn.MouseEnter:Connect(function()
-		playSfx(SFX.Hover)
-		TweenService:Create(btn, TweenInfo.new(0.2), { ImageColor3 = hoverColor }):Play()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
 	end)
 	btn.MouseLeave:Connect(function()
-		TweenService:Create(btn, TweenInfo.new(0.2), { ImageColor3 = CONFIG.Colors.Normal }):Play()
+		isHovering = false
+		isPressed = false
+		updateScale()
+	end)
+	btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
+	end)
+	btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
 	end)
 end
 
@@ -413,7 +434,7 @@ end
 -- ========= UI POOL =========
 local poolFolder = Instance.new("Folder")
 poolFolder.Name = "__InventoryUIPool"
-poolFolder.Parent = myScreenGui
+poolFolder.Parent = inventoryScreenGui or playerGui
 
 local buttonPool = {}
 local activeButtons = {}
@@ -427,11 +448,7 @@ local function disconnectButton(btn)
 		end
 	end
 	buttonCons[btn] = nil
-	-- FIX #4: clear hover-bound flag so the next getPooledButton
-	-- call can re-register effects if the button is truly new.
-	-- We intentionally do NOT clear it here — hover connections
-	-- are kept alive on the pooled button to avoid re-registering
-	-- them; only click/equip connections are stored in buttonCons.
+	btn:SetAttribute("__HoverBound", nil)
 end
 
 -- =========================================================
@@ -485,9 +502,6 @@ local function setGlow(label, rarity)
 		grad:SetAttribute("__GlowRarity", rarity)
 
 		-- Cancel the previous tween stored on the gradient (if any)
-		local oldTween = grad:GetAttribute("__GlowTweenRunning")
-		-- Roblox can't store tween objects in attributes, so we cancel
-		-- via a shared table keyed by the gradient instance
 		if not _G.__GlowTweens then _G.__GlowTweens = setmetatable({}, { __mode = "k" }) end
 		if _G.__GlowTweens[grad] then
 			_G.__GlowTweens[grad]:Cancel()
@@ -541,8 +555,6 @@ local function createItemButton()
 	nameLabel.ZIndex = 5
 	nameLabel.TextColor3 = Color3.new(1, 1, 1)
 
-	-- FIX #5: pre-create equipped decorators as hidden rather than
-	-- destroying and recreating them on every render pass.
 	local equippedStroke = Instance.new("UIStroke")
 	equippedStroke.Name = "__EquippedStroke"
 	equippedStroke.Color = Color3.fromRGB(255, 255, 100) -- CONFIG.Colors.Gold
@@ -658,8 +670,6 @@ local function renderCurrentTab()
 			countTag.Text = "x" .. tostring(count)
 			countTag.Visible = true
 
-			-- FIX #5: toggle pre-created equipped decorators instead of
-			-- destroying and re-creating them on every render.
 			local equipped = (char and char:FindFirstChild((tool and tool.Name) or carName)) ~= nil
 			local existingStroke = btn:FindFirstChild("__EquippedStroke")
 			local existingTag = btn:FindFirstChild("__EquippedTag")
@@ -671,9 +681,6 @@ local function renderCurrentTab()
 				existingTag.Visible = equipped
 			end
 
-			-- FIX #1: merge hover connections into buttonCons so they are
-			-- properly disconnected when the button returns to the pool.
-			-- FIX #4: addButtonEffects self-guards against double-binding.
 			local cons = {}
 			buttonCons[btn] = cons
 
@@ -683,8 +690,7 @@ local function renderCurrentTab()
 			end
 
 			table.insert(cons, btn.MouseButton1Click:Connect(function()
-				playSfx(SFX.Equip)
-
+				UIAudioConfig.PlayClick()
 				local charNow = player.Character
 				if not charNow then return end
 				local currentBp = player:FindFirstChild("Backpack")
@@ -752,11 +758,9 @@ local function bindContainer(container)
 	return conns
 end
 
--- Hook initial backpack
 bpConnections = bindContainer(currentBackpack)
 
 local function onCharacter(char)
-	-- Hook character (tools held in hand)
 	scanContainer(char)
 	local charConnections = bindContainer(char)
 
@@ -769,37 +773,23 @@ local function onCharacter(char)
 	scheduleRender()
 end
 
--- =========================================================
--- FIX #2
--- CharacterAdded previously called scanContainer(char) twice:
--- once directly inside the task.defer block, and a second time
--- inside onCharacter().  This doubled every tool count after
--- each respawn.  The redundant direct call is now removed;
--- onCharacter() handles the scan.
--- =========================================================
 player.CharacterAdded:Connect(function(char)
-	-- 1. Reset data
 	toolToCleanName = {}
 	counts = {}
 	sampleTool = {}
 
-	-- 2. Switch to NEW Backpack
 	currentBackpack = player:WaitForChild("Backpack")
 
 	for _, c in ipairs(bpConnections) do c:Disconnect() end
 	bpConnections = bindContainer(currentBackpack)
 	scanContainer(currentBackpack)
 
-	-- 3. Handle Character
-	-- FIX #2: removed the redundant scanContainer(char) here;
-	-- onCharacter() already calls it internally.
 	task.defer(function()
-		onCharacter(char)  -- this internally calls scanContainer(char)
+		onCharacter(char)
 		scheduleRender()
 	end)
 end)
 
--- Initial run
 scanContainer(currentBackpack)
 if player.Character then onCharacter(player.Character) end
 
@@ -816,41 +806,14 @@ local function performClose()
 
 	toggleOtherGuis(false)
 	TweenService:Create(camera, CONFIG.Tween, { FieldOfView = savedFOV }):Play()
-
-	if shopMusic.IsPlaying then
-		local fade = TweenService:Create(shopMusic, TweenInfo.new(1), { Volume = 0 })
-		fade:Play()
-		fade.Completed:Connect(function()
-			shopMusic:Stop()
-
-			if SoundService:GetAttribute("MusicMuted") ~= true then
-				shopMusic.Volume = 0.5
-				if gameThemeSound then gameThemeSound:Resume() end
-			end
-		end)
-	end
 end
 
--- Handled by UIButtonUtils.SetupStandardButton
--- closeButton.MouseButton1Click:Connect(function()
--- 	playSfx(SFX.Click)
--- 	performClose()
--- end)
-
-openButton.MouseButton1Click:Connect(function()
-	playSfx(SFX.Click)
+openButton.Activated:Connect(function()
+	if isOpen then return end
+	UIAudioConfig.PlayClick()
 
 	savedFOV = camera.FieldOfView
 	isOpen = true
-
-	if gameThemeSound and gameThemeSound.IsPlaying then gameThemeSound:Pause() end
-
-	if SoundService:GetAttribute("MusicMuted") ~= true then
-		if not shopMusic.IsPlaying then
-			shopMusic.Volume = 0.5
-			shopMusic:Play()
-		end
-	end
 
 	toggleOtherGuis(true)
 	currentTab = "Common"
@@ -876,7 +839,7 @@ UIButtonUtils.SetupStandardButton(closeButton, nil, performClose)
 if unequipButton then
 	addButtonEffects(unequipButton, function() return unequipButton.BackgroundColor3 end)
 	unequipButton.MouseButton1Click:Connect(function()
-		playSfx(SFX.Click)
+		UIAudioConfig.PlayClick()
 		local char = player.Character
 		if char then
 			local hum = char:FindFirstChildOfClass("Humanoid")
@@ -891,12 +854,10 @@ if tierContainer then
 	local layout = tierContainer:FindFirstChildOfClass("UIGridLayout")
 	for _, btn in ipairs(tierContainer:GetChildren()) do
 		if btn:IsA("GuiButton") then
-			-- Requirement: Smooth scale from center with UIGridLayout
 			if layout then
 				btn.AnchorPoint = Vector2.new(0.5, 0.5)
 				btn.Position = UDim2.new(0.5, 0, 0.5, 0)
-				
-				-- Wrap in a frame so UIGridLayout positions the wrapper, allowing the button to scale from center
+
 				if not btn.Parent:IsA("Frame") or not btn.Parent.Name:match("_Wrapper$") then
 					local wrapper = Instance.new("Frame")
 					wrapper.Name = btn.Name .. "_Wrapper"
@@ -911,11 +872,7 @@ if tierContainer then
 
 			addButtonEffects(btn, function() return btn.BackgroundColor3 end)
 			btn.MouseButton1Click:Connect(function()
-				if btn.Name == "Mythic" then
-					playSfx(SFX.Mythic)
-				else
-					playSfx(SFX.Click)
-				end
+				UIAudioConfig.PlayClick()
 				currentTab = btn.Name
 				updateBackground()
 				renderCurrentTab()
