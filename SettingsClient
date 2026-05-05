@@ -13,6 +13,8 @@ local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local Debris = game:GetService("Debris")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -52,13 +54,7 @@ local CONFIG = {
 		Hover = Color3.fromRGB(210, 210, 210),
 		Normal = Color3.fromRGB(255, 255, 255)
 	},
-	Sounds = {
-		Open  = "rbxassetid://9083627113",
-		Click = "rbxassetid://9083627113",
-	},
 	DefaultVolume = 0.5,
-
-	-- Animation Settings
 	Anim = {
 		OpenTime = 1.0,
 		StartScale = 0.0,
@@ -66,20 +62,7 @@ local CONFIG = {
 	},
 }
 
--- 🔊 SFX HELPER
-local function playUiSound(name)
-	if SoundService:GetAttribute("SFXMuted") == true then return end
 
-	local id = CONFIG.Sounds[name]
-	if not id then return end
-
-	local s = Instance.new("Sound")
-	s.SoundId = id
-	s.Volume = 0.5
-	s.Parent = SoundService
-	s:Play()
-	Debris:AddItem(s, 2)
-end
 
 -- ✅ ENSURE UISCALE EXISTS
 local uiScale = window:FindFirstChildOfClass("UIScale")
@@ -147,14 +130,14 @@ local function setWindowVisible(isOpen)
 		window.Visible = true
 		openButton.Visible = false
 		uiScale.Scale = A.StartScale
-		playUiSound("Open")
+		UIAudioConfig.PlayClick()
 		setOtherGuisEnabled(false)
 
 		local info = TweenInfo.new(A.OpenTime, A.EasingStyle, Enum.EasingDirection.Out)
 		currentTween = TweenService:Create(uiScale, info, { Scale = 1 })
 		currentTween:Play()
 	else
-		playUiSound("Click")
+		UIAudioConfig.PlayClick()
 
 		window.Visible = false
 		openButton.Visible = true
@@ -178,7 +161,7 @@ local function setMusicMuted(shouldBeMuted)
 	if shopMusic then shopMusic.Volume = vol end
 
 	if window.Visible then
-		playUiSound("Click")
+		UIAudioConfig.PlayClick()
 	end
 end
 
@@ -190,7 +173,7 @@ local function setLODEnabled(isEnabled)
 	workspace:SetAttribute("CarLODEnabled", isEnabled)
 
 	if window.Visible then
-		playUiSound("Click")
+		UIAudioConfig.PlayClick()
 	end
 end
 
@@ -202,7 +185,7 @@ local function setAnimationEnabled(isEnabled)
 	workspace:SetAttribute("CarAnimationEnabled", isEnabled)
 
 	if window.Visible then
-		playUiSound("Click")
+		UIAudioConfig.PlayClick()
 	end
 end
 
@@ -214,25 +197,58 @@ local function setSFXMuted(shouldBeMuted)
 	SoundService:SetAttribute("SFXMuted", shouldBeMuted)
 
 	if window.Visible and not shouldBeMuted then
-		playUiSound("Click")
+		UIAudioConfig.PlayClick()
 	end
 end
 
--- 🖱️ BUTTON SETUP
 local function setupButton(btn, onClick)
 	if not btn or not btn:IsA("GuiButton") then return end
 
-	if not UserInputService.TouchEnabled then
-		btn.MouseEnter:Connect(function()
-			TweenService:Create(btn, TweenInfo.new(0.12), { ImageColor3 = CONFIG.Colors.Hover }):Play()
-		end)
-
-		btn.MouseLeave:Connect(function()
-			TweenService:Create(btn, TweenInfo.new(0.12), { ImageColor3 = CONFIG.Colors.Normal }):Play()
-		end)
+	local uiScale = btn:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale       = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = btn
 	end
 
+	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
+
+	local isHovering = false
+	local isPressed  = false
+	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local function updateScale()
+		local target = 1.0
+		if isPressed      then target = 0.95
+		elseif isHovering then target = 1.05
+		end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+	end
+
+	btn.MouseEnter:Connect(function()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end)
+	btn.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed = false
+		updateScale()
+	end)
+	btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
+	end)
+	btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
+	end)
+
 	btn.MouseButton1Click:Connect(function()
+		UIAudioConfig.PlayClick()
 		if onClick then onClick() end
 	end)
 end

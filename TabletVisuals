@@ -15,6 +15,7 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local TabletEvent = ReplicatedStorage:WaitForChild("TabletEvent")
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- ⚙️ CONFIGURATION
 local DEV_PRODUCT_ID = 3509697462
@@ -108,40 +109,58 @@ end
 -- ============================================================================
 local function setupAnimatedButton(button, clickFunction)
 	if not button:IsA("GuiButton") then return end
-	local originalSize = button.Size
-	local hoverSize = UDim2.new(originalSize.X.Scale * HOVER_SCALE, originalSize.X.Offset * HOVER_SCALE, originalSize.Y.Scale * HOVER_SCALE, originalSize.Y.Offset * HOVER_SCALE)
-	local clickSize = UDim2.new(originalSize.X.Scale * CLICK_SCALE, originalSize.X.Offset * CLICK_SCALE, originalSize.Y.Scale * CLICK_SCALE, originalSize.Y.Offset * CLICK_SCALE)
 
-	-- 1. HOVER LOGIC (PC Only - to prevent Mobile Double Tap)
-	if not UserInputService.TouchEnabled then
-		button.MouseEnter:Connect(function()
-			isHoveringMap[button] = true
-			TweenService:Create(button, TweenInfo.new(ANIM_SPEED), {Size = hoverSize}):Play()
-			local s = Instance.new("Sound");
-			s.SoundId = HOVER_SOUND_ID; s.Volume = HOVER_VOLUME; s.Parent = SoundService; s:Play();
-			game.Debris:AddItem(s,1)
-		end)
-
-		button.MouseLeave:Connect(function()
-			isHoveringMap[button] = false
-			TweenService:Create(button, TweenInfo.new(ANIM_SPEED), {Size = originalSize}):Play()
-		end)
+	local uiScale = button:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = button
 	end
 
-	-- 2. PRESS ANIMATION (Visual Feedback Only)
-	button.MouseButton1Down:Connect(function()
-		TweenService:Create(button, TweenInfo.new(0.05), {Size = clickSize}):Play() 
+	local isHovering = false
+	local isPressed  = false
+	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+
+	local function updateScale()
+		local target = 1.0
+		if isPressed     then target = 0.95
+		elseif isHovering then target = 1.05
+		end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+	end
+
+	button.MouseEnter:Connect(function()
+		isHoveringMap[button] = true
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
 	end)
 
-	-- 3. RELEASE ANIMATION (Visual Feedback Only)
-	button.MouseButton1Up:Connect(function()
-		local target = (isHoveringMap[button] and not UserInputService.TouchEnabled) and hoverSize or originalSize
-		TweenService:Create(button, TweenInfo.new(ANIM_SPEED, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = target}):Play()
+	button.MouseLeave:Connect(function()
+		isHoveringMap[button] = false
+		isHovering = false
+		isPressed  = false
+		updateScale()
 	end)
 
-	-- 4. ACTION LOGIC (THE FIX: Uses Click instead of Up)
-	-- MouseButton1Click fires reliably on mobile even if the finger wiggles slightly.
+	button.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
+	end)
+
+	button.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
+	end)
+
 	button.MouseButton1Click:Connect(function()
+		UIAudioConfig.PlayClick()
 		if clickFunction then clickFunction() end
 	end)
 end

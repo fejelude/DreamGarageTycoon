@@ -30,6 +30,8 @@ local Lighting          = game:GetService("Lighting")
 local TweenService      = game:GetService("TweenService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
@@ -358,37 +360,54 @@ end
 local function applyConfirmationButtonFeedback(button)
 	button = prepareConfirmationButton(button)
 	if not button then return nil end
-	local ti = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	if not button:GetAttribute("OrigBgColor") then
-		button:SetAttribute("OrigBgColor", button.BackgroundColor3)
-		if button:IsA("ImageButton") then button:SetAttribute("OrigImgColor", button.ImageColor3) end
+
+	local uiScale = button:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = button
 	end
-	local origBg  = button:GetAttribute("OrigBgColor")
-	local origImg = button:IsA("ImageButton") and button:GetAttribute("OrigImgColor") or nil
-	button.BackgroundColor3 = origBg
-	if origImg then button.ImageColor3 = origImg end
-	local function tv(dim)
-		local g = {}
-		if button.BackgroundTransparency < 1 then
-			local h, s, v = origBg:ToHSV()
-			g.BackgroundColor3 = dim and Color3.fromHSV(h, s, math.clamp(v * .75, 0, 1)) or origBg
+
+	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local isHovering = false
+	local isPressed  = false
+
+	local function updateScale()
+		local target = 1.0
+		if isPressed      then target = 0.95
+		elseif isHovering then target = 1.05
 		end
-		if origImg then
-			local h, s, v = origImg:ToHSV()
-			g.ImageColor3 = dim and Color3.fromHSV(h, s, math.clamp(v * .75, 0, 1)) or origImg
-		end
-		if next(g) then TweenService:Create(button, ti, g):Play() end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
 	end
-	addConfirmationConnection(button.MouseEnter:Connect(function() Kit.Sound:Play("Hover"); tv(true) end))
-	addConfirmationConnection(button.MouseLeave:Connect(function() tv(false) end))
+
+	addConfirmationConnection(button.MouseEnter:Connect(function()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end))
+
+	addConfirmationConnection(button.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed = false
+		updateScale()
+	end))
+
 	addConfirmationConnection(button.InputBegan:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1
-			or i.UserInputType == Enum.UserInputType.Touch then tv(true) end
+			or i.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
 	end))
+
 	addConfirmationConnection(button.InputEnded:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1
-			or i.UserInputType == Enum.UserInputType.Touch then tv(false) end
+			or i.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
 	end))
+
 	return button
 end
 
@@ -474,7 +493,12 @@ local function bindConfirmationButton(button, callback)
 	button = applyConfirmationButtonFeedback(button)
 	if not button then return end
 	local fired = false
-	local function hp() if fired then return end; fired = true; callback() end
+	local function hp()
+		if fired then return end
+		fired = true
+		UIAudioConfig.PlayClick()
+		callback()
+	end
 	addConfirmationConnection(button.Activated:Connect(hp))
 	addConfirmationConnection(button.MouseButton1Click:Connect(hp))
 	addConfirmationConnection(button.TouchTap:Connect(hp))
@@ -592,10 +616,8 @@ local function setFocusMode(active)
 	setBlur(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
-	local char = player.Character
-	if char and char:FindFirstChild("Humanoid") then
-		char.Humanoid.WalkSpeed = active and 0 or 16
-		char.Humanoid.JumpHeight = active and 0 or 7.2
+	if char then
+		player:SetAttribute("MovementLock", active)
 	end
 end
 

@@ -130,6 +130,8 @@ end
 
 function TweenCtrl:SetupButton(btn, onClick)
 	if not btn or not btn:IsA("GuiButton") then return end
+	if btn:GetAttribute("KitBound") then return end
+	btn:SetAttribute("KitBound", true)
 
 	btn.AutoButtonColor = false
 	btn.Active = true
@@ -137,54 +139,72 @@ function TweenCtrl:SetupButton(btn, onClick)
 	btn.Selectable = true
 	pcall(function() btn.Interactable = true end)
 
-	local originalBg = btn.BackgroundColor3
-	local originalImg = btn:IsA("ImageButton") and btn.ImageColor3 or nil
-	local T_DIM = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local uiScale = btn:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale       = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = btn
+	end
 
-	local function applyDim(isDim)
-		local h,s,v = originalBg:ToHSV()
-		local dimBg = Color3.fromHSV(h, s, math.clamp(v * 0.75, 0, 1))
+	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
 
-		local goals = { BackgroundColor3 = isDim and dimBg or originalBg }
-		if originalImg then 
-			local h2,s2,v2 = originalImg:ToHSV()
-			goals.ImageColor3 = isDim and Color3.fromHSV(h2, s2, math.clamp(v2 * 0.75, 0, 1)) or originalImg 
+	local isHovering = false
+	local isPressed  = false
+	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+
+	local function updateScale()
+		local target = 1.0
+		if isPressed      then target = 0.95
+		elseif isHovering then target = 1.05
 		end
-		TweenService:Create(btn, T_DIM, goals):Play()
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
 	end
 
 	btn.MouseEnter:Connect(function()
-		Kit.Sound:Play("Hover")
-		applyDim(true)
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
 	end)
-	btn.MouseLeave:Connect(function() applyDim(false) end)
+
+	btn.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed = false
+		updateScale()
+	end)
 
 	btn.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			applyDim(true)
+			isPressed = true
+			updateScale()
 		end
 	end)
 
 	btn.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			applyDim(false)
+			isPressed = false
+			updateScale()
 		end
 	end)
 
-	-- FIX: Triple-bind click handler with debounce so mobile Touch input always
-	-- reaches the callback, even if Activated doesn't fire due to UI layering.
+	-- FIX: Use Activated as the sole primary handler (covers Mouse, Touch, Gamepad).
+	-- MouseButton1Click is kept as a PC-only fallback in case Activated is swallowed
+	-- by a child element. TouchTap removed — it duplicates Activated on mobile.
 	local clickFired = false
 	local function handleClick()
 		if clickFired then return end
 		clickFired = true
-		Kit.Sound:Play("Click")
+		UIAudioConfig.PlayClick()
 		if onClick then onClick() end
-		task.delay(0.3, function() clickFired = false end)
+		task.delay(0.5, function() clickFired = false end)
 	end
 
 	btn.Activated:Connect(handleClick)
-	btn.MouseButton1Click:Connect(handleClick)
-	btn.TouchTap:Connect(handleClick)
+	btn.MouseButton1Click:Connect(function()
+		-- Only fire if Activated didn't already handle it (PC safety net)
+		if not clickFired then
+			handleClick()
+		end
+	end)
 end
 
 function TweenCtrl:Shake(guiObject)

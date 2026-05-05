@@ -10,8 +10,8 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
-local SoundService = game:GetService("SoundService")
 local Players = game:GetService("Players")
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
 local withdrawBtn = script.Parent
@@ -26,27 +26,16 @@ local VerifyLabel = mainWindow:WaitForChild("VerifyLabel", 5)
 local SuccessLabel = mainWindow:WaitForChild("SuccessLabel", 5)
 local ErrorLabel = mainWindow:WaitForChild("ErrorLabel", 5)
 
--- 🔊 SOUND CONFIG
-local CASH_SOUND_ID = "rbxassetid://140072726814802"
-local ERROR_SOUND_ID = "rbxassetid://3779045779"
-local CLICK_SOUND_ID = "rbxassetid://9083627113" 
+-- 🔇 All sounds routed through UIAudioConfig (PlayClick / PlayHover).
+-- No legacy sound IDs or throwaway Sound instances are used here.
 
 -- ⚙️ STATE VARIABLES
-local currentVerifyTween = nil 
-local isCoolingDown = false 
+local currentVerifyTween = nil
+local isCoolingDown = false
 
 -- ============================================================================
--- 🛠️ HELPER FUNCTIONS (Formatting & Audio)
+-- 🛠️ HELPER FUNCTIONS (Formatting)
 -- ============================================================================
-
-local function playSound(soundId)
-	local sound = Instance.new("Sound")
-	sound.SoundId = soundId
-	sound.Volume = 1
-	sound.Parent = SoundService 
-	sound:Play()
-	game.Debris:AddItem(sound, 3)
-end
 
 -- ✅ Parses "10k", "5.5m", "1,000" into numbers
 local function parseAmount(text)
@@ -136,7 +125,7 @@ withdrawBtn.MouseButton1Click:Connect(function()
 	isCoolingDown = true 
 
 	-- 🔊 1.5 PLAY INITIAL CLICK SOUND
-	playSound(CLICK_SOUND_ID)
+	UIAudioConfig.PlayClick()
 
 	-- 2. DISABLE BUTTON VISUALLY
 	withdrawBtn.Active = false
@@ -155,7 +144,6 @@ withdrawBtn.MouseButton1Click:Connect(function()
 	if (amount <= 0) or (amount > currentBank) then
 		stopVerifying()
 		print("❌ Invalid Input or Insufficient Funds")
-		playSound(ERROR_SOUND_ID)
 		task.spawn(function() animateResult(ErrorLabel) end)
 
 		-- Reset Button
@@ -174,12 +162,10 @@ withdrawBtn.MouseButton1Click:Connect(function()
 
 	if success then
 		print("✅ Transaction Approved")
-		playSound(CASH_SOUND_ID)
-		amountInput.Text = "" 
+		amountInput.Text = ""
 		task.spawn(function() animateResult(SuccessLabel) end)
 	else
 		print("❌ Transaction Denied: " .. msg)
-		playSound(ERROR_SOUND_ID)
 		task.spawn(function() animateResult(ErrorLabel) end)
 	end
 

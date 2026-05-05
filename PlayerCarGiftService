@@ -1,0 +1,153 @@
+-- Purpose: Handles server-side validation and state tracking for car gifting
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local Players = game:GetService("Players")
+
+local GiftRemotes = ReplicatedStorage:FindFirstChild("PlayerCarGiftingRemotes")
+if not GiftRemotes then
+	GiftRemotes = Instance.new("Folder")
+	GiftRemotes.Name = "PlayerCarGiftingRemotes"
+	GiftRemotes.Parent = ReplicatedStorage
+end
+
+local ActionRemote = GiftRemotes:FindFirstChild("ActionRemote") or Instance.new("RemoteEvent")
+ActionRemote.Name = "ActionRemote"
+ActionRemote.Parent = GiftRemotes
+
+local TriggerPromptEvent = GiftRemotes:FindFirstChild("TriggerPromptEvent") or Instance.new("BindableEvent")
+TriggerPromptEvent.Name = "TriggerPromptEvent"
+TriggerPromptEvent.Parent = GiftRemotes
+
+local AdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
+
+local ActiveOffers = {}
+local ActiveReceivers = {}
+
+local function clearOffer(giverUserId)
+	local offer = ActiveOffers[giverUserId]
+	if offer then ActiveReceivers[offer.Receiver.UserId] = nil end
+	ActiveOffers[giverUserId] = nil
+end
+
+TriggerPromptEvent.Event:Connect(function(giver, receiver, tool)
+	if not giver or not giver.Parent or not receiver or not receiver.Parent then return end
+	if ActiveOffers[giver.UserId] then return end 
+	if ActiveReceivers[receiver.UserId] then return end
+	
+	if tool.Parent ~= giver.Character then return end
+	
+	local carId = tool.Name
+	local offer = {
+		Giver = giver,
+		Receiver = receiver,
+		CarId = carId,
+		ExpiryTime = workspace:GetServerTimeNow() + 15,
+		State = "pending",
+		Tool = tool
+	}
+	
+	ActiveOffers[giver.UserId] = offer
+	ActiveReceivers[receiver.UserId] = true
+	
+	ActionRemote:FireClient(giver, "OpenGiverUI", { Receiver = receiver, CarId = carId })
+	
+	task.delay(15, function()
+		if ActiveOffers[giver.UserId] == offer and offer.State == "pending" then
+			offer.State = "expired"
+			ActionRemote:FireClient(giver, "CloseUI")
+			ActionRemote:FireClient(receiver, "CloseUI")
+			clearOffer(giver.UserId)
+		end
+	end)
+end)
+
+ActionRemote.OnServerEvent:Connect(function(player, action, data)
+	if action == "GiverAccept" then
+		local offer = ActiveOffers[player.UserId]
+		if not offer or offer.State ~= "pending" or offer.Giver ~= player then return end
+		if workspace:GetServerTimeNow() > offer.ExpiryTime then return end
+		
+		ActionRemote:FireClient(offer.Receiver, "OpenReceiverUI", { Giver = offer.Giver, CarId = offer.CarId, ExpiryTime = offer.ExpiryTime })
+		
+	elseif action == "GiverDecline" then
+		local offer = ActiveOffers[player.UserId]
+		if not offer or offer.Giver ~= player then return end
+		if offer.State ~= "pending" then return end
+		if offer.Receiver and offer.Receiver.Parent then
+			ActionRemote:FireClient(offer.Receiver, "CloseUI")
+		end
+		clearOffer(player.UserId)
+		
+	elseif action == "ReceiverAccept" then
+		local giverUserId = data and data.GiverUserId
+		if not giverUserId then return end
+		
+		local offer = ActiveOffers[giverUserId]
+		if not offer or offer.State ~= "pending" or offer.Receiver ~= player then return end
+		
+		if workspace:GetServerTimeNow() > offer.ExpiryTime then
+			ActionRemote:FireClient(player, "UpdateReceiverUI", { State = "Expired" })
+			clearOffer(giverUserId)
+			return
+		end
+		
+		offer.State = "accepted"
+		
+		local success, removedCount = AdminAPI:Invoke("RemoveTool", offer.Giver, offer.CarId, 1)
+		if success and removedCount >= 1 then
+			AdminAPI:Invoke("GiveTool", offer.Receiver, offer.CarId, {})
+			
+			ActionRemote:FireClient(offer.Giver, "UpdateGiverUI", { State = "NotificationTrue", Text = "Gift has been sent to @" .. player.Name .. "!!!" })
+			ActionRemote:FireClient(offer.Receiver, "UpdateReceiverUI", { State = "Accepted", Text = "You have accepted the gift from @" .. offer.Giver.Name })
+			
+			task.delay(2, function()
+				ActionRemote:FireClient(offer.Giver, "CloseUI")
+				ActionRemote:FireClient(offer.Receiver, "CloseUI")
+			end)
+		else
+			ActionRemote:FireClient(offer.Giver, "CloseUI")
+			ActionRemote:FireClient(offer.Receiver, "CloseUI")
+		end
+		
+		clearOffer(giverUserId)
+		
+	elseif action == "ReceiverDecline" then
+		local giverUserId = data and data.GiverUserId
+		if not giverUserId then return end
+		
+		local offer = ActiveOffers[giverUserId]
+		if not offer or offer.Receiver ~= player then return end
+		
+		offer.State = "declined"
+		ActionRemote:FireClient(offer.Giver, "UpdateGiverUI", { State = "NotificationFalse", Text = player.Name .. " has declined your gift" })
+		ActionRemote:FireClient(player, "CloseUI")
+		
+		task.delay(2, function()
+			ActionRemote:FireClient(offer.Giver, "CloseUI")
+		end)
+		
+		clearOffer(giverUserId)
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	if ActiveOffers[player.UserId] then
+		local offer = ActiveOffers[player.UserId]
+		if offer.State == "pending" then
+			ActionRemote:FireClient(offer.Receiver, "CloseUI")
+		end
+		clearOffer(player.UserId)
+	end
+	
+	local toRemove = {}
+	for giverId, offer in pairs(ActiveOffers) do
+		if offer.Receiver == player and offer.State == "pending" then
+			ActionRemote:FireClient(offer.Giver, "UpdateGiverUI", { State = "NotificationFalse", Text = player.Name .. " has declined your gift" })
+			task.delay(2, function()
+				ActionRemote:FireClient(offer.Giver, "CloseUI")
+			end)
+			table.insert(toRemove, giverId)
+		end
+	end
+	for _, id in ipairs(toRemove) do clearOffer(id) end
+end)

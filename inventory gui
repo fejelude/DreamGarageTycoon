@@ -1,4 +1,4 @@
--- [[ LOCAL SCRIPT: Inventory UI (Optimized v3 - FIXED) ]]
+-- [[ LOCAL SCRIPT: Inventory UI (Optimized v5 - Production) ]]
 --      - UI pooling (no destroy/recreate spam)
 --      - Event-driven inventory tracking (fast updates)
 --      - No per-item Heartbeat loops (Tweens instead)
@@ -6,40 +6,56 @@
 --      - Keeps: dynamic FOV, xCount, mobile friendly, universal glow
 --
 -- ============================================================
--- FIX LOG (all changes marked with -- FIX #N)
--- FIX #1  addButtonEffects now RETURNS its connections so they
---         can be stored in buttonCons and properly disconnected
---         on pool release.  Previously they leaked forever.
--- FIX #2  CharacterAdded no longer calls scanContainer(char)
---         twice. The duplicate call inside task.defer was removed;
---         onCharacter() already calls scanContainer internally.
--- FIX #3  setGlow now stores the running tween on the gradient
---         instance itself (__GlowTween). When a pooled button is
---         reused for a different rarity the old tween is cancelled
---         and a fresh one is started regardless of __GlowTweened.
--- FIX #4  addButtonEffects is now SKIPPED for buttons that already
---         have hover connections registered (tracked via a button
---         attribute), preventing compound tween accumulation on
---         every re-render of a pooled button.
--- FIX #5  __EquippedStroke / __EquippedTag are now toggled
---         visible/invisible instead of Destroy/re-create every
---         render, eliminating repeated Instance churn.
--- FIX #6  setGlow stores the TweenService:Create result and only
---         creates a new tween when the rarity actually changes,
---         avoiding redundant tween object allocation each render.
+-- FIX LOG (v4)
+-- FIX #1–#18: see previous version notes
+-- ============================================================
+-- FIX LOG (v5 — Production Hardening)
+-- FIX #19 Inventory item drag initiation now checks `isOpen` before
+--         starting a drag. Prevents ghost drags when the inventory
+--         GUI is closed but buttons are still technically alive.
+-- FIX #20 performClose() cancels any in-flight drag via endDrag(false)
+--         so closing the inventory never leaves a dangling drag icon.
+-- FIX #21 Hotbar car-name labels now display the fantasy car name
+--         (the CarStats key, e.g. "Centurion") with a rarity-coloured
+--         gradient. getDisplayName() centralises the lookup.
+-- FIX #22 updateHotbarUI sanitization is also triggered immediately
+--         inside ChildRemoved with a direct visual sweep, ensuring
+--         icons for lost cars vanish in the same frame.
+-- FIX #23 getDisplayName() centralises the key→display-name lookup
+--         so every label site is consistent.
+-- FIX #24 Drag threshold increased to 12px and touch hold delay to
+--         0.65s for better cross-device feel.
+-- FIX #25 ENTIRE ChildRemoved hotbar logic is now DEFERRED by one
+--         frame. When a tool moves between Backpack↔Character
+--         (equip/unequip), ChildRemoved fires first (count→0), then
+--         ChildAdded fires (count→1). Both the direct sweep AND the
+--         updateHotbarUI sanitization would see count=0 and
+--         incorrectly clear hotbar slots. Deferring lets the companion
+--         ChildAdded restore the count first. If count is still 0
+--         after the defer, the car is truly gone and slots are cleared.
+-- FIX #26 Drop handler's post-drop render is now DEFERRED by one frame
+--         and sets refreshQueued=true to block stale pending renders.
+--         This ensures FIX #25's deferred ChildRemoved sweep and any
+--         ChildAdded scheduleRender settle before the final authoritative
+--         render paints the definitive post-drop UI state.
+-- FIX #27 Hotbar name labels now use an animated gradient system that
+--         matches the inventory's setGlow — same rarity color sequences,
+--         tilted gradient, black stroke, and looping shimmer tween.
+-- FIX #28 CarInfoLabel inside each hotbar slot now displays the car's
+--         base CPS from CarStats. Formatted as +5M$/s, +833.7K$/s, etc.
 -- ============================================================
 
 -- Services
-local Players = game:GetService("Players")
-local StarterGui = game:GetService("StarterGui")
-local TweenService = game:GetService("TweenService")
-local SoundService = game:GetService("SoundService")
+local Players          = game:GetService("Players")
+local StarterGui       = game:GetService("StarterGui")
+local TweenService     = game:GetService("TweenService")
+local SoundService     = game:GetService("SoundService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
+local Workspace        = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
 
-local player = Players.LocalPlayer
-local camera = Workspace.CurrentCamera
+local player    = Players.LocalPlayer
+local camera    = Workspace.CurrentCamera
 local openButton = script.Parent
 
 -- Utility
@@ -48,23 +64,23 @@ local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- Controls
 local PlayerModule = require(player.PlayerScripts:WaitForChild("PlayerModule"))
-local Controls = PlayerModule:GetControls()
+local Controls     = PlayerModule:GetControls()
 
 -- Config
 local CONFIG = {
-	FOV = { Open = 50 },
+	FOV  = { Open = 50 },
 	Zoom = { Min = 0.5, Max = 128 },
 	Tween = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out),
 	Audio = {
-		Equip = "rbxassetid://4676738150",
-		Mythic = "rbxassetid://9120048710",
-		ShopMusic = "rbxassetid://83777726264435",
+		Equip        = "rbxassetid://4676738150",
+		Mythic       = "rbxassetid://9120048710",
+		ShopMusic    = "rbxassetid://83777726264435",
 		GameThemeName = "GameTheme"
 	},
 	Colors = {
 		Normal = Color3.fromRGB(255, 255, 255),
-		Dim = Color3.fromRGB(150, 150, 150),
-		Gold = Color3.fromRGB(255, 255, 100)
+		Dim    = Color3.fromRGB(150, 150, 150),
+		Gold   = Color3.fromRGB(255, 255, 100)
 	},
 	Images = { Default = "rbxassetid://132702954752503" }
 }
@@ -72,23 +88,53 @@ local CONFIG = {
 -- UI refs
 -- Note: openButton moved to MainButtons > Buttons > Inventory, so we search playerGui
 -- for InventoryWindow directly rather than via the button's ancestor ScreenGui.
-local playerGui   = player:WaitForChild("PlayerGui")
-local mainWindow  = playerGui:FindFirstChild("InventoryWindow", true)
+local playerGui          = player:WaitForChild("PlayerGui")
+local mainWindow         = playerGui:FindFirstChild("InventoryWindow", true)
 -- Derive the ScreenGui that actually owns InventoryWindow (NOT MainButtons)
 local inventoryScreenGui = mainWindow and mainWindow:FindFirstAncestorWhichIsA("ScreenGui")
-local itemsContainer = mainWindow:WaitForChild("ItemContainer", 10)
-local closeButton = mainWindow:WaitForChild("CloseButton", 10)
-local unequipButton = mainWindow:FindFirstChild("Unequip")
+local itemsContainer     = mainWindow:WaitForChild("ItemContainer", 10)
+local closeButton        = mainWindow:WaitForChild("CloseButton", 10)
+local unequipButton      = mainWindow:FindFirstChild("Unequip")
 
-local tierFrame = mainWindow:WaitForChild("TierFrame", 10)
+local tierFrame     = mainWindow:WaitForChild("TierFrame", 10)
 local tierContainer = tierFrame:WaitForChild("TierContainer", 10)
 
 local emptyIndicatorLabel = mainWindow:FindFirstChild("Indicator-v2", true)
 
+-- 🛠️ HOTBAR REFERENCES
+local hotbarFrame = mainWindow.Parent:FindFirstChild("HotBarFrame") or mainWindow:WaitForChild("HotBarFrame", 10)
+local slotsFolder = hotbarFrame and hotbarFrame:WaitForChild("Slots", 10)
+local hotbarData  = {}  -- slotIndex -> carName
+local hotbarSlots = {}  -- slotIndex -> button ref
+local selectedSlot = nil
+local SLOT_COUNT   = 6
+
+-- Scroll frame reference (disabled during drag to prevent mobile interference)
+local hotbarScrollFrame = slotsFolder and slotsFolder:FindFirstChildWhichIsA("ScrollingFrame", true)
+
+-- 💾 HOTBAR PERSISTENCE
+local function loadHotbarFromAttributes()
+	for i = 1, SLOT_COUNT do
+		local saved = player:GetAttribute("HotbarSlot" .. i)
+		if saved and saved ~= "" and CarStats and CarStats.Cars[saved] then
+			hotbarData[i] = saved
+		else
+			hotbarData[i] = nil
+		end
+	end
+end
+
+local function saveHotbarToAttributes()
+	for i = 1, SLOT_COUNT do
+		player:SetAttribute("HotbarSlot" .. i, hotbarData[i] or "")
+	end
+end
+
 -- Startup UI state
-if mainWindow then mainWindow.Visible = false end
-if tierFrame then tierFrame.Visible = false end
+if mainWindow    then mainWindow.Visible    = false end
+if tierFrame     then tierFrame.Visible     = false end
 if unequipButton then unequipButton.Visible = false end
+if hotbarFrame   then hotbarFrame.Visible   = true  end
 openButton.Visible = true
 if openButton:IsA("ImageButton") then
 	openButton.ImageColor3 = CONFIG.Colors.Normal
@@ -96,7 +142,6 @@ end
 
 -- 🔇 All inventory sounds have been removed.
 -- Hover feedback is handled by UIAudioConfig.PlayHover() inside addButtonEffects.
-
 -- Disable Roblox backpack
 pcall(function()
 	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
@@ -117,9 +162,9 @@ for _, rarity in ipairs(tierNames) do
 end
 
 local currentTab = "Common"
-local savedFOV = camera.FieldOfView
+local savedFOV   = camera.FieldOfView
 local hiddenGuis = {}
-local isOpen = false
+local isOpen     = false
 
 -- CarStats
 local CarStats = nil
@@ -127,15 +172,762 @@ pcall(function()
 	CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5))
 end)
 
+-- =========================================================
+-- 📦 DRAG & DROP SYSTEM (v4 — Full Bidirectional)
+-- =========================================================
+
+-- FIX #10: Source tracking variables
+local draggingCar      = nil
+local dragIcon         = nil
+local dragConn         = nil
+local globalDropConn   = nil
+local hoveredSlot      = nil
+local dragSourceType   = nil   -- "inventory" | "hotbar"
+local dragSourceSlot   = nil   -- hotbar slot index when source is hotbar
+local dragSourceButton = nil   -- inventory button ref when source is inventory
+
+local scheduleRender  -- forward declaration
+
+local DRAG_ICON_ALPHA        = 0.25
+local DRAG_TWEEN_INFO        = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local DRAG_THRESHOLD_PX      = 12   -- FIX #24: slightly larger for touch accuracy
+local SLOT_HIGHLIGHT_COLOR   = Color3.fromRGB(100, 200, 255)
+local SLOT_SELECTED_COLOR    = Color3.fromRGB(255, 220, 80)
+local SLOT_DEFAULT_BG_TRANS  = 0.4
+local SLOT_HOVER_BG_TRANS    = 0.2
+local SLOT_SELECTED_BG_TRANS = 0.15
+
+-- =========================================================
+-- FIX #13: Frame hit-test helpers
+-- =========================================================
+local function isOnHotbarFrame(screenPos)
+	if not hotbarFrame then return false end
+	local p, s = hotbarFrame.AbsolutePosition, hotbarFrame.AbsoluteSize
+	return screenPos.X >= p.X and screenPos.X <= p.X + s.X
+		and screenPos.Y >= p.Y and screenPos.Y <= p.Y + s.Y
+end
+
+local function isOnInventoryFrame(screenPos)
+	if not mainWindow or not mainWindow.Visible then return false end
+	local frame = itemsContainer or mainWindow
+	local p, s  = frame.AbsolutePosition, frame.AbsoluteSize
+	return screenPos.X >= p.X and screenPos.X <= p.X + s.X
+		and screenPos.Y >= p.Y and screenPos.Y <= p.Y + s.Y
+end
+
+-- Returns the first hotbar slot that is empty, skipping excludeIndex.
+local function getFirstEmptyHotbarSlot(excludeIndex)
+	for i = 1, SLOT_COUNT do
+		if i ~= excludeIndex and not hotbarData[i] then
+			return i
+		end
+	end
+	return nil
+end
+
+-- =========================================================
+-- FIX #11: endDrag(success)
+--   success = true  → keep whatever state was applied by drop
+--   success = false → restore source (show inventory btn / restore hotbar slot)
+-- =========================================================
+local function endDrag(success)
+	if not success then
+		if dragSourceType == "inventory" and dragSourceButton then
+			-- Restore button visibility only if it hasn't been pooled away by
+			-- a mid-drag renderCurrentTab call (FIX #18 also guards this).
+			if dragSourceButton.Parent and dragSourceButton.Parent.Name ~= "__InventoryUIPool" then
+				dragSourceButton.Visible = true
+			end
+		elseif dragSourceType == "hotbar" and dragSourceSlot then
+			-- hotbarData[srcSlot] was cleared by the slot init drag code;
+			-- restore it from draggingCar before we wipe that value.
+			hotbarData[dragSourceSlot] = draggingCar
+			saveHotbarToAttributes()
+			refreshSlotVisual(dragSourceSlot)
+		end
+	end
+
+	-- Clear inventory drop-zone highlight (FIX #16)
+	if mainWindow then
+		local invHl = mainWindow:FindFirstChild("__InvDragHighlight")
+		if invHl then invHl.Visible = false end
+	end
+
+	-- Clear all slot drag-highlights
+	if slotsFolder then
+		for i = 1, SLOT_COUNT do
+			local slot = slotsFolder:FindFirstChild("Slot" .. i)
+			if slot then
+				local hl = slot:FindFirstChild("__DragHighlight")
+				if hl then hl.Visible = false end
+			end
+		end
+	end
+
+	hoveredSlot = nil
+	if dragConn       then dragConn:Disconnect();       dragConn       = nil end
+	if globalDropConn then globalDropConn:Disconnect(); globalDropConn = nil end
+	if dragIcon       then dragIcon:Destroy();          dragIcon       = nil end
+
+	draggingCar      = nil
+	dragSourceType   = nil
+	dragSourceSlot   = nil
+	dragSourceButton = nil
+	-- Re-enable scroll frame once drag ends (mobile fix)
+	if hotbarScrollFrame then
+		hotbarScrollFrame.ScrollingEnabled = true
+	end
+end
+
+local function getSlotAtPosition(screenPos)
+	if not slotsFolder then return nil end
+	for i = 1, SLOT_COUNT do
+		local slot = slotsFolder:FindFirstChild("Slot" .. i)
+		if slot then
+			local absPos  = slot.AbsolutePosition
+			local absSize = slot.AbsoluteSize
+			if screenPos.X >= absPos.X and screenPos.X <= absPos.X + absSize.X and
+				screenPos.Y >= absPos.Y and screenPos.Y <= absPos.Y + absSize.Y then
+				return i
+			end
+		end
+	end
+	return nil
+end
+
+local function updateSlotSelection()
+	if not slotsFolder then return end
+	for i = 1, SLOT_COUNT do
+		local slot = slotsFolder:FindFirstChild("Slot" .. i)
+		if slot then
+			local selStroke = slot:FindFirstChild("__SelStroke")
+			if not selStroke then
+				selStroke           = Instance.new("UIStroke")
+				selStroke.Name      = "__SelStroke"
+				selStroke.Thickness = 3
+				selStroke.Color     = SLOT_SELECTED_COLOR
+				selStroke.Parent    = slot
+			end
+			selStroke.Enabled = (selectedSlot == i)
+		end
+	end
+end
+
+local function getRarityGradient(rarity)
+	if rarity == "Mythic" then
+		return ColorSequence.new({
+			ColorSequenceKeypoint.new(0.0, Color3.fromRGB(255, 0, 0)),
+			ColorSequenceKeypoint.new(0.2, Color3.fromRGB(255, 255, 0)),
+			ColorSequenceKeypoint.new(0.4, Color3.fromRGB(0, 255, 0)),
+			ColorSequenceKeypoint.new(0.6, Color3.fromRGB(0, 255, 255)),
+			ColorSequenceKeypoint.new(0.8, Color3.fromRGB(0, 0, 255)),
+			ColorSequenceKeypoint.new(1.0, Color3.fromRGB(255, 0, 255)),
+		})
+	elseif rarity == "Legendary" then
+		return ColorSequence.new(Color3.fromRGB(255, 180, 50), Color3.fromRGB(255, 240, 150))
+	elseif rarity == "Epic" then
+		return ColorSequence.new(Color3.fromRGB(160, 50, 255), Color3.fromRGB(220, 100, 255))
+	elseif rarity == "Rare" then
+		return ColorSequence.new(Color3.fromRGB(0, 100, 255), Color3.fromRGB(100, 200, 255))
+	elseif rarity == "Uncommon" then
+		return ColorSequence.new(Color3.fromRGB(0, 180, 0), Color3.fromRGB(100, 255, 100))
+	else
+		return ColorSequence.new(Color3.fromRGB(200, 200, 200), Color3.fromRGB(255, 255, 255))
+	end
+end
+
+-- =========================================================
+-- FIX #7: refreshSlotVisual
+-- =========================================================
+-- FIX #23: centralised display-name lookup
+-- Returns the fantasy car name (the CarStats key itself, e.g. "Centurion")
+local function getDisplayName(carKey)
+	return carKey or ""
+end
+
+-- =========================================================
+-- FIX #28: CPS formatting + bonus helpers for CarInfoLabel
+-- =========================================================
+local function formatCPS(value)
+	if value >= 1e12 then
+		local t = value / 1e12
+		if t == math.floor(t) then
+			return string.format("+%dT$/s", t)
+		else
+			return string.format("+%.1fT$/s", t)
+		end
+	elseif value >= 1e9 then
+		local b = value / 1e9
+		if b == math.floor(b) then
+			return string.format("+%dB$/s", b)
+		else
+			return string.format("+%.1fB$/s", b)
+		end
+	elseif value >= 1e6 then
+		local m = value / 1e6
+		if m == math.floor(m) then
+			return string.format("+%dM$/s", m)
+		else
+			return string.format("+%.1fM$/s", m)
+		end
+	elseif value >= 1e3 then
+		local k = value / 1e3
+		if k == math.floor(k) then
+			return string.format("+%dK$/s", k)
+		else
+			return string.format("+%.1fK$/s", k)
+		end
+	else
+		return string.format("+%d$/s", value)
+	end
+end
+
+local function updateCarInfoLabel(slot, carName)
+	local carInfo = slot:FindFirstChild("CarInfo")
+	if not carInfo then return end
+	local infoLabel = carInfo:FindFirstChild("CarInfoLabel")
+	if not infoLabel then return end
+
+	if carName and CarStats and CarStats.Cars and CarStats.Cars[carName] then
+		local baseCPS = CarStats.Cars[carName].CPS or 0
+		infoLabel.Text = formatCPS(baseCPS)
+	else
+		infoLabel.Text = ""
+	end
+end
+
+-- =========================================================
+-- FIX #27: Animated gradient for hotbar name labels
+-- Mirrors the inventory's setGlow() system for visual consistency.
+-- =========================================================
+local function setHotbarNameGlow(nameLabel, rarity)
+	if not nameLabel then return end
+
+	-- Ensure stroke exists
+	local stroke = nameLabel:FindFirstChild("__NameStroke")
+	if not stroke then
+		stroke           = Instance.new("UIStroke")
+		stroke.Name      = "__NameStroke"
+		stroke.Thickness = 1.5
+		stroke.Parent    = nameLabel
+	end
+	stroke.Color = Color3.fromRGB(0, 0, 0) -- default black
+
+	-- Ensure gradient exists
+	local grad = nameLabel:FindFirstChild("__NameGrad")
+	if not grad then
+		grad        = Instance.new("UIGradient")
+		grad.Name   = "__NameGrad"
+		grad.Parent = nameLabel
+	end
+	grad.Rotation = -20
+
+	-- Apply rarity-specific colours (matching inventory setGlow exactly)
+	if rarity == "Mythic" then
+		grad.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0.0, Color3.fromRGB(255, 0, 0)),
+			ColorSequenceKeypoint.new(0.2, Color3.fromRGB(255, 255, 0)),
+			ColorSequenceKeypoint.new(0.4, Color3.fromRGB(0, 255, 0)),
+			ColorSequenceKeypoint.new(0.6, Color3.fromRGB(0, 255, 255)),
+			ColorSequenceKeypoint.new(0.8, Color3.fromRGB(0, 0, 255)),
+			ColorSequenceKeypoint.new(1.0, Color3.fromRGB(255, 0, 255)),
+		})
+	elseif rarity == "Legendary" then
+		grad.Color   = ColorSequence.new(Color3.fromRGB(255, 180, 50), Color3.fromRGB(255, 240, 150))
+		stroke.Color = Color3.fromRGB(100, 60, 0)
+	elseif rarity == "Epic" then
+		grad.Color   = ColorSequence.new(Color3.fromRGB(160, 50, 255), Color3.fromRGB(220, 100, 255))
+		stroke.Color = Color3.fromRGB(60, 0, 100)
+	elseif rarity == "Rare" then
+		grad.Color = ColorSequence.new(Color3.fromRGB(0, 100, 255), Color3.fromRGB(100, 200, 255))
+	elseif rarity == "Uncommon" then
+		grad.Color = ColorSequence.new(Color3.fromRGB(0, 180, 0), Color3.fromRGB(100, 255, 100))
+	else
+		grad.Color = ColorSequence.new(Color3.fromRGB(150, 150, 150), Color3.fromRGB(220, 220, 220))
+	end
+
+	-- Animated shimmer: only create/restart tween when rarity changes
+	local lastRarity = grad:GetAttribute("__HBGlowRarity")
+	if lastRarity ~= rarity then
+		grad:SetAttribute("__HBGlowRarity", rarity)
+		if not _G.__GlowTweens then _G.__GlowTweens = setmetatable({}, { __mode = "k" }) end
+		if _G.__GlowTweens[grad] then _G.__GlowTweens[grad]:Cancel() end
+		grad.Offset = Vector2.new(-0.35, 0)
+		local shimmerTween = TweenService:Create(
+			grad,
+			TweenInfo.new(2.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+			{ Offset = Vector2.new(0.35, 0) }
+		)
+		shimmerTween:Play()
+		_G.__GlowTweens[grad] = shimmerTween
+	end
+end
+
+local function refreshSlotVisual(slotIndex)
+	if not slotsFolder then return end
+	local slot = slotsFolder:FindFirstChild("Slot" .. slotIndex)
+	if not slot then return end
+	local carName = hotbarData[slotIndex]
+	if carName and CarStats and CarStats.Cars and CarStats.Cars[carName] then
+		local stats = CarStats.Cars[carName]
+		slot.Image              = stats.Image or CONFIG.Images.Default
+		slot.ImageTransparency  = 0
+		slot.BackgroundColor3   = Color3.fromRGB(255, 255, 255)
+		slot.BackgroundTransparency = 0
+		-- FIX #21: show display name instead of internal key
+		local nameLabel = slot:FindFirstChild("CarName") or slot:FindFirstChild("__SlotName")
+		if nameLabel then
+			nameLabel.Text    = getDisplayName(carName)
+			nameLabel.Visible = true
+			-- FIX #27: animated gradient matching inventory glow
+			setHotbarNameGlow(nameLabel, stats.Rarity)
+		end
+		local countBadge = slot:FindFirstChild("__SlotCount")
+		if countBadge then countBadge.Visible = false end
+		-- FIX #28: update CPS info label
+		updateCarInfoLabel(slot, carName)
+	else
+		slot.Image              = ""
+		slot.ImageTransparency  = 1
+		slot.BackgroundColor3   = Color3.fromRGB(128, 128, 128)
+		slot.BackgroundTransparency = 0.5
+		local nameLabel = slot:FindFirstChild("CarName") or slot:FindFirstChild("__SlotName")
+		if nameLabel then
+			nameLabel.Text    = ""
+			nameLabel.Visible = false
+		end
+		-- FIX #28: clear CPS info label on empty slot
+		updateCarInfoLabel(slot, nil)
+	end
+end
+
+local function updateHotbarUI()
+	if not slotsFolder then return end
+
+	-- Sanitize: remove hotbar assignments that exceed owned count
+	local assignedCounts = {}
+	local changed = false
+	for i = 1, SLOT_COUNT do
+		local carName = hotbarData[i]
+		if carName then
+			local count         = counts[carName] or 0
+			local alreadyAssigned = assignedCounts[carName] or 0
+			if count <= 0 or not CarStats or not CarStats.Cars or not CarStats.Cars[carName] or alreadyAssigned >= count then
+				hotbarData[i] = nil
+				changed = true
+			else
+				assignedCounts[carName] = alreadyAssigned + 1
+			end
+		end
+	end
+	if changed then saveHotbarToAttributes() end
+
+	for i = 1, SLOT_COUNT do
+		local slot = slotsFolder:FindFirstChild("Slot" .. i)
+		if slot then
+			local carName = hotbarData[i]
+
+			-- Use pre-existing CarName label if present, fall back to creating __SlotName
+			local nameLabel = slot:FindFirstChild("CarName") or slot:FindFirstChild("__SlotName")
+			if not nameLabel then
+				nameLabel                     = Instance.new("TextLabel")
+				nameLabel.Name                = "__SlotName"
+				nameLabel.Size                = UDim2.new(1.4, 0, 0.3, 0)
+				nameLabel.Position            = UDim2.new(0.5, 0, 1.05, 0)
+				nameLabel.AnchorPoint         = Vector2.new(0.5, 0)
+				nameLabel.BackgroundTransparency = 1
+				nameLabel.Font                = Enum.Font.FredokaOne
+				nameLabel.TextScaled          = true
+				nameLabel.TextColor3          = Color3.new(1, 1, 1)
+				nameLabel.ZIndex              = slot.ZIndex + 2
+				nameLabel.Parent              = slot
+				local grad       = Instance.new("UIGradient")
+				grad.Name        = "__NameGrad"
+				grad.Parent      = nameLabel
+				local stroke     = Instance.new("UIStroke")
+				stroke.Name      = "__NameStroke"
+				stroke.Thickness = 1.5
+				stroke.Color     = Color3.fromRGB(0, 0, 0)
+				stroke.Parent    = nameLabel
+			end
+
+			local countBadge = slot:FindFirstChild("__SlotCount")
+			if not countBadge then
+				countBadge                     = Instance.new("TextLabel")
+				countBadge.Name                = "__SlotCount"
+				countBadge.Size                = UDim2.new(0.45, 0, 0.3, 0)
+				countBadge.Position            = UDim2.new(0.95, 0, 0.05, 0)
+				countBadge.AnchorPoint         = Vector2.new(1, 0)
+				countBadge.BackgroundColor3    = Color3.fromRGB(0, 0, 0)
+				countBadge.BackgroundTransparency = 0.35
+				countBadge.TextColor3          = Color3.new(1, 1, 1)
+				countBadge.Font                = Enum.Font.FredokaOne
+				countBadge.TextScaled          = true
+				countBadge.ZIndex              = slot.ZIndex + 3
+				countBadge.Parent              = slot
+				Instance.new("UICorner", countBadge).CornerRadius = UDim.new(0, 6)
+			end
+
+			if carName and CarStats and CarStats.Cars[carName] then
+				local stats = CarStats.Cars[carName]
+				slot.Image              = stats.Image or CONFIG.Images.Default
+				slot.ImageTransparency  = 0
+				slot.BackgroundColor3   = Color3.fromRGB(255, 255, 255)
+				slot.BackgroundTransparency = 0
+				-- FIX #21 + #27: animated gradient name label
+				nameLabel.Text    = getDisplayName(carName)
+				nameLabel.Visible = true
+				setHotbarNameGlow(nameLabel, stats.Rarity)
+				countBadge.Visible = false
+				-- FIX #28: update CPS info label
+				updateCarInfoLabel(slot, carName)
+			else
+				slot.Image              = ""
+				slot.ImageTransparency  = 1
+				slot.BackgroundColor3   = Color3.fromRGB(128, 128, 128)
+				slot.BackgroundTransparency = 0.5
+				nameLabel.Text     = ""
+				nameLabel.Visible  = false
+				countBadge.Visible = false
+				-- FIX #28: clear CPS info label on empty slot
+				updateCarInfoLabel(slot, nil)
+			end
+		end
+	end
+	updateSlotSelection()
+end
+
+local function snapToSlot(slotIndex)
+	local slot = slotsFolder and slotsFolder:FindFirstChild("Slot" .. slotIndex)
+	if not slot then return end
+	local uiScale = slot:FindFirstChildOfClass("UIScale")
+	if uiScale then
+		local snapInfo = TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		TweenService:Create(uiScale, snapInfo, { Scale = 1.15 }):Play()
+		task.delay(0.12, function()
+			TweenService:Create(uiScale, snapInfo, { Scale = 1.0 }):Play()
+		end)
+	end
+end
+
+-- FIX #8: activateSlot toggles equip/unequip
+local function activateSlot(index)
+	if selectedSlot == index then
+		selectedSlot = nil
+		updateSlotSelection()
+		local char = player.Character
+		if char then
+			local hum = char:FindFirstChildOfClass("Humanoid")
+			if hum then hum:UnequipTools() end
+		end
+		if scheduleRender then scheduleRender() end
+		return
+	end
+
+	selectedSlot = index
+	updateSlotSelection()
+
+	local carName = hotbarData[index]
+
+	if not carName then
+		local char = player.Character
+		if char then
+			local hum = char:FindFirstChildOfClass("Humanoid")
+			if hum then hum:UnequipTools() end
+		end
+		if scheduleRender then scheduleRender() end
+		return
+	end
+
+	local char = player.Character
+	if not char then return end
+	local bp = player:FindFirstChild("Backpack")
+	if not bp then return end
+
+	local tool = bp:FindFirstChild(carName) or char:FindFirstChild(carName)
+		or bp:FindFirstChild(carName .. " Item") or char:FindFirstChild(carName .. " Item")
+	if not tool or not tool:IsA("Tool") then
+		for _, child in ipairs(bp:GetChildren()) do
+			if child:IsA("Tool") and child:GetAttribute("ToolId") then
+				local id = child:GetAttribute("ToolId")
+				local clean = id:gsub(" Item$", ""):gsub("Item$", "")
+				if clean == carName or id == carName then tool = child; break end
+			end
+		end
+		if not tool then
+			for _, child in ipairs(char:GetChildren()) do
+				if child:IsA("Tool") and child:GetAttribute("ToolId") then
+					local id = child:GetAttribute("ToolId")
+					local clean = id:gsub(" Item$", ""):gsub("Item$", "")
+					if clean == carName or id == carName then tool = child; break end
+				end
+			end
+		end
+	end
+
+	if tool and tool:IsA("Tool") then
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum:UnequipTools()
+			hum:EquipTool(tool)
+		end
+	end
+end
+
+local function clearSlot(index)
+	hotbarData[index] = nil
+	if selectedSlot == index then selectedSlot = nil end
+	saveHotbarToAttributes()
+	updateHotbarUI()
+	UIAudioConfig.PlayClick()
+	if scheduleRender then scheduleRender() end
+end
+
+-- =========================================================
+-- FIX #9 + FIX #12/14: startDrag — full source-aware rewrite
+-- =========================================================
+local function startDrag(carName, iconImage, startPos, itemCount, sourceType, sourceSlot, sourceBtn)
+	-- Cancel any in-flight drag (edge case protection)
+	if draggingCar then endDrag(false) end
+
+	draggingCar      = carName
+	dragSourceType   = sourceType or "inventory"
+	dragSourceSlot   = sourceSlot
+	dragSourceButton = sourceBtn
+
+	-- FIX #12: Hide the source immediately so no ghost remains
+	if dragSourceType == "inventory" and dragSourceButton then
+		dragSourceButton.Visible = false
+	elseif dragSourceType == "hotbar" and dragSourceSlot and slotsFolder then
+		-- hotbarData[srcSlot] was already cleared by the slot init code.
+		-- Just dim the slot visually during the drag.
+		local srcSlotBtn = slotsFolder:FindFirstChild("Slot" .. dragSourceSlot)
+		if srcSlotBtn then
+			srcSlotBtn.ImageTransparency = 0.85
+			local nl = srcSlotBtn:FindFirstChild("__SlotName")
+			if nl then nl.Visible = false end
+		end
+	end
+
+	-- Disable scroll frame during drag (prevents mobile scroll interference)
+	if hotbarScrollFrame then
+		hotbarScrollFrame.ScrollingEnabled = false
+	end
+
+	-- FIX #9: icon size proportional to viewport
+	local vp     = camera.ViewportSize
+	local iconPx = math.min(vp.X, vp.Y) * 0.09
+
+	dragIcon                    = Instance.new("ImageLabel")
+	dragIcon.Name               = "DragIcon"
+	dragIcon.Size               = UDim2.new(0, iconPx * 0.45, 0, iconPx * 0.45)
+	dragIcon.AnchorPoint        = Vector2.new(0.5, 0.5)
+	dragIcon.BackgroundTransparency = 1
+	dragIcon.Image              = iconImage
+	dragIcon.ZIndex             = 1000
+	dragIcon.ImageTransparency  = DRAG_ICON_ALPHA
+	dragIcon.Rotation           = -5
+	dragIcon.Position           = UDim2.new(0, startPos.X, 0, startPos.Y)
+	dragIcon.Parent             = inventoryScreenGui or playerGui
+
+	Instance.new("UICorner", dragIcon).CornerRadius = UDim.new(0, 10)
+
+	if itemCount and itemCount > 0 then
+		local dc                     = Instance.new("TextLabel")
+		dc.Name                      = "DragCount"
+		dc.Size                      = UDim2.new(0.4, 0, 0.3, 0)
+		dc.Position                  = UDim2.new(0.95, 0, 0.05, 0)
+		dc.AnchorPoint               = Vector2.new(1, 0)
+		dc.BackgroundColor3          = Color3.fromRGB(0, 0, 0)
+		dc.BackgroundTransparency    = 0.35
+		dc.TextColor3                = Color3.new(1, 1, 1)
+		dc.Font                      = Enum.Font.FredokaOne
+		dc.TextScaled                = true
+		dc.Text                      = "x" .. tostring(itemCount)
+		dc.ZIndex                    = 1001
+		dc.Parent                    = dragIcon
+		Instance.new("UICorner", dc).CornerRadius = UDim.new(0, 6)
+	end
+
+	TweenService:Create(dragIcon, DRAG_TWEEN_INFO, {
+		Size     = UDim2.new(0, iconPx, 0, iconPx),
+		Rotation = 0
+	}):Play()
+
+	-- ── Movement: follow cursor + highlight targets ───────────────
+	dragConn = UserInputService.InputChanged:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseMovement
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+		if dragIcon then
+			dragIcon.Position = UDim2.new(0, input.Position.X, 0, input.Position.Y)
+		end
+
+		local overSlot    = getSlotAtPosition(input.Position)
+		-- FIX #16: compute inventory highlight state
+		local onInventory = (dragSourceType == "hotbar") and isOnInventoryFrame(input.Position)
+
+		-- Update hotbar slot highlights
+		if overSlot ~= hoveredSlot then
+			if hoveredSlot and slotsFolder then
+				local old = slotsFolder:FindFirstChild("Slot" .. hoveredSlot)
+				if old then
+					local hl = old:FindFirstChild("__DragHighlight")
+					if hl then hl.Visible = false end
+				end
+			end
+			if overSlot and slotsFolder then
+				local isSrc = (dragSourceType == "hotbar" and dragSourceSlot == overSlot)
+				if not isSrc then
+					local newSlot = slotsFolder:FindFirstChild("Slot" .. overSlot)
+					if newSlot then
+						local hl = newSlot:FindFirstChild("__DragHighlight")
+						if not hl then
+							hl                       = Instance.new("Frame")
+							hl.Name                  = "__DragHighlight"
+							hl.Size                  = UDim2.new(1, 0, 1, 0)
+							hl.BackgroundColor3      = SLOT_HIGHLIGHT_COLOR
+							hl.BackgroundTransparency = 0.7
+							hl.ZIndex                = newSlot.ZIndex + 1
+							hl.Parent                = newSlot
+							Instance.new("UICorner", hl).CornerRadius = UDim.new(0, 8)
+						end
+						hl.Visible = true
+						UIAudioConfig.PlayHover()
+					end
+				end
+			end
+			hoveredSlot = overSlot
+		end
+
+		-- FIX #16: green overlay on inventory frame for hotbar→inventory drag
+		if mainWindow then
+			local invHl = mainWindow:FindFirstChild("__InvDragHighlight")
+			if not invHl and dragSourceType == "hotbar" then
+				invHl                     = Instance.new("Frame")
+				invHl.Name                = "__InvDragHighlight"
+				invHl.Size                = UDim2.new(1, 0, 1, 0)
+				invHl.BackgroundColor3    = Color3.fromRGB(100, 255, 150)
+				invHl.BackgroundTransparency = 0.82
+				invHl.ZIndex              = (itemsContainer and itemsContainer.ZIndex or mainWindow.ZIndex) + 50
+				invHl.Parent              = mainWindow
+				Instance.new("UICorner", invHl).CornerRadius = UDim.new(0, 8)
+			end
+			if invHl then
+				invHl.Visible = (dragSourceType == "hotbar") and onInventory and (overSlot == nil)
+			end
+		end
+	end)
+
+	-- ── FIX #14: Drop handler — all source→target combinations ───
+	globalDropConn = UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+		local dropPos   = input.Position
+		local car       = draggingCar
+		local srcType   = dragSourceType
+		local srcSlot   = dragSourceSlot
+
+		if not car then endDrag(false); return end
+
+		local targetSlot  = getSlotAtPosition(dropPos)
+		local onHotbar    = isOnHotbarFrame(dropPos)
+		local onInventory = isOnInventoryFrame(dropPos)
+
+		local success       = false
+		local affectedSlots = {}
+
+		if srcType == "inventory" then
+			-- ── Inventory → specific hotbar slot ─────────────────
+			if targetSlot then
+				hotbarData[targetSlot] = car
+				table.insert(affectedSlots, targetSlot)
+				success = true
+
+				-- ── Inventory → hotbar frame (first empty slot) ───────
+			elseif onHotbar then
+				local empty = getFirstEmptyHotbarSlot(nil)
+				if empty then
+					hotbarData[empty] = car
+					table.insert(affectedSlots, empty)
+					success = true
+				end
+				-- All slots full → cancel (button restores)
+			end
+			-- Drop anywhere else → cancel
+
+		elseif srcType == "hotbar" then
+			-- ── Hotbar → different hotbar slot (swap) ────────────
+			if targetSlot and targetSlot ~= srcSlot then
+				local displaced        = hotbarData[targetSlot]
+				hotbarData[targetSlot] = car
+				hotbarData[srcSlot]    = displaced  -- nil or swapped car
+				table.insert(affectedSlots, targetSlot)
+				table.insert(affectedSlots, srcSlot)
+				success = true
+
+				-- ── Hotbar → same slot → cancel ───────────────────────
+			elseif targetSlot and targetSlot == srcSlot then
+				success = false
+
+				-- ── Hotbar → hotbar frame but not a slot ─────────────
+			elseif onHotbar and not targetSlot then
+				local empty = getFirstEmptyHotbarSlot(srcSlot)
+				if empty then
+					hotbarData[empty]  = car
+					hotbarData[srcSlot] = nil
+					table.insert(affectedSlots, empty)
+					table.insert(affectedSlots, srcSlot)
+					success = true
+				end
+				-- No empty slot → cancel
+
+				-- ── Hotbar → inventory frame (eject from hotbar) ─────
+			elseif onInventory then
+				hotbarData[srcSlot] = nil
+				table.insert(affectedSlots, srcSlot)
+				success = true
+			end
+			-- Drop anywhere else → cancel (restores srcSlot via endDrag(false))
+		end
+
+		if success then
+			endDrag(true)
+			saveHotbarToAttributes()
+			UIAudioConfig.PlayClick()
+			for _, si in ipairs(affectedSlots) do
+				refreshSlotVisual(si)
+			end
+			if affectedSlots[1] then snapToSlot(affectedSlots[1]) end
+
+			-- FIX #26: Defer the final authoritative render by one frame.
+			-- This ensures all pending deferred tasks (FIX #25 ChildRemoved
+			-- sweep, ChildAdded scheduleRender, etc.) have settled before
+			-- we paint the definitive UI state. Without this, a stale
+			-- deferred render could overwrite the correct post-drop visuals.
+			refreshQueued = true  -- block any pending scheduleRender
+			task.defer(function()
+				refreshQueued = false
+				updateHotbarUI()
+				if isOpen then renderCurrentTab() end
+				updateHotbarUI()  -- second pass after render adjusts hotbar assignments
+			end)
+		else
+			endDrag(false)  -- restores source visually
+		end
+	end)
+end
+
 -- Helpers
 local function getRarityColor(rarity)
 	local map = {
-		Common = Color3.fromRGB(180, 180, 180),
-		Uncommon = Color3.fromRGB(50, 220, 50),
-		Rare = Color3.fromRGB(50, 150, 255),
-		Epic = Color3.fromRGB(180, 50, 255),
+		Common    = Color3.fromRGB(180, 180, 180),
+		Uncommon  = Color3.fromRGB(50,  220, 50),
+		Rare      = Color3.fromRGB(50,  150, 255),
+		Epic      = Color3.fromRGB(180, 50,  255),
 		Legendary = Color3.fromRGB(255, 180, 50),
-		Mythic = Color3.fromRGB(255, 40, 40)
+		Mythic    = Color3.fromRGB(255, 40,  40)
 	}
 	return map[rarity] or CONFIG.Colors.Normal
 end
@@ -164,8 +956,16 @@ local function toggleOtherGuis(shouldHide)
 	end
 end
 
--- =========================================================
 -- FIX #1 + FIX #4
+<<<<<<< HEAD
+local function addButtonEffects(btn, getBaseBg)
+	if btn:GetAttribute("__HoverBound") then return {} end
+	btn:SetAttribute("__HoverBound", true)
+
+	local baseZ     = btn.ZIndex
+	local isHovering = false
+	local isPressed  = false
+=======
 -- addButtonEffects now RETURNS the connection list so callers
 -- can store them for cleanup.  It also guards against being
 -- called more than once on the same button via the attribute
@@ -183,6 +983,7 @@ local function addButtonEffects(btn, getBaseBg)
 	local isPressed = false
 
 	-- FIX #1: collect connections to return
+>>>>>>> origin/Master
 	local connections = {}
 
 	local uiScale = btn:FindFirstChildOfClass("UIScale")
@@ -198,32 +999,48 @@ local function addButtonEffects(btn, getBaseBg)
 		if isPressed      then target = 0.95
 		elseif isHovering then target = 1.05
 		end
+<<<<<<< HEAD
+		TweenService:Create(uiScale, tweenInfo, { Scale = target }):Play()
+=======
 		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+>>>>>>> origin/Master
 	end
 
 	table.insert(connections, btn.MouseEnter:Connect(function()
 		isHovering = true
 		UIAudioConfig.PlayHover()
 		btn.ZIndex = baseZ + 20
+<<<<<<< HEAD
+=======
 
+>>>>>>> origin/Master
 		updateScale()
 	end))
-
 	table.insert(connections, btn.MouseLeave:Connect(function()
 		isHovering = false
+<<<<<<< HEAD
+		isPressed  = false
+		btn.ZIndex = baseZ
+		updateScale()
+	end))
+=======
 		isPressed = false
 		btn.ZIndex = baseZ
 
 		updateScale()
 	end))
 
+>>>>>>> origin/Master
 	table.insert(connections, btn.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			isPressed = true
 			updateScale()
 		end
 	end))
+<<<<<<< HEAD
+=======
 
+>>>>>>> origin/Master
 	table.insert(connections, btn.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			isPressed = false
@@ -231,7 +1048,7 @@ local function addButtonEffects(btn, getBaseBg)
 		end
 	end))
 
-	return connections  -- FIX #1: caller merges these into buttonCons
+	return connections
 end
 
 local function addOpenButtonHover(btn)
@@ -252,6 +1069,21 @@ local function addOpenButtonHover(btn)
 		if isPressed      then target = 0.95
 		elseif isHovering then target = 1.05
 		end
+<<<<<<< HEAD
+		TweenService:Create(uiScale, tweenInfo, { Scale = target }):Play()
+	end
+
+	btn.MouseEnter:Connect(function()  isHovering = true;  UIAudioConfig.PlayHover(); updateScale() end)
+	btn.MouseLeave:Connect(function()  isHovering = false; isPressed = false;           updateScale() end)
+	btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true; updateScale()
+		end
+	end)
+	btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false; updateScale()
+=======
 		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
 	end
 
@@ -275,6 +1107,7 @@ local function addOpenButtonHover(btn)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			isPressed = false
 			updateScale()
+>>>>>>> origin/Master
 		end
 	end)
 end
@@ -285,28 +1118,28 @@ local function ensureEmptyFX()
 	if not emptyIndicatorLabel or EmptyFX then return end
 	if not emptyIndicatorLabel:IsA("TextLabel") then return end
 
-	local stroke = emptyIndicatorLabel:FindFirstChild("__EmptyStroke") or Instance.new("UIStroke")
-	stroke.Name = "__EmptyStroke"
-	stroke.Thickness = 3
-	stroke.LineJoinMode = Enum.LineJoinMode.Round
-	stroke.Parent = emptyIndicatorLabel
+	local stroke           = emptyIndicatorLabel:FindFirstChild("__EmptyStroke") or Instance.new("UIStroke")
+	stroke.Name            = "__EmptyStroke"
+	stroke.Thickness       = 3
+	stroke.LineJoinMode    = Enum.LineJoinMode.Round
+	stroke.Parent          = emptyIndicatorLabel
 
-	local grad = emptyIndicatorLabel:FindFirstChild("__EmptyGrad") or Instance.new("UIGradient")
-	grad.Name = "__EmptyGrad"
-	grad.Rotation = -20
-	grad.Parent = emptyIndicatorLabel
+	local grad     = emptyIndicatorLabel:FindFirstChild("__EmptyGrad") or Instance.new("UIGradient")
+	grad.Name      = "__EmptyGrad"
+	grad.Rotation  = -20
+	grad.Parent    = emptyIndicatorLabel
 
-	local shine = emptyIndicatorLabel:FindFirstChild("__EmptyShine") or Instance.new("Frame")
-	shine.Name = "__EmptyShine"
+	local shine    = emptyIndicatorLabel:FindFirstChild("__EmptyShine") or Instance.new("Frame")
+	shine.Name     = "__EmptyShine"
 	shine.BackgroundTransparency = 1
-	shine.Size = UDim2.new(1, 0, 1, 0)
-	shine.ZIndex = emptyIndicatorLabel.ZIndex + 2
-	shine.Parent = emptyIndicatorLabel
+	shine.Size     = UDim2.new(1, 0, 1, 0)
+	shine.ZIndex   = emptyIndicatorLabel.ZIndex + 2
+	shine.Parent   = emptyIndicatorLabel
 
-	local shineGrad = shine:FindFirstChild("__EmptyShineGrad") or Instance.new("UIGradient")
-	shineGrad.Name = "__EmptyShineGrad"
-	shineGrad.Rotation = -35
-	shineGrad.Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.new(1, 1, 1))
+	local shineGrad        = shine:FindFirstChild("__EmptyShineGrad") or Instance.new("UIGradient")
+	shineGrad.Name         = "__EmptyShineGrad"
+	shineGrad.Rotation     = -35
+	shineGrad.Color        = ColorSequence.new(Color3.new(1, 1, 1), Color3.new(1, 1, 1))
 	shineGrad.Transparency = NumberSequence.new({
 		NumberSequenceKeypoint.new(0.00, 1.00),
 		NumberSequenceKeypoint.new(0.45, 1.00),
@@ -317,19 +1150,13 @@ local function ensureEmptyFX()
 	shineGrad.Offset = Vector2.new(-1.2, 0)
 	shineGrad.Parent = shine
 
-	local shineTween = TweenService:Create(
-		shineGrad,
+	TweenService:Create(shineGrad,
 		TweenInfo.new(2.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, false),
-		{ Offset = Vector2.new(1.2, 0) }
-	)
-	shineTween:Play()
+		{ Offset = Vector2.new(1.2, 0) }):Play()
 
-	local shimmerTween = TweenService:Create(
-		grad,
+	TweenService:Create(grad,
 		TweenInfo.new(2.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-		{ Offset = Vector2.new(0.35, 0) }
-	)
-	shimmerTween:Play()
+		{ Offset = Vector2.new(0.35, 0) }):Play()
 
 	EmptyFX = { stroke = stroke, grad = grad, shine = shine }
 end
@@ -339,9 +1166,9 @@ local function styleEmptyIndicator(tierName)
 	ensureEmptyFX()
 	if not EmptyFX then return end
 
-	local t = tierName or "Common"
+	local t  = tierName or "Common"
 	local st = EmptyFX.stroke
-	local g = EmptyFX.grad
+	local g  = EmptyFX.grad
 
 	st.Color = Color3.new(0, 0, 0)
 	if t == "Mythic" then
@@ -369,25 +1196,24 @@ end
 local function updateEmptyIndicator(tierName, isEmpty)
 	if not emptyIndicatorLabel then return end
 	if isEmpty then
-		emptyIndicatorLabel.Text = ("Your %s Stash is Empty"):format(tierName)
+		emptyIndicatorLabel.Text    = ("Your %s Stash is Empty"):format(tierName)
 		emptyIndicatorLabel.Visible = true
-		emptyIndicatorLabel.Active = false
+		emptyIndicatorLabel.Active  = false
 		styleEmptyIndicator(tierName)
 	else
 		emptyIndicatorLabel.Visible = false
-		emptyIndicatorLabel.Active = false
+		emptyIndicatorLabel.Active  = false
 	end
 end
 
 -- ========= INVENTORY TRACKING =========
 local toolToCleanName = {}
-local counts = {}
-local sampleTool = {}
+local counts          = {}
+local sampleTool      = {}
 
 local function normalizeToolName(toolName)
 	if not CarStats or not CarStats.Cars then return nil end
 	if CarStats.Cars[toolName] then return toolName end
-
 	if toolName:match(" Item$") then
 		local n = toolName:gsub(" Item$", "")
 		if CarStats.Cars[n] then return n end
@@ -412,7 +1238,7 @@ local function adjustCount(tool, delta)
 
 	local newVal = (counts[clean] or 0) + delta
 	if newVal <= 0 then
-		counts[clean] = nil
+		counts[clean]    = nil
 		sampleTool[clean] = nil
 	else
 		counts[clean] = newVal
@@ -433,12 +1259,16 @@ end
 
 -- ========= UI POOL =========
 local poolFolder = Instance.new("Folder")
+<<<<<<< HEAD
+poolFolder.Name  = "__InventoryUIPool"
+=======
 poolFolder.Name = "__InventoryUIPool"
+>>>>>>> origin/Master
 poolFolder.Parent = inventoryScreenGui or playerGui
 
-local buttonPool = {}
+local buttonPool    = {}
 local activeButtons = {}
-local buttonCons = setmetatable({}, { __mode = "k" })
+local buttonCons    = setmetatable({}, { __mode = "k" })
 
 local function disconnectButton(btn)
 	local cons = buttonCons[btn]
@@ -451,28 +1281,19 @@ local function disconnectButton(btn)
 	btn:SetAttribute("__HoverBound", nil)
 end
 
--- =========================================================
 -- FIX #3 + FIX #6
--- setGlow now tracks the last rarity applied on the gradient
--- via __GlowRarity attribute.  If the rarity differs from the
--- previous render, the old tween is cancelled and a new one
--- started.  This fixes the stale-tween bug on pool reuse and
--- avoids creating redundant tween objects when the rarity
--- has not changed.
--- =========================================================
 local function setGlow(label, rarity)
-	local stroke = label:FindFirstChild("__GlowStroke") or Instance.new("UIStroke")
-	stroke.Name = "__GlowStroke"
+	local stroke     = label:FindFirstChild("__GlowStroke") or Instance.new("UIStroke")
+	stroke.Name      = "__GlowStroke"
 	stroke.Thickness = 3
-	stroke.Color = Color3.new(0, 0, 0)
-	stroke.Parent = label
+	stroke.Color     = Color3.new(0, 0, 0)
+	stroke.Parent    = label
 
-	local grad = label:FindFirstChild("__GlowGrad") or Instance.new("UIGradient")
-	grad.Name = "__GlowGrad"
-	grad.Rotation = -20
-	grad.Parent = label
+	local grad      = label:FindFirstChild("__GlowGrad") or Instance.new("UIGradient")
+	grad.Name       = "__GlowGrad"
+	grad.Rotation   = -20
+	grad.Parent     = label
 
-	-- Always update gradient colours so reused buttons show the correct rarity
 	if rarity == "Mythic" then
 		grad.Color = ColorSequence.new({
 			ColorSequenceKeypoint.new(0.0, Color3.fromRGB(255, 0, 0)),
@@ -483,10 +1304,10 @@ local function setGlow(label, rarity)
 			ColorSequenceKeypoint.new(1.0, Color3.fromRGB(255, 0, 255)),
 		})
 	elseif rarity == "Legendary" then
-		grad.Color = ColorSequence.new(Color3.fromRGB(255, 180, 50), Color3.fromRGB(255, 240, 150))
+		grad.Color   = ColorSequence.new(Color3.fromRGB(255, 180, 50), Color3.fromRGB(255, 240, 150))
 		stroke.Color = Color3.fromRGB(100, 60, 0)
 	elseif rarity == "Epic" then
-		grad.Color = ColorSequence.new(Color3.fromRGB(160, 50, 255), Color3.fromRGB(220, 100, 255))
+		grad.Color   = ColorSequence.new(Color3.fromRGB(160, 50, 255), Color3.fromRGB(220, 100, 255))
 		stroke.Color = Color3.fromRGB(60, 0, 100)
 	elseif rarity == "Rare" then
 		grad.Color = ColorSequence.new(Color3.fromRGB(0, 100, 255), Color3.fromRGB(100, 200, 255))
@@ -496,17 +1317,16 @@ local function setGlow(label, rarity)
 		grad.Color = ColorSequence.new(Color3.fromRGB(150, 150, 150), Color3.fromRGB(220, 220, 220))
 	end
 
-	-- FIX #3 + FIX #6: only (re)start the tween when the rarity changed
 	local lastRarity = grad:GetAttribute("__GlowRarity")
 	if lastRarity ~= rarity then
 		grad:SetAttribute("__GlowRarity", rarity)
+<<<<<<< HEAD
+=======
 
 		-- Cancel the previous tween stored on the gradient (if any)
+>>>>>>> origin/Master
 		if not _G.__GlowTweens then _G.__GlowTweens = setmetatable({}, { __mode = "k" }) end
-		if _G.__GlowTweens[grad] then
-			_G.__GlowTweens[grad]:Cancel()
-		end
-
+		if _G.__GlowTweens[grad] then _G.__GlowTweens[grad]:Cancel() end
 		grad.Offset = Vector2.new(-0.35, 0)
 		local newTween = TweenService:Create(
 			grad,
@@ -514,93 +1334,94 @@ local function setGlow(label, rarity)
 			{ Offset = Vector2.new(0.35, 0) }
 		)
 		newTween:Play()
-		_G.__GlowTweens[grad] = newTween  -- FIX #3/#6: track for future cancellation
+		_G.__GlowTweens[grad] = newTween
 	end
 end
 
 local function createItemButton()
-	local btn = Instance.new("TextButton")
-	btn.Name = "__ItemButton"
-	btn.Text = ""
-	btn.Size = UDim2.new(0, 100, 0, 120)
-	btn.AutoButtonColor = false
+	local btn              = Instance.new("TextButton")
+	btn.Name               = "__ItemButton"
+	btn.Text               = ""
+	btn.Size               = UDim2.new(0, 100, 0, 120)
+	btn.AutoButtonColor    = false
 
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 8)
-	corner.Parent = btn
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
 
-	local icon = Instance.new("ImageLabel")
-	icon.Name = "CarIcon"
-	icon.Parent = btn
+	local icon              = Instance.new("ImageLabel")
+	icon.Name               = "CarIcon"
+	icon.Parent             = btn
 	icon.BackgroundTransparency = 1
-	icon.Size = UDim2.new(1, 0, 1, 0)
-	icon.Position = UDim2.new(0.5, 0, 0.5, 0)
-	icon.AnchorPoint = Vector2.new(0.5, 0.5)
-	icon.ScaleType = Enum.ScaleType.Fit
-	icon.ZIndex = 1
+	icon.Size               = UDim2.new(1, 0, 1, 0)
+	icon.Position           = UDim2.new(0.5, 0, 0.5, 0)
+	icon.AnchorPoint        = Vector2.new(0.5, 0.5)
+	icon.ScaleType          = Enum.ScaleType.Fit
+	icon.ZIndex             = 1
+	Instance.new("UICorner", icon).CornerRadius = UDim.new(0, 8)
 
-	local imgCorner = Instance.new("UICorner")
-	imgCorner.CornerRadius = UDim.new(0, 8)
-	imgCorner.Parent = icon
-
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Name = "CarName"
-	nameLabel.Parent = btn
+	local nameLabel         = Instance.new("TextLabel")
+	nameLabel.Name          = "CarName"
+	nameLabel.Parent        = btn
 	nameLabel.BackgroundTransparency = 1
-	nameLabel.Size = UDim2.new(1, -4, 0.25, 0)
-	nameLabel.Position = UDim2.new(0.5, 0, 0.85, 0)
-	nameLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-	nameLabel.Font = Enum.Font.FredokaOne
-	nameLabel.TextScaled = true
-	nameLabel.ZIndex = 5
-	nameLabel.TextColor3 = Color3.new(1, 1, 1)
+	nameLabel.Size          = UDim2.new(1, -4, 0.25, 0)
+	nameLabel.Position      = UDim2.new(0.5, 0, 0.85, 0)
+	nameLabel.AnchorPoint   = Vector2.new(0.5, 0.5)
+	nameLabel.Font          = Enum.Font.FredokaOne
+	nameLabel.TextScaled    = true
+	nameLabel.ZIndex        = 5
+	nameLabel.TextColor3    = Color3.new(1, 1, 1)
 
+<<<<<<< HEAD
+	local equippedStroke    = Instance.new("UIStroke")
+	equippedStroke.Name     = "__EquippedStroke"
+	equippedStroke.Color    = Color3.fromRGB(255, 255, 100)
+=======
 	local equippedStroke = Instance.new("UIStroke")
 	equippedStroke.Name = "__EquippedStroke"
 	equippedStroke.Color = Color3.fromRGB(255, 255, 100) -- CONFIG.Colors.Gold
+>>>>>>> origin/Master
 	equippedStroke.Thickness = 4
-	equippedStroke.Enabled = false  -- hidden by default
-	equippedStroke.Parent = btn
+	equippedStroke.Enabled  = false
+	equippedStroke.Parent   = btn
 
-	local equippedTag = Instance.new("TextLabel")
-	equippedTag.Name = "__EquippedTag"
+	local equippedTag       = Instance.new("TextLabel")
+	equippedTag.Name        = "__EquippedTag"
 	equippedTag.BackgroundTransparency = 1
-	equippedTag.Size = UDim2.new(1, -4, 0.25, 0)
-	equippedTag.Position = UDim2.new(0.5, 0, 0.5, 0)
+	equippedTag.Size        = UDim2.new(1, -4, 0.25, 0)
+	equippedTag.Position    = UDim2.new(0.5, 0, 0.5, 0)
 	equippedTag.AnchorPoint = Vector2.new(0.5, 0.5)
-	equippedTag.Font = Enum.Font.FredokaOne
-	equippedTag.TextScaled = true
-	equippedTag.Text = "EQUIPPED"
-	equippedTag.TextColor3 = Color3.fromRGB(255, 255, 100) -- CONFIG.Colors.Gold
-	equippedTag.Rotation = -15
-	equippedTag.ZIndex = 7
-	equippedTag.Visible = false  -- hidden by default
-	equippedTag.Parent = btn
+	equippedTag.Font        = Enum.Font.FredokaOne
+	equippedTag.TextScaled  = true
+	equippedTag.Text        = "EQUIPPED"
+	equippedTag.TextColor3  = Color3.fromRGB(255, 255, 100)
+	equippedTag.Rotation    = -15
+	equippedTag.ZIndex      = 7
+	equippedTag.Visible     = false
+	equippedTag.Parent      = btn
 
 	return btn
 end
 
 local function getPooledButton()
 	local btn = table.remove(buttonPool)
-	if not btn then
-		btn = createItemButton()
-	end
+	if not btn then btn = createItemButton() end
 	btn.Visible = true
-	btn.Parent = itemsContainer
+	btn.Parent  = itemsContainer
 	return btn
 end
 
 local function releaseAllButtons()
 	for carName, btn in pairs(activeButtons) do
 		disconnectButton(btn)
-		btn.Parent = poolFolder
+		btn.Parent  = poolFolder
 		btn.Visible = false
+		table.insert(buttonPool, btn) -- return to pool for reuse
 		activeButtons[carName] = nil
 	end
 end
 
 -- ========= RENDER UI =========
 local refreshQueued = false
+
 local function renderCurrentTab()
 	if not isOpen then return end
 	if not CarStats or not CarStats.Cars then
@@ -614,129 +1435,182 @@ local function renderCurrentTab()
 	local char = player.Character
 
 	if unequipButton then
-		local equippedTool = char and char:FindFirstChildOfClass("Tool")
+		local equippedTool  = char and char:FindFirstChildOfClass("Tool")
 		unequipButton.Visible = equippedTool ~= nil
 	end
 
 	local renderedAny = false
 
 	for carName, count in pairs(counts) do
-		local stats = CarStats.Cars[carName]
-		if stats and stats.Rarity == currentTab then
-			renderedAny = true
+		-- FIX #18: skip the item currently being dragged from inventory so it
+		-- never ghosts back into view during a mid-drag re-render.
+		if draggingCar == carName and dragSourceType == "inventory" then
+			continue
+		end
 
-			local tool = sampleTool[carName]
-			local btn = getPooledButton()
-			activeButtons[carName] = btn
-
-			local rarity = stats.Rarity
-			local baseBg = getRarityColor(rarity)
-			btn.BackgroundColor3 = baseBg
-
-			local icon = btn:FindFirstChild("CarIcon")
-			local nameLabel = btn:FindFirstChild("CarName")
-
-			if icon and icon:IsA("ImageLabel") then
-				if stats.Image and stats.Image ~= "" then
-					icon.Image = stats.Image
-				elseif tool and tool.TextureId and tool.TextureId ~= "" then
-					icon.Image = tool.TextureId
-				else
-					icon.Image = CONFIG.Images.Default
-				end
+		local assignedCount = 0
+		for i = 1, SLOT_COUNT do
+			if hotbarData[i] == carName then
+				assignedCount += 1
 			end
+		end
 
-			if nameLabel and nameLabel:IsA("TextLabel") then
-				nameLabel.Text = carName
-				setGlow(nameLabel, rarity)
-			end
+		local displayCount = count - assignedCount
 
-			local countTag = btn:FindFirstChild("MultiplierCount")
-			if not countTag then
-				countTag = Instance.new("TextLabel")
-				countTag.Name = "MultiplierCount"
-				countTag.Parent = btn
-				countTag.Size = UDim2.new(0.35, 0, 0.25, 0)
-				countTag.Position = UDim2.new(0.95, 0, 0.05, 0)
-				countTag.AnchorPoint = Vector2.new(1, 0)
-				countTag.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-				countTag.BackgroundTransparency = 0.4
-				countTag.TextColor3 = CONFIG.Colors.Normal
-				countTag.Font = Enum.Font.FredokaOne
-				countTag.TextScaled = true
-				countTag.ZIndex = 6
-				Instance.new("UICorner", countTag).CornerRadius = UDim.new(0, 6)
-			end
-			countTag.Text = "x" .. tostring(count)
-			countTag.Visible = true
+		if displayCount > 0 then
+			local stats = CarStats.Cars[carName]
+			if stats and stats.Rarity == currentTab then
+				renderedAny = true
 
-			local equipped = (char and char:FindFirstChild((tool and tool.Name) or carName)) ~= nil
-			local existingStroke = btn:FindFirstChild("__EquippedStroke")
-			local existingTag = btn:FindFirstChild("__EquippedTag")
+				local tool = sampleTool[carName]
+				local btn  = getPooledButton()
+				activeButtons[carName] = btn
 
-			if existingStroke then
-				existingStroke.Enabled = equipped
-			end
-			if existingTag then
-				existingTag.Visible = equipped
-			end
+				local rarity = stats.Rarity
+				local baseBg = getRarityColor(rarity)
+				btn.BackgroundColor3 = baseBg
 
-			local cons = {}
-			buttonCons[btn] = cons
+				local icon      = btn:FindFirstChild("CarIcon")
+				local nameLabel = btn:FindFirstChild("CarName")
 
-			local hoverCons = addButtonEffects(btn, function() return baseBg end)
-			for _, c in ipairs(hoverCons) do
-				table.insert(cons, c)
-			end
-
-			table.insert(cons, btn.MouseButton1Click:Connect(function()
-				UIAudioConfig.PlayClick()
-				local charNow = player.Character
-				if not charNow then return end
-				local currentBp = player:FindFirstChild("Backpack")
-				if not currentBp then return end
-
-				local moveTool = currentBp:FindFirstChild((tool and tool.Name) or carName)
-					or charNow:FindFirstChild((tool and tool.Name) or carName)
-				if not moveTool or not moveTool:IsA("Tool") then return end
-
-				local humanoid = charNow:FindFirstChildOfClass("Humanoid")
-				if not humanoid then return end
-
-				if moveTool.Parent == charNow then
-					humanoid:UnequipTools()
-				else
-					humanoid:UnequipTools()
-					humanoid:EquipTool(moveTool)
+				if icon and icon:IsA("ImageLabel") then
+					if stats.Image and stats.Image ~= "" then
+						icon.Image = stats.Image
+					elseif tool and tool.TextureId and tool.TextureId ~= "" then
+						icon.Image = tool.TextureId
+					else
+						icon.Image = CONFIG.Images.Default
+					end
 				end
 
-				if not refreshQueued then
-					refreshQueued = true
-					task.defer(function()
-						refreshQueued = false
-						renderCurrentTab()
-					end)
+				if nameLabel and nameLabel:IsA("TextLabel") then
+					nameLabel.Text = carName
+					setGlow(nameLabel, rarity)
 				end
-			end))
+
+				local countTag = btn:FindFirstChild("MultiplierCount")
+				if not countTag then
+					countTag                   = Instance.new("TextLabel")
+					countTag.Name              = "MultiplierCount"
+					countTag.Parent            = btn
+					countTag.Size              = UDim2.new(0.35, 0, 0.25, 0)
+					countTag.Position          = UDim2.new(0.95, 0, 0.05, 0)
+					countTag.AnchorPoint       = Vector2.new(1, 0)
+					countTag.BackgroundColor3  = Color3.fromRGB(0, 0, 0)
+					countTag.BackgroundTransparency = 0.4
+					countTag.TextColor3        = CONFIG.Colors.Normal
+					countTag.Font              = Enum.Font.FredokaOne
+					countTag.TextScaled        = true
+					countTag.ZIndex            = 6
+					Instance.new("UICorner", countTag).CornerRadius = UDim.new(0, 6)
+				end
+				countTag.Text    = "x" .. tostring(displayCount)
+				countTag.Visible = true
+
+				local equipped      = (char and char:FindFirstChild((tool and tool.Name) or carName)) ~= nil
+				local existingStroke = btn:FindFirstChild("__EquippedStroke")
+				local existingTag    = btn:FindFirstChild("__EquippedTag")
+
+				if existingStroke then existingStroke.Enabled = equipped end
+				if existingTag    then existingTag.Visible    = equipped end
+
+				local cons = {}
+				buttonCons[btn] = cons
+
+				local hoverCons = addButtonEffects(btn, function() return baseBg end)
+				for _, c in ipairs(hoverCons) do table.insert(cons, c) end
+
+				-- 👆 DRAG INITIATION (inventory → anywhere)
+				-- FIX #19: Only allow drag when inventory is open
+				table.insert(cons, btn.InputBegan:Connect(function(input)
+					if not isOpen then return end -- FIX #19
+					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+						local startPos = input.Position
+						local moveCon, endCon
+
+						moveCon = UserInputService.InputChanged:Connect(function(moveInput)
+							if moveInput.UserInputType == Enum.UserInputType.MouseMovement or moveInput.UserInputType == Enum.UserInputType.Touch then
+								if (moveInput.Position - startPos).Magnitude > DRAG_THRESHOLD_PX then
+									if moveCon then moveCon:Disconnect(); moveCon = nil end
+									if endCon  then endCon:Disconnect();  endCon  = nil end
+									-- FIX #19: double-check isOpen at drag start moment
+									if not isOpen then return end
+									startDrag(
+										carName,
+										stats.Image or CONFIG.Images.Default,
+										moveInput.Position,
+										displayCount,
+										"inventory",  -- sourceType
+										nil,          -- sourceSlot
+										btn           -- sourceBtn
+									)
+								end
+							end
+						end)
+
+						endCon = UserInputService.InputEnded:Connect(function(endInput)
+							if endInput.UserInputType == Enum.UserInputType.MouseButton1 or endInput.UserInputType == Enum.UserInputType.Touch then
+								if moveCon then moveCon:Disconnect(); moveCon = nil end
+								if endCon  then endCon:Disconnect();  endCon  = nil end
+							end
+						end)
+
+						table.insert(cons, moveCon)
+						table.insert(cons, endCon)
+					end
+				end))
+
+				table.insert(cons, btn.MouseButton1Click:Connect(function()
+					UIAudioConfig.PlayClick()
+					local charNow    = player.Character
+					if not charNow then return end
+					local currentBp = player:FindFirstChild("Backpack")
+					if not currentBp then return end
+
+					local moveTool = currentBp:FindFirstChild((tool and tool.Name) or carName)
+						or charNow:FindFirstChild((tool and tool.Name) or carName)
+					if not moveTool or not moveTool:IsA("Tool") then return end
+
+					local humanoid = charNow:FindFirstChildOfClass("Humanoid")
+					if not humanoid then return end
+
+					if moveTool.Parent == charNow then
+						humanoid:UnequipTools()
+					else
+						humanoid:UnequipTools()
+						humanoid:EquipTool(moveTool)
+					end
+
+					scheduleRender()
+				end))
+			end
 		end
 	end
 
 	updateEmptyIndicator(currentTab, not renderedAny)
 end
 
-local function scheduleRender()
-	if not isOpen then return end
+function scheduleRender()
 	if refreshQueued then return end
 	refreshQueued = true
 	task.defer(function()
 		refreshQueued = false
-		renderCurrentTab()
+		if isOpen then renderCurrentTab() end
+		updateHotbarUI()
 	end)
+end
+
+-- Immediate render: forces a synchronous repaint without the deduplication
+-- guard. Used after drag-to-inventory so the item appears instantly.
+local function forceRender()
+	if isOpen then renderCurrentTab() end
+	updateHotbarUI()
+	refreshQueued = false -- allow the next scheduleRender to also fire
 end
 
 -- ========= CRITICAL FIX: BACKPACK HOOKING =========
 local currentBackpack = player:WaitForChild("Backpack")
-local bpConnections = {}
+local bpConnections   = {}
 
 local function bindContainer(container)
 	local conns = {}
@@ -750,8 +1624,34 @@ local function bindContainer(container)
 
 	table.insert(conns, container.ChildRemoved:Connect(function(child)
 		if child:IsA("Tool") then
+			-- Capture the clean name NOW while the tool reference is still valid
+			local cleanName = toolToCleanName[child] or normalizeToolName(child.Name)
 			adjustCount(child, -1)
-			scheduleRender()
+
+			-- FIX #25: Defer ALL hotbar logic by 1 frame.
+			-- When a tool moves between Backpack↔Character (equip/unequip),
+			-- ChildRemoved fires first (count→0) then ChildAdded fires
+			-- (count→1). Both updateHotbarUI's sanitization AND our direct
+			-- sweep see count=0 and incorrectly clear the hotbar slot.
+			-- Deferring ensures the companion ChildAdded restores the count
+			-- before any sanitization runs. For true removals (pad placement,
+			-- selling, gifting), the count stays at 0 and the slot is cleared.
+			task.defer(function()
+				if cleanName and (counts[cleanName] or 0) <= 0 then
+					local swept = false
+					for si = 1, SLOT_COUNT do
+						if hotbarData[si] == cleanName then
+							hotbarData[si] = nil
+							swept = true
+						end
+					end
+					if swept then
+						saveHotbarToAttributes()
+					end
+				end
+				updateHotbarUI()
+				scheduleRender()
+			end)
 		end
 	end))
 
@@ -775,8 +1675,8 @@ end
 
 player.CharacterAdded:Connect(function(char)
 	toolToCleanName = {}
-	counts = {}
-	sampleTool = {}
+	counts          = {}
+	sampleTool      = {}
 
 	currentBackpack = player:WaitForChild("Backpack")
 
@@ -795,10 +1695,13 @@ if player.Character then onCharacter(player.Character) end
 
 -- ========= UI ACTIONS =========
 local function performClose()
+	-- FIX #20: cancel any in-flight drag so no ghost icon remains
+	if draggingCar then endDrag(false) end
+
 	isOpen = false
-	mainWindow.Visible = false
-	tierFrame.Visible = false
-	openButton.Visible = true
+	mainWindow.Visible  = false
+	tierFrame.Visible   = false
+	openButton.Visible  = true
 
 	Controls:Enable()
 	player.CameraMinZoomDistance = CONFIG.Zoom.Min
@@ -813,7 +1716,7 @@ openButton.Activated:Connect(function()
 	UIAudioConfig.PlayClick()
 
 	savedFOV = camera.FieldOfView
-	isOpen = true
+	isOpen   = true
 
 	toggleOtherGuis(true)
 	currentTab = "Common"
@@ -825,12 +1728,189 @@ openButton.Activated:Connect(function()
 	player.CameraMaxZoomDistance = currentZoom
 
 	mainWindow.Visible = true
-	tierFrame.Visible = true
+	tierFrame.Visible  = true
 	openButton.Visible = false
 
 	TweenService:Create(camera, CONFIG.Tween, { FieldOfView = CONFIG.FOV.Open }):Play()
 
 	renderCurrentTab()
+end)
+
+-- ⌨️ KEYBOARD INPUT (1-6 slot selection)
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then return end
+
+	local keyMap = {
+		[Enum.KeyCode.One]   = 1, [Enum.KeyCode.Two]   = 2, [Enum.KeyCode.Three] = 3,
+		[Enum.KeyCode.Four]  = 4, [Enum.KeyCode.Five]  = 5, [Enum.KeyCode.Six]   = 6
+	}
+	local slotIndex = keyMap[input.KeyCode]
+	if slotIndex then
+		UIAudioConfig.PlayClick()
+		activateSlot(slotIndex)
+		snapToSlot(slotIndex)
+		return
+	end
+
+	if input.UserInputType == Enum.UserInputType.Gamepad1 then
+		if input.KeyCode == Enum.KeyCode.DPadRight then
+			local next = (selectedSlot or 0) + 1
+			if next > SLOT_COUNT then next = 1 end
+			selectedSlot = next
+			updateSlotSelection()
+			UIAudioConfig.PlayHover()
+		elseif input.KeyCode == Enum.KeyCode.DPadLeft then
+			local prev = (selectedSlot or (SLOT_COUNT + 1)) - 1
+			if prev < 1 then prev = SLOT_COUNT end
+			selectedSlot = prev
+			updateSlotSelection()
+			UIAudioConfig.PlayHover()
+		elseif input.KeyCode == Enum.KeyCode.ButtonA then
+			if selectedSlot then
+				UIAudioConfig.PlayClick()
+				activateSlot(selectedSlot)
+				snapToSlot(selectedSlot)
+			end
+		elseif input.KeyCode == Enum.KeyCode.ButtonX then
+			if selectedSlot then clearSlot(selectedSlot) end
+		end
+	end
+end)
+
+-- =========================================================
+-- 🏗️ INIT HOTBAR SLOTS
+-- FIX #15: unified InputBegan handles drag threshold, long-press,
+-- and right-click in a single block with a shared isDragging flag
+-- to prevent conflicts between drag and long-press clear.
+-- =========================================================
+if slotsFolder then
+	for i = 1, SLOT_COUNT do
+		local slot = slotsFolder:FindFirstChild("Slot" .. i)
+		if slot and slot:IsA("ImageButton") then
+			hotbarSlots[i] = slot
+
+			addButtonEffects(slot, function() return Color3.fromRGB(80, 80, 80) end)
+
+			-- FIX #28: CarInfo tooltip — only visible on hover AND only when the
+			-- slot actually has a car. Direct MouseEnter/Leave connections (same
+			-- events UIButtonUtils.wireHoverEffects uses internally) guarantee the
+			-- guard runs BEFORE Visible is ever set to true, so empty slots never
+			-- flash the tooltip for even a single frame.
+			local carInfoImg = slot:FindFirstChild("CarInfo")
+			if carInfoImg then
+				carInfoImg.Visible = false
+				local slotIndex = i
+				slot.MouseEnter:Connect(function()
+					if hotbarData[slotIndex] then
+						carInfoImg.Visible = true
+					end
+					-- slot is empty → carInfoImg stays false, nothing to do
+				end)
+				slot.MouseLeave:Connect(function()
+					carInfoImg.Visible = false
+				end)
+			end
+
+			-- Track drag state per slot to avoid long-press firing during a drag
+			local isDragging = false
+			local holdThread = nil
+
+			-- Click: toggle equip (only fires if NOT a drag)
+			slot.MouseButton1Click:Connect(function()
+				if isDragging then return end
+				UIAudioConfig.PlayClick()
+				activateSlot(i)
+				if selectedSlot == i then snapToSlot(i) end
+			end)
+
+			-- Right-click: clear slot (PC)
+			slot.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton2 then
+					clearSlot(i)
+				end
+			end)
+
+			-- FIX #15: unified drag + long-press handler
+			slot.InputBegan:Connect(function(input)
+				local isMouse = input.UserInputType == Enum.UserInputType.MouseButton1
+				local isTouch = input.UserInputType == Enum.UserInputType.Touch
+				if not (isMouse or isTouch) then return end
+
+				local startPos = input.Position
+				isDragging     = false
+
+				-- FIX #24: Long-press clear (touch only — 0.65s hold without movement)
+				if isTouch then
+					holdThread = task.delay(0.65, function()
+						if not isDragging then
+							holdThread = nil
+							clearSlot(i)
+						end
+					end)
+				end
+
+				local moveCon, upCon
+
+				moveCon = UserInputService.InputChanged:Connect(function(moveInput)
+					if moveInput.UserInputType ~= Enum.UserInputType.MouseMovement
+						and moveInput.UserInputType ~= Enum.UserInputType.Touch then return end
+
+					if (moveInput.Position - startPos).Magnitude > DRAG_THRESHOLD_PX then
+						if moveCon    then moveCon:Disconnect();        moveCon    = nil end
+						if upCon      then upCon:Disconnect();          upCon      = nil end
+						if holdThread then task.cancel(holdThread);     holdThread = nil end
+
+						-- Only begin hotbar drag while inventory is open.
+						-- Guard BEFORE clearing hotbarData so data is never lost
+						-- when the inventory is closed.
+						if not isOpen then return end
+
+						isDragging = true
+						local carName = hotbarData[i]
+						if carName and CarStats and CarStats.Cars and CarStats.Cars[carName] then
+							local stats = CarStats.Cars[carName]
+							-- FIX #12: clear hotbarData BEFORE startDrag so endDrag(false)
+							-- can restore via draggingCar.
+							hotbarData[i] = nil
+							startDrag(
+								carName,
+								stats.Image or CONFIG.Images.Default,
+								moveInput.Position,
+								1,
+								"hotbar",   -- sourceType
+								i,          -- sourceSlot
+								nil         -- no button ref for hotbar source
+							)
+						end
+					end
+				end)
+
+				upCon = UserInputService.InputEnded:Connect(function(endInput)
+					if endInput.UserInputType ~= Enum.UserInputType.MouseButton1
+						and endInput.UserInputType ~= Enum.UserInputType.Touch then return end
+
+					isDragging = false
+					if moveCon    then moveCon:Disconnect();    moveCon    = nil end
+					if upCon      then upCon:Disconnect();      upCon      = nil end
+					if holdThread then task.cancel(holdThread); holdThread = nil end
+				end)
+			end)
+		end
+	end
+	updateHotbarUI()
+end
+
+-- 💾 LOAD HOTBAR PERSISTENCE
+task.spawn(function()
+	local maxWait = 15
+	local waited  = 0
+	while waited < maxWait do
+		if player:GetAttribute("HotbarSlot1") ~= nil then break end
+		task.wait(0.5)
+		waited += 0.5
+	end
+	loadHotbarFromAttributes()
+	updateHotbarUI()
 end)
 
 addOpenButtonHover(openButton)
@@ -843,9 +1923,7 @@ if unequipButton then
 		local char = player.Character
 		if char then
 			local hum = char:FindFirstChildOfClass("Humanoid")
-			if hum then
-				hum:UnequipTools()
-			end
+			if hum then hum:UnequipTools() end
 		end
 	end)
 end
@@ -856,17 +1934,17 @@ if tierContainer then
 		if btn:IsA("GuiButton") then
 			if layout then
 				btn.AnchorPoint = Vector2.new(0.5, 0.5)
-				btn.Position = UDim2.new(0.5, 0, 0.5, 0)
+				btn.Position    = UDim2.new(0.5, 0, 0.5, 0)
 
 				if not btn.Parent:IsA("Frame") or not btn.Parent.Name:match("_Wrapper$") then
-					local wrapper = Instance.new("Frame")
-					wrapper.Name = btn.Name .. "_Wrapper"
+					local wrapper                  = Instance.new("Frame")
+					wrapper.Name                   = btn.Name .. "_Wrapper"
 					wrapper.BackgroundTransparency = 1
-					wrapper.Size = btn.Size
-					wrapper.LayoutOrder = btn.LayoutOrder
-					wrapper.Parent = tierContainer
-					btn.Parent = wrapper
-					btn.Size = UDim2.new(1, 0, 1, 0)
+					wrapper.Size                   = btn.Size
+					wrapper.LayoutOrder            = btn.LayoutOrder
+					wrapper.Parent                 = tierContainer
+					btn.Parent                     = wrapper
+					btn.Size                       = UDim2.new(1, 0, 1, 0)
 				end
 			end
 
@@ -880,4 +1958,3 @@ if tierContainer then
 		end
 	end
 end
-

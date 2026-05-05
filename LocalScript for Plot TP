@@ -1,101 +1,102 @@
--- this too -- this scripts makes the player return to their plots 
---StarterGui
+-- Handles Plot return teleport button interaction.
+-- Hover/click uses UIScale (always scales from center, no AnchorPoint adjustment needed).
 
-local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local TweenService = game:GetService("TweenService")
-local SoundService = game:GetService("SoundService")
+local Players          = game:GetService("Players")
+local Workspace        = game:GetService("Workspace")
+local TweenService     = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIAudioConfig    = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
 local button = script.Parent
 
--- ⚙️ CONFIGURATION
+-- ⚙️ CONFIG
 local TYCOON_FOLDER_NAME = "Tycoons"
-local SPAWN_PART_NAME = "SpawnPoint"
-local OWNER_VALUE_NAME = "Owner" -- The name of the StringValue
-local SOUND_ID = "rbxassetid://9083627113"
-
--- 🎨 DIM HOVER SETTINGS (Minimal Aesthetic)
-local NORMAL_COLOR = Color3.fromRGB(255, 255, 255) -- Bright/Normal
-local DIM_COLOR = Color3.fromRGB(170, 170, 170)    -- Slightly Darker on Hover
-local TWEEN_INFO = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local SPAWN_PART_NAME    = "SpawnPoint"
+local OWNER_VALUE_NAME   = "Owner"
 
 -- ============================================================================
--- 🖌️ DIM ANIMATION LOGIC
+-- 🎨 HOVER ANIMATION (UIScale — always scales from center)
 -- ============================================================================
+local uiScale = button:FindFirstChildOfClass("UIScale")
+if not uiScale then
+	uiScale       = Instance.new("UIScale")
+	uiScale.Scale = 1.0
+	uiScale.Parent = button
+end
 
--- Hover Enter -> Dim
+local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+local isHovering = false
+local isPressed  = false
+
+local function updateScale()
+	local target = 1.0
+	if isPressed      then target = 0.95
+	elseif isHovering then target = 1.05
+	end
+	TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+end
+
 button.MouseEnter:Connect(function()
-	TweenService:Create(button, TWEEN_INFO, {ImageColor3 = DIM_COLOR}):Play()
+	isHovering = true
+	UIAudioConfig.PlayHover()
+	updateScale()
 end)
 
--- Hover Leave -> Bright (Reset)
 button.MouseLeave:Connect(function()
-	TweenService:Create(button, TWEEN_INFO, {ImageColor3 = NORMAL_COLOR}):Play()
+	isHovering = false
+	isPressed  = false
+	updateScale()
 end)
 
--- Click -> Keep Dim (Visual feedback)
-button.MouseButton1Down:Connect(function()
-	button.ImageColor3 = DIM_COLOR
+button.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+		isPressed = true
+		updateScale()
+	end
+end)
+
+button.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+		isPressed = false
+		updateScale()
+	end
 end)
 
 -- ============================================================================
--- 🏠 TELEPORT LOGIC (UNCHANGED)
+-- 🏠 TELEPORT LOGIC
 -- ============================================================================
 button.MouseButton1Click:Connect(function()
-	print("🖱️ CLICKED! Searching for plot owned by: " .. player.Name)
+	UIAudioConfig.PlayClick()
 
-	-- Play Sound
-	local sound = Instance.new("Sound")
-	sound.SoundId = SOUND_ID
-	sound.Volume = 0.5
-	sound.Parent = SoundService
-	sound:Play()
-	game.Debris:AddItem(sound, 2)
-
-	-- 1. Find Tycoon Folder
 	local tycoonFolder = Workspace:FindFirstChild(TYCOON_FOLDER_NAME)
 	if not tycoonFolder then
-		warn("❌ CRITICAL: Could not find folder named '"..TYCOON_FOLDER_NAME.."' in Workspace!")
+		warn("❌ CRITICAL: Could not find folder named '" .. TYCOON_FOLDER_NAME .. "' in Workspace!")
 		return
 	end
 
-	-- 2. Search Loops
 	local foundPlot = nil
-
 	for _, plot in pairs(tycoonFolder:GetChildren()) do
 		local ownerObj = plot:FindFirstChild(OWNER_VALUE_NAME)
-
-		-- DEBUG: Print what we find in every plot
-		if ownerObj then
-			print("   🔎 Checked " .. plot.Name .. " | Owner Value: '" .. tostring(ownerObj.Value) .. "'")
-
-			if tostring(ownerObj.Value) == player.Name then
-				foundPlot = plot
-				print("   ✅ MATCH FOUND! This is your plot.")
-				break
-			end
-		else
-			warn("   ⚠️ Checked " .. plot.Name .. " but it has NO '"..OWNER_VALUE_NAME.."' value inside!")
+		if ownerObj and tostring(ownerObj.Value) == player.Name then
+			foundPlot = plot
+			break
 		end
 	end
 
-	-- 3. Teleport
 	if foundPlot then
 		local spawnPart = foundPlot:FindFirstChild(SPAWN_PART_NAME)
-
 		if spawnPart then
 			local char = player.Character
 			if char then
-				-- Teleport slightly up to avoid stuck feet
 				char:PivotTo(spawnPart.CFrame + Vector3.new(0, 5, 0))
-				print("🚀 Teleporting to " .. foundPlot.Name)
 			end
 		else
-			warn("❌ Found your plot ("..foundPlot.Name..") but missing part named '"..SPAWN_PART_NAME.."'!")
-			warn("   👉 Check spelling! Is it 'SpawnPoint' or 'spawnPoint'?")
+			warn("❌ Found your plot (" .. foundPlot.Name .. ") but missing part named '" .. SPAWN_PART_NAME .. "'!")
 		end
 	else
-		warn("❌ SEARCH FAILED: I checked all plots, but none had Owner = " .. player.Name)
+		warn("❌ SEARCH FAILED: No plot found with Owner = " .. player.Name)
 	end
 end)

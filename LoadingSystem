@@ -148,43 +148,12 @@ end
 
 local movementLock = { active = false, conn = nil, original = {} }
 
-local function applyMovementLock(char)
-	if not movementLock.active or not char then return end
-	local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
-	if not hum then return end
-	if not movementLock.original[hum] then
-		movementLock.original[hum] = {
-			WalkSpeed  = hum.WalkSpeed,
-			JumpPower  = hum.JumpPower,
-			JumpHeight = hum.JumpHeight,
-			AutoRotate = hum.AutoRotate,
-		}
-	end
-	hum.WalkSpeed  = 0
-	hum.JumpPower  = 0
-	hum.JumpHeight = 0
-	hum.AutoRotate = false
-	pcall(function() hum:Move(Vector3.zero, true) end)
-end
-
 local function enableMovementLock()
-	movementLock.active = true
-	if player.Character then applyMovementLock(player.Character) end
-	movementLock.conn = player.CharacterAdded:Connect(applyMovementLock)
+	player:SetAttribute("MovementLock", true)
 end
 
 local function disableMovementLock()
-	movementLock.active = false
-	if movementLock.conn then movementLock.conn:Disconnect() movementLock.conn = nil end
-	for hum, original in pairs(movementLock.original) do
-		if hum and hum.Parent then
-			hum.WalkSpeed  = original.WalkSpeed  or 16
-			hum.JumpPower  = original.JumpPower  or 50
-			hum.JumpHeight = original.JumpHeight or 7.2
-			hum.AutoRotate = (original.AutoRotate ~= nil) and original.AutoRotate or true
-		end
-	end
-	table.clear(movementLock.original)
+	player:SetAttribute("MovementLock", false)
 end
 
 -- ============================================================

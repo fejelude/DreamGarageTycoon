@@ -1,0 +1,214 @@
+-- ============================================================================
+-- UIAudioConfig (ModuleScript)
+-- Location: ReplicatedStorage
+-- Purpose:  Centralized UI sound system. Single source of truth for all
+--           hover/click/robux audio across the entire game UI.
+--           To change volume, edit the volume constants below.
+-- ============================================================================
+
+local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
+local Players      = game:GetService("Players")
+
+local UIAudioConfig = {}
+
+-- ⚙️ EASY VOLUME CONFIGURATION — edit these values to adjust UI sounds
+UIAudioConfig.HOVER_VOLUME  = 0.45
+UIAudioConfig.CLICK_VOLUME  = 0.55
+UIAudioConfig.ROBUX_VOLUME  = 0.75
+
+-- Sound asset IDs
+local HOVER_SFX_ID = "rbxassetid://73899820361873"
+local CLICK_SFX_ID = "rbxassetid://126294184545314"
+local ROBUX_SFX_ID = "rbxassetid://117986449113759"   -- 💎 Robux purchase initiation sound
+
+-- Internal: create or reuse a persistent Sound in SoundService
+local function getOrCreateSound(name, id, volume)
+	local sound = SoundService:FindFirstChild(name)
+	if not sound then
+		sound = Instance.new("Sound")
+		sound.Name   = name
+		sound.SoundId = id
+		sound.Volume  = volume
+		sound.Parent  = SoundService
+	else
+		sound.Volume = volume  -- keep in sync if config changes
+	end
+	return sound
+end
+
+-- Create the three global sounds once at require-time
+local hoverSound = getOrCreateSound("GlobalUIHover", HOVER_SFX_ID, UIAudioConfig.HOVER_VOLUME)
+local clickSound = getOrCreateSound("GlobalUIClick", CLICK_SFX_ID, UIAudioConfig.CLICK_VOLUME)
+local robuxSound = getOrCreateSound("GlobalUIRobux", ROBUX_SFX_ID, UIAudioConfig.ROBUX_VOLUME)
+
+-- Hover cooldown: prevents the shared sound from restarting faster than it
+-- can be heard during rapid mouse movement across elements (80 ms feels
+-- natural — responsive per-element feedback without choppy self-interruption).
+local HOVER_COOLDOWN = 0.08
+local lastHoverClock = 0
+
+-- Play hover — fires at most once per HOVER_COOLDOWN across ALL elements.
+function UIAudioConfig.PlayHover()
+	local now = os.clock()
+	if now - lastHoverClock < HOVER_COOLDOWN then return end
+	lastHoverClock = now
+	hoverSound.Volume = UIAudioConfig.HOVER_VOLUME
+	hoverSound:Play()
+end
+
+-- Play click — single-trigger; no cooldown needed (click = deliberate action).
+function UIAudioConfig.PlayClick()
+	clickSound.Volume = UIAudioConfig.CLICK_VOLUME
+	clickSound:Play()
+end
+
+-- Play Robux — distinct sound for any MarketplaceService purchase initiation.
+function UIAudioConfig.PlayRobux()
+	robuxSound.Volume = UIAudioConfig.ROBUX_VOLUME
+	robuxSound:Play()
+end
+
+-- ============================================================================
+-- 💎 ROBUX PURCHASE LOADING UI
+-- Location: StarterGui > PurchasingState (ScreenGui)
+--           └── Loading (Frame) — centered overlay
+--                └── LoadingIcon (ImageLabel) — spins while active
+--
+-- CRITICAL DESIGN NOTES:
+--   • ShowPurchaseLoading() force-enables PurchasingState and sets DisplayOrder
+--     to 9999 so it ALWAYS renders on top, even when shops run toggleOtherGuis()
+--     which would otherwise hide it.
+--   • HidePurchaseLoading() re-disables the ScreenGui to return to neutral state.
+--   • This makes the loader truly universal — no shop needs to whitelist it.
+-- ============================================================================
+
+local _loadingScreen  = nil  -- cached PurchasingState ScreenGui
+local _loadingFrame   = nil  -- cached Loading Frame
+local _origFrameTrans = 0    -- captured from editor design
+local _origIconTrans  = 0    -- captured from editor design
+
+local function resolveLoadingUI()
+	-- Return cached refs if still valid
+	if _loadingScreen and _loadingScreen.Parent
+	and _loadingFrame  and _loadingFrame.Parent then
+		return _loadingScreen, _loadingFrame
+	end
+
+	local player    = Players.LocalPlayer
+	local playerGui = player and player:FindFirstChild("PlayerGui")
+	if not playerGui then return nil, nil end
+
+	_loadingScreen = playerGui:FindFirstChild("PurchasingState")
+	if not _loadingScreen then
+		warn("[UIAudioConfig] 'PurchasingState' ScreenGui not found in PlayerGui.")
+		return nil, nil
+	end
+
+	_loadingFrame = _loadingScreen:FindFirstChild("Loading")
+	if not _loadingFrame then
+		warn("[UIAudioConfig] 'Loading' Frame not found inside PurchasingState.")
+		return _loadingScreen, nil
+	end
+
+	-- ✅ One-time setup: ensure the ScreenGui renders above all other UIs
+	_loadingScreen.DisplayOrder       = 9999
+	_loadingScreen.ZIndexBehavior     = Enum.ZIndexBehavior.Global
+	_loadingScreen.IgnoreGuiInset     = true
+	_loadingScreen.ResetOnSpawn       = false
+
+	_loadingFrame.AnchorPoint         = Vector2.new(0.5, 0.5)
+	_loadingFrame.Position            = UDim2.new(0.5, 0, 0.5, 0)
+	_loadingFrame.Visible             = false
+	
+	_origFrameTrans = _loadingFrame.BackgroundTransparency
+
+	-- ✅ One-time setup: center the LoadingIcon inside the frame
+	local icon = _loadingFrame:FindFirstChild("LoadingIcon")
+	if icon then
+		icon.AnchorPoint = Vector2.new(0.5, 0.5)
+		icon.Position    = UDim2.new(0.5, 0, 0.5, 0)
+		_origIconTrans = icon.ImageTransparency
+	end
+
+	return _loadingScreen, _loadingFrame
+end
+
+-- Show the loading overlay immediately when a Robux purchase is initiated.
+-- Safe to call from any script — always renders above shop UIs.
+function UIAudioConfig.ShowPurchaseLoading()
+	local screen, frame = resolveLoadingUI()
+	if not frame then return end
+
+	-- Force the ScreenGui ON at the highest layer
+	screen.Enabled  = true
+	frame.Visible   = true
+	
+	-- Reset to the original editor-defined design
+	frame.BackgroundTransparency = _origFrameTrans
+	local icon = frame:FindFirstChild("LoadingIcon")
+	if icon then
+		icon.ImageTransparency = _origIconTrans
+		icon.Rotation = 0
+		
+		-- Cancel any previous spin before starting a new one
+		if not _G.__RobuxSpinTweens then _G.__RobuxSpinTweens = {} end
+		if _G.__RobuxSpinTweens[icon] then
+			_G.__RobuxSpinTweens[icon]:Cancel()
+		end
+		
+		local spinTween = TweenService:Create(
+			icon,
+			TweenInfo.new(1.0, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1),
+			{ Rotation = 360 }
+		)
+		spinTween:Play()
+		_G.__RobuxSpinTweens[icon] = spinTween
+	end
+end
+
+-- Hide the loading overlay when a purchase finishes (success, cancel, or fail).
+function UIAudioConfig.HidePurchaseLoading()
+	local screen, frame = resolveLoadingUI()
+	if not frame then return end
+
+	-- Use a generation counter to ensure late-running fades don't hide a NEW loading session
+	if not _G.__LoadingUIGeneration then _G.__LoadingUIGeneration = 0 end
+	_G.__LoadingUIGeneration += 1
+	local currentGen = _G.__LoadingUIGeneration
+
+	task.delay(0.5, function()
+		if currentGen ~= _G.__LoadingUIGeneration then return end
+
+		local icon = frame:FindFirstChild("LoadingIcon")
+		local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+		
+		local frameTween = TweenService:Create(frame, fadeInfo, {BackgroundTransparency = 1})
+		frameTween:Play()
+		
+		if icon then
+			local iconTween = TweenService:Create(icon, fadeInfo, {ImageTransparency = 1})
+			iconTween:Play()
+		end
+		
+		frameTween.Completed:Connect(function()
+			if currentGen ~= _G.__LoadingUIGeneration then return end
+			frame.Visible = false
+			screen.Enabled = false
+			
+			-- Restore original editor values so it's ready for the next Show call
+			frame.BackgroundTransparency = _origFrameTrans
+			if icon then
+				icon.ImageTransparency = _origIconTrans
+				
+				if _G.__RobuxSpinTweens and _G.__RobuxSpinTweens[icon] then
+					_G.__RobuxSpinTweens[icon]:Cancel()
+					_G.__RobuxSpinTweens[icon] = nil
+				end
+				icon.Rotation = 0
+			end
+		end)
+	end)
+end
+
+return UIAudioConfig
