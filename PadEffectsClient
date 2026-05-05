@@ -28,13 +28,15 @@ local FOV_TIME_OUT = 0.5
 local NOTIFICATION_DURATION = 3.5 
 
 -- 🎉 CONFETTI CONFIG
-local CONFETTI_COUNT = 99      
-local EXPLOSION_RADIUS = 999    
-local ANIMATION_DURATION = 4.5  
+local CONFETTI_COUNT = 70      -- 🚀 Optimized from 99
+local EXPLOSION_RADIUS = 550    -- 🎯 More concentrated explosion
+local ANIMATION_DURATION = 3.0  
 
 -- 🎨 COLORS
-local COLOR_SUCCESS = Color3.fromRGB(85, 255, 127) 
-local COLOR_FAIL    = Color3.fromRGB(255, 85, 85)  
+local COLOR_SUCCESS_TEXT   = Color3.fromRGB(0, 255, 0)     -- Lime Green
+local COLOR_SUCCESS_STROKE = Color3.fromRGB(0, 150, 0)     -- Darker Lime
+local COLOR_FAIL_TEXT      = Color3.fromRGB(255, 120, 120) -- Lighter Red
+local COLOR_FAIL_STROKE    = Color3.fromRGB(150, 0, 0)     -- Darker Red
 
 -- ============================================================================
 -- 1. GET YOUR EXISTING GUI
@@ -68,8 +70,6 @@ local function explodeConfetti()
 		return
 	end
 
-	-- Fix 11: 99 Simultaneous task.spawn Calls for Confetti
-	-- Create particles inline within a single threaded loop and batch yield to preserve framerates.
 	task.spawn(function()
 		for i = 1, CONFETTI_COUNT do
 			local randomTemplate = templates[math.random(1, #templates)]
@@ -85,37 +85,46 @@ local function explodeConfetti()
 				clone.Position = randomTemplate.Position
 				clone.Size = UDim2.new(0, 0, 0, 0) 
 				clone.Rotation = math.random(0, 360)
+				clone.ImageTransparency = 0 -- 🛡️ Ensure visibility
 
 				local angle = math.rad(math.random(0, 360))
-				local distance = math.random(50, EXPLOSION_RADIUS)
+				local distance = math.random(80, EXPLOSION_RADIUS)
 
 				local endX = (math.cos(angle) * distance)
 				local endY = (math.sin(angle) * distance)
 
-				local targetPos = randomTemplate.Position + UDim2.new(0, endX, 0, endY + math.random(50, 150))
+				local targetPos = randomTemplate.Position + UDim2.new(0, endX, 0, endY + math.random(100, 250))
 
 				local tweenInfo = TweenInfo.new(
 					math.random(ANIMATION_DURATION * 8, ANIMATION_DURATION * 12) / 10,
-					Enum.EasingStyle.Quad, 
+					Enum.EasingStyle.Quart, 
 					Enum.EasingDirection.Out
 				)
 
-				local goal = {
+				-- 🎬 Main Movement & Growth
+				local moveTween = TweenService:Create(clone, tweenInfo, {
 					Position = targetPos,
 					Size = randomTemplate.Size,
-					Rotation = clone.Rotation + math.random(-180, 180),
-					ImageTransparency = 1 
-				}
+					Rotation = clone.Rotation + math.random(-180, 180)
+				})
+				moveTween:Play()
 
-				local tween = TweenService:Create(clone, tweenInfo, goal)
-				tween:Play()
-
-				tween.Completed:Connect(function()
-					clone:Destroy()
+				-- 👻 Delayed Fade (Makes them feel more present)
+				task.delay(ANIMATION_DURATION * 0.5, function()
+					if clone and clone.Parent then
+						local fadeTween = TweenService:Create(clone, TweenInfo.new(ANIMATION_DURATION * 0.5), {
+							ImageTransparency = 1
+						})
+						fadeTween:Play()
+						fadeTween.Completed:Connect(function()
+							clone:Destroy()
+						end)
+					end
 				end)
 			end
 
-			if i % 10 == 0 then task.wait() end
+			-- 🚀 Performance: Batch yields to prevent frame spikes during spam
+			if i % 25 == 0 then task.wait() end
 		end
 	end)
 end
@@ -142,7 +151,8 @@ local function playNotification(isSuccess, data)
 	-- 📝 2. BASE TEXT FORMATTING
 	local baseText = ""
 	if isSuccess then
-		padLabel.TextColor3 = COLOR_SUCCESS
+		padLabel.TextColor3 = COLOR_SUCCESS_TEXT
+		if uiStroke then uiStroke.Color = COLOR_SUCCESS_STROKE end
 		local isNumber = tonumber(data)
 
 		if isNumber then
@@ -153,7 +163,8 @@ local function playNotification(isSuccess, data)
 			baseText = "You finally own " .. cleanName .. " pads!"
 		end
 	else
-		padLabel.TextColor3 = COLOR_FAIL
+		padLabel.TextColor3 = COLOR_FAIL_TEXT
+		if uiStroke then uiStroke.Color = COLOR_FAIL_STROKE end
 
 		local isNumber = tonumber(data)
 		if isNumber then

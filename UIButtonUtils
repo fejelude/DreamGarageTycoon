@@ -1,90 +1,153 @@
--- Purpose: Shared utilities for standard UI buttons (hover animations, sounds, debouncing).
--- Runs on: Client
--- Location: ReplicatedStorage > UIButtonUtils
--- Dependencies: TweenService
--- Public API: SetupStandardButton
--- Networking: None
--- Security: Client side visuals only.
+-- ============================================================================
+-- UIButtonUtils (ModuleScript)
+-- Location: ReplicatedStorage
+-- Purpose:  Canonical helper for all standard interactive UI buttons.
+--           Provides center-based UIScale hover/click animations and
+--           unified sound via UIAudioConfig.
+--
+-- Usage:
+--   local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+--   UIButtonUtils.SetupButton(button, onClickCallback)
+--   UIButtonUtils.SetupStandardButton(button, infoFrame, onClickCallback)
+-- ============================================================================
 
-local TweenService = game:GetService("TweenService")
+local TweenService      = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIAudioConfig     = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+
 local UIButtonUtils = {}
 
-local HOVER_SOUND_ID = "rbxassetid://6895079853"
-local CLICK_SOUND_ID = "rbxassetid://9083627113"
+-- ⚙️ Shared animation config
+local HOVER_SCALE  = 1.05
+local CLICK_SCALE  = 0.95
+local TWEEN_INFO   = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 
-local activeInfoFrame = nil -- ✅ Tracks which info frame is currently shown
+-- Internal tracker for exclusive info-frame display
+local activeInfoFrame = nil
 
-local function getOrCreateSound(button, name, soundId)
-	local sound = button:FindFirstChild(name)
-	if not sound then
-		sound = Instance.new("Sound")
-		sound.Name = name
-		sound.SoundId = soundId
-		sound.Parent = button
+-- ============================================================================
+-- Internal: ensure button has a UIScale (scales from center — no AnchorPoint
+-- manipulation required, UIScale always scales around the element's center).
+-- ============================================================================
+local function getOrCreateUIScale(button)
+	local uiScale = button:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale          = Instance.new("UIScale")
+		uiScale.Scale    = 1.0
+		uiScale.Parent   = button
 	end
-	return sound
+	return uiScale
 end
 
-function UIButtonUtils.SetupStandardButton(button, informationFrame, onClickCallback)
-	local hoverSound = getOrCreateSound(button, "HoverSound", HOVER_SOUND_ID)
-	local clickSound = getOrCreateSound(button, "ClickSound", CLICK_SOUND_ID)
+-- ============================================================================
+-- Internal: wire hover + press + audio onto a button using UIScale.
+-- Returns the UIScale so callers can reset it if needed.
+-- ============================================================================
+local function wireHoverEffects(button, uiScale, onHoverEnter, onHoverLeave)
+	local isHovering = false
+	local isPressed  = false
 
-	if informationFrame then
-		informationFrame.Visible = false
+	local function updateScale()
+		local target = 1.0
+		if isPressed     then target = CLICK_SCALE
+		elseif isHovering then target = HOVER_SCALE
+		end
+		TweenService:Create(uiScale, TWEEN_INFO, {Scale = target}):Play()
 	end
 
-	local hoverColor = Color3.new(0.7, 0.7, 0.7)
-	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	local hoverEnterTween = TweenService:Create(button, tweenInfo, {ImageColor3 = hoverColor})
-
-	local originalColor = Color3.new(1, 1, 1)
-	task.defer(function()
-		originalColor = button.ImageColor3
-	end)
-
 	button.MouseEnter:Connect(function()
-		if not hoverSound.IsPlaying then
-			hoverSound:Play()
-		end
-
-		-- ✅ Hide the previously active info frame before showing this one
-		if activeInfoFrame and activeInfoFrame ~= informationFrame then
-			activeInfoFrame.Visible = false
-		end
-
-		if informationFrame then
-			informationFrame.Visible = true
-			activeInfoFrame = informationFrame
-		end
-
-		hoverEnterTween:Play()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		if onHoverEnter then onHoverEnter() end
+		updateScale()
 	end)
 
 	button.MouseLeave:Connect(function()
-		if informationFrame then
-			informationFrame.Visible = false
-			-- ✅ Clear the tracker if this was the active one
-			if activeInfoFrame == informationFrame then
-				activeInfoFrame = nil
-			end
-		end
-
-		local hoverLeaveTween = TweenService:Create(button, tweenInfo, {ImageColor3 = originalColor})
-		hoverLeaveTween:Play()
+		isHovering = false
+		isPressed  = false
+		if onHoverLeave then onHoverLeave() end
+		updateScale()
 	end)
+
+	button.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
+	end)
+
+	button.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
+	end)
+
+	return uiScale
+end
+
+-- ============================================================================
+-- PUBLIC: SetupButton — lightweight version, no info frame
+-- ============================================================================
+function UIButtonUtils.SetupButton(button, onClickCallback)
+	if not button or not button:IsA("GuiButton") then return end
+
+	local uiScale = getOrCreateUIScale(button)
+	wireHoverEffects(button, uiScale)
 
 	local isDebouncing = false
 	button.Activated:Connect(function()
 		if isDebouncing then return end
 		isDebouncing = true
+		UIAudioConfig.PlayClick()
+		if onClickCallback then onClickCallback() end
+		task.wait(0.3)
+		isDebouncing = false
+	end)
+end
 
-		clickSound:Play()
+-- ============================================================================
+-- PUBLIC: SetupStandardButton — with optional info/tooltip frame management
+-- ============================================================================
+function UIButtonUtils.SetupStandardButton(button, informationFrame, onClickCallback)
+	if not button or not button:IsA("GuiButton") then return end
 
-		if onClickCallback then
-			onClickCallback()
+	if informationFrame then
+		informationFrame.Visible = false
+	end
+
+	local uiScale = getOrCreateUIScale(button)
+
+	local function onEnter()
+		if activeInfoFrame and activeInfoFrame ~= informationFrame then
+			activeInfoFrame.Visible = false
 		end
+		if informationFrame then
+			informationFrame.Visible = true
+			activeInfoFrame = informationFrame
+		end
+	end
 
-		task.wait(1)
+	local function onLeave()
+		if informationFrame then
+			informationFrame.Visible = false
+			if activeInfoFrame == informationFrame then
+				activeInfoFrame = nil
+			end
+		end
+	end
+
+	wireHoverEffects(button, uiScale, onEnter, onLeave)
+
+	local isDebouncing = false
+	button.Activated:Connect(function()
+		if isDebouncing then return end
+		isDebouncing = true
+		UIAudioConfig.PlayClick()
+		if onClickCallback then onClickCallback() end
+		task.wait(0.5)
 		isDebouncing = false
 	end)
 end

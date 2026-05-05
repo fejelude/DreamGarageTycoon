@@ -12,6 +12,7 @@ local Workspace = game:GetService("Workspace")
 local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local CarSellPrices = require(ReplicatedStorage:WaitForChild("CarSellPrices"))
 
@@ -51,8 +52,6 @@ local TYPEWRITER_SPEED = 0.02
 local LEAVE_DELAY = 3.5
 
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
-local HOVER_SOUND_ID = "rbxassetid://6895079853"
-local CLICK_SOUND_ID = "rbxassetid://9083627113"
 
 local HOVER_SCALE = 1.1
 local CLICK_SCALE = 0.9
@@ -92,12 +91,11 @@ end)
 -- 🎬 INTERACTION FUNCTIONS
 -- ============================================================================
 local function playSound(id, vol)
-	local s = Instance.new("Sound")
-	s.SoundId = id
-	s.Volume = vol or 0.5
-	s.Parent = SoundService
-	s:Play()
-	game.Debris:AddItem(s, 1)
+	if id == TYPING_SOUND_ID then
+		local s = Instance.new("Sound")
+		s.SoundId = id; s.Volume = vol or 0.1; s.Parent = SoundService; s:Play()
+		game.Debris:AddItem(s, 1)
+	end
 end
 
 local function setButtonsState(isActive)
@@ -126,6 +124,15 @@ local function clearConnections()
 		if conn then conn:Disconnect() end
 	end
 	buttonHoverConnections = {}
+
+	-- Reset HoverBound attribute so effects re-bind on next interaction
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if myGui then
+		for _, btnID in ipairs(ALL_BUTTON_IDS) do
+			local btn = myGui:FindFirstChild(btnID, true)
+			if btn then btn:SetAttribute("HoverBound", nil) end
+		end
+	end
 end
 
 local function toggleNamedGuiObjects(shouldHide, objectName)
@@ -235,10 +242,7 @@ local function stopInteraction()
 	if controls then controls:Enable() end
 
 	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-		local humanoid = player.Character:FindFirstChild("Humanoid")
-		if hrp then hrp.Anchored = false end
-		if humanoid then humanoid.WalkSpeed = 16 end
+		player:SetAttribute("MovementLock", false)
 	end
 
 	local myGui = playerGui:FindFirstChild(GUI_ID)
@@ -254,60 +258,51 @@ local function stopInteraction()
 end
 
 local function animateButton(btn)
-	-- Always read the freshest original size in case it changed
-	local origX = btn.Size.X.Scale
-	local origXO = btn.Size.X.Offset
-	local origY = btn.Size.Y.Scale
-	local origYO = btn.Size.Y.Offset
+	if btn:GetAttribute("HoverBound") then return end
+	btn:SetAttribute("HoverBound", true)
 
-	local origTransparency
-	if btn:IsA("ImageButton") or btn:IsA("ImageLabel") then
-		origTransparency = btn.ImageTransparency
-	else
-		origTransparency = btn.BackgroundTransparency
+	local uiScale = btn:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = btn
 	end
 
-	local normalSize = UDim2.new(origX, origXO, origY, origYO)
-	local hoverSize = UDim2.new(origX * HOVER_SCALE, origXO * HOVER_SCALE, origY * HOVER_SCALE, origYO * HOVER_SCALE)
-	local clickSize = UDim2.new(origX * CLICK_SCALE, origXO * CLICK_SCALE, origY * CLICK_SCALE, origYO * CLICK_SCALE)
-
-	local function setTransparency(t)
-		local goal = {}
-		if btn:IsA("ImageButton") or btn:IsA("ImageLabel") then
-			goal.ImageTransparency = t
-		else
-			goal.BackgroundTransparency = t
+	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local isHovering = false
+	local isPressed  = false
+	local function updateScale()
+		local target = 1.0
+		if isPressed      then target = 0.95
+		elseif isHovering then target = 1.05
 		end
-		TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), goal):Play()
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
 	end
 
-	if not UserInputService.TouchEnabled then
-		local connEnter = btn.MouseEnter:Connect(function()
-			playSound(HOVER_SOUND_ID, 0.5)
-			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = hoverSize}):Play()
-			setTransparency(math.min(1, origTransparency + 0.25))
-		end)
-		local connLeave = btn.MouseLeave:Connect(function()
-			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = normalSize}):Play()
-			setTransparency(origTransparency)
-		end)
-		table.insert(buttonHoverConnections, connEnter)
-		table.insert(buttonHoverConnections, connLeave)
-	end
-
-	local connDown = btn.MouseButton1Down:Connect(function()
-		TweenService:Create(btn, TweenInfo.new(0.05), {Size = clickSize}):Play()
-		setTransparency(math.min(1, origTransparency + 0.25))
-	end)
-	local connUp = btn.MouseButton1Up:Connect(function()
-		local target = (not UserInputService.TouchEnabled) and hoverSize or normalSize
-		TweenService:Create(btn, TweenInfo.new(ANIM_SPEED, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = target}):Play()
-		if UserInputService.TouchEnabled then
-			setTransparency(origTransparency)
+	table.insert(buttonHoverConnections, btn.MouseEnter:Connect(function()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end))
+	table.insert(buttonHoverConnections, btn.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed  = false
+		updateScale()
+	end))
+	table.insert(buttonHoverConnections, btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
 		end
-	end)
-	table.insert(buttonHoverConnections, connDown)
-	table.insert(buttonHoverConnections, connUp)
+	end))
+	table.insert(buttonHoverConnections, btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
+	end))
 end
 
 -- ============================================================================
@@ -375,38 +370,54 @@ end
 
 local function applyConfirmationButtonFeedback(button)
 	if not button then return nil end
-	local ti = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	if not button:GetAttribute("OrigBgColor") then
-		button:SetAttribute("OrigBgColor", button.BackgroundColor3)
-		if button:IsA("ImageButton") then button:SetAttribute("OrigImgColor", button.ImageColor3) end
-	end
-	local origBg  = button:GetAttribute("OrigBgColor")
-	local origImg = button:IsA("ImageButton") and button:GetAttribute("OrigImgColor") or nil
 
-	button.BackgroundColor3 = origBg
-	if origImg then button.ImageColor3 = origImg end
-
-	local function tv(dim)
-		local g = {}
-		if button.BackgroundTransparency < 1 then
-			local h, s, v = origBg:ToHSV()
-			g.BackgroundColor3 = dim and Color3.fromHSV(h, s, math.clamp(v * 0.75, 0, 1)) or origBg
-		end
-		if origImg then
-			local h, s, v = origImg:ToHSV()
-			g.ImageColor3 = dim and Color3.fromHSV(h, s, math.clamp(v * 0.75, 0, 1)) or origImg
-		end
-		if next(g) then TweenService:Create(button, ti, g):Play() end
+	local uiScale = button:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = button
 	end
 
-	addConfirmationConnection(button.MouseEnter:Connect(function() tv(true) end))
-	addConfirmationConnection(button.MouseLeave:Connect(function() tv(false) end))
+	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local isHovering = false
+	local isPressed  = false
+
+	local function updateScale()
+		local target = 1.0
+		if isPressed      then target = 0.95
+		elseif isHovering then target = 1.05
+		end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+	end
+
+	addConfirmationConnection(button.MouseEnter:Connect(function()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end))
+
+	addConfirmationConnection(button.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed = false
+		updateScale()
+	end))
+
 	addConfirmationConnection(button.InputBegan:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then tv(true) end
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
 	end))
+
 	addConfirmationConnection(button.InputEnded:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then tv(false) end
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
 	end))
+
 	return button
 end
 
@@ -415,13 +426,15 @@ local function bindConfirmationButton(button, callback)
 	button.Active = true
 	button.Interactable = true
 
-	-- Apply Legendary-style hover dim
+	-- Apply standard hover/press feedback
 	applyConfirmationButtonFeedback(button)
 
 	local fired = false
 	local function hp() 
 		if fired then return end
 		fired = true
+
+		UIAudioConfig.PlayClick()
 
 		-- Immediately lock button to prevent double-fire
 		button.Active = false
@@ -609,7 +622,7 @@ local function handleSell(dialogueLabel)
 			if not isInteracting then return end
 
 			if success then
-				playSound(CLICK_SOUND_ID, 0.5) -- Optional: Add a success sound here
+				UIAudioConfig.PlayClick()
 				typewrite(dialogueLabel, "Wonderful~ 🌟 It was a pleasure doing business with you, darling! Your wallet is looking quite fabulous now~ ✨", function()
 					isProcessingSell = false
 					task.wait(1.5)
@@ -650,13 +663,7 @@ local function startInteraction(npcModel)
 	setFocusMode(true)
 
 	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-		local humanoid = player.Character:FindFirstChild("Humanoid")
-		if humanoid then humanoid.WalkSpeed = 0 end
-		if hrp then
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.Anchored = true
-		end
+		player:SetAttribute("MovementLock", true)
 	end
 
 	camera.CameraType = Enum.CameraType.Scriptable
@@ -689,12 +696,12 @@ local function startInteraction(npcModel)
 				local conn
 				if UserInputService.TouchEnabled then
 					conn = btn.Activated:Connect(function()
-						playSound(CLICK_SOUND_ID, 0.5)
+						UIAudioConfig.PlayClick()
 						func()
 					end)
 				else
 					conn = btn.MouseButton1Click:Connect(function()
-						playSound(CLICK_SOUND_ID, 0.5)
+						UIAudioConfig.PlayClick()
 						func()
 					end)
 				end

@@ -30,6 +30,8 @@ local Lighting          = game:GetService("Lighting")
 local TweenService      = game:GetService("TweenService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
@@ -358,37 +360,54 @@ end
 local function applyConfirmationButtonFeedback(button)
 	button = prepareConfirmationButton(button)
 	if not button then return nil end
-	local ti = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	if not button:GetAttribute("OrigBgColor") then
-		button:SetAttribute("OrigBgColor", button.BackgroundColor3)
-		if button:IsA("ImageButton") then button:SetAttribute("OrigImgColor", button.ImageColor3) end
+
+	local uiScale = button:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = button
 	end
-	local origBg  = button:GetAttribute("OrigBgColor")
-	local origImg = button:IsA("ImageButton") and button:GetAttribute("OrigImgColor") or nil
-	button.BackgroundColor3 = origBg
-	if origImg then button.ImageColor3 = origImg end
-	local function tv(dim)
-		local g = {}
-		if button.BackgroundTransparency < 1 then
-			local h, s, v = origBg:ToHSV()
-			g.BackgroundColor3 = dim and Color3.fromHSV(h, s, math.clamp(v * .75, 0, 1)) or origBg
+
+	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local isHovering = false
+	local isPressed  = false
+
+	local function updateScale()
+		local target = 1.0
+		if isPressed      then target = 0.95
+		elseif isHovering then target = 1.05
 		end
-		if origImg then
-			local h, s, v = origImg:ToHSV()
-			g.ImageColor3 = dim and Color3.fromHSV(h, s, math.clamp(v * .75, 0, 1)) or origImg
-		end
-		if next(g) then TweenService:Create(button, ti, g):Play() end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
 	end
-	addConfirmationConnection(button.MouseEnter:Connect(function() Kit.Sound:Play("Hover"); tv(true) end))
-	addConfirmationConnection(button.MouseLeave:Connect(function() tv(false) end))
+
+	addConfirmationConnection(button.MouseEnter:Connect(function()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end))
+
+	addConfirmationConnection(button.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed = false
+		updateScale()
+	end))
+
 	addConfirmationConnection(button.InputBegan:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1
-			or i.UserInputType == Enum.UserInputType.Touch then tv(true) end
+			or i.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
 	end))
+
 	addConfirmationConnection(button.InputEnded:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1
-			or i.UserInputType == Enum.UserInputType.Touch then tv(false) end
+			or i.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
 	end))
+
 	return button
 end
 
@@ -474,7 +493,12 @@ local function bindConfirmationButton(button, callback)
 	button = applyConfirmationButtonFeedback(button)
 	if not button then return end
 	local fired = false
-	local function hp() if fired then return end; fired = true; callback() end
+	local function hp()
+		if fired then return end
+		fired = true
+		UIAudioConfig.PlayClick()
+		callback()
+	end
 	addConfirmationConnection(button.Activated:Connect(hp))
 	addConfirmationConnection(button.MouseButton1Click:Connect(hp))
 	addConfirmationConnection(button.TouchTap:Connect(hp))
@@ -492,7 +516,8 @@ end
 local function PromptConfirmation(sessionId, text, callback)
 	local cGui, cMain = resolveConfirmationUi()
 	if not cGui or not cMain then
-		if isActiveShopSession(sessionId) then callback(true) end
+		warn("⚠️ Confirmation UI not found!")
+		if isActiveShopSession(sessionId) then callback(false) end
 		return
 	end
 	confirmationVersion += 1
@@ -591,10 +616,8 @@ local function setFocusMode(active)
 	setBlur(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
-	local char = player.Character
-	if char and char:FindFirstChild("Humanoid") then
-		char.Humanoid.WalkSpeed = active and 0 or 16
-		char.Humanoid.JumpHeight = active and 0 or 7.2
+	if char then
+		player:SetAttribute("MovementLock", active)
 	end
 end
 
@@ -960,8 +983,7 @@ local function AttemptCraft(carName, isPremium)
 			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
 		}), function()
-
-			task.wait(3)
+			task.wait(1.5)
 			ShowActiveCraftPanel()
 		end)
 		return
@@ -973,7 +995,13 @@ local function AttemptCraft(carName, isPremium)
 			"It is finished. The <font color='#B652FF'>" .. displayName .. "</font> is a true work of art. It should be in your inventory already.",
 			"The <font color='#B652FF'>" .. displayName .. "</font> is already there in your inventory, " .. coloredName .. ".",
 			"Construction of the <font color='#B652FF'>" .. displayName .. "</font> is done. A flawless execution. It's already there in your inventory.",
-		}), restoreToCraftingFrame)
+		}), function()
+			local FuncAcknowledge = MythicalRemotes:FindFirstChild("AcknowledgeMythicalCraft")
+			if FuncAcknowledge then FuncAcknowledge:InvokeServer(carName) end
+			currentState = FuncGetState:InvokeServer()
+			UpdateDisplay()
+			restoreToCraftingFrame()
+		end)
 		return
 	end
 
@@ -1037,7 +1065,7 @@ local function AttemptCraft(carName, isPremium)
 		Kit.Sound:Play("Click")
 
 		task.spawn(function()
-			local success, msg = FuncCraftCar:InvokeServer(carName)
+			local success, msg = FuncCraftCar:InvokeServer(carName, isPremium)
 			if requestSessionId == shopSessionId then isProcessingPurchase = false end
 			if not isActiveShopSession(requestSessionId) then mainFrame.Visible = true; return end
 
@@ -1045,13 +1073,13 @@ local function AttemptCraft(carName, isPremium)
 			UpdateDisplay()
 
 			if success then
-				Kit.Sound:Play("BuySuccess")
-				showFeedback("Crafting Started!", FEEDBACK_COLORS.Success)
 				if isPremium then
 					-- Premium: fire Robux prompt immediately; return to crafting frame.
 					MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
 					restoreToCraftingFrame()
 				else
+					Kit.Sound:Play("BuySuccess")
+					showFeedback("Crafting Started!", FEEDBACK_COLORS.Success)
 					-- Normal craft started: Ethourah confirms, then return to crafting frame.
 					-- The Active Craft panel is NOT shown here — the player can continue
 					-- browsing normally. It only appears if they try to start another craft.
@@ -1079,13 +1107,23 @@ local function AttemptCraft(carName, isPremium)
 	end
 
 	if isPremium then
-		executeCraft()
+		local confirmText = string.format(
+			"<font color='%s'>Are you sure you want to skip the waiting time?</font>",
+			CONFIRMATION_COLORS.Accent
+		)
+		PromptConfirmation(requestSessionId, confirmText, function(confirmed)
+			if confirmed then executeCraft() end
+		end)
 	else
 		local craftHours = tostring(math.floor((recipe.CraftTime or 0) / 3600))
+		local timeDisplay = craftHours .. " hours"
+		if recipe.CraftTime and recipe.CraftTime < 3600 then
+			timeDisplay = tostring(math.floor(recipe.CraftTime / 60)) .. " minutes"
+		end
+		
 		local confirmText = string.format(
-			"<font color='%s'>Begin forging </font><b><font color='%s'>%s</font></b><font color='%s'>? Once the ritual starts, it will take </font><b><font color='%s'>%s hours</font></b><font color='%s'> to complete.</font>",
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
-			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, escapeRichText(craftHours),
+			"<font color='%s'>Are you sure you want to craft this car? It will take </font><b><font color='%s'>%s</font></b><font color='%s'> to complete.</font>",
+			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, timeDisplay,
 			CONFIRMATION_COLORS.Accent
 		)
 		PromptConfirmation(requestSessionId, confirmText, function(confirmed)
@@ -1137,9 +1175,31 @@ local function OpenCraftingMenu(carName)
 			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
 		}), function()
-
-			task.wait(3)
+			task.wait(1.5)
 			ShowActiveCraftPanel()
+		end)
+		return
+	end
+
+	-- ALREADY COMPLETED INTERCEPT
+	-- Acknowledges the craft so ingredients can be reset for another build.
+	if currentState and currentState.CompletedCrafts and currentState.CompletedCrafts[carName] then
+		local displayName = getDisplayCarName(carName)
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		ethourahSpeak(pickRandom({
+			"It is finished. The <font color='#B652FF'>" .. displayName .. "</font> is a true work of art. It should be in your inventory already.",
+			"The <font color='#B652FF'>" .. displayName .. "</font> is already there in your inventory, " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. displayName .. "</font> is done. A flawless execution. It's already there in your inventory.",
+		}), function()
+			local FuncAcknowledge = MythicalRemotes:FindFirstChild("AcknowledgeMythicalCraft")
+			if FuncAcknowledge then FuncAcknowledge:InvokeServer(carName) end
+			currentState = FuncGetState:InvokeServer()
+			local craftGui = gui:FindFirstChild(carName .. "Crafting")
+			if craftGui then
+				UpdateCraftingUI(carName)
+				mainFrame.Visible = false
+				craftGui.Visible = true
+			end
 		end)
 		return
 	end

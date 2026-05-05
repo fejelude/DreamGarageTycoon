@@ -13,6 +13,8 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
@@ -49,16 +51,7 @@ local PROMPT_NAME = "TalkPrompt"
 local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TYPEWRITER_SPEED = 0.02
 local LEAVE_DELAY = 1.5
-
--- 🔊 SOUNDS
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
-local HOVER_SOUND_ID = "rbxassetid://6895079853"
-local CLICK_SOUND_ID = "rbxassetid://9083627113"
-
--- ✨ ANIMATION SETTINGS
-local HOVER_SCALE = 1.1
-local CLICK_SCALE = 0.9
-local ANIM_SPEED = 0.1
 
 -- ============================================================================
 -- 🛠️ STATE VARIABLES
@@ -111,6 +104,15 @@ local function clearConnections()
 		if conn then conn:Disconnect() end
 	end
 	buttonHoverConnections = {}
+
+	-- Reset HoverBound attribute so effects re-bind on next interaction
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if myGui then
+		for _, btnID in ipairs(ALL_BUTTON_IDS) do
+			local btn = myGui:FindFirstChild(btnID, true)
+			if btn then btn:SetAttribute("HoverBound", nil) end
+		end
+	end
 end
 
 local function toggleNamedGuiObjects(shouldHide, objectName)
@@ -133,6 +135,7 @@ end
 
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
+		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
 		for _, otherGui in pairs(playerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui")
@@ -159,12 +162,16 @@ local function setFocusMode(active)
 end
 
 local function playSound(id, vol)
-	local s = Instance.new("Sound")
-	s.SoundId = id
-	s.Volume = vol or 0.5
-	s.Parent = SoundService
-	s:Play()
-	game.Debris:AddItem(s, 1)
+	if id == TYPING_SOUND_ID then
+		-- typing sound: keep legacy instance approach (low-vol, rapid)
+		local s = Instance.new("Sound")
+		s.SoundId = id
+		s.Volume = vol or 0.1
+		s.Parent = SoundService
+		s:Play()
+		game.Debris:AddItem(s, 1)
+	end
+	-- hover/click now handled by UIAudioConfig
 end
 
 local function getCleanTextLength(str)
@@ -223,11 +230,8 @@ local function stopInteraction()
 	if controls then controls:Enable() end
 
 	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		local humanoid = player.Character:FindFirstChild("Humanoid")
-
-		if hrp then hrp.Anchored = false end
-		if humanoid then humanoid.WalkSpeed = 16 end
+		player:SetAttribute("MovementLock", false)
 	end
 
 	local myGui = playerGui:FindFirstChild(GUI_ID)
@@ -239,45 +243,55 @@ local function stopInteraction()
 end
 
 local function animateButton(btn)
-	if not btn:GetAttribute("OriginalSizeX") then
-		btn:SetAttribute("OriginalSizeX", btn.Size.X.Scale)
-		btn:SetAttribute("OriginalSizeXO", btn.Size.X.Offset)
-		btn:SetAttribute("OriginalSizeY", btn.Size.Y.Scale)
-		btn:SetAttribute("OriginalSizeYO", btn.Size.Y.Offset)
+	if btn:GetAttribute("HoverBound") then return end
+	btn:SetAttribute("HoverBound", true)
+
+	local uiScale = btn:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = btn
 	end
 
-	local origX = btn:GetAttribute("OriginalSizeX")
-	local origXO = btn:GetAttribute("OriginalSizeXO")
-	local origY = btn:GetAttribute("OriginalSizeY")
-	local origYO = btn:GetAttribute("OriginalSizeYO")
+	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local isHovering = false
+	local isPressed  = false
 
-	local normalSize = UDim2.new(origX, origXO, origY, origYO)
-	local hoverSize = UDim2.new(origX * HOVER_SCALE, origXO * HOVER_SCALE, origY * HOVER_SCALE, origYO * HOVER_SCALE)
-	local clickSize = UDim2.new(origX * CLICK_SCALE, origXO * CLICK_SCALE, origY * CLICK_SCALE, origYO * CLICK_SCALE)
-
-	if not UserInputService.TouchEnabled then
-		local connEnter = btn.MouseEnter:Connect(function()
-			playSound(HOVER_SOUND_ID, 0.5)
-			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = hoverSize}):Play()
-		end)
-
-		local connLeave = btn.MouseLeave:Connect(function()
-			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = normalSize}):Play()
-		end)
-
-		table.insert(buttonHoverConnections, connEnter)
-		table.insert(buttonHoverConnections, connLeave)
+	local function updateScale()
+		local target = 1.0
+		if isPressed      then target = 0.95
+		elseif isHovering then target = 1.05
+		end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
 	end
 
-	local connDown = btn.MouseButton1Down:Connect(function()
-		TweenService:Create(btn, TweenInfo.new(0.05), {Size = clickSize}):Play()
+	local connEnter = btn.MouseEnter:Connect(function()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end)
+	local connLeave = btn.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed  = false
+		updateScale()
+	end)
+	local connDown = btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
+	end)
+	local connUp = btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
 	end)
 
-	local connUp = btn.MouseButton1Up:Connect(function()
-		local target = (not UserInputService.TouchEnabled) and hoverSize or normalSize
-		TweenService:Create(btn, TweenInfo.new(ANIM_SPEED, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = target}):Play()
-	end)
-
+	table.insert(buttonHoverConnections, connEnter)
+	table.insert(buttonHoverConnections, connLeave)
 	table.insert(buttonHoverConnections, connDown)
 	table.insert(buttonHoverConnections, connUp)
 end
@@ -299,13 +313,9 @@ local function startInteraction(npcModel)
 	setFocusMode(true)
 
 	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		local humanoid = player.Character:FindFirstChild("Humanoid")
-
-		if humanoid then humanoid.WalkSpeed = 0 end
-		if hrp then
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.Anchored = true
+		if humanoid then
+			player:SetAttribute("MovementLock", true)
 		end
 	end
 
@@ -338,7 +348,7 @@ local function startInteraction(npcModel)
 				animateButton(btn)
 
 				local conn = btn.MouseButton1Click:Connect(function()
-					playSound(CLICK_SOUND_ID, 0.5)
+					UIAudioConfig.PlayClick()
 					func()
 				end)
 				table.insert(buttonConnections, conn)
@@ -404,3 +414,7 @@ local function setupNPC()
 end
 
 setupNPC()
+
+player.CharacterAdded:Connect(function()
+	stopInteraction()
+end)

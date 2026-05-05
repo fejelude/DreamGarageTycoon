@@ -30,6 +30,7 @@ pcall(function()
 	Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit", 5))
 end)
 local BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- ⚙️ CONFIGURATION
 local UI_NAME = "BaseUpgradeUI"
@@ -186,6 +187,7 @@ end
 local function toggleOtherGuis(shouldHide)
 	local myGui = PlayerGui:FindFirstChild(UI_NAME)
 	if shouldHide then
+		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
 		for _, otherGui in pairs(PlayerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui") 
@@ -211,16 +213,7 @@ local function toggleOtherGuis(shouldHide)
 end
 
 local function setMovement(active)
-	local char = player.Character
-	if char and char:FindFirstChild("Humanoid") then
-		if not active then
-			char.Humanoid.WalkSpeed = 0
-			char.Humanoid.JumpPower = 0
-		else
-			char.Humanoid.WalkSpeed = 16
-			char.Humanoid.JumpPower = 50
-		end
-	end
+	player:SetAttribute("MovementLock", not active)
 end
 
 -- ============================================================================
@@ -328,9 +321,11 @@ local function ConnectCard(cardFrame, skinName)
 			if isProcessingTransaction then return end
 			isProcessingTransaction = true
 
-			TransactionFunc:InvokeServer(skinName, "Robux") 
+			UIAudioConfig.PlayRobux()
+			UIAudioConfig.ShowPurchaseLoading()
+			TransactionFunc:InvokeServer(skinName, "Robux")
 
-			task.wait(1) 
+			task.wait(1)
 			isProcessingTransaction = false
 		end
 

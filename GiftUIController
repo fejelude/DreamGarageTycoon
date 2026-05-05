@@ -109,6 +109,7 @@ end
 -- ============================================================================
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
+		if #hiddenGuis > 0 then return end
 		table.clear(hiddenGuis)
 		for _, gui in pairs(PlayerGui:GetDescendants()) do
 			if gui:IsA("ScreenGui") and gui ~= screenGui and gui.Name ~= "Confirmation" and gui.Enabled then
@@ -130,26 +131,7 @@ end
 -- 🚶 MOVEMENT LOCK
 -- ============================================================================
 local function setMovementLocked(isLocked)
-	local character = player.Character
-	if not character then return end
-
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid then return end
-
-	if isLocked then
-		if savedWalkSpeed == nil then
-			savedWalkSpeed = humanoid.WalkSpeed
-			savedJumpPower = humanoid.JumpPower
-		end
-		humanoid.WalkSpeed = 0
-		humanoid.JumpPower = 0
-	else
-		if savedWalkSpeed ~= nil then humanoid.WalkSpeed = savedWalkSpeed end
-		if savedJumpPower ~= nil then humanoid.JumpPower = savedJumpPower end
-
-		savedWalkSpeed = nil
-		savedJumpPower = nil
-	end
+	player:SetAttribute("MovementLock", isLocked)
 end
 
 -- ============================================================================
@@ -170,19 +152,48 @@ local function addHover(btn)
 	if not btn or btn:GetAttribute("HoverAdded") then return end
 	btn:SetAttribute("HoverAdded", true)
 
-	local prop = nil
-	if btn:IsA("ImageButton") or btn:IsA("ImageLabel") then
-		prop = "ImageColor3"
-	elseif btn:IsA("TextButton") or btn:IsA("TextLabel") or btn:IsA("Frame") then
-		prop = "BackgroundColor3"
+	local uiScale = btn:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = btn
 	end
-	if not prop then return end
+
+	local isHovering = false
+	local isPressed  = false
+	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+
+	local function updateScale()
+		local target = 1.0
+		if isPressed     then target = 0.95
+		elseif isHovering then target = 1.05
+		end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+	end
 
 	btn.MouseEnter:Connect(function()
-		TweenService:Create(btn, HOVER_TWEEN, {[prop] = DIM_COLOR}):Play()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
 	end)
 	btn.MouseLeave:Connect(function()
-		TweenService:Create(btn, HOVER_TWEEN, {[prop] = NORMAL_COLOR}):Play()
+		isHovering = false
+		isPressed  = false
+		updateScale()
+	end)
+	btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
+	end)
+	btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
 	end)
 end
 
@@ -348,7 +359,9 @@ local function UpdateSlots()
 						giftBtn:SetAttribute("Cooldown", true)
 						task.delay(1, function() giftBtn:SetAttribute("Cooldown", false) end)
 
-						playSfx(SFX.Click, 0.5, screenGui)
+						local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
+						UIAudioConfig.PlayClick()
+						UIAudioConfig.ShowPurchaseLoading()
 						currentTargetName = target.Name
 						SetIndicator("Processing...", Color3.fromRGB(255, 255, 100))
 
@@ -371,7 +384,8 @@ end
 -- ============================================================================
 local function PerformClose()
 	if not isMenuOpen then return end
-	playSfx(SFX.Click, 0.5, screenGui)
+	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
+	UIAudioConfig.PlayClick()
 	setFocusMode(false)
 end
 

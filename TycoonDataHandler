@@ -712,6 +712,13 @@ local function save(player, isClosing)
 		local currentEquippedSkin = player:GetAttribute("EquippedSkin") or "Default"
 		local currentRank = player:GetAttribute("Rank") or "Player"
 
+		-- 🎮 HOTBAR: snapshot current slot assignments from client-set attributes
+		local currentHotbar = {}
+		for i = 1, 6 do
+			local v = player:GetAttribute("HotbarSlot" .. i)
+			currentHotbar[i] = (v and v ~= "") and v or ""
+		end
+
 		local inventory = {}
 		local invCount = 0
 		local seenInstances = {}
@@ -906,6 +913,7 @@ local function save(player, isClosing)
 					oldData.HighestUnlockedPad = currentUnlockedPad
 					oldData.BaseLevel = currentBaseLevel
 					oldData.Rank = currentRank
+					oldData.HotbarSlots = currentHotbar
 
 					oldData.LastUpdated  = os.time()
 					oldData.DataVersion  = "V38_Fixed"
@@ -1074,11 +1082,21 @@ local function InitializePlayer(player)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
 	player:SetAttribute("Rank", data.Rank)
 
+	-- 🎮 HOTBAR: restore slot assignments so the client can read them
+	local hotbarSlots = data.HotbarSlots or {}
+	for i = 1, 6 do
+		local v = hotbarSlots[i] or (hotbarSlots[tostring(i)] or "")
+		player:SetAttribute("HotbarSlot" .. i, v)
+	end
+
 	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(setDirty)
 	player:GetAttributeChangedSignal("BaseLevel"):Connect(setDirty)
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
 	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rank"):Connect(setDirty)
+	for i = 1, 6 do
+		player:GetAttributeChangedSignal("HotbarSlot" .. i):Connect(setDirty)
+	end
 
 	local function ApplyRankVisual()
 		local SetRankAPI = ServerStorage:FindFirstChild("SetRankAPI")

@@ -27,6 +27,7 @@ gui.Enabled = false
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- ⚙️ CONFIGURATION
 local REROLL_PRODUCT_ID = 3556132134 
@@ -158,6 +159,7 @@ end
 
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
+		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
 		for _, otherGui in pairs(PlayerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui") 
@@ -184,10 +186,8 @@ local function setFocusMode(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
 
-	local char = player.Character
-	if char and char:FindFirstChild("Humanoid") then
-		char.Humanoid.WalkSpeed = active and 0 or 16
-		char.Humanoid.JumpPower = active and 0 or 50
+	if char then
+		player:SetAttribute("MovementLock", active)
 	end
 end
 
@@ -323,6 +323,8 @@ local function init()
 	Kit.Inventory:Init(SHOP_CARS)
 
 	Kit.Tween:SetupButton(rerollBtn, function()
+		UIAudioConfig.PlayRobux()
+		UIAudioConfig.ShowPurchaseLoading()
 		MarketplaceService:PromptProductPurchase(player, REROLL_PRODUCT_ID)
 	end)
 
@@ -356,8 +358,10 @@ local function init()
 			if robuxBtn then
 				Kit.Tween:SetupButton(robuxBtn, function()
 					local pid = ROBUX_PRODUCTS[carName]
-					if pid and pid > 0 then 
-						MarketplaceService:PromptProductPurchase(player, pid) 
+					if pid and pid > 0 then
+						UIAudioConfig.PlayRobux()
+						UIAudioConfig.ShowPurchaseLoading()
+						MarketplaceService:PromptProductPurchase(player, pid)
 					else
 						warn("⚠️ Robux ID is 0 for " .. carName)
 					end
@@ -401,19 +405,9 @@ local function init()
 		if isPurchased then
 			if productId == REROLL_PRODUCT_ID then
 				showFeedback("Successfully Restocked", FEEDBACK_COLORS.Success)
-				Kit.Sound:Play("PaidReroll") 
+				Kit.Sound:Play("PaidReroll")
 			else
 				showFeedback("Purchase Success", FEEDBACK_COLORS.Success)
-				if not game:GetService("SoundService"):GetAttribute("SFXMuted") then
-					local s = Instance.new("Sound")
-					s.Name = "CarPurchaseSFX"
-					s.SoundId = SPECIAL_SFX_ID
-					s.Volume = 1.5
-					s.Pitch = 1.0
-					s.Parent = SoundService
-					s:Play()
-					Debris:AddItem(s, 5)
-				end
 			end
 		else
 			Kit.Sound:Play("BuyFail") 

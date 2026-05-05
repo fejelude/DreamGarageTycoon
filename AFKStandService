@@ -84,10 +84,7 @@ local function restoreAndTeleport(player)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 
-	if humanoid then
-		humanoid.WalkSpeed = DEFAULT_WALK_SPEED
-		humanoid.JumpPower = DEFAULT_JUMP_POWER
-	end
+	player:SetAttribute("MovementLock", false)
 
 	if hrp then
 		hrp.Anchored = false
@@ -145,11 +142,7 @@ standPart.Touched:Connect(function(hit)
 	-- Zero out movement now so the character decelerates cleanly on the client
 	-- before we hard-anchor. The client also fades out animation tracks at the
 	-- same moment it receives the "Enter" event below, so both sides are in sync.
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid.WalkSpeed = 0
-		humanoid.JumpPower = 0
-	end
+	player:SetAttribute("MovementLock", true)
 
 	-- Disconnect any stale death watcher
 	if activeConnections[player.UserId] then

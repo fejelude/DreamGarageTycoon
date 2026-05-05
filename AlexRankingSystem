@@ -139,11 +139,7 @@ local function stopInteraction()
 	if controls then controls:Enable() end
 
 	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-		local humanoid = player.Character:FindFirstChild("Humanoid")
-
-		if hrp then hrp.Anchored = false end
-		if humanoid then humanoid.WalkSpeed = 16 end
+		player:SetAttribute("MovementLock", false)
 	end
 
 	local myGui = playerGui:FindFirstChild(GUI_ID)
@@ -188,14 +184,7 @@ local function startInteraction(npcModel)
 	setFocusMode(true)
 
 	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-		local humanoid = player.Character:FindFirstChild("Humanoid")
-
-		if humanoid then humanoid.WalkSpeed = 0 end
-		if hrp then
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.Anchored = true
-		end
+		player:SetAttribute("MovementLock", true)
 	end
 
 	local camPart = npcModel:FindFirstChild(CAMERA_PART)

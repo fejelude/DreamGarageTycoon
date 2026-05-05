@@ -4,9 +4,6 @@
 -- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
 -- Public API: UpdateMythicalEthourahDialogue (BindableEvent), EthourahShopSpeak (BindableEvent)
 -- Networking: Fires ShopRemotes.MythicalShop.RequestOpenShop (Client -> Server)
--- Security: Purely visual client-side transitions; no server authority bypass possible here.
--- Performance: Uses callback chaining instead of parallel yielding, preventing race conditions.
--- Notes: Fixes premature UI closing on Leave by waiting for typewriting to finish before starting the leave delay.
 
 local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
@@ -14,6 +11,7 @@ local Workspace = game:GetService("Workspace")
 local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
@@ -50,8 +48,6 @@ local LEAVE_DELAY = 1.5
 local SHOP_OPEN_DELAY_SECONDS = 2.0
 
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
-local HOVER_SOUND_ID = "rbxassetid://6895079853"
-local CLICK_SOUND_ID = "rbxassetid://9083627113"
 local CRAFT_OPEN_MESSAGE = "Aight pick a chassis. You already know what it costs to build with me."
 
 local HOVER_SCALE = 1.1
@@ -137,10 +133,20 @@ local function clearConnections()
 		if conn then conn:Disconnect() end
 	end
 	buttonConnections = {}
+
 	for _, conn in pairs(buttonHoverConnections) do
 		if conn then conn:Disconnect() end
 	end
 	buttonHoverConnections = {}
+
+	-- Reset HoverBound attribute so effects re-bind on next interaction
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if myGui then
+		for _, btnID in ipairs(ALL_BUTTON_IDS) do
+			local btn = myGui:FindFirstChild(btnID, true)
+			if btn then btn:SetAttribute("HoverBound", nil) end
+		end
+	end
 end
 
 local function toggleNamedGuiObjects(shouldHide, objectName)
@@ -192,12 +198,11 @@ local function setFocusMode(active)
 end
 
 local function playSound(id, vol)
-	local s = Instance.new("Sound")
-	s.SoundId = id
-	s.Volume = vol or 0.5
-	s.Parent = SoundService
-	s:Play()
-	game.Debris:AddItem(s, 1)
+	if id == TYPING_SOUND_ID then
+		local s = Instance.new("Sound")
+		s.SoundId = id; s.Volume = vol or 0.1; s.Parent = SoundService; s:Play()
+		game.Debris:AddItem(s, 1)
+	end
 end
 
 local function getCleanTextLength(str)
@@ -265,10 +270,8 @@ local function stopInteraction()
 	if controls then controls:Enable() end
 
 	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		local humanoid = player.Character:FindFirstChild("Humanoid")
-		if hrp then hrp.Anchored = false end
-		if humanoid then humanoid.WalkSpeed = 16 end
+		player:SetAttribute("MovementLock", false)
 	end
 
 	local myGui = playerGui:FindFirstChild(GUI_ID)
@@ -306,13 +309,8 @@ local function releaseInteractionForShop()
 	if controls then controls:Enable() end
 
 	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		local humanoid = player.Character:FindFirstChild("Humanoid")
-		if hrp then hrp.Anchored = false end
-		if humanoid then
-			humanoid.WalkSpeed = 16
-			humanoid.JumpPower = 50
-		end
+		player:SetAttribute("MovementLock", false)
 	end
 
 	local myGui = playerGui:FindFirstChild(GUI_ID)
@@ -327,43 +325,51 @@ local function releaseInteractionForShop()
 end
 
 local function animateButton(btn)
-	if not btn:GetAttribute("OriginalSizeX") then
-		btn:SetAttribute("OriginalSizeX", btn.Size.X.Scale)
-		btn:SetAttribute("OriginalSizeXO", btn.Size.X.Offset)
-		btn:SetAttribute("OriginalSizeY", btn.Size.Y.Scale)
-		btn:SetAttribute("OriginalSizeYO", btn.Size.Y.Offset)
+	if btn:GetAttribute("HoverBound") then return end
+	btn:SetAttribute("HoverBound", true)
+
+	local uiScale = btn:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = btn
 	end
 
-	local origX = btn:GetAttribute("OriginalSizeX")
-	local origXO = btn:GetAttribute("OriginalSizeXO")
-	local origY = btn:GetAttribute("OriginalSizeY")
-	local origYO = btn:GetAttribute("OriginalSizeYO")
-
-	local normalSize = UDim2.new(origX, origXO, origY, origYO)
-	local hoverSize = UDim2.new(origX * HOVER_SCALE, origXO * HOVER_SCALE, origY * HOVER_SCALE, origYO * HOVER_SCALE)
-	local clickSize = UDim2.new(origX * CLICK_SCALE, origXO * CLICK_SCALE, origY * CLICK_SCALE, origYO * CLICK_SCALE)
-
-	if not UserInputService.TouchEnabled then
-		local connEnter = btn.MouseEnter:Connect(function()
-			playSound(HOVER_SOUND_ID, 0.5)
-			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = hoverSize}):Play()
-		end)
-		local connLeave = btn.MouseLeave:Connect(function()
-			TweenService:Create(btn, TweenInfo.new(ANIM_SPEED), {Size = normalSize}):Play()
-		end)
-		table.insert(buttonHoverConnections, connEnter)
-		table.insert(buttonHoverConnections, connLeave)
+	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local isHovering = false
+	local isPressed  = false
+	local function updateScale()
+		local target = 1.0
+		if isPressed      then target = 0.95
+		elseif isHovering then target = 1.05
+		end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
 	end
 
-	local connDown = btn.MouseButton1Down:Connect(function()
-		TweenService:Create(btn, TweenInfo.new(0.05), {Size = clickSize}):Play()
-	end)
-	local connUp = btn.MouseButton1Up:Connect(function()
-		local target = (not UserInputService.TouchEnabled) and hoverSize or normalSize
-		TweenService:Create(btn, TweenInfo.new(ANIM_SPEED, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = target}):Play()
-	end)
-	table.insert(buttonHoverConnections, connDown)
-	table.insert(buttonHoverConnections, connUp)
+	table.insert(buttonHoverConnections, btn.MouseEnter:Connect(function()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end))
+	table.insert(buttonHoverConnections, btn.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed  = false
+		updateScale()
+	end))
+	table.insert(buttonHoverConnections, btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
+	end))
+	table.insert(buttonHoverConnections, btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
+	end))
 end
 
 local GREETING_DIALOGUES = {
@@ -392,12 +398,9 @@ local function startInteraction(npcModel)
 	setFocusMode(true)
 
 	if player.Character then
-		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
 		local humanoid = player.Character:FindFirstChild("Humanoid")
-		if humanoid then humanoid.WalkSpeed = 0 end
-		if hrp then
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.Anchored = true
+		if humanoid then
+			player:SetAttribute("MovementLock", true)
 		end
 	end
 
@@ -429,7 +432,7 @@ local function startInteraction(npcModel)
 			if btn and btn:IsA("GuiButton") then
 				animateButton(btn)
 				local conn = btn.MouseButton1Click:Connect(function()
-					playSound(CLICK_SOUND_ID, 0.5)
+					UIAudioConfig.PlayClick()
 					func()
 				end)
 				table.insert(buttonConnections, conn)
@@ -438,6 +441,7 @@ local function startInteraction(npcModel)
 			end
 		end
 
+		-- ✅ CHANGE 1: Leave button — delay runs alongside typewrite (matches Angelo behaviour)
 		connectBtn(BTN_LEAVE_ID, function()
 			if isLeaving then return end
 			isLeaving = true
@@ -446,13 +450,10 @@ local function startInteraction(npcModel)
 			if dialogueLabel then
 				local coloredRedName = "<font color='" .. ETHOURAH_COLOR .. "'>" .. player.DisplayName .. "</font>"
 				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Aight slide out then. Come back when you ready to get serious </font>" .. coloredRedName .. "."
-				typewrite(dialogueLabel, goodbyeMsg, function()
-					task.wait(LEAVE_DELAY)
-					stopInteraction()
-				end)
-			else
-				stopInteraction()
+				typewrite(dialogueLabel, goodbyeMsg)
 			end
+			task.wait(LEAVE_DELAY)
+			stopInteraction()
 		end)
 
 		connectBtn(BTN_INQUIRY_ID, function()
@@ -486,6 +487,50 @@ local function startInteraction(npcModel)
 				typewrite(dialogueLabel, responseText, function()
 					task.wait(2.0)
 					stopInteraction()
+				end)
+				return
+			end
+
+			-- ✅ CHANGE 2: Active craft pre-check (matches Angelo behaviour)
+			local FuncGetState = MythicalRemotes:FindFirstChild("GetMythicalShopState")
+			local currentState = FuncGetState and FuncGetState:InvokeServer() or {}
+
+			local activeCar, endTime
+			if currentState and currentState.ActiveCrafts then
+				for c, e in pairs(currentState.ActiveCrafts) do
+					activeCar = c
+					endTime = e
+					break
+				end
+			end
+
+			if activeCar and endTime then
+				-- NPC speaks about active craft, then opens the shop after a short pause.
+				isOpeningShop = true
+				local openGeneration = interactionGeneration
+
+				local busyMsgs = {
+					"Chill bro I'm already working on your car. Wait until the current one is done.",
+					"You can't just stack orders on me like that. Come back when I finish what's on the forge.",
+					"One at a time fam. I need to wrap up your current build first.",
+					"The forge is occupied. Pull up again once I'm done with what you already ordered.",
+					"Bro I only got two hands. Let me finish before you come asking for more.",
+				}
+				local responseText = busyMsgs[math.random(1, #busyMsgs)]
+
+				typewrite(dialogueLabel, responseText, function()
+					if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
+
+					if pendingShopOpenTask then
+						pcall(task.cancel, pendingShopOpenTask)
+					end
+
+					pendingShopOpenTask = task.spawn(function()
+						task.wait(1)
+						if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
+						releaseInteractionForShop()
+						RemoteOpen:FireServer()
+					end)
 				end)
 				return
 			end
@@ -524,7 +569,7 @@ end
 
 -- ============================================================================
 -- 📡 UpdateDialogueEvent — original handler, untouched.
--- Only handles ForceClose now since all shop events route through AngeloShopSpeak.
+-- Only handles ForceClose now since all shop events route through EthourahShopSpeak.
 -- ============================================================================
 UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	if actionType == "ForceClose" then
@@ -668,7 +713,7 @@ player.CharacterAdded:Connect(function()
 end)
 
 -- ============================================================================
--- 🛒 EthourahShopSpeak — NEW dedicated BindableEvent for all shop-driven dialogue.
+-- 🛒 EthourahShopSpeak — dedicated BindableEvent for all shop-driven dialogue.
 -- ============================================================================
 local EthourahShopSpeak = Instance.new("BindableEvent")
 EthourahShopSpeak.Name = "EthourahShopSpeak"

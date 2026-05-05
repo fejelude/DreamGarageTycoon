@@ -1,0 +1,307 @@
+-- Purpose: Handles client-side UI and communication for car gifting
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Debris = game:GetService("Debris")
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+
+local player = Players.LocalPlayer
+local PlayerGui = player:WaitForChild("PlayerGui")
+local GiftingFolder = PlayerGui:WaitForChild("Gifting", 10)
+
+if not GiftingFolder then
+	warn("Gifting folder not found in PlayerGui")
+	return
+end
+
+local GiverGui = GiftingFolder:WaitForChild("Giver")
+local ReceiverGui = GiftingFolder:WaitForChild("Receiver")
+
+local GiverMain = GiverGui:WaitForChild("MainFrame")
+local ReceiverMain = ReceiverGui:WaitForChild("MainFrame")
+
+local GiftRemotes = ReplicatedStorage:WaitForChild("PlayerCarGiftingRemotes")
+local ActionRemote = GiftRemotes:WaitForChild("ActionRemote")
+
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
+local HOVER_TWEEN = TweenInfo.new(0.2)
+local DIM_COLOR = Color3.fromRGB(200, 200, 200)
+local NORMAL_COLOR = Color3.fromRGB(255, 255, 255)
+
+local SFX = {
+	Open = "rbxassetid://6895079853",
+	Click = "rbxassetid://4210586953",
+	Success = "rbxassetid://73743814975286",
+	Error = "rbxassetid://1526487928"
+}
+
+local function playSfx(soundId, volume, parent)
+	local s = Instance.new("Sound")
+	s.SoundId = soundId
+	s.Volume = volume or 0.5
+	s.Parent = parent or PlayerGui
+	s:Play()
+	Debris:AddItem(s, 3)
+end
+
+local currentGiverUserId = nil
+local countdownConn = nil
+
+local TierColors = {
+	Common = Color3.fromRGB(180, 180, 180),
+	Uncommon = Color3.fromRGB(0, 200, 200),
+	Rare = Color3.fromRGB(0, 100, 255),
+	Epic = Color3.fromRGB(150, 0, 255),
+	Legendary = Color3.fromRGB(255, 200, 0),
+	Mythic = Color3.fromRGB(255, 255, 255)
+}
+
+local function applyTierStyling(textLabel, rarity)
+	-- Clean previous styling
+	for _, child in ipairs(textLabel:GetChildren()) do
+		if child.Name == "TierGradient" or child.Name == "TierStroke" then
+			child:Destroy()
+		end
+	end
+	
+	textLabel.TextColor3 = Color3.new(1, 1, 1)
+	local grad = Instance.new("UIGradient")
+	grad.Name = "TierGradient"
+	grad.Parent = textLabel
+	
+	local stroke = Instance.new("UIStroke")
+	stroke.Name = "TierStroke"
+	stroke.Thickness = 2
+	stroke.Parent = textLabel
+	
+	if rarity == "Common" then
+		grad.Color = ColorSequence.new(Color3.fromRGB(180, 180, 180), Color3.fromRGB(100, 100, 100))
+		stroke.Color = Color3.fromRGB(50, 50, 50)
+	elseif rarity == "Uncommon" then
+		grad.Color = ColorSequence.new(Color3.fromRGB(0, 255, 200), Color3.fromRGB(0, 100, 150))
+		stroke.Color = Color3.fromRGB(0, 50, 80)
+	elseif rarity == "Rare" then
+		grad.Color = ColorSequence.new(Color3.fromRGB(100, 200, 255), Color3.fromRGB(0, 50, 255))
+		stroke.Color = Color3.fromRGB(0, 0, 100)
+	elseif rarity == "Epic" then
+		grad.Color = ColorSequence.new(Color3.fromRGB(200, 100, 255), Color3.fromRGB(100, 0, 255))
+		stroke.Color = Color3.fromRGB(50, 0, 100)
+	elseif rarity == "Legendary" then
+		grad.Color = ColorSequence.new(Color3.fromRGB(255, 255, 100), Color3.fromRGB(255, 150, 0))
+		stroke.Color = Color3.fromRGB(100, 50, 0)
+	elseif rarity == "Mythic" then
+		grad.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+			ColorSequenceKeypoint.new(0.2, Color3.fromRGB(255, 255, 0)),
+			ColorSequenceKeypoint.new(0.4, Color3.fromRGB(0, 255, 0)),
+			ColorSequenceKeypoint.new(0.6, Color3.fromRGB(0, 255, 255)),
+			ColorSequenceKeypoint.new(0.8, Color3.fromRGB(0, 0, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 255))
+		})
+		stroke.Color = Color3.fromRGB(255, 255, 255)
+	else
+		grad.Color = ColorSequence.new(Color3.fromRGB(180, 180, 180))
+		stroke.Color = Color3.fromRGB(50, 50, 50)
+	end
+	
+	-- Animated Shimmer
+	if rarity ~= "Common" then
+		grad.Offset = Vector2.new(-1, 0)
+		local tween = TweenService:Create(grad, TweenInfo.new(2, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Offset = Vector2.new(1, 0)})
+		tween:Play()
+	end
+end
+
+local function getCarData(carId)
+	local cleanId = carId:gsub(" Item", ""):gsub("Item", "")
+	if CarStats.Cars and CarStats.Cars[cleanId] then
+		local data = CarStats.Cars[cleanId]
+		return { Name = cleanId, Rarity = data.Rarity, Image = data.Image }
+	end
+	return { Name = cleanId, Rarity = "Common", Image = "" }
+end
+
+local function addHover(btn)
+	if not btn or btn:GetAttribute("HoverAdded") then return end
+	btn:SetAttribute("HoverAdded", true)
+
+	local uiScale = btn:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1.0
+		uiScale.Parent = btn
+	end
+
+	local isHovering = false
+	local isPressed  = false
+	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+
+	local function updateScale()
+		local target = 1.0
+		if isPressed     then target = 0.95
+		elseif isHovering then target = 1.05
+		end
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+	end
+
+	btn.MouseEnter:Connect(function()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end)
+	btn.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed  = false
+		updateScale()
+	end)
+	btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
+	end)
+	btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
+	end)
+end
+
+addHover(GiverMain:WaitForChild("Yes"))
+addHover(GiverMain:WaitForChild("No"))
+addHover(ReceiverMain:WaitForChild("Yes"))
+addHover(ReceiverMain:WaitForChild("No"))
+
+GiverMain.Yes.MouseButton1Click:Connect(function()
+	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
+	UIAudioConfig.PlayClick()
+	ActionRemote:FireServer("GiverAccept")
+	GiverMain.Yes.Visible = false
+	GiverMain.No.Visible = false
+end)
+
+GiverMain.No.MouseButton1Click:Connect(function()
+	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
+	UIAudioConfig.PlayClick()
+	ActionRemote:FireServer("GiverDecline")
+	GiverGui.Enabled = false
+end)
+
+ReceiverMain.Yes.MouseButton1Click:Connect(function()
+	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
+	UIAudioConfig.PlayClick()
+	if currentGiverUserId then
+		ActionRemote:FireServer("ReceiverAccept", { GiverUserId = currentGiverUserId })
+		ReceiverMain.Yes.Visible = false
+		ReceiverMain.No.Visible = false
+	end
+end)
+
+ReceiverMain.No.MouseButton1Click:Connect(function()
+	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
+	UIAudioConfig.PlayClick()
+	if currentGiverUserId then
+		ActionRemote:FireServer("ReceiverDecline", { GiverUserId = currentGiverUserId })
+		ReceiverGui.Enabled = false
+	end
+end)
+
+ActionRemote.OnClientEvent:Connect(function(action, data)
+	if action == "OpenGiverUI" then
+		playSfx(SFX.Open)
+		local receiver = data.Receiver
+		local carId = data.CarId
+		local carData = getCarData(carId)
+		
+		GiverMain.PlayerName.Text = receiver.Name
+		GiverMain.CarName.Text = carData.Name
+		applyTierStyling(GiverMain.CarName, carData.Rarity)
+		GiverMain.ImageLabel.Image = carData.Image
+		
+		GiverMain.NotificationTrue.Visible = false
+		GiverMain.NotificationFalse.Visible = false
+		GiverMain.Yes.Visible = true
+		GiverMain.No.Visible = true
+		
+		GiverGui.Enabled = true
+		
+	elseif action == "OpenReceiverUI" then
+		if ReceiverGui.Enabled then return end -- Protect against concurrent offers
+		playSfx(SFX.Open)
+		local giver = data.Giver
+		local carId = data.CarId
+		local expiryTime = data.ExpiryTime
+		currentGiverUserId = giver.UserId
+		
+		local carData = getCarData(carId)
+		
+		ReceiverMain.SenderName.Text = giver.Name .. " wants to gift you this car"
+		ReceiverMain.CarName.Text = carData.Name
+		applyTierStyling(ReceiverMain.CarName, carData.Rarity)
+		ReceiverMain.ImageLabel.Image = carData.Image
+		
+		ReceiverMain.Expired.Visible = false
+		ReceiverMain.Accepted.Visible = false
+		ReceiverMain.Countdown.Visible = true
+		ReceiverMain.Yes.Visible = true
+		ReceiverMain.No.Visible = true
+		
+		if countdownConn then countdownConn:Disconnect() end
+		countdownConn = RunService.RenderStepped:Connect(function()
+			local remaining = math.max(0, math.ceil(expiryTime - workspace:GetServerTimeNow()))
+			ReceiverMain.Countdown.Text = tostring(remaining) .. "s"
+			if remaining <= 0 then
+				countdownConn:Disconnect()
+			end
+		end)
+		
+		ReceiverGui.Enabled = true
+		
+	elseif action == "UpdateGiverUI" then
+		if data.State == "NotificationTrue" then
+			playSfx(SFX.Success)
+			GiverMain.NotificationTrue.Text = data.Text
+			GiverMain.NotificationTrue.Visible = true
+			GiverMain.NotificationFalse.Visible = false
+		elseif data.State == "NotificationFalse" then
+			playSfx(SFX.Error)
+			GiverMain.NotificationFalse.Text = data.Text
+			GiverMain.NotificationFalse.Visible = true
+			GiverMain.NotificationTrue.Visible = false
+		end
+		GiverMain.Yes.Visible = false
+		GiverMain.No.Visible = false
+		
+	elseif action == "UpdateReceiverUI" then
+		if data.State == "Expired" then
+			playSfx(SFX.Error)
+			ReceiverMain.Expired.Visible = true
+			ReceiverMain.Countdown.Visible = false
+			ReceiverMain.Yes.Visible = false
+			ReceiverMain.No.Visible = false
+			task.delay(1, function()
+				ReceiverGui.Enabled = false
+			end)
+		elseif data.State == "Accepted" then
+			playSfx(SFX.Success)
+			ReceiverMain.Accepted.Text = data.Text
+			ReceiverMain.Accepted.Visible = true
+			ReceiverMain.Countdown.Visible = false
+			ReceiverMain.Yes.Visible = false
+			ReceiverMain.No.Visible = false
+		end
+		
+	elseif action == "CloseUI" then
+		GiverGui.Enabled = false
+		ReceiverGui.Enabled = false
+		if countdownConn then
+			countdownConn:Disconnect()
+			countdownConn = nil
+		end
+	end
+end)
