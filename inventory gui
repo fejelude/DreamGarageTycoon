@@ -86,8 +86,11 @@ local CONFIG = {
 }
 
 -- UI refs
+-- Note: openButton moved to MainButtons > Buttons > Inventory, so we search playerGui
+-- for InventoryWindow directly rather than via the button's ancestor ScreenGui.
 local playerGui          = player:WaitForChild("PlayerGui")
 local mainWindow         = playerGui:FindFirstChild("InventoryWindow", true)
+-- Derive the ScreenGui that actually owns InventoryWindow (NOT MainButtons)
 local inventoryScreenGui = mainWindow and mainWindow:FindFirstAncestorWhichIsA("ScreenGui")
 local itemsContainer     = mainWindow:WaitForChild("ItemContainer", 10)
 local closeButton        = mainWindow:WaitForChild("CloseButton", 10)
@@ -137,6 +140,8 @@ if openButton:IsA("ImageButton") then
 	openButton.ImageColor3 = CONFIG.Colors.Normal
 end
 
+-- 🔇 All inventory sounds have been removed.
+-- Hover feedback is handled by UIAudioConfig.PlayHover() inside addButtonEffects.
 -- Disable Roblox backpack
 pcall(function()
 	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
@@ -952,6 +957,7 @@ local function toggleOtherGuis(shouldHide)
 end
 
 -- FIX #1 + FIX #4
+<<<<<<< HEAD
 local function addButtonEffects(btn, getBaseBg)
 	if btn:GetAttribute("__HoverBound") then return {} end
 	btn:SetAttribute("__HoverBound", true)
@@ -959,6 +965,25 @@ local function addButtonEffects(btn, getBaseBg)
 	local baseZ     = btn.ZIndex
 	local isHovering = false
 	local isPressed  = false
+=======
+-- addButtonEffects now RETURNS the connection list so callers
+-- can store them for cleanup.  It also guards against being
+-- called more than once on the same button via the attribute
+-- "__HoverBound", preventing tween accumulation on pool reuse.
+-- =========================================================
+local function addButtonEffects(btn, getBaseBg)
+	-- FIX #4: skip if already bound; connections are still alive from last use
+	if btn:GetAttribute("__HoverBound") then
+		return {}
+	end
+	btn:SetAttribute("__HoverBound", true)
+
+	local baseZ = btn.ZIndex
+	local isHovering = false
+	local isPressed = false
+
+	-- FIX #1: collect connections to return
+>>>>>>> origin/Master
 	local connections = {}
 
 	local uiScale = btn:FindFirstChildOfClass("UIScale")
@@ -974,27 +999,48 @@ local function addButtonEffects(btn, getBaseBg)
 		if isPressed      then target = 0.95
 		elseif isHovering then target = 1.05
 		end
+<<<<<<< HEAD
 		TweenService:Create(uiScale, tweenInfo, { Scale = target }):Play()
+=======
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+>>>>>>> origin/Master
 	end
 
 	table.insert(connections, btn.MouseEnter:Connect(function()
 		isHovering = true
 		UIAudioConfig.PlayHover()
 		btn.ZIndex = baseZ + 20
+<<<<<<< HEAD
+=======
+
+>>>>>>> origin/Master
 		updateScale()
 	end))
 	table.insert(connections, btn.MouseLeave:Connect(function()
 		isHovering = false
+<<<<<<< HEAD
 		isPressed  = false
 		btn.ZIndex = baseZ
 		updateScale()
 	end))
+=======
+		isPressed = false
+		btn.ZIndex = baseZ
+
+		updateScale()
+	end))
+
+>>>>>>> origin/Master
 	table.insert(connections, btn.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			isPressed = true
 			updateScale()
 		end
 	end))
+<<<<<<< HEAD
+=======
+
+>>>>>>> origin/Master
 	table.insert(connections, btn.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			isPressed = false
@@ -1023,6 +1069,7 @@ local function addOpenButtonHover(btn)
 		if isPressed      then target = 0.95
 		elseif isHovering then target = 1.05
 		end
+<<<<<<< HEAD
 		TweenService:Create(uiScale, tweenInfo, { Scale = target }):Play()
 	end
 
@@ -1036,6 +1083,31 @@ local function addOpenButtonHover(btn)
 	btn.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			isPressed = false; updateScale()
+=======
+		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+	end
+
+	btn.MouseEnter:Connect(function()
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end)
+	btn.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed = false
+		updateScale()
+	end)
+	btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			updateScale()
+		end
+	end)
+	btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+>>>>>>> origin/Master
 		end
 	end)
 end
@@ -1187,7 +1259,11 @@ end
 
 -- ========= UI POOL =========
 local poolFolder = Instance.new("Folder")
+<<<<<<< HEAD
 poolFolder.Name  = "__InventoryUIPool"
+=======
+poolFolder.Name = "__InventoryUIPool"
+>>>>>>> origin/Master
 poolFolder.Parent = inventoryScreenGui or playerGui
 
 local buttonPool    = {}
@@ -1244,6 +1320,11 @@ local function setGlow(label, rarity)
 	local lastRarity = grad:GetAttribute("__GlowRarity")
 	if lastRarity ~= rarity then
 		grad:SetAttribute("__GlowRarity", rarity)
+<<<<<<< HEAD
+=======
+
+		-- Cancel the previous tween stored on the gradient (if any)
+>>>>>>> origin/Master
 		if not _G.__GlowTweens then _G.__GlowTweens = setmetatable({}, { __mode = "k" }) end
 		if _G.__GlowTweens[grad] then _G.__GlowTweens[grad]:Cancel() end
 		grad.Offset = Vector2.new(-0.35, 0)
@@ -1289,9 +1370,15 @@ local function createItemButton()
 	nameLabel.ZIndex        = 5
 	nameLabel.TextColor3    = Color3.new(1, 1, 1)
 
+<<<<<<< HEAD
 	local equippedStroke    = Instance.new("UIStroke")
 	equippedStroke.Name     = "__EquippedStroke"
 	equippedStroke.Color    = Color3.fromRGB(255, 255, 100)
+=======
+	local equippedStroke = Instance.new("UIStroke")
+	equippedStroke.Name = "__EquippedStroke"
+	equippedStroke.Color = Color3.fromRGB(255, 255, 100) -- CONFIG.Colors.Gold
+>>>>>>> origin/Master
 	equippedStroke.Thickness = 4
 	equippedStroke.Enabled  = false
 	equippedStroke.Parent   = btn

@@ -1119,7 +1119,8 @@ local function AttemptCraft(carName, isPremium)
 		if recipe.CraftTime and recipe.CraftTime < 3600 then
 			timeDisplay = tostring(math.floor(recipe.CraftTime / 60)) .. " minutes"
 		end
-		
+
+
 		local confirmText = string.format(
 			"<font color='%s'>Are you sure you want to craft this car? It will take </font><b><font color='%s'>%s</font></b><font color='%s'> to complete.</font>",
 			CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, timeDisplay,
@@ -1428,3 +1429,4 @@ else
 	player.CharacterAdded:Wait()
 	init()
 end
+
