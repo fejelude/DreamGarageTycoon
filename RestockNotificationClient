@@ -41,7 +41,7 @@ local SHOP_REQUIREMENTS = {
 }
 
 local RESTOCK_AUDIO_ID = "rbxassetid://81822437427070"
-local DISPLAY_TIME     = 5  -- seconds the notification stays visible
+local DISPLAY_TIME     = 6  -- seconds the notification stays visible
 
 -- ============================================================
 -- REFERENCES
@@ -100,44 +100,65 @@ end
 --   captured ID and does nothing if it no longer matches.
 -- ============================================================
 
-local currentNotifId = 0
+local notificationQueue = {}
+local isDisplaying      = false
 
-local function showNotification(message: string)
-	currentNotifId += 1
-	local myId = currentNotifId
+local function processQueue()
+	if isDisplaying or #notificationQueue == 0 then return end
+	isDisplaying = true
+
+	local message = table.remove(notificationQueue, 1)
 
 	notifText.Text     = message
 	notifFrame.Visible = true
 	playRestockSound()
 
-	task.delay(DISPLAY_TIME, function()
-		-- Only hide if no newer notification has taken over
-		if myId == currentNotifId then
-			notifFrame.Visible = false
-		end
-	end)
+	-- We use task.wait here because we want to block the queue processing
+	-- for this specific notification. This ensures they show one-by-one.
+	task.wait(DISPLAY_TIME)
+
+	-- Check if there's another message before hiding, to avoid flickering
+	-- if we're just going to show another one immediately.
+	if #notificationQueue == 0 then
+		notifFrame.Visible = false
+		task.wait(0.2) -- small gap for visual clarity
+	end
+
+	isDisplaying = false
+	processQueue()
+end
+
+local function showNotification(message: string)
+	if not message or message == "" then return end
+	table.insert(notificationQueue, message)
+	task.spawn(processQueue)
 end
 
 -- ============================================================
 -- MESSAGE BUILDER
 -- ============================================================
 
-local function buildMessage(arg1: string, arg2: any): string?
+local function buildMessage(arg1: string, arg2: any, arg3: any): string?
 	if arg1 == "AutoRestock" then
 		local rarity   = tostring(arg2 or "Common")
 		local color    = getRarityColor(rarity)
 		local hasAccess, requiredRank = hasAccessToShop(rarity)
 
+		local carsList = ""
+		if type(arg3) == "table" and #arg3 > 0 then
+			carsList = "\n<font color=\"#FFFFFF\"><small>(" .. table.concat(arg3, ", ") .. ")</small></font>"
+		end
+
 		if hasAccess then
 			return string.format(
-				[[<font color="%s"><b>%s</b></font> Shop has restocked!!]],
-				color, rarity
+				[[<font color="%s"><b>%s</b></font> Shop has restocked!!%s]],
+				color, rarity, carsList
 			)
 		else
 			return string.format(
-				[[🔒 <font color="%s"><b>%s</b></font> Shop has restocked!! ]] ..
+				[[🔒 <font color="%s"><b>%s</b></font> Shop has restocked!!%s ]] ..
 					[[(Unlock at <font color="#FF4444">%s</font>)]],
-				color, rarity, requiredRank
+				color, rarity, carsList, requiredRank
 			)
 		end
 
@@ -190,7 +211,7 @@ end
 --   guard (loadingWatchConn check) prevents double-firing.
 -- ============================================================
 
-local pendingMessage: string? = nil
+local pendingQueue = {}
 
 local function isLoadingActive(): boolean
 	return playerGui:GetAttribute("LoadingScreenActive") == true
@@ -207,11 +228,13 @@ local function watchLoadingEnd()
 				loadingWatchConn:Disconnect()
 				loadingWatchConn = nil
 			end
-			if pendingMessage then
-				local msg = pendingMessage
-				pendingMessage = nil
+			
+			if #pendingQueue > 0 then
 				task.wait(0.5) -- brief grace period after screen fades
-				showNotification(msg)
+				for _, msg in ipairs(pendingQueue) do
+					showNotification(msg)
+				end
+				table.clear(pendingQueue)
 			end
 		end
 	end)
@@ -223,18 +246,18 @@ watchLoadingEnd() -- best-effort attempt at startup
 -- EVENT HANDLER
 -- ============================================================
 
-RestockNotificationEvent.OnClientEvent:Connect(function(arg1, arg2)
+RestockNotificationEvent.OnClientEvent:Connect(function(arg1, arg2, arg3)
 	if type(arg1) ~= "string" then return end
 
-	local ok, result = pcall(buildMessage, arg1, arg2)
+	local ok, result = pcall(buildMessage, arg1, arg2, arg3)
 	if not ok or not result then
 		warn("[RestockNotification] buildMessage failed:", result)
 		return
 	end
 
 	if isLoadingActive() then
-		-- Loading screen is up — queue it (overwrite any older pending msg)
-		pendingMessage = result
+		-- Loading screen is up — queue it for later
+		table.insert(pendingQueue, result)
 		watchLoadingEnd() -- ensure watcher is active regardless of startup timing
 	else
 		showNotification(result)

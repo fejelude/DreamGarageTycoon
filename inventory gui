@@ -109,6 +109,11 @@ local hotbarSlots = {}  -- slotIndex -> button ref
 local selectedSlot = nil
 local SLOT_COUNT   = 6
 
+-- 📦 INVENTORY TRACKING (Moved to top to prevent scope errors)
+local toolToCleanName = {}
+local counts          = {}
+local sampleTool      = {}
+
 -- Scroll frame reference (disabled during drag to prevent mobile interference)
 local hotbarScrollFrame = slotsFolder and slotsFolder:FindFirstChildWhichIsA("ScrollingFrame", true)
 
@@ -187,6 +192,8 @@ local dragSourceSlot   = nil   -- hotbar slot index when source is hotbar
 local dragSourceButton = nil   -- inventory button ref when source is inventory
 
 local scheduleRender  -- forward declaration
+local renderCurrentTab -- forward declaration
+local updateHotbarUI  -- forward declaration
 
 local DRAG_ICON_ALPHA        = 0.25
 local DRAG_TWEEN_INFO        = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -501,7 +508,7 @@ local function refreshSlotVisual(slotIndex)
 	end
 end
 
-local function updateHotbarUI()
+function updateHotbarUI()
 	if not slotsFolder then return end
 
 	-- Sanitize: remove hotbar assignments that exceed owned count
@@ -957,15 +964,6 @@ local function toggleOtherGuis(shouldHide)
 end
 
 -- FIX #1 + FIX #4
-<<<<<<< HEAD
-local function addButtonEffects(btn, getBaseBg)
-	if btn:GetAttribute("__HoverBound") then return {} end
-	btn:SetAttribute("__HoverBound", true)
-
-	local baseZ     = btn.ZIndex
-	local isHovering = false
-	local isPressed  = false
-=======
 -- addButtonEffects now RETURNS the connection list so callers
 -- can store them for cleanup.  It also guards against being
 -- called more than once on the same button via the attribute
@@ -983,7 +981,6 @@ local function addButtonEffects(btn, getBaseBg)
 	local isPressed = false
 
 	-- FIX #1: collect connections to return
->>>>>>> origin/Master
 	local connections = {}
 
 	local uiScale = btn:FindFirstChildOfClass("UIScale")
@@ -999,48 +996,28 @@ local function addButtonEffects(btn, getBaseBg)
 		if isPressed      then target = 0.95
 		elseif isHovering then target = 1.05
 		end
-<<<<<<< HEAD
-		TweenService:Create(uiScale, tweenInfo, { Scale = target }):Play()
-=======
 		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
->>>>>>> origin/Master
 	end
 
 	table.insert(connections, btn.MouseEnter:Connect(function()
 		isHovering = true
 		UIAudioConfig.PlayHover()
 		btn.ZIndex = baseZ + 20
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/Master
 		updateScale()
 	end))
 	table.insert(connections, btn.MouseLeave:Connect(function()
 		isHovering = false
-<<<<<<< HEAD
-		isPressed  = false
-		btn.ZIndex = baseZ
-		updateScale()
-	end))
-=======
 		isPressed = false
 		btn.ZIndex = baseZ
 
 		updateScale()
 	end))
-
->>>>>>> origin/Master
 	table.insert(connections, btn.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			isPressed = true
 			updateScale()
 		end
 	end))
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/Master
 	table.insert(connections, btn.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			isPressed = false
@@ -1069,21 +1046,6 @@ local function addOpenButtonHover(btn)
 		if isPressed      then target = 0.95
 		elseif isHovering then target = 1.05
 		end
-<<<<<<< HEAD
-		TweenService:Create(uiScale, tweenInfo, { Scale = target }):Play()
-	end
-
-	btn.MouseEnter:Connect(function()  isHovering = true;  UIAudioConfig.PlayHover(); updateScale() end)
-	btn.MouseLeave:Connect(function()  isHovering = false; isPressed = false;           updateScale() end)
-	btn.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = true; updateScale()
-		end
-	end)
-	btn.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = false; updateScale()
-=======
 		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
 	end
 
@@ -1107,7 +1069,6 @@ local function addOpenButtonHover(btn)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			isPressed = false
 			updateScale()
->>>>>>> origin/Master
 		end
 	end)
 end
@@ -1207,9 +1168,7 @@ local function updateEmptyIndicator(tierName, isEmpty)
 end
 
 -- ========= INVENTORY TRACKING =========
-local toolToCleanName = {}
-local counts          = {}
-local sampleTool      = {}
+-- (Variables moved to top)
 
 local function normalizeToolName(toolName)
 	if not CarStats or not CarStats.Cars then return nil end
@@ -1259,11 +1218,7 @@ end
 
 -- ========= UI POOL =========
 local poolFolder = Instance.new("Folder")
-<<<<<<< HEAD
-poolFolder.Name  = "__InventoryUIPool"
-=======
 poolFolder.Name = "__InventoryUIPool"
->>>>>>> origin/Master
 poolFolder.Parent = inventoryScreenGui or playerGui
 
 local buttonPool    = {}
@@ -1320,11 +1275,8 @@ local function setGlow(label, rarity)
 	local lastRarity = grad:GetAttribute("__GlowRarity")
 	if lastRarity ~= rarity then
 		grad:SetAttribute("__GlowRarity", rarity)
-<<<<<<< HEAD
-=======
 
 		-- Cancel the previous tween stored on the gradient (if any)
->>>>>>> origin/Master
 		if not _G.__GlowTweens then _G.__GlowTweens = setmetatable({}, { __mode = "k" }) end
 		if _G.__GlowTweens[grad] then _G.__GlowTweens[grad]:Cancel() end
 		grad.Offset = Vector2.new(-0.35, 0)
@@ -1370,15 +1322,9 @@ local function createItemButton()
 	nameLabel.ZIndex        = 5
 	nameLabel.TextColor3    = Color3.new(1, 1, 1)
 
-<<<<<<< HEAD
-	local equippedStroke    = Instance.new("UIStroke")
-	equippedStroke.Name     = "__EquippedStroke"
-	equippedStroke.Color    = Color3.fromRGB(255, 255, 100)
-=======
 	local equippedStroke = Instance.new("UIStroke")
 	equippedStroke.Name = "__EquippedStroke"
 	equippedStroke.Color = Color3.fromRGB(255, 255, 100) -- CONFIG.Colors.Gold
->>>>>>> origin/Master
 	equippedStroke.Thickness = 4
 	equippedStroke.Enabled  = false
 	equippedStroke.Parent   = btn
@@ -1422,7 +1368,7 @@ end
 -- ========= RENDER UI =========
 local refreshQueued = false
 
-local function renderCurrentTab()
+function renderCurrentTab()
 	if not isOpen then return end
 	if not CarStats or not CarStats.Cars then
 		releaseAllButtons()
@@ -1703,7 +1649,6 @@ local function performClose()
 	tierFrame.Visible   = false
 	openButton.Visible  = true
 
-	Controls:Enable()
 	player.CameraMinZoomDistance = CONFIG.Zoom.Min
 	player.CameraMaxZoomDistance = CONFIG.Zoom.Max
 
@@ -1722,7 +1667,6 @@ openButton.Activated:Connect(function()
 	currentTab = "Common"
 	updateBackground()
 
-	Controls:Disable()
 	local currentZoom = (camera.CFrame.Position - camera.Focus.Position).Magnitude
 	player.CameraMinZoomDistance = currentZoom
 	player.CameraMaxZoomDistance = currentZoom

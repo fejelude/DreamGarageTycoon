@@ -68,14 +68,15 @@ local function toggleVisual(obj, isVisible, canTouch)
 end
 
 local function getLevelModel(plot, levelName)
-	local model = plot:FindFirstChild(levelName)
+	local altName = levelName == "Level1" and "Level 1" or (levelName == "Level2" and "Level 2" or levelName)
+	local model = plot:FindFirstChild(levelName) or plot:FindFirstChild(altName)
 	if model then return model end
 
 	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 	if dedicatedFolder then
 		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
 		if plotStorage then
-			return plotStorage:FindFirstChild(levelName)
+			return plotStorage:FindFirstChild(levelName) or plotStorage:FindFirstChild(altName)
 		end
 	end
 	return nil
@@ -245,7 +246,7 @@ end
 local function setupLevel2BuyButton(plot, buyButtonModel)
 	if not buyButtonModel then return end
 
-	local buyButton = buyButtonModel:FindFirstChild("BuyButton")
+	local buyButton = buyButtonModel:FindFirstChild("BuyButton") or buyButtonModel
 	if not buyButton then return end
 
 	if buyButton:GetAttribute("Connected") then return end
@@ -406,7 +407,7 @@ local function setupPlot(plot)
 			if newOwner == "" then 
 				updatePadVisuals(plot, 1, 1)
 
-				local level2BuyButton = plot:FindFirstChild("Level2BuyButton")
+				local level2BuyButton = plot:FindFirstChild("Level2BuyButton") or plot:FindFirstChild("Level 2 Buy Button")
 				if level2BuyButton then
 					toggleVisual(level2BuyButton, false, false)
 				end
@@ -427,7 +428,7 @@ local function setupPlot(plot)
 					local savedBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
 					updatePadVisuals(plot, savedLevel, savedBaseLevel)
 
-					local level2BuyButton = plot:FindFirstChild("Level2BuyButton")
+					local level2BuyButton = plot:FindFirstChild("Level2BuyButton") or plot:FindFirstChild("Level 2 Buy Button")
 					if level2BuyButton then
 						toggleVisual(level2BuyButton, savedBaseLevel < 2, savedBaseLevel < 2)
 					end
@@ -468,15 +469,22 @@ local function setupPlot(plot)
 		setupPadsInFolder(level1)
 
 		local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-		local level2 = nil
-		if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-			level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
-		end
-		if not level2 then level2 = plot:FindFirstChild("Level2") end
+		local level2 = getLevelModel(plot, "Level2")
 
 		setupPadsInFolder(level2)
 
-		local level2BuyButton = plot:WaitForChild("Level2BuyButton", 10)
+		local level2BuyButton = plot:WaitForChild("Level2BuyButton", 5)
+		if not level2BuyButton then
+			level2BuyButton = plot:FindFirstChild("Level 2 Buy Button")
+		end
+		
+		-- FIX: If the button is inside Level1 (map builder error), find it
+		if not level2BuyButton then
+			local l1 = getLevelModel(plot, "Level1")
+			if l1 then
+				level2BuyButton = l1:FindFirstChild("Level2BuyButton") or l1:FindFirstChild("Level 2 Buy Button")
+			end
+		end
 		if level2BuyButton then
 			if ownerVal.Value == "" then
 				toggleVisual(level2BuyButton, false, false)

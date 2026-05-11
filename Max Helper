@@ -1,7 +1,7 @@
 -- Purpose: Updates the AmountInput with the maximum available balance, or toggles to 0 if already at max.
 -- Runs on: Client
 -- Location: StarterGui / PlayerGui -> BankGui -> MaxButton
--- Dependencies: Players, SoundService
+-- Dependencies: Players, ReplicatedStorage (UIAudioConfig)
 -- Public API: None
 -- Networking: None (UI display only)
 -- Security: Completely safe; relies entirely on server validation for actual transfers.
@@ -11,7 +11,10 @@
 print("✅ Max Button Script Loaded (Toggle Edition)")
 
 local Players = game:GetService("Players")
-local SoundService = game:GetService("SoundService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Require the centralized audio module
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
 local hiddenStats = player:WaitForChild("HiddenStats", 10)
@@ -20,9 +23,6 @@ local mainWindow = button.Parent
 
 -- 📂 UI REFERENCES
 local AmountInput = mainWindow:WaitForChild("AmountInput", 5)
-
--- 🔊 SOUND CONFIG
-local CLICK_SOUND_ID = "rbxassetid://9083627113" 
 
 button.MouseButton1Click:Connect(function()
 	print("🖱️ MAX Button Clicked")
@@ -34,13 +34,8 @@ button.MouseButton1Click:Connect(function()
 		currentBank = math.floor(cashValue.Value)
 	end
 
-	-- 2. Play Click Sound
-	local s = Instance.new("Sound")
-	s.SoundId = CLICK_SOUND_ID
-	s.Volume = 0.5
-	s.Parent = SoundService
-	s:Play()
-	game.Debris:AddItem(s, 2)
+	-- 2. Play Click Sound (Centralized)
+	UIAudioConfig.PlayClick()
 
 	-- 3. Toggle Logic
 	if AmountInput then

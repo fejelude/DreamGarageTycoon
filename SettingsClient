@@ -281,7 +281,7 @@ if workspace:GetAttribute("CarLODEnabled") == nil then
 end
 
 if workspace:GetAttribute("CarAnimationEnabled") == nil then
-	setAnimationEnabled(false) -- Default: Animation OFF
+	setAnimationEnabled(true) -- Default: Animation ON
 end
 
 if SoundService:GetAttribute("MusicMuted") == nil then

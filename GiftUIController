@@ -13,6 +13,7 @@ local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- 📚 MODULES
 local BaseSkinStats
@@ -353,19 +354,26 @@ local function UpdateSlots()
 						btnConnections[i] = nil
 					end
 
+					-- FIX: Capture target in a local to prevent stale closure references
+					local capturedTarget = target
 					btnConnections[i] = giftBtn.MouseButton1Click:Connect(function()
 						if not currentProductId or giftBtn:GetAttribute("Cooldown") then return end
+
+						-- FIX: Verify the target player is still in the server
+						if not capturedTarget or not capturedTarget.Parent then
+							SetIndicator("Player has left the server", Color3.fromRGB(255, 85, 85))
+							return
+						end
 
 						giftBtn:SetAttribute("Cooldown", true)
 						task.delay(1, function() giftBtn:SetAttribute("Cooldown", false) end)
 
-						local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
 						UIAudioConfig.PlayClick()
 						UIAudioConfig.ShowPurchaseLoading()
-						currentTargetName = target.Name
+						currentTargetName = capturedTarget.Name
 						SetIndicator("Processing...", Color3.fromRGB(255, 255, 100))
 
-						SetIntentEvent:FireServer(target.UserId)
+						SetIntentEvent:FireServer(capturedTarget.UserId)
 						MarketplaceService:PromptProductPurchase(player, currentProductId)
 					end)
 				elseif btnConnections[i] then
@@ -384,7 +392,6 @@ end
 -- ============================================================================
 local function PerformClose()
 	if not isMenuOpen then return end
-	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
 	UIAudioConfig.PlayClick()
 	setFocusMode(false)
 end
@@ -399,8 +406,31 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 		SetIndicator("Gift sent to " .. currentTargetName .. "!", Color3.fromRGB(85, 255, 127))
 		playSfx(SFX.Success, 0.6, screenGui)
 
-		task.delay(2.5, function()
-			setFocusMode(false)
+		-- [POLISH] Close the Gift UI immediately so the NPC can take focus
+		task.delay(1.5, function()
+			-- If the player is still locked (likely by an NPC reaction), 
+			-- we wait for that lock to release before we unhide other GUIs.
+			if player:GetAttribute("MovementLock") then
+				-- Hide our own UI components first
+				mainFrame.Visible = false
+				screenGui.Enabled = false
+				isMenuOpen = false 
+				detector.Visible = false
+				
+				task.spawn(function()
+					while player:GetAttribute("MovementLock") do
+						task.wait(0.5)
+					end
+					-- Force cleanup of other GUIs and FOV since setFocusMode(false) 
+					-- would return early now that isMenuOpen is false.
+					toggleOtherGuis(false)
+					setMovementLocked(false)
+					tweenFov(normalFov)
+				end)
+			else
+				-- Standard close
+				setFocusMode(false)
+			end
 		end)
 	else
 		SetIndicator("Purchase Cancelled", Color3.fromRGB(255, 85, 85))

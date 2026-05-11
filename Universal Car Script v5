@@ -13,10 +13,12 @@
 ]]
 
 local RunService = game:GetService("RunService")
+local Players    = game:GetService("Players")
 local Tool       = script.Parent
 local Handle     = Tool:WaitForChild("Handle")
 
-local giftPrompt = nil
+local isGiftActive = false
+local TRIGGER_COOLDOWN = 2
 
 -- === SETTINGS ===
 local HEIGHT_OFFSET = 2
@@ -78,6 +80,8 @@ local function yieldEvery(i: number)
 		RunService.Heartbeat:Wait()
 	end
 end
+
+-- (Prompt management moved to client)
 
 local function prepareOnce()
 	-- Fix #1: double-guard — attribute (survives clone) + lock (prevents race)
@@ -144,51 +148,13 @@ local function prepareOnce()
 	-- Fix #2: Pivot AFTER all welds are live — model moves as one rigid body
 	CarModel:PivotTo(Handle.CFrame * CFrame.new(0, HEIGHT_OFFSET, 0))
 
-	giftPrompt = primary:FindFirstChild("GiftCarPrompt")
-	if not giftPrompt then
-		giftPrompt = Instance.new("ProximityPrompt")
-		giftPrompt.Name = "GiftCarPrompt"
-		giftPrompt.ActionText = "Gift Car"
-		giftPrompt.ObjectText = Tool.Name
-		giftPrompt.RequiresLineOfSight = false
-		giftPrompt.HoldDuration = 0
-		giftPrompt.MaxActivationDistance = 10
-		giftPrompt.Enabled = false
-		giftPrompt.Parent = primary
-		
-		local lastTrigger = 0
-		giftPrompt.Triggered:Connect(function(player)
-			if os.clock() - lastTrigger < 0.5 then return end
-			lastTrigger = os.clock()
-			
-			local giftFolder = game:GetService("ReplicatedStorage"):FindFirstChild("PlayerCarGiftingRemotes")
-			if giftFolder then
-				local triggerEvent = giftFolder:FindFirstChild("TriggerPromptEvent")
-				if triggerEvent then
-					local giver = game:GetService("Players"):GetPlayerFromCharacter(Tool.Parent)
-					if giver and giver ~= player then
-						triggerEvent:Fire(giver, player, Tool)
-					end
-				end
-			end
-		end)
+	-- Clean up any leftover ProximityPrompt on the car model from old versions
+	local legacyPrompt = primary:FindFirstChild("GiftCarPrompt")
+	if legacyPrompt then
+		legacyPrompt:Destroy()
 	end
 end
 
 -- Start preparing immediately (not on equip) — zero lag when player picks it up
 task.spawn(prepareOnce)
 
--- Fix #5: Equipped handler was redundant (Transparency already 1 above).
--- Now used only for anything genuinely needed on equip.
-Tool.Equipped:Connect(function()
-	if giftPrompt then
-		giftPrompt.Enabled = true
-	end
-end)
-
--- Fix #6: Unequipped stub — react to drop/swap
-Tool.Unequipped:Connect(function()
-	if giftPrompt then
-		giftPrompt.Enabled = false
-	end
-end)

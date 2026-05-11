@@ -95,7 +95,7 @@ end
 local DIALOGUE_POOLS = {
 	Greetings = {
 		"Hello there {player}, welcome to my shop. Wanna buy?",
-		"Ah, {player}! I see you've got <font color='"..MONEY_COLOR.."'><b>{money}</b></font> in that Wallet. Ready to boost your Garage?",
+		"Ah, {player}! I see you've got <font color='"..MONEY_COLOR.."'>{money}</font> in that Wallet. Ready to boost your Garage?",
 		"Step right up, {player}. Let's put that <font color='"..MONEY_COLOR.."'><b>Money</b></font> to good use on your Tycoon.",
 		"Welcome back! Those cars on your plot must be printing cash. Let's get you an upgrade.",
 		"Greetings! The <font color='"..UNCOMMON_COLOR.."'><b>Uncommon</b></font> shop is open, {player}."
@@ -116,13 +116,13 @@ local DIALOGUE_POOLS = {
 		"Catch you later. Come back when you need more CPS."
 	},
 	Reactions = { -- IN-GAME CASH REACTIONS
-		"A wise investment, {player}. Place that <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> on a pad and watch it print <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>!",
-		"The <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font>? Oh yeah, that's gonna look incredible on your plot. Plus, it generates <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>.",
-		"Pleasure doing business. I can't wait to see the <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> sitting in your garage making <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>."
+		"A wise investment, {player}. Place that <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> on a pad and watch it print <font color='"..CPS_COLOR.."'>{cps} CPS</font>!",
+		"The <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font>? Oh yeah, that's gonna look incredible on your plot. Plus, it generates <font color='"..CPS_COLOR.."'>{cps} CPS</font>.",
+		"Pleasure doing business. I can't wait to see the <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> sitting in your garage making <font color='"..CPS_COLOR.."'>{cps} CPS</font>."
 	},
 	RobuxReactions = { -- ROBUX SPECIFIC REACTIONS
 		"Whoa, paying with <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>? Thanks, {player}! That <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> is worth every penny.",
-		"Ah, a high roller! Thanks for the <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>, {player}. Enjoy your new <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> making <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>!",
+		"Ah, a high roller! Thanks for the <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>, {player}. Enjoy your new <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> making <font color='"..CPS_COLOR.."'>{cps} CPS</font>!",
 		"Using <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>, I see? I really appreciate the support, {player}. Get that <font color='"..UNCOMMON_COLOR.."'><b>{carName}</b></font> on a pad ASAP!"
 	}
 }
@@ -192,6 +192,10 @@ end
 local function setFocusMode(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
+
+	if player.Character then
+		player:SetAttribute("MovementLock", active)
+	end
 end
 
 -- ============================================================================
@@ -287,14 +291,14 @@ local function stopInteraction()
 	local controls = getControls()
 	if controls then controls:Enable() end
 
-	if player.Character then
-		local humanoid = player.Character:FindFirstChild("Humanoid")
-		player:SetAttribute("MovementLock", false)
-	end
-
 	local myGui, container = getUIElements()
 	if myGui then myGui.Enabled = false end
 	if container then container.Visible = false end
+
+	-- Restore camera to default
+	local currentCamera = Workspace.CurrentCamera
+	currentCamera.CameraType = Enum.CameraType.Custom
+	currentCamera.FieldOfView = 70
 end
 
 local function animateButton(btn)
@@ -358,7 +362,6 @@ local function startInteraction(npcModel)
 	if player.Character then
 		local humanoid = player.Character:FindFirstChild("Humanoid")
 		if humanoid then
-			player:SetAttribute("MovementLock", true)
 			local deathConn
 			deathConn = humanoid.Died:Connect(function()
 				if deathConn then deathConn:Disconnect() end
@@ -366,6 +369,16 @@ local function startInteraction(npcModel)
 			end)
 			table.insert(buttonConnections, deathConn)
 		end
+	end
+
+	-- Refresh camera reference to prevent stale object bugs
+	local camera = Workspace.CurrentCamera
+	local camPart = npcModel:FindFirstChild("CameraAimPart")
+	if camPart then
+		camera.CameraType = Enum.CameraType.Scriptable
+		TweenService:Create(camera, TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
+			CFrame = camPart.CFrame
+		}):Play()
 	end
 
 	local myGui = playerGui:WaitForChild(GUI_ID, 5)
@@ -426,22 +439,34 @@ end
 -- ============================================================================
 -- 📣 POST-PURCHASE REACTION EVENT LOGIC
 -- ============================================================================
-purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux)
+purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipientName, giftSenderName)
 	-- FIX: 0.8s delay before NPC speaks after purchase
 	task.wait(0.8)
 
 	local carData = CarStats.Cars[carId]
 	if not carData then return end
 
-	-- FIX: Full clean stop before re-engaging to avoid orphaned connections
-	if isInteracting then stopInteraction() end
+	-- 🛡️ [POLISH] Close Shop UI immediately so it doesn't overlap
+	local shopUi = playerGui:FindFirstChild("UncommonShopUi")
+	if shopUi then shopUi.Enabled = false end
 
-	-- Guard: if another interaction started during the wait, abort
-	if isInteracting then return end
+	-- 🛡️ [POLISH] Refresh camera reference to prevent stale object bugs
+	local camera = Workspace.CurrentCamera
+	local npcFolder = Workspace:FindFirstChild(NPC_FOLDER)
+	local npcModel = npcFolder and npcFolder:FindFirstChild(TARGET_NPC)
+	local camPart = npcModel and npcModel:FindFirstChild("CameraAimPart")
+	
+	if camPart then
+		camera.CameraType = Enum.CameraType.Scriptable
+		TweenService:Create(camera, TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
+			CFrame = camPart.CFrame
+		}):Play()
+	end
 
 	print("💬 [DarrelLogic] Triggering Post-Purchase Reaction. Car: " .. carId .. " | Robux: " .. tostring(isRobux))
+	
 	isInteracting = true
-	setFocusMode(true)
+	setFocusMode(true) -- Focus on the NPC dialogue
 
 	local myGui, container, dialogueLabel = getUIElements()
 	if myGui and container and dialogueLabel then
@@ -449,16 +474,22 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux)
 		container.Visible = true
 		setButtonsState(false)
 
-		local poolToUse = isRobux and "RobuxReactions" or "Reactions"
-		local reactionText = getRandomDialogue(poolToUse, carId, carData.CPS)
+		local reactionText = ""
+		if giftRecipientName then
+			reactionText = "Gift sent! <font color='"..USER_COLOR.."'><b>" .. giftRecipientName .. "</b></font> received the <font color='"..UNCOMMON_COLOR.."'><b>" .. carId .. "</b></font>."
+		else
+			local poolToUse = isRobux and "RobuxReactions" or "Reactions"
+			reactionText = getRandomDialogue(poolToUse, carId, carData.CPS)
+		end
 
 		typewrite(dialogueLabel, reactionText, function()
 			task.wait(REACTION_PAUSE)
-			stopInteraction()
+			stopInteraction() -- Fully close everything
 		end)
 	else
 		-- Safety: couldn't find GUI, abort gracefully
 		isInteracting = false
+		setFocusMode(false)
 	end
 end)
 
@@ -486,4 +517,3 @@ setupNPC()
 player.CharacterAdded:Connect(function()
 	stopInteraction()
 end)
-

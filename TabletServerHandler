@@ -2,13 +2,7 @@
 -- Runs on: Server
 -- Location: ServerScriptService
 -- Dependencies: Players, Workspace, ReplicatedStorage, MarketplaceService, Debris
--- Public API: None
 -- Networking: TabletEvent (RemoteEvent) - Client requests Claim/Prompt2X, Server replies with ClaimResult.
--- Security: Ownership verification, distance checks, strict type validation, API rate limiting.
--- Performance: Cached UserId and Headshot lookups, early-exit validation on remotes.
--- Notes: DevProduct receipt handling is moved to ReceiptRouter. ProcessReceipt is omitted here.
--- FIX: Cash is now read from HiddenStats instead of leaderstats to match the new data structure.
--- UPDATE: 2x AFK multiplier is applied at claim time when plot.IsAFK == true.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -20,12 +14,8 @@ local Debris = game:GetService("Debris")
 local DEV_PRODUCT_ID = 3509697462
 local TYCOON_FOLDER_NAME = "Tycoons"
 local CLAIM_COOLDOWN = 1.5
-local PROMPT_COOLDOWN_TIME = 2.5 -- 🛡️ SECURITY: DevProduct prompt rate limit
-local MAX_CLAIM_DISTANCE = 20    -- 🛡️ SECURITY: Max studs away to claim
-
--- 🔊 SOUND CONFIGURATION
-local SUCCESS_SOUND = "rbxassetid://140072726814802"
-local FAIL_SOUND    = "rbxassetid://3779045779"
+local PROMPT_COOLDOWN_TIME = 2.5 
+local MAX_CLAIM_DISTANCE = 20    
 
 -- 📂 REFERENCES
 local TycoonFolder = Workspace:WaitForChild(TYCOON_FOLDER_NAME)
@@ -116,26 +106,14 @@ local function nukeConstraints(obj)
 	end
 end
 
--- 🔊 HELPER: PLAY SOUND
-local function playSound(part, soundId, volume)
-	local sound = Instance.new("Sound")
-	sound.SoundId = soundId
-	sound.Volume = volume or 1
-	sound.RollOffMaxDistance = 50
-	sound.Parent = part
-	sound:Play()
-	Debris:AddItem(sound, 2)
-end
-
 -- ============================================================================
--- 🛠️ TABLET SETUP FUNCTION (Visuals on Server)
+-- 🛠️ TABLET SETUP FUNCTION
 -- ============================================================================
 local function setupTablet(plot)
 	task.spawn(function()
 		local model = plot:WaitForChild("ClaimEarnings", 30)
 		if not model then return end
 
-		-- 1. SETUP TOTAL CPS DISPLAY
 		local cpsPart = model:WaitForChild("TotalEarningsPerSecond", 5)
 		if cpsPart then
 			local cpsGui = cpsPart:WaitForChild("EarningsAmountGUI", 5)
@@ -146,7 +124,6 @@ local function setupTablet(plot)
 					local function updateCPS()
 						local currentCPS = plot:GetAttribute("CurrentCPS") or 0
 						if plot:GetAttribute("IsAFK") == true then
-							-- Show the actual doubled rate so the number matches reality
 							cpsLabel.Text = "$ " .. formatNumber(currentCPS * 2) .. "/s (2x)"
 						else
 							cpsLabel.Text = "$ " .. formatNumber(currentCPS) .. "/s"
@@ -163,15 +140,12 @@ local function setupTablet(plot)
 		local claimPart = model:WaitForChild("ClaimPart", 10)
 		if not mainPart or not claimPart then return end
 
-		-- Anchor Parts
 		mainPart.Anchored  = true; mainPart.CanCollide  = true; mainPart.Velocity  = Vector3.zero
 		claimPart.Anchored = true; claimPart.CanCollide = true; claimPart.Velocity = Vector3.zero
 
-		-- 2. GET AVATAR & USERNAME GUIS
 		local avatarGui   = mainPart:WaitForChild("AvatarGUI", 10)
 		local usernameGui = mainPart:WaitForChild("UsernameGUI", 10)
 
-		-- Get Revenue GUI
 		local revenueGui = mainPart:FindFirstChild("RevenueGUI")
 		if not revenueGui and model:FindFirstChild("Revenue-indicator") then
 			revenueGui = model["Revenue-indicator"]:FindFirstChild("RevenueGUI")
@@ -179,7 +153,6 @@ local function setupTablet(plot)
 
 		if not (avatarGui and usernameGui and revenueGui) then return end
 
-		-- 3. GET LABELS & VALUES
 		local avatarLabel   = avatarGui:WaitForChild("Avatar-Label")
 		local usernameLabel = usernameGui:WaitForChild("Username")
 		local revenueLabel  = revenueGui:WaitForChild("Total-Revenue")
@@ -191,7 +164,6 @@ local function setupTablet(plot)
 		nukeConstraints(avatarLabel)
 		nukeConstraints(usernameLabel)
 
-		-- 🔧 AUTO-FIX: SEPARATE "$" FROM NUMBER
 		if revenueLabel:IsA("TextLabel") then
 			local dollarLabel = revenueGui:FindFirstChild("Dollar-Static")
 			if not dollarLabel then
@@ -212,7 +184,6 @@ local function setupTablet(plot)
 			end
 		end
 
-		-- 4. UPDATE FUNCTIONS
 		local lastOwnerName = nil
 		local function updateOwnerInfo()
 			local playerName = ownerVal.Value
@@ -221,7 +192,6 @@ local function setupTablet(plot)
 
 			if playerName and playerName ~= "" then
 				usernameLabel.Text = playerName
-
 				local onlinePlayer = Players:FindFirstChild(playerName)
 				local userId = onlinePlayer and onlinePlayer.UserId or getUserIdCached(playerName)
 				avatarLabel.Image = getHeadshotCached(userId)
@@ -236,27 +206,24 @@ local function setupTablet(plot)
 			revenueLabel.Text = formatNumber(pendingVal.Value * multiplier)
 		end
 
-		-- 5. LISTENERS
 		ownerVal.Changed:Connect(updateOwnerInfo)
 		pendingVal.Changed:Connect(updateRevenue)
-		plot:GetAttributeChangedSignal("IsAFK"):Connect(updateRevenue) -- instantly refresh display on AFK toggle
+		plot:GetAttributeChangedSignal("IsAFK"):Connect(updateRevenue)
 
 		updateOwnerInfo()
 		updateRevenue()
 	end)
 end
 
--- Initialize Existing Tycoons
 for _, plot in pairs(TycoonFolder:GetChildren()) do
 	setupTablet(plot)
 end
 TycoonFolder.ChildAdded:Connect(setupTablet)
 
 -- ============================================================================
--- 📡 REMOTE HANDLING (CLAIM LOGIC)
+-- 📡 REMOTE HANDLING
 -- ============================================================================
 TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
-	-- 🛡️ SECURITY: Strict Type Validation
 	if type(action) ~= "string" or type(plotName) ~= "string" then return end
 
 	local function respondClaim(success, payload)
@@ -269,7 +236,6 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 		return
 	end
 
-	-- Security Check 1: Ownership
 	if plot.Owner.Value ~= player.Name then
 		if action == "Claim" then respondClaim(false, "NotOwner") end
 		return
@@ -285,7 +251,6 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 		return
 	end
 
-	-- 🛡️ Security Check 2: Distance Verification
 	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
 		if action == "Claim" then respondClaim(false, "NoCharacter") end
 		return
@@ -298,7 +263,6 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 	end
 
 	if action == "Claim" then
-		-- Cooldown
 		local lastClaim = playerCooldowns[player.UserId] or 0
 		if (os.clock() - lastClaim) < CLAIM_COOLDOWN then
 			respondClaim(false, "Cooldown")
@@ -309,34 +273,24 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 
 		if amount > 0 then
 			pendingVal.Value = 0
-
-			-- 💰 2x AFK MULTIPLIER: Double the payout if the player is on the AFK stand.
-			-- The plot's IsAFK attribute is set/cleared by AFKStandService, so this is
-			-- server-authoritative and cannot be spoofed by the client.
 			local multiplier = plot:GetAttribute("IsAFK") == true and 2 or 1
 			local finalAmount = amount * multiplier
 
-			-- ✅ FIX: Cash now lives in HiddenStats, not leaderstats
 			local hs = player:FindFirstChild("HiddenStats")
 			if hs and hs:FindFirstChild("Cash") then
 				hs.Cash.Value += finalAmount
 			end
 
 			playerCooldowns[player.UserId] = os.clock()
-			playSound(claimPart, SUCCESS_SOUND, 1.0)
-			respondClaim(true, finalAmount) -- Send the actual credited amount back to the client
+			respondClaim(true, finalAmount)
 		else
 			playerCooldowns[player.UserId] = os.clock()
-			playSound(claimPart, FAIL_SOUND, 0.8)
 			respondClaim(false, "NoEarnings")
 		end
 
 	elseif action == "Prompt2X" then
-		-- 🛡️ SECURITY: DevProduct Prompts Rate Limiter
 		local lastPrompt = promptCooldowns[player.UserId] or 0
-		if (os.clock() - lastPrompt) < PROMPT_COOLDOWN_TIME then
-			return -- Drop spam
-		end
+		if (os.clock() - lastPrompt) < PROMPT_COOLDOWN_TIME then return end
 		promptCooldowns[player.UserId] = os.clock()
 
 		local amount = pendingVal.Value
@@ -348,7 +302,6 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 	end
 end)
 
--- 🧹 Memory Leak Prevention
 Players.PlayerRemoving:Connect(function(player)
 	playerCooldowns[player.UserId] = nil
 	promptCooldowns[player.UserId] = nil

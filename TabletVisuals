@@ -35,9 +35,9 @@ local START_OFFSET = Vector3.new(0, 2, 0)
 
 -- 🔊 SOUNDS
 local HOVER_SOUND_ID = "rbxassetid://6895079853" 
-local CLICK_SOUND_ID = "rbxassetid://9083627113"       
-local FAIL_SOUND_ID = "rbxassetid://3779045779"        
-local SUCCESS_SOUND_ID = "rbxassetid://140072726814802" 
+local CLICK_SOUND_ID = "rbxassetid://9083627113"        
+local FAIL_SOUND_ID = "rbxassetid://139063727738556"        
+local SUCCESS_SOUND_ID = "rbxassetid://139806997485371" -- ✅ UPDATED SOUND ID
 local HOVER_VOLUME = 0.5
 
 -- 🛡️ STATE

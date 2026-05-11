@@ -10,28 +10,42 @@
 --           + UIAudioConfig.PlayRobux() when a Robux button is clicked.
 --           This script is the only place HidePurchaseLoading() needs to live.
 -- ============================================================================
-
 local MarketplaceService = game:GetService("MarketplaceService")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
-local UIAudioConfig      = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local Players            = game:GetService("Players")
+
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- ============================================================================
 -- Ensure the Loading frame starts hidden
 -- ============================================================================
-local Players   = game:GetService("Players")
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- Wait briefly for StarterGui replication before hiding
 task.defer(function()
-	local screen = playerGui:FindFirstChild("PurchasingState")
+	local screen = playerGui:WaitForChild("PurchasingState", 10)
 	if screen then
-		local loading = screen:FindFirstChild("Loading")
+		local loading = screen:WaitForChild("Loading", 10)
 		if loading then
 			loading.Visible = false
+		else
+			warn("[RobuxPurchaseState] 'Loading' frame not found inside PurchasingState")
 		end
+	else
+		warn("[RobuxPurchaseState] 'PurchasingState' ScreenGui not found in PlayerGui")
 	end
 end)
+
+-- ============================================================================
+-- Safe wrapper — prevents stuck loader if UIAudioConfig is misconfigured
+-- ============================================================================
+local function safeHide()
+	if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then
+		UIAudioConfig.HidePurchaseLoading()
+	else
+		warn("[RobuxPurchaseState] HidePurchaseLoading is missing in UIAudioConfig")
+	end
+end
 
 -- ============================================================================
 -- Global listeners — hide loader when any prompt closes
@@ -40,18 +54,18 @@ end)
 -- Developer Products (PromptProductPurchase)
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, _productId, _wasPurchased)
 	if userId ~= player.UserId then return end
-	UIAudioConfig.HidePurchaseLoading()
+	safeHide()
 end)
 
 -- Game Passes (PromptGamePassPurchase) — covers any future gamepass buttons
 MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(gamepassPlayer, _gamePassId, _wasPurchased)
 	if gamepassPlayer ~= player then return end
-	UIAudioConfig.HidePurchaseLoading()
+	safeHide()
 end)
 
 -- Premium Purchase (safety net)
 MarketplaceService.PromptPremiumPurchaseFinished:Connect(function()
-	UIAudioConfig.HidePurchaseLoading()
+	safeHide()
 end)
 
 print("✅ [RobuxPurchaseState] Global loading state listener active.")

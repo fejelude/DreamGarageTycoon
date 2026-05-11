@@ -487,7 +487,12 @@ task.spawn(function()
 			end
 
 			if RestockNotificationEvent then
-				RestockNotificationEvent:FireAllClients("AutoRestock", "Common")
+				local config = generateStockConfiguration(currentID)
+				local featuredNames = {}
+				for name, _ in pairs(config.Featured) do
+					table.insert(featuredNames, name)
+				end
+				RestockNotificationEvent:FireAllClients("AutoRestock", "Common", featuredNames)
 			end
 		end
 	end

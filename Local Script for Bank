@@ -174,9 +174,7 @@ local function setFocusMode(isFocused)
 		toggleOtherGuis(false)
 	end
 
-	if character then
-		player:SetAttribute("MovementLock", isFocused)
-	end
+	-- MovementLock removed to allow walking while UI is open
 end
 
 -- ============================================================================
