@@ -467,6 +467,11 @@ end)
 -- ROTATION LOOP
 -- =========================
 local RestockNotificationEvent = ReplicatedStorage:FindFirstChild("RestockNotificationEvent")
+if not RestockNotificationEvent then
+	RestockNotificationEvent = Instance.new("RemoteEvent")
+	RestockNotificationEvent.Name = "RestockNotificationEvent"
+	RestockNotificationEvent.Parent = ReplicatedStorage
+end
 
 task.spawn(function()
 	local lastGlobalID = getGlobalSeedID()
@@ -487,12 +492,7 @@ task.spawn(function()
 			end
 
 			if RestockNotificationEvent then
-				local config = generateStockConfiguration(currentID)
-				local featuredNames = {}
-				for name, _ in pairs(config.Featured) do
-					table.insert(featuredNames, name)
-				end
-				RestockNotificationEvent:FireAllClients("AutoRestock", "Common", featuredNames)
+				RestockNotificationEvent:FireAllClients("AutoRestock", "Common")
 			end
 		end
 	end
