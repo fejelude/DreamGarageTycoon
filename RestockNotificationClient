@@ -66,6 +66,25 @@ local notifText        = notifFrame:WaitForChild("RestockNotification")
 notifFrame:SetAttribute("ExternallyManaged", true)
 notifFrame.Visible = false
 
+if notificationsGui:IsA("ScreenGui") then
+	notificationsGui.DisplayOrder = 10000
+	notificationsGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+end
+
+local function bringNotificationToFront()
+	local topZIndex = 10000
+	if notifFrame:IsA("GuiObject") then
+		notifFrame.ZIndex = topZIndex
+	end
+	for _, inst in ipairs(notifFrame:GetDescendants()) do
+		if inst:IsA("GuiObject") then
+			inst.ZIndex = topZIndex + 1
+		end
+	end
+end
+
+bringNotificationToFront()
+
 -- ============================================================
 -- HELPERS
 -- ============================================================
@@ -109,6 +128,8 @@ local function processQueue()
 
 	local message = table.remove(notificationQueue, 1)
 
+	bringNotificationToFront()
+	notifText.Visible  = true
 	notifText.Text     = message
 	notifFrame.Visible = true
 	playRestockSound()
@@ -144,21 +165,16 @@ local function buildMessage(arg1: string, arg2: any, arg3: any): string?
 		local color    = getRarityColor(rarity)
 		local hasAccess, requiredRank = hasAccessToShop(rarity)
 
-		local carsList = ""
-		if type(arg3) == "table" and #arg3 > 0 then
-			carsList = "\n<font color=\"#FFFFFF\"><small>(" .. table.concat(arg3, ", ") .. ")</small></font>"
-		end
-
 		if hasAccess then
 			return string.format(
-				[[<font color="%s"><b>%s</b></font> Shop has restocked!!%s]],
-				color, rarity, carsList
+				[[<font color="%s"><b>%s</b></font> Shop has restocked!!]],
+				color, rarity
 			)
 		else
 			return string.format(
-				[[🔒 <font color="%s"><b>%s</b></font> Shop has restocked!!%s ]] ..
+				[[🔒 <font color="%s"><b>%s</b></font> Shop has restocked!! ]] ..
 					[[(Unlock at <font color="#FF4444">%s</font>)]],
-				color, rarity, carsList, requiredRank
+				color, rarity, requiredRank
 			)
 		end
 
@@ -169,31 +185,20 @@ local function buildMessage(arg1: string, arg2: any, arg3: any): string?
 		)
 
 	else
-		-- Specific car restock
+		-- Specific car restock: never expose the car name in the player-facing message.
 		local carName = arg1
 		local carData = CarStats.Cars and CarStats.Cars[carName]
 
 		if carData then
-			local rarity   = carData.Rarity or "Common"
-			local color    = getRarityColor(rarity)
-			local nameStr  = carName
-
-			-- Strip trailing " Car" to avoid "Galadriel Car Car"
-			if nameStr:lower():sub(-4) == " car" then
-				nameStr = nameStr:sub(1, -5)
-			end
+			local rarity = carData.Rarity or "Common"
+			local color  = getRarityColor(rarity)
 
 			return string.format(
-				[[<font color="%s"><b>%s Car</b></font> has been restocked to the ]] ..
-					[[<font color="%s"><b>%s</b></font> Shop!]],
-				color, nameStr, color, rarity
+				[[<font color="%s"><b>%s</b></font> Shop has restocked!!]],
+				color, rarity
 			)
 		else
-			-- Fallback: car missing from CarStats
-			return string.format(
-				[[<font color="%s"><b>%s Car</b></font> has been restocked!]],
-				COLORS.Common, carName
-			)
+			return [[The shop has restocked!!]]
 		end
 	end
 end
@@ -211,7 +216,7 @@ end
 --   guard (loadingWatchConn check) prevents double-firing.
 -- ============================================================
 
-local pendingQueue = {}
+local pendingMessage: string? = nil
 
 local function isLoadingActive(): boolean
 	return playerGui:GetAttribute("LoadingScreenActive") == true
@@ -229,12 +234,10 @@ local function watchLoadingEnd()
 				loadingWatchConn = nil
 			end
 			
-			if #pendingQueue > 0 then
+			if pendingMessage then
 				task.wait(0.5) -- brief grace period after screen fades
-				for _, msg in ipairs(pendingQueue) do
-					showNotification(msg)
-				end
-				table.clear(pendingQueue)
+				showNotification(pendingMessage)
+				pendingMessage = nil
 			end
 		end
 	end)
@@ -256,8 +259,8 @@ RestockNotificationEvent.OnClientEvent:Connect(function(arg1, arg2, arg3)
 	end
 
 	if isLoadingActive() then
-		-- Loading screen is up — queue it for later
-		table.insert(pendingQueue, result)
+		-- Loading screen is up — keep only the latest message for a clean post-load flow.
+		pendingMessage = result
 		watchLoadingEnd() -- ensure watcher is active regardless of startup timing
 	else
 		showNotification(result)
