@@ -760,6 +760,8 @@ local function UpdateActiveCraftPanel()
 			Kit.Tween:SetupButton(skipBtn, function()
 				if skipBtn.Visible and skipBtn.Active and isShopOpen then
 					if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[activeCar] then
+						UIAudioConfig.PlayRobux()
+						UIAudioConfig.ShowPurchaseLoading()
 						MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
 					end
 				end

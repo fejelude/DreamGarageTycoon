@@ -759,6 +759,8 @@ local function UpdateActiveCraftPanel()
 				if skipBtn.Visible and skipBtn.Active and isShopOpen then
 					if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[activeCar] then
 						-- FIX: Robux prompt fires immediately — no in-game confirmation.
+						UIAudioConfig.PlayRobux()
+						UIAudioConfig.ShowPurchaseLoading()
 						MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
 					end
 				end
