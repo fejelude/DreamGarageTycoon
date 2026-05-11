@@ -77,6 +77,20 @@ local function getUI()
 	return notificationsGui, notifFrame, notifText
 end
 
+-- Force Z-Index management (from Master conflict)
+local function bringNotificationToFront(frame, label)
+	if not frame or not label then return end
+	local topZIndex = 10000
+	if frame:IsA("GuiObject") then
+		frame.ZIndex = topZIndex
+	end
+	for _, inst in ipairs(frame:GetDescendants()) do
+		if inst:IsA("GuiObject") then
+			inst.ZIndex = topZIndex + 1
+		end
+	end
+end
+
 local function getRarityColor(rarity: string): string
 	return COLORS[rarity] or COLORS.Common
 end
@@ -118,6 +132,9 @@ local function processQueue()
 
 	isDisplaying = true
 	local message = table.remove(notificationQueue, 1)
+
+	-- Resolve conflict: incorporate bringNotificationToFront
+	bringNotificationToFront(frame, label)
 
 	label.Text     = message
 	label.Visible  = true
@@ -264,4 +281,3 @@ RestockNotificationEvent.OnClientEvent:Connect(function(arg1, arg2, arg3, arg4)
 		showNotification(result)
 	end
 end)
-
