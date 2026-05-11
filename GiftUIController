@@ -368,7 +368,7 @@ local function UpdateSlots()
 						giftBtn:SetAttribute("Cooldown", true)
 						task.delay(1, function() giftBtn:SetAttribute("Cooldown", false) end)
 
-						UIAudioConfig.PlayClick()
+						UIAudioConfig.PlayRobux()
 						UIAudioConfig.ShowPurchaseLoading()
 						currentTargetName = capturedTarget.Name
 						SetIndicator("Processing...", Color3.fromRGB(255, 255, 100))
