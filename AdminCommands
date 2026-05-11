@@ -144,7 +144,8 @@ task.spawn(function()
 			if type(data) == "string" then
 				print("🌐 [Admin] Cross-server Restock Received:", data)
 				AdminRestockEvent:Fire(data)
-				RestockNotificationEvent:FireAllClients(data)
+				-- Pass true for isAdmin flag (4th argument)
+				RestockNotificationEvent:FireAllClients(data, nil, nil, true)
 			end
 		end)
 	end)

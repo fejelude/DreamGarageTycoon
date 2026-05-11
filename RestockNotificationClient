@@ -50,25 +50,32 @@ local DISPLAY_TIME     = 6  -- seconds the notification stays visible
 local CarStats                 = require(ReplicatedStorage:WaitForChild("CarStats"))
 local RestockNotificationEvent = ReplicatedStorage:WaitForChild("RestockNotificationEvent")
 
-local player           = Players.LocalPlayer
-local playerGui        = player:WaitForChild("PlayerGui")
-local notificationsGui = playerGui:WaitForChild("Notifications")
-local notifFrame       = notificationsGui:WaitForChild("RestockNotificationFrame")
-local notifText        = notifFrame:WaitForChild("RestockNotification")
-
--- ============================================================
--- SETUP
---   Tag this frame so the loading screen knows NOT to touch it.
---   The loading-screen script checks this attribute before recording
---   or restoring any GuiObject's visibility.
--- ============================================================
-
-notifFrame:SetAttribute("ExternallyManaged", true)
-notifFrame.Visible = false
+local player = Players.LocalPlayer
 
 -- ============================================================
 -- HELPERS
 -- ============================================================
+
+local function getUI()
+	local playerGui = player:FindFirstChild("PlayerGui")
+	if not playerGui then return nil end
+
+	local notificationsGui = playerGui:FindFirstChild("Notifications")
+	if not notificationsGui then return nil end
+
+	-- Ensure the notification GUI is always on top
+	notificationsGui.DisplayOrder = 999999
+	notificationsGui.Enabled      = true
+
+	local notifFrame = notificationsGui:FindFirstChild("RestockNotificationFrame")
+	local notifText  = notifFrame and notifFrame:FindFirstChild("RestockNotification")
+
+	if notifFrame then
+		notifFrame:SetAttribute("ExternallyManaged", true)
+	end
+
+	return notificationsGui, notifFrame, notifText
+end
 
 local function getRarityColor(rarity: string): string
 	return COLORS[rarity] or COLORS.Common
@@ -83,21 +90,17 @@ local function hasAccessToShop(shopRarity: string): (boolean, string)
 end
 
 local function playRestockSound()
-	local sound        = Instance.new("Sound")
-	sound.SoundId      = RESTOCK_AUDIO_ID
-	sound.Volume       = 1
+	local sound              = Instance.new("Sound")
+	sound.SoundId            = RESTOCK_AUDIO_ID
+	sound.Volume             = 1
 	sound.RollOffMaxDistance = 0 -- flat, non-spatial
-	sound.Parent       = SoundService
+	sound.Parent             = SoundService
 	sound:Play()
 	sound.Ended:Once(function() sound:Destroy() end)
 end
 
 -- ============================================================
 -- NOTIFICATION STATE
---   Instead of task.cancel (unreliable on yielded threads), we
---   use an incrementing ID.  When a new notification fires it
---   bumps the ID; the old task.delay closure compares its
---   captured ID and does nothing if it no longer matches.
 -- ============================================================
 
 local notificationQueue = {}
@@ -105,23 +108,27 @@ local isDisplaying      = false
 
 local function processQueue()
 	if isDisplaying or #notificationQueue == 0 then return end
-	isDisplaying = true
+	
+	local gui, frame, label = getUI()
+	if not (gui and frame and label) then
+		-- UI not ready or missing, wait a bit and try again
+		task.delay(1, processQueue)
+		return
+	end
 
+	isDisplaying = true
 	local message = table.remove(notificationQueue, 1)
 
-	notifText.Text     = message
-	notifFrame.Visible = true
+	label.Text     = message
+	label.Visible  = true
+	frame.Visible  = true
 	playRestockSound()
 
-	-- We use task.wait here because we want to block the queue processing
-	-- for this specific notification. This ensures they show one-by-one.
 	task.wait(DISPLAY_TIME)
 
-	-- Check if there's another message before hiding, to avoid flickering
-	-- if we're just going to show another one immediately.
 	if #notificationQueue == 0 then
-		notifFrame.Visible = false
-		task.wait(0.2) -- small gap for visual clarity
+		frame.Visible = false
+		task.wait(0.2)
 	end
 
 	isDisplaying = false
@@ -138,90 +145,86 @@ end
 -- MESSAGE BUILDER
 -- ============================================================
 
-local function buildMessage(arg1: string, arg2: any, arg3: any): string?
-	if arg1 == "AutoRestock" then
-		local rarity   = tostring(arg2 or "Common")
-		local color    = getRarityColor(rarity)
-		local hasAccess, requiredRank = hasAccessToShop(rarity)
-
-		local carsList = ""
-		if type(arg3) == "table" and #arg3 > 0 then
-			carsList = "\n<font color=\"#FFFFFF\"><small>(" .. table.concat(arg3, ", ") .. ")</small></font>"
-		end
-
-		if hasAccess then
+local function buildMessage(arg1: string, arg2: any, arg3: any, isAdmin: boolean?): string?
+	-- 1. Admin Triggered Message (Highest Priority)
+	if isAdmin then
+		if arg1:lower() == "all" then
 			return string.format(
-				[[<font color="%s"><b>%s</b></font> Shop has restocked!!%s]],
-				color, rarity, carsList
-			)
-		else
-			return string.format(
-				[[🔒 <font color="%s"><b>%s</b></font> Shop has restocked!!%s ]] ..
-					[[(Unlock at <font color="#FF4444">%s</font>)]],
-				color, rarity, carsList, requiredRank
+				[[🛠️ <font color="%s"><b>EVERYTHING</b></font> has been restocked by an <font color="#FFFF00"><b>ADMIN</b></font>!! 🛠️]],
+				COLORS.All
 			)
 		end
 
-	elseif arg1:lower() == "all" then
-		return string.format(
-			[[<font color="%s"><b>Everything has been restocked on all shops!!</b></font>]],
-			COLORS.All
-		)
-
-	else
-		-- Specific car restock
 		local carName = arg1
 		local carData = CarStats.Cars and CarStats.Cars[carName]
+		local rarity = carData and carData.Rarity or "Common"
+		local color = getRarityColor(rarity)
 
+		return string.format(
+			[[🛠️ <font color="%s"><b>%s</b></font> has been restocked by an <font color="#FFFF00"><b>ADMIN</b></font>!! 🛠️]],
+			color, carName
+		)
+	end
+
+	-- 2. Automatic / Natural Restock Logic
+	local rarity = "Common"
+
+	if arg1 == "AutoRestock" then
+		rarity = tostring(arg2 or "Common")
+	elseif arg1:lower() == "all" then
+		return string.format(
+			[[✨ <font color="%s"><b>Everything has been restocked on all shops!!</b></font> ✨]],
+			COLORS.All
+		)
+	else
+		-- Specific car restock (fallback)
+		local carName = arg1
+		local carData = CarStats.Cars and CarStats.Cars[carName]
 		if carData then
-			local rarity   = carData.Rarity or "Common"
-			local color    = getRarityColor(rarity)
-			local nameStr  = carName
-
-			-- Strip trailing " Car" to avoid "Galadriel Car Car"
-			if nameStr:lower():sub(-4) == " car" then
-				nameStr = nameStr:sub(1, -5)
-			end
-
-			return string.format(
-				[[<font color="%s"><b>%s Car</b></font> has been restocked to the ]] ..
-					[[<font color="%s"><b>%s</b></font> Shop!]],
-				color, nameStr, color, rarity
-			)
+			rarity = carData.Rarity or "Common"
 		else
-			-- Fallback: car missing from CarStats
+			-- Generic fallback
 			return string.format(
-				[[<font color="%s"><b>%s Car</b></font> has been restocked!]],
-				COLORS.Common, carName
+				[[✨ <font color="%s"><b>A Shop</b></font> has restocked!! ✨]],
+				COLORS.Common
 			)
 		end
+	end
+
+	local color = getRarityColor(rarity)
+	local hasAccess, requiredRank = hasAccessToShop(rarity)
+
+	if hasAccess then
+		return string.format(
+			[[✨ <font color="%s"><b>%s Shop</b></font> has restocked!! ✨]],
+			color, rarity
+		)
+	else
+		-- Show lock/requirement for UX
+		return string.format(
+			[[🔒 <font color="%s"><b>%s Shop</b></font> has restocked!! (Unlock at <font color="#FF4444">%s</font>)]],
+			color, rarity, requiredRank
+		)
 	end
 end
 
 -- ============================================================
 -- PENDING QUEUE (loading-screen guard)
---   If a restock fires while the loading screen is still up we
---   hold the latest message and display it once the screen clears.
---   Only the most recent message is kept — stale restocks aren't
---   worth showing after a 30-second load.
---
---   FIX: watchLoadingEnd is now also called from the event handler
---   whenever a message is queued, so the watcher is guaranteed to
---   exist regardless of startup-timing races. A duplicate-connection
---   guard (loadingWatchConn check) prevents double-firing.
 -- ============================================================
 
 local pendingQueue = {}
 
 local function isLoadingActive(): boolean
-	return playerGui:GetAttribute("LoadingScreenActive") == true
+	local playerGui = player:FindFirstChild("PlayerGui")
+	return playerGui and playerGui:GetAttribute("LoadingScreenActive") == true
 end
 
 local loadingWatchConn: RBXScriptConnection? = nil
 local function watchLoadingEnd()
 	if not isLoadingActive() then return end
-	if loadingWatchConn then return end  -- already watching, don't stack connections
+	if loadingWatchConn then return end
 
+	local playerGui = player:WaitForChild("PlayerGui")
 	loadingWatchConn = playerGui:GetAttributeChangedSignal("LoadingScreenActive"):Connect(function()
 		if not isLoadingActive() then
 			if loadingWatchConn then
@@ -230,7 +233,7 @@ local function watchLoadingEnd()
 			end
 			
 			if #pendingQueue > 0 then
-				task.wait(0.5) -- brief grace period after screen fades
+				task.wait(1) -- Brief grace period after screen fades
 				for _, msg in ipairs(pendingQueue) do
 					showNotification(msg)
 				end
@@ -240,26 +243,25 @@ local function watchLoadingEnd()
 	end)
 end
 
-watchLoadingEnd() -- best-effort attempt at startup
-
 -- ============================================================
 -- EVENT HANDLER
 -- ============================================================
 
-RestockNotificationEvent.OnClientEvent:Connect(function(arg1, arg2, arg3)
+RestockNotificationEvent.OnClientEvent:Connect(function(arg1, arg2, arg3, arg4)
 	if type(arg1) ~= "string" then return end
 
-	local ok, result = pcall(buildMessage, arg1, arg2, arg3)
+	local isAdmin = (arg4 == true)
+	local ok, result = pcall(buildMessage, arg1, arg2, arg3, isAdmin)
 	if not ok or not result then
 		warn("[RestockNotification] buildMessage failed:", result)
 		return
 	end
 
 	if isLoadingActive() then
-		-- Loading screen is up — queue it for later
 		table.insert(pendingQueue, result)
-		watchLoadingEnd() -- ensure watcher is active regardless of startup timing
+		watchLoadingEnd()
 	else
 		showNotification(result)
 	end
 end)
+
