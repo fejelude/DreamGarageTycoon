@@ -42,6 +42,8 @@ local SHOP_REQUIREMENTS = {
 
 local RESTOCK_AUDIO_ID = "rbxassetid://81822437427070"
 local DISPLAY_TIME     = 6  -- seconds the notification stays visible
+local TOP_DISPLAY_ORDER = 10000
+local TOP_Z_INDEX       = 10000
 
 -- ============================================================
 -- REFERENCES
@@ -63,7 +65,12 @@ local notifText        = notifFrame:WaitForChild("RestockNotification")
 --   or restoring any GuiObject's visibility.
 -- ============================================================
 
+notificationsGui.DisplayOrder    = TOP_DISPLAY_ORDER
+notificationsGui.ZIndexBehavior  = Enum.ZIndexBehavior.Global
+
 notifFrame:SetAttribute("ExternallyManaged", true)
+notifFrame.ZIndex = TOP_Z_INDEX
+notifText.ZIndex  = TOP_Z_INDEX + 1
 notifFrame.Visible = false
 
 -- ============================================================
@@ -138,27 +145,22 @@ end
 -- MESSAGE BUILDER
 -- ============================================================
 
-local function buildMessage(arg1: string, arg2: any, arg3: any): string?
+local function buildMessage(arg1: string, arg2: any, _arg3: any): string?
 	if arg1 == "AutoRestock" then
 		local rarity   = tostring(arg2 or "Common")
 		local color    = getRarityColor(rarity)
 		local hasAccess, requiredRank = hasAccessToShop(rarity)
 
-		local carsList = ""
-		if type(arg3) == "table" and #arg3 > 0 then
-			carsList = "\n<font color=\"#FFFFFF\"><small>(" .. table.concat(arg3, ", ") .. ")</small></font>"
-		end
-
 		if hasAccess then
 			return string.format(
-				[[<font color="%s"><b>%s</b></font> Shop has restocked!!%s]],
-				color, rarity, carsList
+				[[<font color="%s"><b>%s</b></font> Shop has restocked!!]],
+				color, rarity
 			)
 		else
 			return string.format(
-				[[🔒 <font color="%s"><b>%s</b></font> Shop has restocked!!%s ]] ..
+				[[🔒 <font color="%s"><b>%s</b></font> Shop has restocked!! ]] ..
 					[[(Unlock at <font color="#FF4444">%s</font>)]],
-				color, rarity, carsList, requiredRank
+				color, rarity, requiredRank
 			)
 		end
 
@@ -169,31 +171,18 @@ local function buildMessage(arg1: string, arg2: any, arg3: any): string?
 		)
 
 	else
-		-- Specific car restock
-		local carName = arg1
-		local carData = CarStats.Cars and CarStats.Cars[carName]
+		-- Specific admin restocks still display a generic shop-level message.
+		local carData = CarStats.Cars and CarStats.Cars[arg1]
 
 		if carData then
-			local rarity   = carData.Rarity or "Common"
-			local color    = getRarityColor(rarity)
-			local nameStr  = carName
-
-			-- Strip trailing " Car" to avoid "Galadriel Car Car"
-			if nameStr:lower():sub(-4) == " car" then
-				nameStr = nameStr:sub(1, -5)
-			end
-
+			local rarity = carData.Rarity or "Common"
+			local color  = getRarityColor(rarity)
 			return string.format(
-				[[<font color="%s"><b>%s Car</b></font> has been restocked to the ]] ..
-					[[<font color="%s"><b>%s</b></font> Shop!]],
-				color, nameStr, color, rarity
+				[[<font color="%s"><b>%s</b></font> Shop has restocked!!]],
+				color, rarity
 			)
 		else
-			-- Fallback: car missing from CarStats
-			return string.format(
-				[[<font color="%s"><b>%s Car</b></font> has been restocked!]],
-				COLORS.Common, carName
-			)
+			return [[The shop has restocked!!]]
 		end
 	end
 end
