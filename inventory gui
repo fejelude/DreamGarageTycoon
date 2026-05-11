@@ -56,7 +56,6 @@ local UserInputService = game:GetService("UserInputService")
 
 local player    = Players.LocalPlayer
 local camera    = Workspace.CurrentCamera
-local openButton = script.Parent
 
 -- Utility
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
@@ -86,9 +85,13 @@ local CONFIG = {
 }
 
 -- UI refs
--- Note: openButton moved to MainButtons > Buttons > Inventory, so we search playerGui
--- for InventoryWindow directly rather than via the button's ancestor ScreenGui.
 local playerGui          = player:WaitForChild("PlayerGui")
+
+-- OpenButton (Inventory) now lives under MainButtons > Buttons > Inventory
+local mainButtonsGui     = playerGui:WaitForChild("MainButtons")
+local buttonsFolder      = mainButtonsGui:WaitForChild("Buttons")
+local openButton         = buttonsFolder:WaitForChild("Inventory")
+
 local mainWindow         = playerGui:FindFirstChild("InventoryWindow", true)
 -- Derive the ScreenGui that actually owns InventoryWindow (NOT MainButtons)
 local inventoryScreenGui = mainWindow and mainWindow:FindFirstAncestorWhichIsA("ScreenGui")

@@ -21,9 +21,13 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 -- 🛠️ REFERENCES
 local screenGui = script.Parent
-local openButton = screenGui:WaitForChild("OpenButton")
 local window = screenGui:WaitForChild("SettingsWindow")
 local closeButton = window:WaitForChild("CloseButton")
+
+-- OpenButton (Settings) now lives under MainButtons > Buttons > Settings
+local mainButtonsGui = playerGui:WaitForChild("MainButtons")
+local buttonsFolder  = mainButtonsGui:WaitForChild("Buttons")
+local openButton     = buttonsFolder:WaitForChild("Settings")
 
 -- 🎵 MUSIC BUTTONS
 local btnMusicOn = window:WaitForChild("MusicOnButton")
