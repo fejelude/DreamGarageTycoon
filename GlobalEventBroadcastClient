@@ -1,0 +1,112 @@
+-- Purpose: Handles secure, modular server-wide event announcements (e.g. car gifts, global drops).
+-- Runs on: Client (StarterPlayerScripts)
+-- Dependencies: TextChatService, ReplicatedStorage
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TextChatService = game:GetService("TextChatService")
+
+local Remotes = ReplicatedStorage:WaitForChild("GiftRemotes", 10)
+if not Remotes then return end
+
+local GlobalChatBroadcast = Remotes:WaitForChild("GlobalChatBroadcast", 10)
+if not GlobalChatBroadcast then return end
+
+-- ============================================================================
+-- 🎨 COLOR & STYLING DEFINITIONS
+-- ============================================================================
+
+local CAR_RARITY_COLORS = {
+	["Common"] = "#A3A2A5",
+	["Uncommon"] = "#55FF55",
+	["Rare"] = "#55FFFF",
+	["Epic"] = "#AA00FF",
+	["Legendary"] = "#FFD700",
+	["Mythical"] = "#FF0000"
+}
+
+-- Fallback/Default Colors
+local DEFAULT_SENDER_COLOR = "#00BFFF" -- Light Blue
+local DEFAULT_RECEIVER_COLOR = "#00BFFF"
+
+-- ============================================================================
+-- 💬 PERSONALITY TEMPLATES (Randomized)
+-- ============================================================================
+
+local CAR_GIFT_TEMPLATES = {
+	"💸 {SENDER} just blessed {RECEIVER} with a {CAR}… bro got MONEY money 😭🔥",
+	"🚗 {SENDER} gifted {RECEIVER} a {CAR}! Somebody check this man’s Robux balance 💎",
+	"💰 BIG GIFT ALERT — {SENDER} just spoiled {RECEIVER} with a {CAR} 😭",
+	"🏆 {RECEIVER} just got gifted a {CAR} by {SENDER}… W friend honestly",
+	"🔥 {SENDER} out here funding dreams again, giving {RECEIVER} a {CAR} 😭🚗",
+	"💎 Nahhh {SENDER} is actually rich bro, just bought {RECEIVER} a {CAR}!"
+}
+
+-- ============================================================================
+-- 🛠️ HELPER FUNCTIONS
+-- ============================================================================
+
+local function formatRichText(template, sender, receiver, car, senderColor, receiverColor, carColor)
+	local sTag = string.format("<b><font color='%s'>%s</font></b>", senderColor, sender)
+	local rTag = string.format("<b><font color='%s'>%s</font></b>", receiverColor, receiver)
+	local cTag = string.format("<b><font color='%s'>%s</font></b>", carColor, car)
+
+	local msg = string.gsub(template, "{SENDER}", sTag)
+	msg = string.gsub(msg, "{RECEIVER}", rTag)
+	msg = string.gsub(msg, "{CAR}", cTag)
+	return msg
+end
+
+local function displaySystemMessage(messageText)
+	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+		local generalChannel = TextChatService:FindFirstChild("TextChannels") and TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+		if generalChannel then
+			generalChannel:DisplaySystemMessage(messageText)
+		end
+	else
+		-- Fallback to legacy chat
+		local success, err = pcall(function()
+			game:GetService("StarterGui"):SetCore("ChatMakeSystemMessage", {
+				Text = messageText,
+				Color = Color3.fromRGB(255, 255, 255),
+				Font = Enum.Font.SourceSansBold,
+				FontSize = Enum.FontSize.Size18
+			})
+		end)
+	end
+end
+
+-- ============================================================================
+-- 📡 EVENT LISTENERS
+-- ============================================================================
+
+local function handleGlobalBroadcast(data)
+	if type(data) ~= "table" or not data.Type then return end
+
+	if data.Type == "CarGift" then
+		local senderName = data.SenderName or "Someone"
+		local receiverName = data.ReceiverName or "Someone"
+		local carName = data.CarName or "Car"
+		local rarity = data.Rarity or "Common"
+
+		local carColor = CAR_RARITY_COLORS[rarity] or CAR_RARITY_COLORS["Common"]
+		local template = CAR_GIFT_TEMPLATES[math.random(1, #CAR_GIFT_TEMPLATES)]
+
+		local formattedMessage = formatRichText(
+			template,
+			senderName,
+			receiverName,
+			carName,
+			DEFAULT_SENDER_COLOR,
+			DEFAULT_RECEIVER_COLOR,
+			carColor
+		)
+		
+		-- Prefix with a tag
+		local finalMessage = string.format("<font color='#FFD700'><b>[EVENT]</b></font> %s", formattedMessage)
+		displaySystemMessage(finalMessage)
+	end
+	
+	-- Future handlers (e.g., "GlobalDrop", "SeasonalEvent") can be added here
+end
+
+GlobalChatBroadcast.OnClientEvent:Connect(handleGlobalBroadcast)

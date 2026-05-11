@@ -1,4 +1,4 @@
--- [[ SERVER SCRIPT: GiftIntentHandler (FIXED) ]]
+-- [[ SERVER SCRIPT: GiftIntentHandler (HARDENED) ]]
 -- Purpose: Remembers who a player wants to gift AND creates the necessary Remotes.
 -- Runs on: Server
 -- Location: ServerScriptService
@@ -6,57 +6,65 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
--- 🛠️ FIX: Auto-Create Remotes to prevent "Deadlock"
--- (We use FindFirstChild or Instance.new so we don't wait forever)
-local Remotes = ReplicatedStorage:FindFirstChild("GiftRemotes") 
-if not Remotes then
-	Remotes = Instance.new("Folder")
-	Remotes.Name = "GiftRemotes"
-	Remotes.Parent = ReplicatedStorage
-	print("✅ GiftIntentHandler: Created 'GiftRemotes' folder")
-end
-
-local SetIntentEvent = Remotes:FindFirstChild("SetGiftIntent")
-if not SetIntentEvent then
-	SetIntentEvent = Instance.new("RemoteEvent")
-	SetIntentEvent.Name = "SetGiftIntent"
-	SetIntentEvent.Parent = Remotes
-	print("✅ GiftIntentHandler: Created 'SetGiftIntent' RemoteEvent")
-end
+-- 🛠️ Use existing Remotes
+local Remotes = ReplicatedStorage:WaitForChild("GiftRemotes") 
+local SetIntentEvent = Remotes:WaitForChild("SetGiftIntent")
 
 -- 🗄️ STORAGE: { [BuyerUserId] = ReceiverUserId }
 local pendingGifts = {}
 
+-- FIX: Rate-limit intent sets per player to prevent spam/flooding
+local lastIntentTime = {}
+local INTENT_COOLDOWN = 1 -- seconds
+
 -- 📡 LISTEN FOR INTENT
 SetIntentEvent.OnServerEvent:Connect(function(buyer, receiverUserId)
 	-- Security: Validate Input Type
-	if typeof(receiverUserId) == "number" then
-		-- Optional: Check if receiver actually exists in game (if you only want to gift present players)
-		-- For now, we allow offline gifting intent if your system supports it.
-		print("🎁 Gift Intent Set: " .. buyer.Name .. " wants to gift UserID: " .. receiverUserId)
-		pendingGifts[buyer.UserId] = receiverUserId
-	else
-		warn("⚠️ Invalid Gift Intent from " .. buyer.Name .. ": ReceiverID is not a number.")
+	if typeof(receiverUserId) ~= "number" then
+		return
 	end
+
+	-- FIX: Prevent self-gifting exploit
+	if receiverUserId == buyer.UserId then
+		return
+	end
+
+	-- FIX: Rate limit
+	local now = os.clock()
+	if lastIntentTime[buyer.UserId] and (now - lastIntentTime[buyer.UserId]) < INTENT_COOLDOWN then
+		return
+	end
+	lastIntentTime[buyer.UserId] = now
+
+	-- FIX: Validate that the receiver actually exists in this server
+	local receiverPlayer = Players:GetPlayerByUserId(receiverUserId)
+	if not receiverPlayer then
+		return
+	end
+
+	pendingGifts[buyer.UserId] = receiverUserId
 end)
 
 -- 🧹 CLEANUP (If player leaves, clear memory)
 Players.PlayerRemoving:Connect(function(player)
 	pendingGifts[player.UserId] = nil
+	lastIntentTime[player.UserId] = nil
 end)
 
 -- 🔒 EXPOSE DATA TO RECEIPT ROUTER
--- We use _G so ReceiptRouter can read this table without a circular dependency
-_G.GetGiftReceiver = function(buyerUserId)
+-- FIX: Changed to a Peek + Clear design. GetGiftReceiver now takes an
+-- optional `consume` parameter. The ReceiptRouter should:
+--   1. Peek first (consume = false) to determine the target
+--   2. Only consume (consume = true) AFTER the item grant succeeds
+-- This prevents the gift intent from being lost on a failed ProcessReceipt retry.
+_G.GetGiftReceiver = function(buyerUserId, consume)
 	local receiverId = pendingGifts[buyerUserId]
 
-	-- Important: Clear the intent immediately after reading so next purchase isn't accidental
-	if receiverId then
-		pendingGifts[buyerUserId] = nil 
-		print("✅ _G.GetGiftReceiver: Retrieved & Cleared intent for Buyer " .. buyerUserId)
+	if receiverId and consume then
+		pendingGifts[buyerUserId] = nil
 	end
 
 	return receiverId
 end
 
-print("🟢 GiftIntentHandler: Loaded & Ready")
+return {}

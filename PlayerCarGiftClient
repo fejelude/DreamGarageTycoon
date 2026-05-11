@@ -1,307 +1,648 @@
 -- Purpose: Handles client-side UI and communication for car gifting
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local Debris = game:GetService("Debris")
-local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 
 local player = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
-local GiftingFolder = PlayerGui:WaitForChild("Gifting", 10)
 
-if not GiftingFolder then
-	warn("Gifting folder not found in PlayerGui")
-	return
+local ok, UIAudioConfig = pcall(require, ReplicatedStorage:WaitForChild("UIAudioConfig"))
+if not ok then
+    UIAudioConfig = { PlayHover = function() end, PlayClick = function() end }
 end
 
-local GiverGui = GiftingFolder:WaitForChild("Giver")
-local ReceiverGui = GiftingFolder:WaitForChild("Receiver")
+-- ============ CONFIG ============
+local PROMPT_SCAN_RANGE      = 15
+local PROMPT_ACTIVATION_DIST = 10
+local PROMPT_HOLD_DURATION   = 0.5
+local NOTIFICATION_DURATION  = 6
+local HEARTBEAT_INTERVAL     = 0.1
+local GIVER_TIMEOUT_SECONDS  = 30
+-- ================================
 
-local GiverMain = GiverGui:WaitForChild("MainFrame")
-local ReceiverMain = ReceiverGui:WaitForChild("MainFrame")
+local GiftRemotes = ReplicatedStorage:WaitForChild("PlayerCarGiftingRemotes", 10)
+if not GiftRemotes then return end
+local ActionRemote = GiftRemotes:WaitForChild("ActionRemote", 10)
+if not ActionRemote then return end
 
-local GiftRemotes = ReplicatedStorage:WaitForChild("PlayerCarGiftingRemotes")
-local ActionRemote = GiftRemotes:WaitForChild("ActionRemote")
+-- ============================================================================
+-- 🖼️ DYNAMIC UI REFERENCE GETTER & STARTUP WIPE
+-- ============================================================================
+local function getGiverUI()
+    local folder = PlayerGui:FindFirstChild("Gifting")
+    if not folder then return nil, nil end
+    local gui = folder:FindFirstChild("Giver")
+    if not gui then return nil, nil end
+    return gui, gui:FindFirstChild("MainFrame")
+end
 
-local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local function getReceiverUI()
+    local folder = PlayerGui:FindFirstChild("Gifting")
+    if not folder then return nil, nil end
+    local gui = folder:FindFirstChild("Receiver")
+    if not gui then return nil, nil end
+    return gui, gui:FindFirstChild("MainFrame")
+end
 
-local HOVER_TWEEN = TweenInfo.new(0.2)
-local DIM_COLOR = Color3.fromRGB(200, 200, 200)
-local NORMAL_COLOR = Color3.fromRGB(255, 255, 255)
+-- Force-hide everything on boot to clear messy Studio defaults
+local bootGiver, bootGiverMain = getGiverUI()
+local bootReceiver, bootReceiverMain = getReceiverUI()
+
+if bootGiver then bootGiver.Enabled = false end
+if bootGiverMain then bootGiverMain.Visible = false end
+
+if bootReceiver then bootReceiver.Enabled = false end
+if bootReceiverMain then bootReceiverMain.Visible = false end
 
 local SFX = {
-	Open = "rbxassetid://6895079853",
-	Click = "rbxassetid://4210586953",
-	Success = "rbxassetid://73743814975286",
-	Error = "rbxassetid://1526487928"
+    Open = "rbxassetid://6895079853",
+    Click = "rbxassetid://126294184545314",
+    Success = "rbxassetid://73743814975286",
+    Error = "rbxassetid://1526487928"
 }
 
 local function playSfx(soundId, volume, parent)
-	local s = Instance.new("Sound")
-	s.SoundId = soundId
-	s.Volume = volume or 0.5
-	s.Parent = parent or PlayerGui
-	s:Play()
-	Debris:AddItem(s, 3)
+    local s = Instance.new("Sound")
+    s.SoundId = soundId
+    s.Volume = volume or 0.5
+    s.Parent = parent or PlayerGui
+    s:Play()
+    Debris:AddItem(s, 3)
 end
 
+-- STATE VARIABLES
+local isGiverProcessing = false
+local isReceiverProcessing = false
 local currentGiverUserId = nil
-local countdownConn = nil
 
-local TierColors = {
-	Common = Color3.fromRGB(180, 180, 180),
-	Uncommon = Color3.fromRGB(0, 200, 200),
-	Rare = Color3.fromRGB(0, 100, 255),
-	Epic = Color3.fromRGB(150, 0, 255),
-	Legendary = Color3.fromRGB(255, 200, 0),
-	Mythic = Color3.fromRGB(255, 255, 255)
+-- 📝 TRACKING FOR DUPLICATE GIFTS
+local currentPromptCarId = nil
+local currentPromptReceiverId = nil
+local lastSentCarId = nil
+local lastSentReceiverId = nil
+
+-- 📝 SINGLE NOTIFICATION STATE
+local currentNotification = nil -- { Label = Instance, Count = N, BaseText = string, Timer = task }
+local DEFAULT_DISPLAY_DURATION = 6 
+
+-- ============================================================================
+-- 🧪 NOTIFICATION SYSTEM (Single Label Replacement)
+-- ============================================================================
+
+local STYLES = {
+    Accepted = {
+        TextColor = Color3.fromHex("#A7F3D0"), -- Soft Light Green
+        StrokeColor = Color3.fromHex("#166534"), -- Deep Green
+    },
+    Sent = {
+        TextColor = Color3.fromHex("#A7F3D0"), -- Soft Light Green
+        StrokeColor = Color3.fromHex("#166534"), -- Deep Green
+    },
+    Declined = {
+        TextColor = Color3.fromHex("#FCA5A5"), -- Soft Amber Red
+        StrokeColor = Color3.fromHex("#9A3412"), -- Burnt Orange
+    },
+    Rejected = {
+        TextColor = Color3.fromHex("#FCA5A5"), -- Soft Amber Red
+        StrokeColor = Color3.fromHex("#9A3412"), -- Burnt Orange
+    },
+    Error = {
+        TextColor = Color3.fromHex("#D1D5DB"), -- Light Gray
+        StrokeColor = Color3.fromHex("#7F1D1D"), -- Deep Red
+    },
+    Pending = {
+        TextColor = Color3.fromHex("#FDE68A"), -- Soft Yellow
+        StrokeColor = Color3.fromHex("#92400E"), -- Golden Brown
+    },
+    Neutral = {
+        TextColor = Color3.fromHex("#BFDBFE"), -- Light Blue
+        StrokeColor = Color3.fromHex("#1E3A8A"), -- Navy Blue
+    }
 }
 
+local function getStyleForText(text)
+    text = text:lower()
+    -- Force Error/Red for the warning message
+    if text:find("!!!") then
+        return STYLES.Error
+    end
+    
+    if text:find("accepted") or text:find("sent") or text:find("success") then
+        return STYLES.Accepted
+    elseif text:find("declined") or text:find("rejected") or text:find("cancelled") then
+        return STYLES.Declined
+    elseif text:find("error") or text:find("fail") or text:find("limit") then
+        return STYLES.Error
+    elseif text:find("pending") or text:find("waiting") then
+        return STYLES.Pending
+    elseif text:find("info") or text:find("neutral") then
+        return STYLES.Neutral
+    end
+    return STYLES.Neutral
+end
+
+local function createStatusNotificationLabel(text, style)
+    local statusGui = PlayerGui:FindFirstChild("GiftingStatus")
+    if not statusGui then
+        warn("⚠️ GiftingStatus ScreenGui missing in PlayerGui!")
+        return nil
+    end
+    
+    local container = statusGui:FindFirstChild("NotificationContainer")
+    if not container then
+        warn("⚠️ NotificationContainer missing inside GiftingStatus!")
+        return nil
+    end
+    
+    local labelTemplate = container:FindFirstChild("StatusLabelTemplate")
+    if not labelTemplate then
+        warn("⚠️ StatusLabelTemplate missing inside NotificationContainer!")
+        return nil
+    end
+    
+    local label = labelTemplate:Clone()
+    label.Name = "StatusLabel"
+    label.Text = text
+    label.TextColor3 = style.TextColor
+    label.Visible = true
+    label.TextTransparency = 1
+    
+    -- Ensure UIGradient doesn't override our dynamic color
+    local grad = label:FindFirstChildOfClass("UIGradient")
+    if grad then grad.Enabled = false end
+    
+    local stroke = label:FindFirstChild("StatusStroke")
+    if stroke then
+        stroke.Color = style.StrokeColor
+        stroke.Transparency = 1
+        stroke.Enabled = true
+    end
+    
+    local shadow = label:FindFirstChild("Shadow")
+    if shadow then
+        shadow.Transparency = 1
+        shadow.Enabled = true
+    end
+    
+    label.Parent = container
+    return label
+end
+
+local function showStatusNotification(baseText)
+    local style = getStyleForText(baseText)
+    local newCount = 1
+    
+    local wasReplaced = false
+    -- 1. If a notification already exists, handle stacking and duplicate gift logic
+    if currentNotification then
+        wasReplaced = true
+        -- Logic for "Duplicate Gift" warning (force red if repeat sent)
+        local isRepeatSent = (currentNotification.BaseText:lower():find("sent") or currentNotification.BaseText:lower():find("!!!")) 
+                             and baseText:lower():find("sent")
+        
+        if isRepeatSent then
+            baseText = "You already sent a gift!!!"
+            style = STYLES.Error
+            newCount = currentNotification.Count + 1
+        elseif currentNotification.BaseText == baseText then
+            newCount = currentNotification.Count + 1
+        end
+        
+        -- Immediately destroy the old one
+        if currentNotification.Timer then task.cancel(currentNotification.Timer) end
+        if currentNotification.Label then currentNotification.Label:Destroy() end
+        currentNotification = nil
+    end
+    
+    -- 2. Create the new updated label
+    local displayText = (newCount > 1) and string.format("%s (x%d)", baseText, newCount) or baseText
+    local label = createStatusNotificationLabel(displayText, style)
+    if not label then return end
+    
+    -- 3. Save state
+    currentNotification = {
+        Label = label,
+        Count = newCount,
+        BaseText = baseText,
+        Timer = nil
+    }
+    
+    -- 4. Animate In (Snap instantly if it's replacing an old message to prevent flickering)
+    if wasReplaced then
+        label.TextTransparency = 0
+        local s = label:FindFirstChild("StatusStroke")
+        if s then s.Transparency = 0 end
+        local sh = label:FindFirstChild("Shadow")
+        if sh then sh.Transparency = 0.5 end
+    else
+        label.TextTransparency = 1
+        local fadeInInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        TweenService:Create(label, fadeInInfo, { TextTransparency = 0 }):Play()
+        local s = label:FindFirstChild("StatusStroke")
+        if s then TweenService:Create(s, fadeInInfo, { Transparency = 0 }):Play() end
+        local sh = label:FindFirstChild("Shadow")
+        if sh then TweenService:Create(sh, fadeInInfo, { Transparency = 0.5 }):Play() end
+    end
+    
+    -- 5. Set Auto-Destruct
+    currentNotification.Timer = task.delay(NOTIFICATION_DURATION, function()
+        if currentNotification and currentNotification.Label == label then
+            local fadeOutInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+            local t = TweenService:Create(label, fadeOutInfo, { TextTransparency = 1 })
+            local s2 = label:FindFirstChild("StatusStroke")
+            if s2 then TweenService:Create(s2, fadeOutInfo, { Transparency = 1 }):Play() end
+            local sh2 = label:FindFirstChild("Shadow")
+            if sh2 then TweenService:Create(sh2, fadeOutInfo, { Transparency = 1 }):Play() end
+            
+            t:Play()
+            t.Completed:Connect(function()
+                if label and label.Parent then label:Destroy() end
+                if currentNotification and currentNotification.Label == label then
+                    currentNotification = nil
+                end
+            end)
+        end
+    end)
+end
+
+-- Helpers to instantly close UIs and release the processing lock safely
+local function fadeOutAndClose(gui, main)
+    if not gui or not main then return end
+    
+    local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    
+    if main:IsA("CanvasGroup") then
+        local tween = TweenService:Create(main, fadeInfo, { GroupTransparency = 1 })
+        tween:Play()
+        tween.Completed:Connect(function()
+            if main.GroupTransparency >= 0.99 then
+                gui.Enabled = false
+                main.Visible = false
+                main.GroupTransparency = 0 -- Reset for next time
+            end
+        end)
+    else
+        -- Fallback if no CanvasGroup: Hide immediately
+        gui.Enabled = false
+        main.Visible = false
+    end
+end
+
+local function instantCloseGiver()
+    local gGui, gMain = getGiverUI()
+    fadeOutAndClose(gGui, gMain)
+end
+
+local function instantCloseReceiver()
+    local rGui, rMain = getReceiverUI()
+    fadeOutAndClose(rGui, rMain)
+end
+
 local function applyTierStyling(textLabel, rarity)
-	-- Clean previous styling
-	for _, child in ipairs(textLabel:GetChildren()) do
-		if child.Name == "TierGradient" or child.Name == "TierStroke" then
-			child:Destroy()
-		end
-	end
-	
-	textLabel.TextColor3 = Color3.new(1, 1, 1)
-	local grad = Instance.new("UIGradient")
-	grad.Name = "TierGradient"
-	grad.Parent = textLabel
-	
-	local stroke = Instance.new("UIStroke")
-	stroke.Name = "TierStroke"
-	stroke.Thickness = 2
-	stroke.Parent = textLabel
-	
-	if rarity == "Common" then
-		grad.Color = ColorSequence.new(Color3.fromRGB(180, 180, 180), Color3.fromRGB(100, 100, 100))
-		stroke.Color = Color3.fromRGB(50, 50, 50)
-	elseif rarity == "Uncommon" then
-		grad.Color = ColorSequence.new(Color3.fromRGB(0, 255, 200), Color3.fromRGB(0, 100, 150))
-		stroke.Color = Color3.fromRGB(0, 50, 80)
-	elseif rarity == "Rare" then
-		grad.Color = ColorSequence.new(Color3.fromRGB(100, 200, 255), Color3.fromRGB(0, 50, 255))
-		stroke.Color = Color3.fromRGB(0, 0, 100)
-	elseif rarity == "Epic" then
-		grad.Color = ColorSequence.new(Color3.fromRGB(200, 100, 255), Color3.fromRGB(100, 0, 255))
-		stroke.Color = Color3.fromRGB(50, 0, 100)
-	elseif rarity == "Legendary" then
-		grad.Color = ColorSequence.new(Color3.fromRGB(255, 255, 100), Color3.fromRGB(255, 150, 0))
-		stroke.Color = Color3.fromRGB(100, 50, 0)
-	elseif rarity == "Mythic" then
-		grad.Color = ColorSequence.new({
-			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
-			ColorSequenceKeypoint.new(0.2, Color3.fromRGB(255, 255, 0)),
-			ColorSequenceKeypoint.new(0.4, Color3.fromRGB(0, 255, 0)),
-			ColorSequenceKeypoint.new(0.6, Color3.fromRGB(0, 255, 255)),
-			ColorSequenceKeypoint.new(0.8, Color3.fromRGB(0, 0, 255)),
-			ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 255))
-		})
-		stroke.Color = Color3.fromRGB(255, 255, 255)
-	else
-		grad.Color = ColorSequence.new(Color3.fromRGB(180, 180, 180))
-		stroke.Color = Color3.fromRGB(50, 50, 50)
-	end
-	
-	-- Animated Shimmer
-	if rarity ~= "Common" then
-		grad.Offset = Vector2.new(-1, 0)
-		local tween = TweenService:Create(grad, TweenInfo.new(2, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Offset = Vector2.new(1, 0)})
-		tween:Play()
-	end
+    if not textLabel then return end
+
+    local grad = textLabel:FindFirstChild("TierGradient") or Instance.new("UIGradient", textLabel)
+    grad.Name = "TierGradient"
+    
+    local stroke = textLabel:FindFirstChild("TierStroke") or Instance.new("UIStroke", textLabel)
+    stroke.Name = "TierStroke"
+    stroke.Thickness = 2
+
+    textLabel.TextColor3 = Color3.new(1, 1, 1)
+
+    if rarity == "Legendary" then
+        grad.Color = ColorSequence.new(Color3.fromRGB(255, 255, 100), Color3.fromRGB(255, 150, 0))
+        stroke.Color = Color3.fromRGB(100, 50, 0)
+    elseif rarity == "Mythic" then
+        grad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 255, 0)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 255))
+        })
+        stroke.Color = Color3.fromRGB(255, 255, 255)
+    else
+        grad.Color = ColorSequence.new(Color3.fromRGB(180, 180, 180), Color3.fromRGB(100, 100, 100))
+        stroke.Color = Color3.fromRGB(50, 50, 50)
+    end
 end
 
 local function getCarData(carId)
-	local cleanId = carId:gsub(" Item", ""):gsub("Item", "")
-	if CarStats.Cars and CarStats.Cars[cleanId] then
-		local data = CarStats.Cars[cleanId]
-		return { Name = cleanId, Rarity = data.Rarity, Image = data.Image }
-	end
-	return { Name = cleanId, Rarity = "Common", Image = "" }
+    local cleanId = carId:gsub(" Item", ""):gsub("Item", "")
+    if CarStats.Cars and CarStats.Cars[cleanId] then
+        local data = CarStats.Cars[cleanId]
+        return { Name = cleanId, Rarity = data.Rarity, Image = data.Image }
+    end
+    return { Name = cleanId, Rarity = "Common", Image = "" }
 end
 
 local function addHover(btn)
-	if not btn or btn:GetAttribute("HoverAdded") then return end
-	btn:SetAttribute("HoverAdded", true)
+    if not btn or btn:GetAttribute("HoverAdded") then return end
+    btn:SetAttribute("HoverAdded", true)
 
-	local uiScale = btn:FindFirstChildOfClass("UIScale")
-	if not uiScale then
-		uiScale = Instance.new("UIScale")
-		uiScale.Scale = 1.0
-		uiScale.Parent = btn
-	end
+    local uiScale = btn:FindFirstChildOfClass("UIScale") or Instance.new("UIScale", btn)
+    local tweenInfo  = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 
-	local isHovering = false
-	local isPressed  = false
-	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
-
-	local function updateScale()
-		local target = 1.0
-		if isPressed     then target = 0.95
-		elseif isHovering then target = 1.05
-		end
-		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
-	end
-
-	btn.MouseEnter:Connect(function()
-		isHovering = true
-		UIAudioConfig.PlayHover()
-		updateScale()
-	end)
-	btn.MouseLeave:Connect(function()
-		isHovering = false
-		isPressed  = false
-		updateScale()
-	end)
-	btn.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = true
-			updateScale()
-		end
-	end)
-	btn.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = false
-			updateScale()
-		end
-	end)
+    btn.MouseEnter:Connect(function()
+        UIAudioConfig.PlayHover()
+        TweenService:Create(uiScale, tweenInfo, {Scale = 1.05}):Play()
+    end)
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(uiScale, tweenInfo, {Scale = 1.0}):Play()
+    end)
 end
 
-addHover(GiverMain:WaitForChild("Yes"))
-addHover(GiverMain:WaitForChild("No"))
-addHover(ReceiverMain:WaitForChild("Yes"))
-addHover(ReceiverMain:WaitForChild("No"))
+local function bindGiverEvents(giverGui, giverMain)
+    if giverGui:GetAttribute("EventsBound") then return end
+    giverGui:SetAttribute("EventsBound", true)
 
-GiverMain.Yes.MouseButton1Click:Connect(function()
-	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
-	UIAudioConfig.PlayClick()
-	ActionRemote:FireServer("GiverAccept")
-	GiverMain.Yes.Visible = false
-	GiverMain.No.Visible = false
-end)
+    local btnFrame = giverMain:WaitForChild("Buttons"):WaitForChild("ButtonFrame")
+    local yesBtn = btnFrame:WaitForChild("Yes")
+    local noBtn = btnFrame:WaitForChild("No")
 
-GiverMain.No.MouseButton1Click:Connect(function()
-	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
-	UIAudioConfig.PlayClick()
-	ActionRemote:FireServer("GiverDecline")
-	GiverGui.Enabled = false
-end)
+    addHover(yesBtn)
+    addHover(noBtn)
 
-ReceiverMain.Yes.MouseButton1Click:Connect(function()
-	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
-	UIAudioConfig.PlayClick()
-	if currentGiverUserId then
-		ActionRemote:FireServer("ReceiverAccept", { GiverUserId = currentGiverUserId })
-		ReceiverMain.Yes.Visible = false
-		ReceiverMain.No.Visible = false
-	end
-end)
+    yesBtn.MouseButton1Click:Connect(function()
+        local isSameCar = (lastSentCarId == currentPromptCarId and lastSentReceiverId == currentPromptReceiverId)
+        
+        -- Trigger immediate RED warning if pending or same car/receiver
+        if isGiverProcessing or (isSameCar and currentNotification and currentNotification.BaseText:lower():find("sent")) then
+            showStatusNotification("You already sent a gift!!!")
+            instantCloseGiver() -- Ensure UI disappears
+            return -- Always block the duplicate action
+        end
+        
+        lastSentCarId = currentPromptCarId
+        lastSentReceiverId = currentPromptReceiverId
+        isGiverProcessing = true
+        
+        UIAudioConfig.PlayClick()
+        ActionRemote:FireServer("GiverAccept")
+        
+        -- Dismiss UI instantly (fade out)
+        instantCloseGiver()
 
-ReceiverMain.No.MouseButton1Click:Connect(function()
-	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
-	UIAudioConfig.PlayClick()
-	if currentGiverUserId then
-		ActionRemote:FireServer("ReceiverDecline", { GiverUserId = currentGiverUserId })
-		ReceiverGui.Enabled = false
-	end
-end)
+        -- Safety fallback to prevent permanent deadlock if server drops response
+        task.delay(GIVER_TIMEOUT_SECONDS, function()
+            if isGiverProcessing then
+                isGiverProcessing = false
+                showStatusNotification("Gift request timed out.")
+            end
+        end)
+    end)
+
+    noBtn.MouseButton1Click:Connect(function()
+        if isGiverProcessing then return end
+        isGiverProcessing = true
+        UIAudioConfig.PlayClick()
+        ActionRemote:FireServer("GiverDecline")
+        isGiverProcessing = false -- Clear flag immediately since server doesn't respond to Giver
+        instantCloseGiver()
+    end)
+end
+
+local function bindReceiverEvents(receiverGui, receiverMain)
+    if receiverGui:GetAttribute("EventsBound") then return end
+    receiverGui:SetAttribute("EventsBound", true)
+
+    local btnFrame = receiverMain:WaitForChild("Buttons"):WaitForChild("ButtonFrame")
+    local yesBtn = btnFrame:WaitForChild("Yes")
+    local noBtn = btnFrame:WaitForChild("No")
+
+    addHover(yesBtn)
+    addHover(noBtn)
+
+    yesBtn.MouseButton1Click:Connect(function()
+        if isReceiverProcessing or not currentGiverUserId then return end
+        isReceiverProcessing = true
+        UIAudioConfig.PlayClick()
+        ActionRemote:FireServer("ReceiverAccept", { GiverUserId = currentGiverUserId })
+        
+        -- Dismiss UI instantly (fade out)
+        instantCloseReceiver()
+    end)
+
+    noBtn.MouseButton1Click:Connect(function()
+        if isReceiverProcessing or not currentGiverUserId then return end
+        isReceiverProcessing = true
+        UIAudioConfig.PlayClick()
+        ActionRemote:FireServer("ReceiverDecline", { GiverUserId = currentGiverUserId })
+        isReceiverProcessing = false -- Clear immediately to prevent deadlocks
+        currentGiverUserId = nil -- Clear active giver session
+        instantCloseReceiver()
+    end)
+end
 
 ActionRemote.OnClientEvent:Connect(function(action, data)
-	if action == "OpenGiverUI" then
-		playSfx(SFX.Open)
-		local receiver = data.Receiver
-		local carId = data.CarId
-		local carData = getCarData(carId)
-		
-		GiverMain.PlayerName.Text = receiver.Name
-		GiverMain.CarName.Text = carData.Name
-		applyTierStyling(GiverMain.CarName, carData.Rarity)
-		GiverMain.ImageLabel.Image = carData.Image
-		
-		GiverMain.NotificationTrue.Visible = false
-		GiverMain.NotificationFalse.Visible = false
-		GiverMain.Yes.Visible = true
-		GiverMain.No.Visible = true
-		
-		GiverGui.Enabled = true
-		
-	elseif action == "OpenReceiverUI" then
-		if ReceiverGui.Enabled then return end -- Protect against concurrent offers
-		playSfx(SFX.Open)
-		local giver = data.Giver
-		local carId = data.CarId
-		local expiryTime = data.ExpiryTime
-		currentGiverUserId = giver.UserId
-		
-		local carData = getCarData(carId)
-		
-		ReceiverMain.SenderName.Text = giver.Name .. " wants to gift you this car"
-		ReceiverMain.CarName.Text = carData.Name
-		applyTierStyling(ReceiverMain.CarName, carData.Rarity)
-		ReceiverMain.ImageLabel.Image = carData.Image
-		
-		ReceiverMain.Expired.Visible = false
-		ReceiverMain.Accepted.Visible = false
-		ReceiverMain.Countdown.Visible = true
-		ReceiverMain.Yes.Visible = true
-		ReceiverMain.No.Visible = true
-		
-		if countdownConn then countdownConn:Disconnect() end
-		countdownConn = RunService.RenderStepped:Connect(function()
-			local remaining = math.max(0, math.ceil(expiryTime - workspace:GetServerTimeNow()))
-			ReceiverMain.Countdown.Text = tostring(remaining) .. "s"
-			if remaining <= 0 then
-				countdownConn:Disconnect()
-			end
-		end)
-		
-		ReceiverGui.Enabled = true
-		
-	elseif action == "UpdateGiverUI" then
-		if data.State == "NotificationTrue" then
-			playSfx(SFX.Success)
-			GiverMain.NotificationTrue.Text = data.Text
-			GiverMain.NotificationTrue.Visible = true
-			GiverMain.NotificationFalse.Visible = false
-		elseif data.State == "NotificationFalse" then
-			playSfx(SFX.Error)
-			GiverMain.NotificationFalse.Text = data.Text
-			GiverMain.NotificationFalse.Visible = true
-			GiverMain.NotificationTrue.Visible = false
-		end
-		GiverMain.Yes.Visible = false
-		GiverMain.No.Visible = false
-		
-	elseif action == "UpdateReceiverUI" then
-		if data.State == "Expired" then
-			playSfx(SFX.Error)
-			ReceiverMain.Expired.Visible = true
-			ReceiverMain.Countdown.Visible = false
-			ReceiverMain.Yes.Visible = false
-			ReceiverMain.No.Visible = false
-			task.delay(1, function()
-				ReceiverGui.Enabled = false
-			end)
-		elseif data.State == "Accepted" then
-			playSfx(SFX.Success)
-			ReceiverMain.Accepted.Text = data.Text
-			ReceiverMain.Accepted.Visible = true
-			ReceiverMain.Countdown.Visible = false
-			ReceiverMain.Yes.Visible = false
-			ReceiverMain.No.Visible = false
-		end
-		
-	elseif action == "CloseUI" then
-		GiverGui.Enabled = false
-		ReceiverGui.Enabled = false
-		if countdownConn then
-			countdownConn:Disconnect()
-			countdownConn = nil
-		end
-	end
+    if action == "OpenGiverUI" then
+        local giverGui, giverMain = getGiverUI()
+        if not giverGui or not giverMain then return end
+
+        bindGiverEvents(giverGui, giverMain)
+        pcall(function() playSfx(SFX.Open) end)
+
+        local carData = getCarData(data.CarId)
+        
+        -- Capture current context for duplicate check
+        currentPromptCarId = data.CarId
+        currentPromptReceiverId = data.Receiver.UserId
+        
+        -- Reset transparency if it was faded out
+        if giverMain:IsA("CanvasGroup") then giverMain.GroupTransparency = 0 end
+        
+        giverMain.PlayerName.Text = "to: " .. data.Receiver.Name 
+        giverMain.CarName.Text = carData.Name
+        applyTierStyling(giverMain.CarName, carData.Rarity)
+        giverMain.CarImage.Image = carData.Image
+
+        giverMain.Buttons.ButtonFrame.Yes.Visible = true
+        giverMain.Buttons.ButtonFrame.No.Visible = true
+        giverMain.Visible = true
+        giverGui.Enabled = true
+
+    elseif action == "OpenReceiverUI" then
+        local receiverGui, receiverMain = getReceiverUI()
+        if not receiverGui or not receiverMain then return end
+
+        if isReceiverProcessing or currentGiverUserId ~= nil then
+            local giverId = data and data.Giver and data.Giver.UserId
+            if giverId then
+                ActionRemote:FireServer("ReceiverBusy", { GiverUserId = giverId })
+            end
+            return
+        end
+
+        bindReceiverEvents(receiverGui, receiverMain)
+        pcall(function() playSfx(SFX.Open) end)
+        
+        -- Reset transparency if it was faded out
+        if receiverMain:IsA("CanvasGroup") then receiverMain.GroupTransparency = 0 end
+
+        currentGiverUserId = data.Giver.UserId
+        local carData = getCarData(data.CarId)
+
+        receiverMain.SenderName.Text = "from: " .. data.Giver.Name
+        receiverMain.CarName.Text = carData.Name
+        applyTierStyling(receiverMain.CarName, carData.Rarity)
+        receiverMain.CarImage.Image = carData.Image
+
+        receiverMain.Accepted.Visible = false
+        receiverMain.Buttons.ButtonFrame.Yes.Visible = true
+        receiverMain.Buttons.ButtonFrame.No.Visible = true
+        
+        receiverMain.Visible = true
+        receiverGui.Enabled = true
+
+    elseif action == "UpdateGiverUI" then
+        local giverGui, giverMain = getGiverUI()
+        if not giverGui or not giverMain then return end
+
+        isGiverProcessing = false
+
+        -- If it's a success, clear the anti-spam trackers
+        if data and data.Text and data.Text:lower():find("successful") then
+            lastSentCarId = nil
+            lastSentReceiverId = nil
+        end
+
+        -- Close the main gifting interface instantly
+        instantCloseGiver()
+
+        -- Show persistent status feedback
+        if data.State == "NotificationTrue" then
+            pcall(function() playSfx(SFX.Success) end)
+            showStatusNotification(data.Text)
+        else
+            pcall(function() playSfx(SFX.Error) end)
+            showStatusNotification(data.Text)
+        end
+
+    elseif action == "UpdateReceiverUI" then
+        local receiverGui, receiverMain = getReceiverUI()
+        if not receiverGui or not receiverMain then return end
+
+        isReceiverProcessing = false
+        currentGiverUserId = nil
+
+        -- Close the main gifting interface instantly
+        instantCloseReceiver()
+
+        -- Show persistent status feedback
+        local isSuccess = not (data.Text:lower():find("fail") or data.Text:lower():find("error"))
+        pcall(function() playSfx(isSuccess and SFX.Success or SFX.Error) end)
+        showStatusNotification(data.Text)
+
+    elseif action == "CloseUI" then
+        isGiverProcessing = false
+        isReceiverProcessing = false
+        instantCloseGiver()
+        instantCloseReceiver()
+        currentGiverUserId = nil
+    end
+end)
+
+-- ============================================================================
+-- 🎁 DYNAMIC PROXIMITY PROMPT MANAGEMENT (Optimized Distance Scanner)
+-- ============================================================================
+local activePrompts = {}
+
+local function getEquippedCarTool()
+    local char = player.Character
+    if not char then return nil end
+    local tool = char:FindFirstChildOfClass("Tool")
+    -- A car tool is considered valid if it either has the specific CarToolPrepared attribute 
+    -- OR it simply has a Handle, matching the game's broader tool system requirements.
+    if tool and (tool:GetAttribute("CarToolPrepared") or tool:FindFirstChild("Handle")) then
+        return tool
+    end
+    return nil
+end
+
+local lastHeartbeat = 0
+RunService.Heartbeat:Connect(function(dt)
+    -- Throttle updates to ~10 times per second to save CPU
+    lastHeartbeat += dt
+    if lastHeartbeat < HEARTBEAT_INTERVAL then return end
+    lastHeartbeat -= HEARTBEAT_INTERVAL
+
+    local equippedTool = getEquippedCarTool()
+    
+    local giverGui, giverMain = getGiverUI()
+    local receiverGui, receiverMain = getReceiverUI()
+
+    local giverOpen = (giverGui and giverGui.Enabled and giverMain and giverMain.Visible) or false
+    local receiverOpen = (receiverGui and receiverGui.Enabled and receiverMain and receiverMain.Visible) or false
+    local uiOpen = giverOpen or receiverOpen
+    
+    local localChar = player.Character
+    local localRoot = localChar and (localChar:FindFirstChild("HumanoidRootPart") or localChar:FindFirstChild("Torso"))
+
+    -- If holding a tool and NO UI is open, scan for players
+    if equippedTool and not uiOpen and localRoot then
+        local nearbyPlayers = {}
+
+        for _, otherPlayer in ipairs(Players:GetPlayers()) do
+            if otherPlayer ~= player and otherPlayer.Character then
+                local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart") or otherPlayer.Character:FindFirstChild("Torso")
+                if otherRoot then
+                    local dist = (localRoot.Position - otherRoot.Position).Magnitude
+                    
+                    if dist <= PROMPT_SCAN_RANGE then
+                        nearbyPlayers[otherPlayer] = true
+                        
+                        -- Create prompt if it doesn't exist
+                        if not activePrompts[otherPlayer] or not activePrompts[otherPlayer].Parent then
+                            if activePrompts[otherPlayer] then activePrompts[otherPlayer]:Destroy() end
+                            
+                            local prompt = Instance.new("ProximityPrompt")
+                            prompt.Name = "GiftCarPrompt_Local"
+                            prompt.ActionText = "Gift Car"
+                            prompt.ObjectText = equippedTool.Name
+                            prompt.RequiresLineOfSight = false
+                            prompt.Exclusivity = Enum.ProximityPromptExclusivity.AlwaysShow
+                            prompt.HoldDuration = PROMPT_HOLD_DURATION
+                            prompt.MaxActivationDistance = PROMPT_ACTIVATION_DIST
+                            prompt.Enabled = true
+                            prompt.Parent = otherRoot
+                            
+                            prompt.Triggered:Connect(function()
+                                local currentTool = getEquippedCarTool()
+                                if not currentTool then return end
+                                playSfx(SFX.Click)
+                                ActionRemote:FireServer("TriggerPrompt", { Receiver = otherPlayer, Tool = currentTool })
+                            end)
+                            
+                            activePrompts[otherPlayer] = prompt
+                        else
+                            -- Update existing prompt quietly
+                            local p = activePrompts[otherPlayer]
+                            if p.ObjectText ~= equippedTool.Name then
+                                p.ObjectText = equippedTool.Name
+                            end
+                            if not p.Enabled then
+                                p.Enabled = true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        for otherPlayer, prompt in pairs(activePrompts) do
+            if not nearbyPlayers[otherPlayer] then
+                prompt:Destroy()
+                activePrompts[otherPlayer] = nil
+            end
+        end
+
+    else
+        for otherPlayer, prompt in pairs(activePrompts) do
+            prompt:Destroy()
+            activePrompts[otherPlayer] = nil
+        end
+    end
 end)

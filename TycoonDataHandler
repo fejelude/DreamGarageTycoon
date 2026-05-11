@@ -338,14 +338,15 @@ end
 -- 🏗️ LAYOUT RESTORATION
 -- ----------------------------------------------------------------------------
 local function getLevelModel(plot, levelName)
-	local model = plot:FindFirstChild(levelName)
+	local altName = levelName == "Level1" and "Level 1" or (levelName == "Level2" and "Level 2" or levelName)
+	local model = plot:FindFirstChild(levelName) or plot:FindFirstChild(altName)
 	if model then return model end
 
 	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 	if dedicatedFolder then
 		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
 		if plotStorage then
-			return plotStorage:FindFirstChild(levelName)
+			return plotStorage:FindFirstChild(levelName) or plotStorage:FindFirstChild(altName)
 		end
 	end
 	return nil

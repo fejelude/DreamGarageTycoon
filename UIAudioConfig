@@ -13,9 +13,9 @@ local Players      = game:GetService("Players")
 local UIAudioConfig = {}
 
 -- ⚙️ EASY VOLUME CONFIGURATION — edit these values to adjust UI sounds
-UIAudioConfig.HOVER_VOLUME  = 0.45
-UIAudioConfig.CLICK_VOLUME  = 0.55
-UIAudioConfig.ROBUX_VOLUME  = 0.75
+UIAudioConfig.HOVER_VOLUME  = 2
+UIAudioConfig.CLICK_VOLUME  = 2.5
+UIAudioConfig.ROBUX_VOLUME  = 2
 
 -- Sound asset IDs
 local HOVER_SFX_ID = "rbxassetid://73899820361873"
@@ -45,7 +45,7 @@ local robuxSound = getOrCreateSound("GlobalUIRobux", ROBUX_SFX_ID, UIAudioConfig
 -- Hover cooldown: prevents the shared sound from restarting faster than it
 -- can be heard during rapid mouse movement across elements (80 ms feels
 -- natural — responsive per-element feedback without choppy self-interruption).
-local HOVER_COOLDOWN = 0.08
+local HOVER_COOLDOWN = 0
 local lastHoverClock = 0
 
 -- Play hover — fires at most once per HOVER_COOLDOWN across ALL elements.
@@ -91,7 +91,7 @@ local _origIconTrans  = 0    -- captured from editor design
 local function resolveLoadingUI()
 	-- Return cached refs if still valid
 	if _loadingScreen and _loadingScreen.Parent
-	and _loadingFrame  and _loadingFrame.Parent then
+		and _loadingFrame  and _loadingFrame.Parent then
 		return _loadingScreen, _loadingFrame
 	end
 
@@ -120,7 +120,7 @@ local function resolveLoadingUI()
 	_loadingFrame.AnchorPoint         = Vector2.new(0.5, 0.5)
 	_loadingFrame.Position            = UDim2.new(0.5, 0, 0.5, 0)
 	_loadingFrame.Visible             = false
-	
+
 	_origFrameTrans = _loadingFrame.BackgroundTransparency
 
 	-- ✅ One-time setup: center the LoadingIcon inside the frame
@@ -143,20 +143,20 @@ function UIAudioConfig.ShowPurchaseLoading()
 	-- Force the ScreenGui ON at the highest layer
 	screen.Enabled  = true
 	frame.Visible   = true
-	
+
 	-- Reset to the original editor-defined design
 	frame.BackgroundTransparency = _origFrameTrans
 	local icon = frame:FindFirstChild("LoadingIcon")
 	if icon then
 		icon.ImageTransparency = _origIconTrans
 		icon.Rotation = 0
-		
+
 		-- Cancel any previous spin before starting a new one
 		if not _G.__RobuxSpinTweens then _G.__RobuxSpinTweens = {} end
 		if _G.__RobuxSpinTweens[icon] then
 			_G.__RobuxSpinTweens[icon]:Cancel()
 		end
-		
+
 		local spinTween = TweenService:Create(
 			icon,
 			TweenInfo.new(1.0, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, -1),
@@ -182,25 +182,25 @@ function UIAudioConfig.HidePurchaseLoading()
 
 		local icon = frame:FindFirstChild("LoadingIcon")
 		local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
-		
+
 		local frameTween = TweenService:Create(frame, fadeInfo, {BackgroundTransparency = 1})
 		frameTween:Play()
-		
+
 		if icon then
 			local iconTween = TweenService:Create(icon, fadeInfo, {ImageTransparency = 1})
 			iconTween:Play()
 		end
-		
+
 		frameTween.Completed:Connect(function()
 			if currentGen ~= _G.__LoadingUIGeneration then return end
 			frame.Visible = false
 			screen.Enabled = false
-			
+
 			-- Restore original editor values so it's ready for the next Show call
 			frame.BackgroundTransparency = _origFrameTrans
 			if icon then
 				icon.ImageTransparency = _origIconTrans
-				
+
 				if _G.__RobuxSpinTweens and _G.__RobuxSpinTweens[icon] then
 					_G.__RobuxSpinTweens[icon]:Cancel()
 					_G.__RobuxSpinTweens[icon] = nil

@@ -194,14 +194,14 @@ task.spawn(function()
 				local activeLevelFolder = nil
 
 				if playerBaseLevel == 1 then
-					activeLevelFolder = plot:FindFirstChild("Level1")
+					activeLevelFolder = plot:FindFirstChild("Level1") or plot:FindFirstChild("Level 1")
 					if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level1")
+						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level1") or dedicatedFolder[plot.Name]:FindFirstChild("Level 1")
 					end
 				elseif playerBaseLevel == 2 then
-					activeLevelFolder = plot:FindFirstChild("Level2")
+					activeLevelFolder = plot:FindFirstChild("Level2") or plot:FindFirstChild("Level 2")
 					if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level2") or dedicatedFolder[plot.Name]:FindFirstChild("Level 2")
 					end
 				else
 					warn("⚠️ TycoonEconomy: Unhandled BaseLevel " .. tostring(playerBaseLevel) .. " for plot " .. plot.Name)

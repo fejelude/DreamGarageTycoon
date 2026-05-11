@@ -50,7 +50,7 @@ local PROMPT_NAME = "TalkPrompt"
 
 local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TYPEWRITER_SPEED = 0.02
-local LEAVE_DELAY = 2 
+local LEAVE_DELAY = 3 
 
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
 local CASH_SFX_ID = "rbxassetid://2865227271" 
@@ -419,10 +419,13 @@ local function startInteraction(npcModel)
 			if dialogueLabel then
 				local goodbyeMsg = LEAVE_OPTIONS[math.random(1, #LEAVE_OPTIONS)]
 				goodbyeMsg = goodbyeMsg:gsub("%[Name%]", coloredName)
-				typewrite(dialogueLabel, goodbyeMsg)
+				typewrite(dialogueLabel, goodbyeMsg, function()
+					task.wait(LEAVE_DELAY)
+					stopInteraction()
+				end)
+			else
+				stopInteraction()
 			end
-			task.wait(LEAVE_DELAY)
-			stopInteraction()
 		end)
 
 		connectBtn(BTN_INQUIRY_ID, function()
@@ -476,9 +479,10 @@ local function startInteraction(npcModel)
 					"There you go " .. coloredName .. ". " .. coloredAmount .. " straight from the vault. Don't spend it all in one place fr."
 				}
 
-				typewrite(dialogueLabel, successMsgs[math.random(1, #successMsgs)])
-				task.wait(2.5) 
-				stopInteraction()
+				typewrite(dialogueLabel, successMsgs[math.random(1, #successMsgs)], function()
+					task.wait(3) 
+					stopInteraction()
+				end)
 			else
 				local errorMsgs = {
 					"Hold up, bank system trippin': " .. msg,
@@ -520,4 +524,3 @@ setupATM()
 player.CharacterAdded:Connect(function()
 	stopInteraction()
 end)
-

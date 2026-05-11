@@ -98,26 +98,11 @@ local SkipLegendaryCraftFunc = BindableFunctions:WaitForChild("SkipLegendaryCraf
 local SkipMythicalCraftFunc = BindableFunctions:WaitForChild("SkipMythicalCraftFunction")
 
 -- 📡 REMOTES SETUP
-local PadUnlockEvent = ReplicatedStorage:FindFirstChild("PadUnlockEvent")
-if not PadUnlockEvent then
-	PadUnlockEvent = Instance.new("RemoteEvent")
-	PadUnlockEvent.Name = "PadUnlockEvent"
-	PadUnlockEvent.Parent = ReplicatedStorage
-end
+local PadUnlockEvent = ReplicatedStorage:WaitForChild("PadUnlockEvent")
+local Remotes = ReplicatedStorage:WaitForChild("GiftRemotes")
+local NotifyGiftReceived = Remotes:WaitForChild("NotifyGiftReceived")
 
-local Remotes = ReplicatedStorage:FindFirstChild("GiftRemotes")
-if not Remotes then
-	Remotes = Instance.new("Folder")
-	Remotes.Name = "GiftRemotes"
-	Remotes.Parent = ReplicatedStorage
-end
-
-local NotifyGiftReceived = Remotes:FindFirstChild("NotifyGiftReceived")
-if not NotifyGiftReceived then
-	NotifyGiftReceived = Instance.new("RemoteEvent")
-	NotifyGiftReceived.Name = "NotifyGiftReceived"
-	NotifyGiftReceived.Parent = Remotes
-end
+local GlobalChatBroadcast = Remotes:WaitForChild("GlobalChatBroadcast", 10)
 
 local BaseSkinStats
 pcall(function()
@@ -230,6 +215,42 @@ local function giveCarTool(targetPlayer, carName)
 end
 
 -- ============================================================================
+-- 🎁 HELPER: Handle Car Purchase & Broadcasts
+-- ============================================================================
+local function handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, rarity, npcFeedbackName)
+	local purchaseSuccess = giveCarTool(targetPlayer, carName)
+	if not purchaseSuccess then return false end
+
+	local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
+	local feedbackRemote = ShopRemotes and npcFeedbackName and ShopRemotes:FindFirstChild(npcFeedbackName)
+
+	if isGift then
+		-- Keep Sender confirmation untouched
+		if feedbackRemote then
+			feedbackRemote:FireClient(buyerPlayer, carName, true, targetPlayer.Name)
+		end
+		
+		-- Replace Receiver private notification with server-wide broadcast
+		if GlobalChatBroadcast then
+			GlobalChatBroadcast:FireAllClients({
+				Type = "CarGift",
+				SenderName = buyerPlayer.Name,
+				ReceiverName = targetPlayer.Name,
+				CarName = carName,
+				Rarity = rarity
+			})
+		end
+	else
+		-- Normal non-gift purchase
+		if feedbackRemote then
+			feedbackRemote:FireClient(targetPlayer, carName, true)
+		end
+	end
+	
+	return true
+end
+
+-- ============================================================================
 -- 🧾 MAIN RECEIPT PROCESSOR
 -- ============================================================================
 MarketplaceService.ProcessReceipt = function(receiptInfo)
@@ -240,11 +261,14 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	local targetPlayer = buyerPlayer
 	local isGift = false
+	local giftReceiverId = nil
 
+	-- FIX: Peek at the gift intent WITHOUT consuming it.
+	-- Only consume after the purchase is fully granted to prevent data loss on retry.
 	if _G.GetGiftReceiver then
-		local receiverId = _G.GetGiftReceiver(buyerId)
-		if receiverId then
-			local receiver = Players:GetPlayerByUserId(receiverId)
+		giftReceiverId = _G.GetGiftReceiver(buyerId, false) -- peek only
+		if giftReceiverId then
+			local receiver = Players:GetPlayerByUserId(giftReceiverId)
 			if receiver then
 				targetPlayer = receiver
 				isGift = true
@@ -328,46 +352,22 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		-- ─── 🟢 COMMON CAR ───────────────────────────────────────────────────────
 	elseif CAR_PRODUCT_IDS[pid] then
 		local carName = CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = giveCarTool(targetPlayer, carName)
+		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Common", nil)
 
 		-- ─── 🔵 UNCOMMON CAR ─────────────────────────────────────────────────────
 	elseif UNCOMMON_CAR_PRODUCT_IDS[pid] then
 		local carName = UNCOMMON_CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = giveCarTool(targetPlayer, carName)
-
-		if purchaseSuccess then
-			local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
-			local feedbackRemote = ShopRemotes and ShopRemotes:FindFirstChild("DarrelPurchaseFeedback")
-			if feedbackRemote then
-				feedbackRemote:FireClient(targetPlayer, carName, true)
-			end
-		end
+		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Uncommon", "DarrelPurchaseFeedback")
 
 		-- ─── 🟣 RARE CAR ─────────────────────────────────────────────────────────
 	elseif RARE_CAR_PRODUCT_IDS[pid] then
 		local carName = RARE_CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = giveCarTool(targetPlayer, carName)
-
-		if purchaseSuccess then
-			local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
-			local feedbackRemote = ShopRemotes and ShopRemotes:FindFirstChild("JacobPurchaseFeedback")
-			if feedbackRemote then
-				feedbackRemote:FireClient(targetPlayer, carName, true)
-			end
-		end
+		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Rare", "JacobPurchaseFeedback")
 
 		-- ─── 🟡 EPIC CAR ─────────────────────────────────────────────────────────
 	elseif EPIC_CAR_PRODUCT_IDS[pid] then
 		local carName = EPIC_CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = giveCarTool(targetPlayer, carName)
-
-		if purchaseSuccess then
-			local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
-			local feedbackRemote = ShopRemotes and ShopRemotes:FindFirstChild("RayWPurchaseFeedback")
-			if feedbackRemote then
-				feedbackRemote:FireClient(targetPlayer, carName, true)
-			end
-		end
+		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Epic", "RayWPurchaseFeedback")
 
 		-- ─── ⏩ SKIP CRAFT TIMES ──────────────────────────────────────────────────
 	elseif pid == LEGENDARY_SKIP_CRAFT_ID then
@@ -416,6 +416,12 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	if purchaseSuccess then
 		if not markPurchaseProcessed(purchaseKey) then
 			return Enum.ProductPurchaseDecision.NotProcessedYet
+		end
+
+		-- FIX: NOW consume the gift intent — only after the grant and persistence succeeded.
+		-- This guarantees the intent survives ProcessReceipt retries on failure.
+		if isGift and giftReceiverId and _G.GetGiftReceiver then
+			_G.GetGiftReceiver(buyerId, true) -- consume
 		end
 
 		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")

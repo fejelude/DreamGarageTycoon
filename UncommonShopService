@@ -549,7 +549,12 @@ task.spawn(function()
 				pushUpdate(player, session, "Auto")
 			end
 			if RestockNotificationEvent then
-				RestockNotificationEvent:FireAllClients("AutoRestock", "Uncommon")
+				local config = generateStockConfiguration(currentID)
+				local featuredNames = {}
+				for name, _ in pairs(config.Featured) do
+					table.insert(featuredNames, name)
+				end
+				RestockNotificationEvent:FireAllClients("AutoRestock", "Uncommon", featuredNames)
 			end
 		end
 	end

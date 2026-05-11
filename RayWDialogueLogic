@@ -95,7 +95,7 @@ end
 local DIALOGUE_POOLS = {
 	Greetings = {
 		"Welcome, {player}. Only the finest stock today.",
-		"I see you have <font color='"..MONEY_COLOR.."'><b>{money}</b></font>. Let's put that towards something <font color='"..EPIC_COLOR.."'><b>Epic</b></font>.",
+		"I see you have <font color='"..MONEY_COLOR.."'>{money}</font>. Let's put that towards something <font color='"..EPIC_COLOR.."'><b>Epic</b></font>.",
 		"Quality speaks for itself. Take a look.",
 		"Back again, {player}? Good. I've got exactly what you need.",
 		"The <font color='"..EPIC_COLOR.."'><b>Epic</b></font> shop is open. Let's make a deal."
@@ -116,13 +116,13 @@ local DIALOGUE_POOLS = {
 		"Whenever you're ready for true power, I'll be here."
 	},
 	Reactions = { -- IN-GAME CASH REACTIONS
-		"Impeccable taste, {player}. That <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> will easily produce <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>.",
-		"A masterpiece. The <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> is yours. Let it generate that <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>.",
-		"Done. The <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> is a statement piece, pulling <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font> effortlessly."
+		"Impeccable taste, {player}. That <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> will easily produce <font color='"..CPS_COLOR.."'>{cps} CPS</font>.",
+		"A masterpiece. The <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> is yours. Let it generate that <font color='"..CPS_COLOR.."'>{cps} CPS</font>.",
+		"Done. The <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> is a statement piece, pulling <font color='"..CPS_COLOR.."'>{cps} CPS</font> effortlessly."
 	},
 	RobuxReactions = { -- ROBUX SPECIFIC REACTIONS
 		"Paying in <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>? You value efficiency. The <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> is yours.",
-		"A premium transaction for a premium <font color='"..EPIC_COLOR.."'><b>{carName}</b></font>. Enjoy your <font color='"..CPS_COLOR.."'><b>{cps} CPS</b></font>, {player}.",
+		"A premium transaction for a premium <font color='"..EPIC_COLOR.."'><b>{carName}</b></font>. Enjoy your <font color='"..CPS_COLOR.."'>{cps} CPS</font>, {player}.",
 		"With <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>, you command respect. The <font color='"..EPIC_COLOR.."'><b>{carName}</b></font> is a worthy addition."
 	}
 }
@@ -192,6 +192,10 @@ end
 local function setFocusMode(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
+
+	if player.Character then
+		player:SetAttribute("MovementLock", active)
+	end
 end
 
 -- ============================================================================
@@ -287,18 +291,14 @@ local function stopInteraction()
 	local controls = getControls()
 	if controls then controls:Enable() end
 
-	if player.Character then
-		local humanoid = player.Character:FindFirstChild("Humanoid")
-		player:SetAttribute("MovementLock", false)
-	end
-
 	local myGui, container = getUIElements()
 	if myGui then myGui.Enabled = false end
 	if container then container.Visible = false end
 
 	-- Restore camera to default
-	local Workspace = game:GetService("Workspace")
-	Workspace.CurrentCamera.CameraType = Enum.CameraType.Custom
+	local currentCamera = Workspace.CurrentCamera
+	currentCamera.CameraType = Enum.CameraType.Custom
+	currentCamera.FieldOfView = 70
 end
 
 local function animateButton(btn)
@@ -361,7 +361,6 @@ local function startInteraction(npcModel)
 	if player.Character then
 		local humanoid = player.Character:FindFirstChild("Humanoid")
 		if humanoid then
-			player:SetAttribute("MovementLock", true)
 			local deathConn
 			deathConn = humanoid.Died:Connect(function()
 				if deathConn then deathConn:Disconnect() end
@@ -371,6 +370,8 @@ local function startInteraction(npcModel)
 		end
 	end
 
+	-- Refresh camera reference to prevent stale object bugs
+	local camera = Workspace.CurrentCamera
 	local camPart = npcModel:FindFirstChild("CameraAimPart")
 	if camPart then
 		camera.CameraType = Enum.CameraType.Scriptable
@@ -437,22 +438,34 @@ end
 -- ============================================================================
 -- 📣 POST-PURCHASE REACTION EVENT LOGIC
 -- ============================================================================
-purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux)
+purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipientName, giftSenderName)
 	-- FIX: 0.8s delay before NPC speaks after purchase
 	task.wait(0.8)
 
 	local carData = CarStats.Cars[carId]
 	if not carData then return end
 
-	-- FIX: Full clean stop before re-engaging to avoid orphaned connections
-	if isInteracting then stopInteraction() end
+	-- 🛡️ [POLISH] Close Shop UI immediately so it doesn't overlap
+	local shopUi = playerGui:FindFirstChild("EpicShopUi")
+	if shopUi then shopUi.Enabled = false end
 
-	-- Guard: if another interaction started during the wait, abort
-	if isInteracting then return end
+	-- 🛡️ [POLISH] Refresh camera reference to prevent stale object bugs
+	local camera = Workspace.CurrentCamera
+	local npcFolder = Workspace:FindFirstChild(NPC_FOLDER)
+	local npcModel = npcFolder and npcFolder:FindFirstChild(TARGET_NPC)
+	local camPart = npcModel and npcModel:FindFirstChild("CameraAimPart")
+	
+	if camPart then
+		camera.CameraType = Enum.CameraType.Scriptable
+		TweenService:Create(camera, TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
+			CFrame = camPart.CFrame
+		}):Play()
+	end
 
 	print("💬 [RayWLogic] Triggering Post-Purchase Reaction. Car: " .. carId .. " | Robux: " .. tostring(isRobux))
+	
 	isInteracting = true
-	setFocusMode(true)
+	setFocusMode(true) -- Focus on the NPC dialogue
 
 	local myGui, container, dialogueLabel = getUIElements()
 	if myGui and container and dialogueLabel then
@@ -460,16 +473,22 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux)
 		container.Visible = true
 		setButtonsState(false)
 
-		local poolToUse = isRobux and "RobuxReactions" or "Reactions"
-		local reactionText = getRandomDialogue(poolToUse, carId, carData.CPS)
+		local reactionText = ""
+		if giftRecipientName then
+			reactionText = "Gift sent! <font color='"..USER_COLOR.."'><b>" .. giftRecipientName .. "</b></font> received the <font color='"..EPIC_COLOR.."'><b>" .. carId .. "</b></font>."
+		else
+			local poolToUse = isRobux and "RobuxReactions" or "Reactions"
+			reactionText = getRandomDialogue(poolToUse, carId, carData.CPS)
+		end
 
 		typewrite(dialogueLabel, reactionText, function()
 			task.wait(REACTION_PAUSE)
-			stopInteraction()
+			stopInteraction() -- Fully close everything
 		end)
 	else
 		-- Safety: couldn't find GUI, abort gracefully
 		isInteracting = false
+		setFocusMode(false)
 	end
 end)
 
@@ -497,4 +516,3 @@ setupNPC()
 player.CharacterAdded:Connect(function()
 	stopInteraction()
 end)
-
