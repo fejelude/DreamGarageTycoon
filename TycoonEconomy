@@ -215,6 +215,7 @@ task.spawn(function()
 				local friendMultiplier = 1
 				local premiumMultiplier = 1
 				local skinMultiplier = 1
+				local rankMultiplier = 1
 
 				if ownerValue and ownerValue.Value ~= "" then
 					local player = Players:FindFirstChild(ownerValue.Value)
@@ -230,12 +231,15 @@ task.spawn(function()
 
 						-- C. Skin Bonus (Gold Upgrade) ✅ NEW
 						skinMultiplier = GetSkinMultiplier(player)
+
+						-- D. Rank milestone bonus (VIP through MVP++)
+						rankMultiplier = tonumber(player:GetAttribute("RankResourceMultiplier")) or 1
 					end
 				end
 
-				-- Apply the bonuses: (((Base * Friend) * Premium) * Skin)
-				-- Example: (((100 CPS * 1.5 Friend) * 1.5 Premium) * 1.25 Gold)
-				plotTotalCPS = ((plotTotalCPS * friendMultiplier) * premiumMultiplier) * skinMultiplier
+				-- Apply the bonuses: ((((Base * Friend) * Premium) * Skin) * Rank)
+				-- Example: ((((100 CPS * 1.5 Friend) * 1.5 Premium) * 1.25 Gold) * 2 VIP)
+				plotTotalCPS = (((plotTotalCPS * friendMultiplier) * premiumMultiplier) * skinMultiplier) * rankMultiplier
 
 				-- Update attribute so TabletHandler sees the Boosted CPS (before AFK)
 				plot:SetAttribute("CurrentCPS", plotTotalCPS)

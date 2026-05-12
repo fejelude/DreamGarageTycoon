@@ -82,6 +82,12 @@ local OPEN_REQUEST_COOLDOWN_SECONDS = 1
 -- =========================
 
 
+
+local RANK_VALUES = { Player = 0, VIP = 1, ["VIP+"] = 2, MVP = 3, ["MVP+"] = 4, ["MVP++"] = 5 }
+local function hasRequiredRank(player)
+	return (RANK_VALUES[player:GetAttribute("Rank") or "Player"] or 0) >= (RANK_VALUES["MVP++"] or 0)
+end
+
 -- =========================
 -- REMOTES (ISOLATED)
 -- =========================
@@ -267,6 +273,15 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 	end
 end
 
+local function recordRankCraft(player, carName)
+	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
+	if rankApi then
+		task.spawn(function()
+			pcall(function() rankApi:Invoke("CarObtained", player, carName, "Craft", nil) end)
+		end)
+	end
+end
+
 -- =========================
 -- CLIENT REQUESTS
 -- =========================
@@ -292,6 +307,7 @@ RemoteRequestOpen.OnServerEvent:Connect(function(player)
 
 	local distance = (char.PrimaryPart.Position - ethourahRoot.Position).Magnitude
 	if distance <= MAX_INTERACTION_DISTANCE then
+		if not hasRequiredRank(player) then return end
 		LastOpenRequestAt[player.UserId] = now
 		local session = getSession(player)
 		pushUpdate(player, session, "Open")
@@ -344,6 +360,8 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	local recipe = RECIPES[carName]
 	if not recipe              then return false, "Invalid Mythical Car" end
 	if not recipe[ingredient]  then return false, "Invalid Ingredient"    end
+
+	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
 
 	local uid = player.UserId
 	if InteractionLocks[uid] then return false, "Transaction in progress" end
@@ -438,6 +456,8 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 
 	local recipe = RECIPES[carName]
 	if not recipe then return false, "Invalid Mythical Car" end
+
+	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
 
 	local uid = player.UserId
 	if InteractionLocks[uid] then return false, "Transaction in progress" end
@@ -537,6 +557,7 @@ SkipCraftFunc.OnInvoke = function(player)
 	local invokeOk, giveResult = safeInvoke(MythicalInventoryBindable, 3, "GiveTool", player, realToolName)
 
 	if invokeOk and giveResult ~= false then
+		recordRankCraft(player, realToolName)
 		print("✅ [MythicalShop] SKIP Granted " .. realToolName .. " to " .. player.Name)
 		pushUpdate(player, session, "Skipped")
 		safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
@@ -574,6 +595,7 @@ task.spawn(function()
 						safeInvoke(MythicalInventoryBindable, 3, "GiveTool", player, realToolName)
 
 					if invokeOk and giveResult ~= false then
+						recordRankCraft(player, realToolName)
 						print("✅ [MythicalShop] Granted " .. realToolName .. " to " .. player.Name)
 						dirty = true
 					else
