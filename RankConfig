@@ -11,6 +11,16 @@ RankConfig.DefaultWithdrawalLimit = nil -- nil means use the banking system's ex
 
 RankConfig.Order = { "VIP", "VIP+", "MVP", "MVP+", "MVP++" }
 
+RankConfig.ShopRequirements = {
+	Common = nil,
+	Uncommon = "VIP",
+	Rare = "VIP+",
+	Epic = "MVP",
+	Legendary = "MVP+",
+	Mythical = "MVP++",
+	Mythic = "MVP++",
+}
+
 RankConfig.Values = {
 	Player = 0,
 	VIP = 1,
@@ -102,18 +112,22 @@ function RankConfig.GetRankValue(rankName)
 end
 
 function RankConfig.PlayerMeetsRank(playerRank, requiredRank)
+	if not requiredRank then return true end
 	return RankConfig.GetRankValue(playerRank) >= RankConfig.GetRankValue(requiredRank)
 end
 
+function RankConfig.GetRequiredRankForShop(shopName)
+	return RankConfig.ShopRequirements[shopName]
+end
+
+function RankConfig.PlayerCanAccessShop(playerRank, shopName)
+	return RankConfig.PlayerMeetsRank(playerRank, RankConfig.GetRequiredRankForShop(shopName))
+end
+
 function RankConfig.GetTotalStorageForRank(rankName)
-	local total = RankConfig.BaseStorageSlots
-	for _, orderedRank in ipairs(RankConfig.Order) do
-		local rank = RankConfig.Ranks[orderedRank]
-		if rank and RankConfig.GetRankValue(orderedRank) <= RankConfig.GetRankValue(rankName) then
-			total += rank.Benefits.ExtraStorage or 0
-		end
-	end
-	return total
+	local rank = RankConfig.Ranks[rankName]
+	local extraStorage = rank and rank.Benefits and rank.Benefits.ExtraStorage or 0
+	return RankConfig.BaseStorageSlots + extraStorage
 end
 
 function RankConfig.GetBenefitsForRank(rankName)

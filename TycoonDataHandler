@@ -1070,9 +1070,9 @@ local function InitializePlayer(player)
 
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
 	local hs = Instance.new("Folder"); hs.Name = "HiddenStats"; hs.Parent = player
-	local cash   = Instance.new("IntValue"); cash.Name   = "Cash";       cash.Parent   = hs
-	local wallet = Instance.new("IntValue"); wallet.Name = "Wallet";     wallet.Parent = ls
-	local atm    = Instance.new("IntValue"); atm.Name    = "ATMBalance"; atm.Parent    = ls
+	local cash   = Instance.new("NumberValue"); cash.Name   = "Cash";       cash.Parent   = hs
+	local wallet = Instance.new("NumberValue"); wallet.Name = "Wallet";     wallet.Parent = ls
+	local atm    = Instance.new("NumberValue"); atm.Name    = "ATMBalance"; atm.Parent    = ls
 
 	local function setDirty() markDirty(player) end
 	cash.Changed:Connect(setDirty)
@@ -1106,9 +1106,15 @@ local function InitializePlayer(player)
 	data.Rank                   = data.Rank                   or "Player"
 	data.RankData               = data.RankData               or {}
 
-	cash.Value   = data.Bank       or 0
-	wallet.Value = data.Wallet     or 0
-	atm.Value    = data.ATMBalance or 0
+	local function sanitizeMoney(value)
+		value = tonumber(value) or 0
+		if value ~= value or value == math.huge or value == -math.huge then return 0 end
+		return math.max(0, math.floor(value))
+	end
+
+	cash.Value   = sanitizeMoney(data.Bank)
+	wallet.Value = sanitizeMoney(data.Wallet)
+	atm.Value    = sanitizeMoney(data.ATMBalance)
 
 	local shopBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
 	if shopBindable then shopBindable:Invoke("Load", player, data.ShopPurchases) end
@@ -1141,6 +1147,7 @@ local function InitializePlayer(player)
 
 	local rankPersistenceBindable = ServerStorage:WaitForChild("RankPersistenceFunction", 10)
 	if rankPersistenceBindable then
+		data.RankData.LegacyRank = data.Rank
 		data.RankData.CurrentRank = data.RankData.CurrentRank or data.Rank
 		rankPersistenceBindable:Invoke("Load", player, data.RankData)
 	end

@@ -39,11 +39,30 @@ local ADMIN_USER_IDS = {
 
 local IS_STUDIO = RunService:IsStudio()
 local CMD_DEBOUNCE = 0.3
+local MAX_SAFE_BALANCE = 1000000000000000 -- 1 quadrillion; below double precision integer danger range.
 
 -- 🛡️ STATE
 local AdminDebounces = {}
 local ToolCache = nil
 math.randomseed(os.time()) 
+
+local function parsePositiveMoney(raw)
+	local amount = tonumber(raw)
+	if not amount or amount ~= amount or amount == math.huge or amount == -math.huge then
+		return nil
+	end
+	amount = math.floor(amount)
+	if amount <= 0 then return nil end
+	return math.min(amount, MAX_SAFE_BALANCE)
+end
+
+local function addMoneySafely(stat, amount)
+	local current = tonumber(stat.Value) or 0
+	if current < 0 then current = 0 end
+	local newValue = math.min(current + amount, MAX_SAFE_BALANCE)
+	stat.Value = newValue
+	return newValue
+end
 
 -- 🔗 API CONNECTION
 local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI", 10)
@@ -375,8 +394,11 @@ Players.PlayerAdded:Connect(function(player)
 			-- 💰 /bank   [player] [amount]  →  adds to Cash   (in HiddenStats)
 		elseif command == "/wallet" or command == "/bank" then
 			local selector = args[2]
-			local amount = tonumber(args[3])
-			if not selector or not amount then return end
+			local amount = parsePositiveMoney(args[3])
+			if not selector or not amount then
+				print("⚠️ Syntax: /wallet [selector] [positive amount] or /bank [selector] [positive amount]")
+				return
+			end
 
 			local targets = getTargets(player, selector)
 
@@ -386,8 +408,8 @@ Players.PlayerAdded:Connect(function(player)
 					local hs = t:FindFirstChild("HiddenStats")
 					local stat = hs and hs:FindFirstChild("Cash")
 					if stat then
-						stat.Value = stat.Value + amount
-						print(string.format("💰 Added $%d to %s's Bank (HiddenStats.Cash)", amount, t.Name))
+						local newBalance = addMoneySafely(stat, amount)
+						print(string.format("💰 Added $%.0f to %s's Bank (HiddenStats.Cash). New balance: $%.0f", amount, t.Name, newBalance))
 					else
 						warn("⚠️ HiddenStats.Cash not found for " .. t.Name)
 					end
@@ -396,8 +418,8 @@ Players.PlayerAdded:Connect(function(player)
 					local ls = t:FindFirstChild("leaderstats")
 					local stat = ls and ls:FindFirstChild("Wallet")
 					if stat then
-						stat.Value = stat.Value + amount
-						print(string.format("💰 Added $%d to %s's Wallet", amount, t.Name))
+						local newBalance = addMoneySafely(stat, amount)
+						print(string.format("💰 Added $%.0f to %s's Wallet. New balance: $%.0f", amount, t.Name, newBalance))
 					else
 						warn("⚠️ leaderstats.Wallet not found for " .. t.Name)
 					end
@@ -420,9 +442,9 @@ Players.PlayerAdded:Connect(function(player)
 				if SetRankAPI then
 					local success, reason = SetRankAPI:Invoke(t, rankName)
 					if success then
-						print(string.format("👑 Set rank visual of %s to %s", t.Name, rankName))
+						print(string.format("👑 Granted rank %s to %s (benefits, access, and save state refreshed)", rankName, t.Name))
 					else
-						print(string.format("⚠️ Failed to set rank for %s: %s", t.Name, reason))
+						print(string.format("⚠️ Failed to grant rank for %s: %s", t.Name, reason))
 					end
 				else
 					warn("❌ SetRankAPI missing in ServerStorage")

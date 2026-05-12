@@ -46,7 +46,12 @@ end
 
 local function normalizeLoadedData(data)
 	data = type(data) == "table" and data or {}
-	data.CurrentRank = data.CurrentRank or data.Rank or RankConfig.DefaultRankName
+	local savedRank = data.CurrentRank or RankConfig.DefaultRankName
+	local legacyRank = data.Rank or data.LegacyRank
+	if RankConfig.GetRankValue(legacyRank) > RankConfig.GetRankValue(savedRank) then
+		savedRank = legacyRank
+	end
+	data.CurrentRank = savedRank
 	data.CompletedRanks = type(data.CompletedRanks) == "table" and data.CompletedRanks or {}
 	data.ClaimedRewards = type(data.ClaimedRewards) == "table" and data.ClaimedRewards or {}
 	data.Progress = type(data.Progress) == "table" and data.Progress or newProgress()
@@ -199,6 +204,39 @@ local function applyBenefits(player)
 	if player.Character then task.spawn(Action_SetRankVisual, player, session.CurrentRank) end
 end
 
+local pushState
+local announceRank
+
+local function grantRank(player, rankName, shouldAnnounce)
+	if type(rankName) ~= "string" then
+		return false, "Invalid rank"
+	end
+
+	if rankName ~= RankConfig.DefaultRankName and not RankConfig.Ranks[rankName] then
+		return false, "Invalid rank"
+	end
+
+	local session = getSession(player)
+	local previousRank = session.CurrentRank
+	session.CurrentRank = rankName
+
+	for _, orderedRank in ipairs(RankConfig.Order) do
+		local unlocked = RankConfig.GetRankValue(orderedRank) <= RankConfig.GetRankValue(rankName)
+		session.CompletedRanks[orderedRank] = unlocked or nil
+		session.ClaimedRewards[orderedRank] = unlocked or nil
+	end
+
+	applyBenefits(player)
+	markDirty(player)
+	pushState(player)
+
+	if shouldAnnounce and previousRank ~= rankName and RankConfig.Ranks[rankName] then
+		announceRank(player, rankName)
+	end
+
+	return true, "Rank granted"
+end
+
 local function getCurrencyValue(player, currency)
 	if currency == "Wallet" then
 		local ls = player:FindFirstChild("leaderstats")
@@ -288,7 +326,7 @@ local function buildState(player)
 	}
 end
 
-local function pushState(player)
+pushState = function(player)
 	RankUpdate:FireClient(player, buildState(player))
 end
 
@@ -298,7 +336,7 @@ local function escapeRichText(text)
 	return text
 end
 
-local function announceRank(player, rankName)
+announceRank = function(player, rankName)
 	local rankData = RankConfig.Ranks[rankName]
 	local template = rankData and rankData.Announcement and rankData.Announcement.Template
 	if not template then
@@ -328,14 +366,8 @@ local function claimRank(player, rankName)
 		end
 	end
 
-	session.CompletedRanks[rankName] = true
-	session.ClaimedRewards[rankName] = true
-	session.CurrentRank = rankName
-	applyBenefits(player)
-	markDirty(player)
-	pushState(player)
-	announceRank(player, rankName)
-	return true, "Rank claimed", buildState(player)
+	local granted, message = grantRank(player, rankName, true)
+	return granted, message, buildState(player)
 end
 
 local function recordCarObtained(player, carName, source, shopName)
@@ -413,7 +445,7 @@ end
 local SetRankAPI = requireChild(ServerStorage, "SetRankAPI", "BindableFunction")
 
 SetRankAPI.OnInvoke = function(player, rankName)
-	return Action_SetRankVisual(player, rankName)
+	return grantRank(player, rankName, false)
 end
 
 GetRankState.OnServerInvoke = function(player)
