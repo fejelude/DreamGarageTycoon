@@ -433,10 +433,14 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 		if not TycoonAdminAPI then return false, "System Error: Admin API Missing" end
 
-		local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", player, toolSource.Name)
+		local invokeOk, giveResult, giveMessage = safeInvoke(TycoonAdminAPI, 3, "GiveTool", player, toolSource.Name)
 		if not invokeOk or giveResult ~= true then
-			warn("⚠️ [EpicShop] TycoonAdminAPI grant failed for", player.Name)
-			return false, giveResult == "Car storage full" and "Car Storage Full" or "System Error: Inventory Grant Failed"
+			warn("⚠️ [EpicShop] TycoonAdminAPI grant failed for", player.Name, giveResult, giveMessage)
+			local failureReason = giveMessage or giveResult
+			if failureReason == "Car storage full" then
+				return false, "Inventory Full"
+			end
+			return false, "Unable to add car to inventory. Please try again."
 		end
 
 		wallet.Value -= carData.Price

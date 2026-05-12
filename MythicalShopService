@@ -554,7 +554,7 @@ SkipCraftFunc.OnInvoke = function(player)
 	session.CraftProgress[skippedCar] = {}
 
 	local realToolName = RECIPES[skippedCar].TargetCar
-	local invokeOk, giveResult = safeInvoke(MythicalInventoryBindable, 3, "GiveTool", player, realToolName)
+	local invokeOk, giveResult, giveMessage = safeInvoke(MythicalInventoryBindable, 3, "GiveTool", player, realToolName)
 
 	if invokeOk and giveResult ~= false then
 		recordRankCraft(player, realToolName)
@@ -563,10 +563,13 @@ SkipCraftFunc.OnInvoke = function(player)
 		safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
 		return true, "Success"
 	else
-		warn("⚠️ [MythicalShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name)
+		warn("⚠️ [MythicalShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name, giveResult, giveMessage)
 		session.ActiveCrafts[skippedCar] = os.time() + 60 -- revert and retry in 1m if failed
 		session.CompletedCrafts[skippedCar] = nil
-		return false, "System error granting item"
+		if (giveMessage or giveResult) == "Car storage full" then
+			return false, "Inventory Full"
+		end
+		return false, "Unable to add car to inventory. Please try again."
 	end
 end
 
