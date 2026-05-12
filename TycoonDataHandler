@@ -83,6 +83,7 @@ local MIN_SAVE_INTERVAL = 60
 local MAX_RETRIES = 3
 
 local MAX_INVENTORY_SIZE = 500
+local DEFAULT_CAR_STORAGE_LIMIT = 5
 local MAX_LAYOUT_SIZE = 200
 local STARTER_CAR_NAME = "Delta Item"
 
@@ -283,8 +284,55 @@ end
 -- ----------------------------------------------------------------------------
 -- 🎁 GIVE TOOL
 -- ----------------------------------------------------------------------------
+local function getCurrentStorageCount(player)
+	local count = 0
+	local seen = {}
+	local function scan(container)
+		if not container then return end
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and child:GetAttribute("ToolId") and not seen[child] then
+				seen[child] = true
+				count += 1
+			end
+		end
+	end
+	scan(player:FindFirstChild("Backpack"))
+	if player.Character then scan(player.Character) end
+
+	local plotName = player:GetAttribute("OccupiedPlot")
+	local plot = plotName and TycoonFolder:FindFirstChild(plotName)
+	if plot then
+		for _, descendant in ipairs(plot:GetDescendants()) do
+			if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
+				local car = descendant.Value
+				if car:GetAttribute("OwnerUserId") == player.UserId then
+					count += 1
+				end
+			end
+		end
+	end
+	return count
+end
+
+local function canAddCarToStorage(player, amount)
+	local session = SessionData[player]
+	if session and not session.DataLoaded then return true end
+	amount = math.max(1, tonumber(amount) or 1)
+	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
+	if rankApi then
+		local ok, allowed = pcall(function() return rankApi:Invoke("CanAddCar", player, amount) end)
+		if ok then return allowed == true end
+	end
+
+	local limit = tonumber(player:GetAttribute("RankStorageLimit")) or DEFAULT_CAR_STORAGE_LIMIT
+	return getCurrentStorageCount(player) + amount <= limit
+end
+
 local function giveTool(player, toolName, customAttributes)
-	if not player or not player.Parent then return end
+	if not player or not player.Parent then return false, "Player missing" end
+	if not canAddCarToStorage(player, 1) then
+		return false, "Car storage full"
+	end
 	local sourceTool = safeFindCarTool(toolName)
 	if not sourceTool then
 		local rec = FindToolNameFromModel(toolName)
@@ -329,8 +377,10 @@ local function giveTool(player, toolName, customAttributes)
 		end
 
 		markDirty(player)
+		return true
 	else
 		warn("⚠️ [DATA] Invalid tool requested: " .. tostring(toolName))
+		return false, "Invalid tool"
 	end
 end
 
@@ -533,8 +583,7 @@ AdminAPI.OnInvoke = function(action, player, ...)
 
 	elseif action == "GiveTool" and player then
 		local toolName, customAttributes = ...
-		giveTool(player, toolName, customAttributes)
-		return true
+		return giveTool(player, toolName, customAttributes)
 
 	elseif action == "RemoveTool" and player then
 		local targetToolId, requestedAmount = ...
@@ -602,8 +651,7 @@ LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 
 	elseif action == "GiveTool" then
 		local toolName, customAttributes = ...
-		giveTool(player, toolName, customAttributes)
-		return true
+		return giveTool(player, toolName, customAttributes)
 
 	elseif action == "MarkDirty" then
 		markDirty(player)
@@ -654,8 +702,7 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 
 	elseif action == "GiveTool" then
 		local toolName, customAttributes = ...
-		giveTool(player, toolName, customAttributes)
-		return true
+		return giveTool(player, toolName, customAttributes)
 
 	elseif action == "MarkDirty" then
 		markDirty(player)
@@ -712,6 +759,12 @@ local function save(player, isClosing)
 		local currentOwnedSkins = HttpService:JSONDecode(currentOwnedRaw)
 		local currentEquippedSkin = player:GetAttribute("EquippedSkin") or "Default"
 		local currentRank = player:GetAttribute("Rank") or "Player"
+		local rankPersistenceBindable = ServerStorage:FindFirstChild("RankPersistenceFunction")
+		local currentRankData = {}
+		if rankPersistenceBindable then
+			local ok, result = pcall(function() return rankPersistenceBindable:Invoke("Get", player) end)
+			if ok and type(result) == "table" then currentRankData = result end
+		end
 
 		-- 🎮 HOTBAR: snapshot current slot assignments from client-set attributes
 		local currentHotbar = {}
@@ -914,6 +967,7 @@ local function save(player, isClosing)
 					oldData.HighestUnlockedPad = currentUnlockedPad
 					oldData.BaseLevel = currentBaseLevel
 					oldData.Rank = currentRank
+					oldData.RankData = currentRankData
 					oldData.HotbarSlots = currentHotbar
 
 					oldData.LastUpdated  = os.time()
@@ -961,6 +1015,7 @@ local function save(player, isClosing)
 		safeClose("EpicShopPersistenceFunction")
 		safeClose("LegendaryShopPersistenceFunction")
 		safeClose("MythicalShopPersistenceFunction")
+		safeClose("RankPersistenceFunction")
 	end
 
 	session.IsSaving = false
@@ -1034,7 +1089,7 @@ local function InitializePlayer(player)
 		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1, BaseLevel = 1,
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
-		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player"
+		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player", RankData = {}
 	}
 
 	data.Inventory              = data.Inventory              or {}
@@ -1049,6 +1104,7 @@ local function InitializePlayer(player)
 	data.EquippedSkin           = data.EquippedSkin           or "Default"
 	data.BaseLevel              = data.BaseLevel              or 1
 	data.Rank                   = data.Rank                   or "Player"
+	data.RankData               = data.RankData               or {}
 
 	cash.Value   = data.Bank       or 0
 	wallet.Value = data.Wallet     or 0
@@ -1082,6 +1138,12 @@ local function InitializePlayer(player)
 	player:SetAttribute("OwnedBaseSkins", ownedJson)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
 	player:SetAttribute("Rank", data.Rank)
+
+	local rankPersistenceBindable = ServerStorage:WaitForChild("RankPersistenceFunction", 10)
+	if rankPersistenceBindable then
+		data.RankData.CurrentRank = data.RankData.CurrentRank or data.Rank
+		rankPersistenceBindable:Invoke("Load", player, data.RankData)
+	end
 
 	-- 🎮 HOTBAR: restore slot assignments so the client can read them
 	local hotbarSlots = data.HotbarSlots or {}

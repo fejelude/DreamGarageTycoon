@@ -214,12 +214,26 @@ local function giveCarTool(targetPlayer, carName)
 	return invokeOk and giveResult == true
 end
 
+
+local function recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, rarity)
+	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
+	if not rankApi then return end
+	task.spawn(function()
+		if isGift then
+			pcall(function() rankApi:Invoke("CarGiftSent", buyerPlayer, targetPlayer, carName) end)
+		else
+			pcall(function() rankApi:Invoke("CarObtained", targetPlayer, carName, "Buy", rarity) end)
+		end
+	end)
+end
+
 -- ============================================================================
 -- 🎁 HELPER: Handle Car Purchase & Broadcasts
 -- ============================================================================
 local function handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, rarity, npcFeedbackName)
 	local purchaseSuccess = giveCarTool(targetPlayer, carName)
 	if not purchaseSuccess then return false end
+	recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, rarity)
 
 	local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
 	local feedbackRemote = ShopRemotes and npcFeedbackName and ShopRemotes:FindFirstChild(npcFeedbackName)
