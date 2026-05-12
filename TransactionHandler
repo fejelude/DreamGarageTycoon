@@ -17,10 +17,22 @@ local withdrawFunc = ReplicatedStorage:WaitForChild("WithdrawFunction")
 local NPC_FOLDER_NAME = "NPCS"
 local MANAGER_NAME = "AfraiC4t"
 local MAX_DISTANCE = 20 -- Studs (For Physical Withdraw only)
-local MAX_AMOUNT_LIMIT = 1000000000000 -- 1 Trillion safety cap
+local MAX_AMOUNT_LIMIT = 100000000000000 -- 100 Trillion absolute safety cap
 
 -- 🛡️ SECURITY: Transaction Locks
 local activeTransactions = {}
+
+local function getPlayerWithdrawalLimit(player)
+	return tonumber(player:GetAttribute("MaxBankWithdrawal")) or 1000000000000
+end
+
+local function validateWithdrawalLimit(player, amount)
+	local limit = getPlayerWithdrawalLimit(player)
+	if amount > limit then
+		return false, "Amount exceeds your current withdrawal limit."
+	end
+	return true
+end
 
 -- [[ 1. TRANSFER: BANK -> ATM (Remote / App) ]]
 local function TransferToATM(player, amount)
@@ -32,6 +44,9 @@ local function TransferToATM(player, amount)
 	local atm = leaderstats:FindFirstChild("ATMBalance")
 
 	if not bank or not atm then return false, "Missing Values" end
+
+	local withinLimit, limitMessage = validateWithdrawalLimit(player, amount)
+	if not withinLimit then return false, limitMessage end
 
 	if bank.Value >= amount then
 		bank.Value -= amount
@@ -72,6 +87,9 @@ local function WithdrawFromATM(player, amount)
 	local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 
 	if not atm or not wallet or not hiddenStats then return false, "Data Error" end
+
+	local withinLimit, limitMessage = validateWithdrawalLimit(player, amount)
+	if not withinLimit then return false, limitMessage end
 
 	if atm.Value >= amount then
 		atm.Value -= amount

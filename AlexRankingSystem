@@ -13,6 +13,8 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TextChatService = game:GetService("TextChatService")
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
@@ -47,6 +49,19 @@ local buttonConnections = {}
 local hiddenGuis = {}
 local hiddenObjects = {}
 local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
+
+local RankRemotes = ReplicatedStorage:WaitForChild("RankRemotes")
+local GetRankState = RankRemotes:WaitForChild("GetRankState")
+local ClaimRank = RankRemotes:WaitForChild("ClaimRank")
+local RankUpdate = RankRemotes:WaitForChild("RankUpdate")
+local RankAnnouncement = RankRemotes:WaitForChild("RankAnnouncement")
+
+local RANK_ORDER = { "VIP", "VIP+", "MVP", "MVP+", "MVP++" }
+local currentRankState = nil
+local notificationBusy = false
+local errorBusy = {}
+local originalInfoStrokeColors = {}
+local LIGHT_RED = Color3.fromRGB(255, 120, 120)
 
 -- ============================================================================
 -- 🔒 FORCE HIDE UI ON LOAD
@@ -175,6 +190,220 @@ local function animateImageButton(btn)
 	table.insert(buttonConnections, connUp)
 end
 
+
+local function tweenGuiObject(guiObject, visible)
+	if not guiObject or not guiObject:IsA("GuiObject") then return end
+	local targetTransparency = visible and 0 or 1
+	guiObject.Visible = true
+	if guiObject:IsA("TextLabel") or guiObject:IsA("TextButton") then
+		TweenService:Create(guiObject, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = targetTransparency}):Play()
+	elseif guiObject:IsA("ImageLabel") or guiObject:IsA("ImageButton") then
+		TweenService:Create(guiObject, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {ImageTransparency = targetTransparency}):Play()
+	else
+		TweenService:Create(guiObject, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundTransparency = targetTransparency}):Play()
+	end
+	if not visible then
+		task.delay(0.28, function()
+			if guiObject then guiObject.Visible = false end
+		end)
+	end
+end
+
+local function getRankingGui()
+	return playerGui:FindFirstChild(GUI_ID)
+end
+
+local function showNotification(text)
+	if notificationBusy then return end
+	notificationBusy = true
+	local gui = getRankingGui()
+	local notification = gui and gui:FindFirstChild("Notification", true)
+	if notification and notification:IsA("TextLabel") then
+		notification.Text = text
+		notification.TextTransparency = 1
+		notification.Visible = true
+		TweenService:Create(notification, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 0}):Play()
+		task.delay(2.25, function()
+			if notification and notification.Parent then
+				TweenService:Create(notification, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1}):Play()
+			end
+			task.delay(0.4, function() notificationBusy = false end)
+		end)
+	else
+		notificationBusy = false
+	end
+end
+
+local function showRequirementError(rankName, text)
+	if errorBusy[rankName] then return end
+	errorBusy[rankName] = true
+	local gui = getRankingGui()
+	local rankPage = gui and gui:FindFirstChild("Requirements", true) and gui:FindFirstChild("Requirements", true):FindFirstChild(rankName)
+	local errorLabel = rankPage and rankPage:FindFirstChild("Error", true)
+	if errorLabel and errorLabel:IsA("TextLabel") then
+		errorLabel.Text = text
+		errorLabel.TextTransparency = 1
+		errorLabel.Visible = true
+		TweenService:Create(errorLabel, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 0}):Play()
+		task.delay(2, function()
+			if errorLabel and errorLabel.Parent then
+				TweenService:Create(errorLabel, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1}):Play()
+			end
+			task.delay(0.4, function() errorBusy[rankName] = false end)
+		end)
+	else
+		errorBusy[rankName] = false
+	end
+end
+
+local function setRequirementPageVisible(rankName, visible)
+	local gui = getRankingGui()
+	local requirementsRoot = gui and gui:FindFirstChild("Requirements", true)
+	local rankPage = requirementsRoot and requirementsRoot:FindFirstChild(rankName)
+	if rankPage and rankPage:IsA("GuiObject") then
+		tweenGuiObject(rankPage, visible)
+	end
+end
+
+local function formatProgress(requirementProgress)
+	if requirementProgress.UniqueTarget then
+		return tostring(requirementProgress.Current) .. "/" .. tostring(requirementProgress.Target) .. "  •  " .. tostring(requirementProgress.UniqueCurrent or 0) .. "/" .. tostring(requirementProgress.UniqueTarget) .. " players"
+	end
+	return tostring(requirementProgress.Current or 0) .. "/" .. tostring(requirementProgress.Target or 1)
+end
+
+local function updateRequirementLabels(rankName, rankState)
+	local gui = getRankingGui()
+	local requirementsRoot = gui and gui:FindFirstChild("Requirements", true)
+	local rankPage = requirementsRoot and requirementsRoot:FindFirstChild(rankName)
+	if not rankPage or not rankState then return end
+
+	for requirementId, progress in pairs(rankState.Requirements or {}) do
+		local frame = rankPage:FindFirstChild(requirementId, true)
+		local label = frame and frame:FindFirstChild("Information2", true)
+		if label and label:IsA("TextLabel") then
+			local stroke = label:FindFirstChildOfClass("UIStroke")
+			if stroke and not originalInfoStrokeColors[stroke] then
+				originalInfoStrokeColors[stroke] = stroke.Color
+			end
+
+			if progress.Complete then
+				label.Text = formatProgress(progress)
+				if stroke then stroke.Color = originalInfoStrokeColors[stroke] or stroke.Color end
+			else
+				label.Text = formatProgress(progress)
+				if stroke then stroke.Color = LIGHT_RED end
+			end
+		end
+	end
+end
+
+local function applyRankState(state)
+	currentRankState = state
+	local gui = getRankingGui()
+	local rankScrollingFrame = gui and gui:FindFirstChild("RankScrollingFrame", true)
+	if not rankScrollingFrame or not state then return end
+
+	for _, rankName in ipairs(RANK_ORDER) do
+		local rankFrame = rankScrollingFrame:FindFirstChild(rankName)
+		local rankState = state.Ranks and state.Ranks[rankName]
+		if rankFrame and rankState then
+			local accomplish = rankFrame:FindFirstChild("Accomplish", true)
+			local accomplished = rankFrame:FindFirstChild("Accomplished", true)
+			if accomplish and accomplish:IsA("GuiObject") then accomplish.Visible = not rankState.Completed end
+			if accomplished and accomplished:IsA("GuiObject") then accomplished.Visible = rankState.Completed end
+			updateRequirementLabels(rankName, rankState)
+		end
+	end
+end
+
+local function refreshRankState()
+	local ok, state = pcall(function() return GetRankState:InvokeServer() end)
+	if ok and type(state) == "table" then applyRankState(state) end
+end
+
+local function findNamedButton(root, name)
+	if not root then return nil end
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if descendant.Name == name and descendant:IsA("GuiButton") then
+			return descendant
+		end
+	end
+	return nil
+end
+
+local function setupRankingButtons()
+	local gui = getRankingGui()
+	local rankScrollingFrame = gui and gui:FindFirstChild("RankScrollingFrame", true)
+	if not rankScrollingFrame then return end
+
+	for _, rankName in ipairs(RANK_ORDER) do
+		local rankFrame = rankScrollingFrame:FindFirstChild(rankName)
+		local accomplish = rankFrame and rankFrame:FindFirstChild("Accomplish", true)
+		if accomplish and accomplish:IsA("ImageButton") and not accomplish:GetAttribute("RankConnected") then
+			accomplish:SetAttribute("RankConnected", true)
+			animateImageButton(accomplish)
+			local conn = accomplish.MouseButton1Click:Connect(function()
+				playSound(CLICK_SOUND_ID, 0.5)
+				local rankState = currentRankState and currentRankState.Ranks and currentRankState.Ranks[rankName]
+				if rankState and not rankState.PreviousComplete then
+					showNotification("Finish " .. tostring(rankState.PreviousRank) .. " first to accomplish " .. rankName)
+					return
+				end
+				setRequirementPageVisible(rankName, true)
+			end)
+			table.insert(buttonConnections, conn)
+		end
+	end
+
+	local requirementsRoot = gui:FindFirstChild("Requirements", true)
+	if not requirementsRoot then return end
+
+	for _, rankName in ipairs(RANK_ORDER) do
+		local rankPage = requirementsRoot:FindFirstChild(rankName)
+		if rankPage then
+			local page2Button = findNamedButton(rankPage, "Page2")
+			local page2Frame = rankPage:FindFirstChild("Page2")
+			if page2Button and page2Frame and not page2Button:GetAttribute("RankConnected") then
+				page2Button:SetAttribute("RankConnected", true)
+				local conn = page2Button.MouseButton1Click:Connect(function()
+					playSound(CLICK_SOUND_ID, 0.5)
+					local main = page2Frame:FindFirstChild("MainFrame", true) or page2Frame
+					tweenGuiObject(main, true)
+				end)
+				table.insert(buttonConnections, conn)
+			end
+
+			local previous = findNamedButton(rankPage, "Previous")
+			if previous and not previous:GetAttribute("RankConnected") then
+				previous:SetAttribute("RankConnected", true)
+				local conn = previous.MouseButton1Click:Connect(function()
+					playSound(CLICK_SOUND_ID, 0.5)
+					local parentFrame = previous:FindFirstAncestor("Page2") or previous.Parent
+					if parentFrame then tweenGuiObject(parentFrame, false) end
+				end)
+				table.insert(buttonConnections, conn)
+			end
+
+			local complete = findNamedButton(rankPage, "Complete")
+			if complete and not complete:GetAttribute("RankConnected") then
+				complete:SetAttribute("RankConnected", true)
+				local conn = complete.MouseButton1Click:Connect(function()
+					playSound(CLICK_SOUND_ID, 0.5)
+					local ok, success, message, state = pcall(function() return ClaimRank:InvokeServer(rankName) end)
+					if ok and state then applyRankState(state) end
+					if ok and success then
+						setRequirementPageVisible(rankName, false)
+					else
+						showRequirementError(rankName, message or "Finish all requirements before claiming this rank.")
+					end
+				end)
+				table.insert(buttonConnections, conn)
+			end
+		end
+	end
+end
+
 local function startInteraction(npcModel)
 	if isInteracting then return end
 	isInteracting = true
@@ -205,6 +434,8 @@ local function startInteraction(npcModel)
 	-- Enable UI
 	myGui.Enabled = true
 	container.Visible = true
+	refreshRankState()
+	setupRankingButtons()
 
 	local exitBtn = container:FindFirstChild(BTN_EXIT_ID, true)
 	if exitBtn and exitBtn:IsA("ImageButton") then
@@ -238,5 +469,17 @@ local function setupNPC()
 		end
 	end)
 end
+
+RankUpdate.OnClientEvent:Connect(applyRankState)
+
+RankAnnouncement.OnClientEvent:Connect(function(richTextMessage)
+	local channels = TextChatService:FindFirstChild("TextChannels")
+	local systemChannel = channels and (channels:FindFirstChild("RBXGeneral") or channels:FindFirstChild("RBXSystem"))
+	if systemChannel then
+		systemChannel:DisplaySystemMessage(richTextMessage)
+	else
+		print(richTextMessage)
+	end
+end)
 
 setupNPC()

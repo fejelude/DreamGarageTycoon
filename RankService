@@ -1,22 +1,152 @@
--- Purpose: Authoritative server script managing Rank logic and visuals (Displaynames & Custom Tags).
+-- Purpose: Authoritative server script managing rank visuals, progress, rewards, storage, and announcements.
 -- Runs on: Server (ServerScriptService)
 -- Location: ServerScriptService > RankService
--- Dependencies: Players, ServerStorage, ServerStorage.RankTags
--- Public API: SetRankAPI (BindableFunction)
--- Security: Server-side UI injection ensures custom name tags cannot be faked on the client.
--- Performance: Lightweight tag cloning, cleans up previous rank tags on application.
+-- Dependencies: Players, ReplicatedStorage.RankConfig, ServerStorage.RankTags
+-- Security: All rank claims, benefits, and requirement checks are validated server-side.
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
+local Workspace = game:GetService("Workspace")
 
--- ⚙️ CONFIGURATION & DEPENDENCIES
-local RankTags = ServerStorage:WaitForChild("RankTags", 10) -- 🛡️ SECURE RANK UI LOCATION
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
+local RankTags = ServerStorage:WaitForChild("RankTags", 10)
 
--- ============================================================================
--- 👑 RANK LOGIC
--- ============================================================================
+local RankRemotes = ReplicatedStorage:FindFirstChild("RankRemotes")
+if not RankRemotes then
+	RankRemotes = Instance.new("Folder")
+	RankRemotes.Name = "RankRemotes"
+	RankRemotes.Parent = ReplicatedStorage
+end
 
-local function Action_SetRank(player, rankName)
+local function getRemote(name, className)
+	local remote = RankRemotes:FindFirstChild(name)
+	if not remote then
+		remote = Instance.new(className)
+		remote.Name = name
+		remote.Parent = RankRemotes
+	end
+	return remote
+end
+
+local GetRankState = getRemote("GetRankState", "RemoteFunction")
+local ClaimRank = getRemote("ClaimRank", "RemoteFunction")
+local RankUpdate = getRemote("RankUpdate", "RemoteEvent")
+local RankAnnouncement = getRemote("RankAnnouncement", "RemoteEvent")
+
+local Sessions = {}
+
+local function newProgress()
+	return {
+		Purchases = {},
+		Crafted = {},
+		Obtained = {},
+		GiftSentTotal = 0,
+		GiftSentPlayers = {},
+		GiftReceivedTotal = 0,
+		GiftReceivedPlayers = {},
+	}
+end
+
+local function normalizeLoadedData(data)
+	data = type(data) == "table" and data or {}
+	data.CurrentRank = data.CurrentRank or data.Rank or RankConfig.DefaultRankName
+	data.CompletedRanks = type(data.CompletedRanks) == "table" and data.CompletedRanks or {}
+	data.ClaimedRewards = type(data.ClaimedRewards) == "table" and data.ClaimedRewards or {}
+	data.Progress = type(data.Progress) == "table" and data.Progress or newProgress()
+
+	local defaults = newProgress()
+	for _, rankName in ipairs(RankConfig.Order) do
+		if RankConfig.GetRankValue(rankName) <= RankConfig.GetRankValue(data.CurrentRank) then
+			data.CompletedRanks[rankName] = true
+			data.ClaimedRewards[rankName] = true
+		end
+	end
+
+	for key, value in pairs(defaults) do
+		if type(value) == "table" then
+			data.Progress[key] = type(data.Progress[key]) == "table" and data.Progress[key] or {}
+		else
+			data.Progress[key] = tonumber(data.Progress[key]) or 0
+		end
+	end
+
+	return data
+end
+
+local function markDirty(player)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if api then
+		task.spawn(function()
+			pcall(function() api:Invoke("MarkDirty", player) end)
+		end)
+	end
+end
+
+local function getSession(player)
+	if not Sessions[player] then
+		Sessions[player] = normalizeLoadedData({ CurrentRank = player:GetAttribute("Rank") or RankConfig.DefaultRankName })
+	end
+	return Sessions[player]
+end
+
+local function countDictionary(dictionary)
+	local total = 0
+	for _ in pairs(dictionary or {}) do total += 1 end
+	return total
+end
+
+local function progressKey(shopName, carName)
+	return tostring(shopName or "Any") .. ":" .. RankConfig.NormalizeCarName(carName)
+end
+
+local function increment(dictionary, key, amount)
+	dictionary[key] = (tonumber(dictionary[key]) or 0) + (amount or 1)
+end
+
+local function getHeldAndStoredCarCount(player)
+	local count = 0
+	local seen = {}
+	local function scan(container)
+		if not container then return end
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and not seen[child] and child:GetAttribute("ToolId") then
+				seen[child] = true
+				count += 1
+			end
+		end
+	end
+
+	scan(player:FindFirstChild("Backpack"))
+	if player.Character then scan(player.Character) end
+
+	local plotName = player:GetAttribute("OccupiedPlot")
+	local tycoons = Workspace:FindFirstChild("Tycoons")
+	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
+	if plot then
+		for _, descendant in ipairs(plot:GetDescendants()) do
+			if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
+				local car = descendant.Value
+				if car:GetAttribute("OwnerUserId") == player.UserId then
+					count += 1
+				end
+			end
+		end
+	end
+
+	return count
+end
+
+local function getStorageLimit(player)
+	return tonumber(player:GetAttribute("RankStorageLimit")) or RankConfig.GetBenefitsForRank(player:GetAttribute("Rank") or RankConfig.DefaultRankName).StorageSlots
+end
+
+local function canAddCar(player, amount)
+	amount = math.max(1, tonumber(amount) or 1)
+	return getHeldAndStoredCarCount(player) + amount <= getStorageLimit(player)
+end
+
+local function Action_SetRankVisual(player, rankName)
 	local character = player.Character
 	if not character then return false, "No Character" end
 
@@ -24,31 +154,26 @@ local function Action_SetRank(player, rankName)
 	local humanoid = character:FindFirstChild("Humanoid")
 	if not head or not humanoid then return false, "Character missing Head/Humanoid" end
 
-	-- 1. Hide default Roblox Name
 	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
 
-	-- 2. Locate requested Rank Folder in ServerStorage
 	if not RankTags then return false, "ServerStorage.RankTags folder missing!" end
-	local rankFolder = RankTags:FindFirstChild(rankName)
-	if not rankFolder or not rankFolder:IsA("Folder") then 
-		return false, "Rank Folder not found in RankTags: " .. tostring(rankName) 
+	local rankFolder = RankTags:FindFirstChild(rankName) or RankTags:FindFirstChild(RankConfig.DefaultRankName)
+	if not rankFolder or not rankFolder:IsA("Folder") then
+		return false, "Rank Folder not found in RankTags: " .. tostring(rankName)
 	end
 
-	-- 3. Clean up existing custom tags
 	for _, child in pairs(head:GetChildren()) do
 		if child:IsA("BillboardGui") and child:GetAttribute("IsCustomTag") then
 			child:Destroy()
 		end
 	end
 
-	-- 4. Clone and apply new tags FROM the target Folder
 	for _, guiTemplate in pairs(rankFolder:GetChildren()) do
 		if guiTemplate:IsA("BillboardGui") then
 			local newGui = guiTemplate:Clone()
-			newGui:SetAttribute("IsCustomTag", true) 
+			newGui:SetAttribute("IsCustomTag", true)
 
-			-- Inject actual player name
 			if newGui.Name == "Displayname" then
 				local nameLabel = newGui:FindFirstChild("Name")
 				if nameLabel and nameLabel:IsA("TextLabel") then
@@ -60,17 +185,245 @@ local function Action_SetRank(player, rankName)
 		end
 	end
 
-	-- 5. Set persistent non-visual attribute for client-side shop checks
 	player:SetAttribute("Rank", rankName)
-
 	return true, "Success"
 end
 
--- ============================================================================
--- 🔄 BINDABLE API SETUP
--- ============================================================================
+local function applyBenefits(player)
+	local session = getSession(player)
+	local benefits = RankConfig.GetBenefitsForRank(session.CurrentRank)
 
--- Check for or create the SetRankAPI BindableFunction
+	player:SetAttribute("Rank", session.CurrentRank)
+	player:SetAttribute("RankStorageLimit", benefits.StorageSlots)
+	player:SetAttribute("RankResourceMultiplier", benefits.Multiplier)
+	player:SetAttribute("MaxBankWithdrawal", benefits.WithdrawalLimit)
+	player:SetAttribute("RankChatTag", benefits.ChatTag)
+	player:SetAttribute("HighestRankShopAccess", benefits.ShopAccess or "Common")
+
+	if player.Character then task.spawn(Action_SetRankVisual, player, session.CurrentRank) end
+end
+
+local function getCurrencyValue(player, currency)
+	if currency == "Wallet" then
+		local ls = player:FindFirstChild("leaderstats")
+		local wallet = ls and ls:FindFirstChild("Wallet")
+		return wallet and wallet.Value or 0
+	elseif currency == "Bank" then
+		local hs = player:FindFirstChild("HiddenStats")
+		local cash = hs and hs:FindFirstChild("Cash")
+		return cash and cash.Value or 0
+	end
+	return 0
+end
+
+local function evaluateRequirement(player, requirement)
+	local session = getSession(player)
+	local progress = session.Progress
+	local current = 0
+	local target = requirement.Amount or 1
+
+	if requirement.Type == "Buy" then
+		current = progress.Purchases[progressKey(requirement.Shop, requirement.Car)] or 0
+	elseif requirement.Type == "Craft" then
+		current = progress.Crafted[RankConfig.NormalizeCarName(requirement.Car)] or 0
+	elseif requirement.Type == "Obtain" then
+		current = progress.Obtained[RankConfig.NormalizeCarName(requirement.Car)] or 0
+	elseif requirement.Type == "Hold" then
+		current = getCurrencyValue(player, requirement.Currency)
+	elseif requirement.Type == "GiftSent" then
+		current = progress.GiftSentTotal or 0
+	elseif requirement.Type == "GiftSentUnique" then
+		current = countDictionary(progress.GiftSentPlayers)
+		target = requirement.UniquePlayers or target
+	elseif requirement.Type == "GiftReceivedUnique" then
+		local uniquePlayers = countDictionary(progress.GiftReceivedPlayers)
+		current = math.min(progress.GiftReceivedTotal or 0, target)
+		return {
+			Id = requirement.Id,
+			Current = current,
+			Target = target,
+			Complete = (progress.GiftReceivedTotal or 0) >= target and uniquePlayers >= (requirement.UniquePlayers or 1),
+			UniqueCurrent = uniquePlayers,
+			UniqueTarget = requirement.UniquePlayers or 1,
+		}
+	elseif requirement.Type == "Pad" then
+		current = (tonumber(player:GetAttribute("HighestUnlockedPad")) or 1) >= requirement.PadNumber and 1 or 0
+	elseif requirement.Type == "BaseLevel" then
+		current = (tonumber(player:GetAttribute("BaseLevel")) or 1) >= requirement.Level and 1 or 0
+	end
+
+	return {
+		Id = requirement.Id,
+		Current = math.min(current, target),
+		Target = target,
+		Complete = current >= target,
+	}
+end
+
+local function buildState(player)
+	local session = getSession(player)
+	local ranks = {}
+
+	for _, rankName in ipairs(RankConfig.Order) do
+		local rankData = RankConfig.Ranks[rankName]
+		local requirements = {}
+		local allComplete = true
+		for _, requirement in ipairs(rankData.Requirements) do
+			local result = evaluateRequirement(player, requirement)
+			requirements[requirement.Id] = result
+			if not result.Complete then allComplete = false end
+		end
+
+		ranks[rankName] = {
+			Completed = session.CompletedRanks[rankName] == true,
+			Claimed = session.ClaimedRewards[rankName] == true,
+			PreviousRank = rankData.PreviousRank,
+			PreviousComplete = not rankData.PreviousRank or session.CompletedRanks[rankData.PreviousRank] == true,
+			RequirementsComplete = allComplete,
+			Requirements = requirements,
+		}
+	end
+
+	return {
+		CurrentRank = session.CurrentRank,
+		CompletedRanks = session.CompletedRanks,
+		Benefits = RankConfig.GetBenefitsForRank(session.CurrentRank),
+		Ranks = ranks,
+	}
+end
+
+local function pushState(player)
+	RankUpdate:FireClient(player, buildState(player))
+end
+
+local function escapeRichText(text)
+	text = tostring(text or "")
+	text = text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"):gsub("'", "&apos;")
+	return text
+end
+
+local function announceRank(player, rankName)
+	local rankData = RankConfig.Ranks[rankName]
+	local template = rankData and rankData.Announcement and rankData.Announcement.Template
+	if not template then
+		template = "<b>{DisplayName}</b> has reached the " .. rankName .. " milestone!"
+	end
+	local message = template:gsub("{DisplayName}", escapeRichText(player.DisplayName))
+	RankAnnouncement:FireAllClients(message, rankName)
+end
+
+local function claimRank(player, rankName)
+	if type(rankName) ~= "string" or not RankConfig.Ranks[rankName] then
+		return false, "Invalid rank", buildState(player)
+	end
+
+	local session = getSession(player)
+	local rankData = RankConfig.Ranks[rankName]
+	if session.CompletedRanks[rankName] then
+		return false, "Rank already claimed", buildState(player)
+	end
+	if rankData.PreviousRank and not session.CompletedRanks[rankData.PreviousRank] then
+		return false, "Finish " .. rankData.PreviousRank .. " first to accomplish " .. rankName, buildState(player)
+	end
+
+	for _, requirement in ipairs(rankData.Requirements) do
+		if not evaluateRequirement(player, requirement).Complete then
+			return false, "Finish all requirements before claiming " .. rankName .. ".", buildState(player)
+		end
+	end
+
+	session.CompletedRanks[rankName] = true
+	session.ClaimedRewards[rankName] = true
+	session.CurrentRank = rankName
+	applyBenefits(player)
+	markDirty(player)
+	pushState(player)
+	announceRank(player, rankName)
+	return true, "Rank claimed", buildState(player)
+end
+
+local function recordCarObtained(player, carName, source, shopName)
+	local session = getSession(player)
+	local normalized = RankConfig.NormalizeCarName(carName)
+	increment(session.Progress.Obtained, normalized, 1)
+	if source == "Buy" then
+		increment(session.Progress.Purchases, progressKey(shopName, carName), 1)
+	elseif source == "Craft" then
+		increment(session.Progress.Crafted, normalized, 1)
+	end
+	markDirty(player)
+	pushState(player)
+end
+
+local RankProgressAPI = ServerStorage:FindFirstChild("RankProgressAPI")
+if not RankProgressAPI then
+	RankProgressAPI = Instance.new("BindableFunction")
+	RankProgressAPI.Name = "RankProgressAPI"
+	RankProgressAPI.Parent = ServerStorage
+end
+
+RankProgressAPI.OnInvoke = function(action, player, ...)
+	if not player then return false end
+	if action == "CanAddCar" then
+		local amount = ...
+		return canAddCar(player, amount), getStorageLimit(player), getHeldAndStoredCarCount(player)
+	elseif action == "CarObtained" then
+		local carName, source, shopName = ...
+		recordCarObtained(player, carName, source, shopName)
+		return true
+	elseif action == "CarGiftSent" then
+		local receiver, carName = ...
+		local giverSession = getSession(player)
+		giverSession.Progress.GiftSentTotal += 1
+		if receiver then giverSession.Progress.GiftSentPlayers[tostring(receiver.UserId)] = true end
+		markDirty(player)
+		pushState(player)
+
+		if receiver then
+			local receiverSession = getSession(receiver)
+			receiverSession.Progress.GiftReceivedTotal += 1
+			receiverSession.Progress.GiftReceivedPlayers[tostring(player.UserId)] = true
+			recordCarObtained(receiver, carName, "Gift", nil)
+			markDirty(receiver)
+			pushState(receiver)
+		end
+		return true
+	elseif action == "Refresh" then
+		applyBenefits(player)
+		pushState(player)
+		return true
+	end
+	return false
+end
+
+local RankPersistenceFunction = ServerStorage:FindFirstChild("RankPersistenceFunction")
+if not RankPersistenceFunction then
+	RankPersistenceFunction = Instance.new("BindableFunction")
+	RankPersistenceFunction.Name = "RankPersistenceFunction"
+	RankPersistenceFunction.Parent = ServerStorage
+end
+
+RankPersistenceFunction.OnInvoke = function(action, player, data)
+	if action == "Load" then
+		Sessions[player] = normalizeLoadedData(data)
+		applyBenefits(player)
+		pushState(player)
+		return true
+	elseif action == "Get" then
+		local session = getSession(player)
+		return {
+			CurrentRank = session.CurrentRank,
+			CompletedRanks = session.CompletedRanks,
+			ClaimedRewards = session.ClaimedRewards,
+			Progress = session.Progress,
+		}
+	elseif action == "Close" then
+		Sessions[player] = nil
+		return true
+	end
+	return false
+end
+
 local SetRankAPI = ServerStorage:FindFirstChild("SetRankAPI")
 if not SetRankAPI then
 	SetRankAPI = Instance.new("BindableFunction")
@@ -78,7 +431,50 @@ if not SetRankAPI then
 	SetRankAPI.Parent = ServerStorage
 end
 
--- Listen for Rank Requests
 SetRankAPI.OnInvoke = function(player, rankName)
-	return Action_SetRank(player, rankName)
+	return Action_SetRankVisual(player, rankName)
+end
+
+GetRankState.OnServerInvoke = function(player)
+	return buildState(player)
+end
+
+ClaimRank.OnServerInvoke = function(player, rankName)
+	return claimRank(player, rankName)
+end
+
+local function hookPlayer(player)
+	getSession(player)
+	applyBenefits(player)
+
+	player.CharacterAdded:Connect(function()
+		task.wait(0.25)
+		applyBenefits(player)
+	end)
+
+	local function hookValue(value)
+		if value then
+			value.Changed:Connect(function() pushState(player) end)
+		end
+	end
+
+	task.spawn(function()
+		local leaderstats = player:WaitForChild("leaderstats", 30)
+		local hiddenStats = player:WaitForChild("HiddenStats", 30)
+		hookValue(leaderstats and leaderstats:FindFirstChild("Wallet"))
+		hookValue(hiddenStats and hiddenStats:FindFirstChild("Cash"))
+		pushState(player)
+	end)
+
+	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(function() pushState(player) end)
+	player:GetAttributeChangedSignal("BaseLevel"):Connect(function() pushState(player) end)
+end
+
+Players.PlayerAdded:Connect(hookPlayer)
+Players.PlayerRemoving:Connect(function(player)
+	Sessions[player] = nil
+end)
+
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(hookPlayer, player)
 end

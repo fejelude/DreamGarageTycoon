@@ -125,6 +125,15 @@ local function safeInvoke(bindable, timeout, ...)
 	return true, table.unpack(result, 2, result.n)
 end
 
+local function recordRankPurchase(player, carName)
+	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
+	if rankApi then
+		task.spawn(function()
+			pcall(function() rankApi:Invoke("CarObtained", player, carName, "Buy", "Rare") end)
+		end)
+	end
+end
+
 -- =========================
 -- SHOP LOGIC
 -- =========================
@@ -338,6 +347,7 @@ RemoteOpen.OnServerEvent:Connect(function(player)
 
 	local distance = (char.PrimaryPart.Position - jacobRoot.Position).Magnitude
 	if distance <= MAX_INTERACTION_DISTANCE then
+		if not hasRequiredRank(player) then return end
 		local session = getSession(player)
 		pushUpdate(player, session, "Open")
 		RemoteOpen:FireClient(player)
@@ -373,6 +383,8 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 	if not CAR_WEIGHTS[carName] and not ALWAYS_STOCK[carName] then
 		return false, "Invalid Rare Car"
 	end
+
+	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
 
 	local uid = player.UserId
 	if PurchaseLocks[uid]    then return false, "Purchase in progress" end
@@ -416,12 +428,13 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		if not TycoonAdminAPI then return false, "System Error: Admin API Missing" end
 
 		local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", player, toolSource.Name)
-		if not invokeOk then
+		if not invokeOk or giveResult ~= true then
 			warn("⚠️ [RareShop] TycoonAdminAPI grant failed for", player.Name)
-			return false, "System Error: Inventory Grant Failed"
+			return false, giveResult == "Car storage full" and "Car Storage Full" or "System Error: Inventory Grant Failed"
 		end
 
 		wallet.Value -= carData.Price
+		recordRankPurchase(player, carName)
 		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
 
