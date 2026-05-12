@@ -1,0 +1,237 @@
+-- Purpose: Studio/debug validator for the Ranking System hierarchy and integration objects.
+-- Runs on: Server (recommended: ServerScriptService > RankingSystemValidator)
+-- Notes: This script does not create/fix anything. It only reports missing or mistyped objects.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local StarterGui = game:GetService("StarterGui")
+local StarterPlayer = game:GetService("StarterPlayer")
+local Workspace = game:GetService("Workspace")
+
+local RANKS = { "VIP", "VIP+", "MVP", "MVP+", "MVP++" }
+local REQUIREMENT_IDS = { "Requirement1", "Requirement2", "Requirement3", "Requirement4", "Requirement5" }
+
+local results = {
+	MissingRequired = 0,
+	MissingOptional = 0,
+	TypeMismatch = 0,
+	Found = 0,
+}
+
+local function typeListText(classNames)
+	if typeof(classNames) == "string" then return classNames end
+	return table.concat(classNames, " or ")
+end
+
+local function matchesType(instance, classNames)
+	if not instance then return false end
+	if typeof(classNames) == "string" then
+		return instance:IsA(classNames)
+	end
+	for _, className in ipairs(classNames) do
+		if instance:IsA(className) then return true end
+	end
+	return false
+end
+
+local function logFound(path, classNames, note)
+	results.Found += 1
+	print(string.format(
+		"✅ [RankingValidator][FOUND] %s (%s)%s",
+		path,
+		typeListText(classNames),
+		note and (" — " .. note) or ""
+	))
+end
+
+local function logMissing(path, classNames, required, note)
+	if required then
+		results.MissingRequired += 1
+	else
+		results.MissingOptional += 1
+	end
+
+	warn(string.format(
+		"%s [RankingValidator][MISSING][%s] Expected %s at %s%s",
+		required and "❌" or "⚠️",
+		required and "REQUIRED" or "OPTIONAL",
+		typeListText(classNames),
+		path,
+		note and (" — " .. note) or ""
+	))
+end
+
+local function logTypeMismatch(path, instance, classNames, required, note)
+	results.TypeMismatch += 1
+	warn(string.format(
+		"❌ [RankingValidator][TYPE MISMATCH][%s] %s exists but is %s; expected %s%s",
+		required and "REQUIRED" or "OPTIONAL",
+		path,
+		instance.ClassName,
+		typeListText(classNames),
+		note and (" — " .. note) or ""
+	))
+end
+
+local function checkChild(parent, childName, classNames, path, required, note)
+	if not parent then
+		logMissing(path .. " > " .. childName, classNames, required, "Parent missing; cannot inspect child.")
+		return nil
+	end
+
+	local child = parent:FindFirstChild(childName)
+	local fullPath = path .. " > " .. childName
+	if not child then
+		logMissing(fullPath, classNames, required, note)
+		return nil
+	end
+
+	if not matchesType(child, classNames) then
+		logTypeMismatch(fullPath, child, classNames, required, note)
+		return child
+	end
+
+	logFound(fullPath, classNames, note)
+	return child
+end
+
+local function findDescendantOfType(root, objectName, classNames)
+	if not root then return nil end
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if descendant.Name == objectName and matchesType(descendant, classNames) then
+			return descendant
+		end
+	end
+	return nil
+end
+
+local function checkDescendant(root, objectName, classNames, rootPath, required, note)
+	local descendant = findDescendantOfType(root, objectName, classNames)
+	local expectedPath = rootPath .. " > ... > " .. objectName
+	if not descendant then
+		logMissing(expectedPath, classNames, required, note)
+		return nil
+	end
+
+	logFound(expectedPath, classNames, note)
+	return descendant
+end
+
+local function checkServiceObjects()
+	print("\n========== Ranking System Validator: Services / Shared Objects ==========")
+
+	checkChild(ReplicatedStorage, "RankConfig", "ModuleScript", "ReplicatedStorage", true, "Shared rank definitions, requirements, benefits, and announcement styling.")
+
+	local rankRemotes = checkChild(ReplicatedStorage, "RankRemotes", "Folder", "ReplicatedStorage", true, "Container for Ranking UI client/server remotes.")
+	checkChild(rankRemotes, "GetRankState", "RemoteFunction", "ReplicatedStorage > RankRemotes", true, "Client requests complete rank state/progress.")
+	checkChild(rankRemotes, "ClaimRank", "RemoteFunction", "ReplicatedStorage > RankRemotes", true, "Client asks server to claim a validated rank.")
+	checkChild(rankRemotes, "RankUpdate", "RemoteEvent", "ReplicatedStorage > RankRemotes", true, "Server pushes progress/state refreshes to clients.")
+	checkChild(rankRemotes, "RankAnnouncement", "RemoteEvent", "ReplicatedStorage > RankRemotes", true, "Server broadcasts RichText milestone announcements.")
+
+	checkChild(ServerStorage, "RankProgressAPI", "BindableFunction", "ServerStorage", true, "Server-only API for storage checks and rank progress tracking.")
+	checkChild(ServerStorage, "RankPersistenceFunction", "BindableFunction", "ServerStorage", true, "Load/save bridge between TycoonDataHandler and RankService.")
+	checkChild(ServerStorage, "SetRankAPI", "BindableFunction", "ServerStorage", true, "Applies secure overhead rank/name visuals.")
+
+	local rankTags = checkChild(ServerStorage, "RankTags", "Folder", "ServerStorage", true, "Folder containing overhead rank tag templates.")
+	checkChild(rankTags, "Player", "Folder", "ServerStorage > RankTags", false, "Fallback/default overhead tag folder.")
+	for _, rankName in ipairs(RANKS) do
+		checkChild(rankTags, rankName, "Folder", "ServerStorage > RankTags", true, "Overhead tag folder for claimed rank visuals.")
+	end
+end
+
+local function checkScripts()
+	print("\n========== Ranking System Validator: Scripts ==========")
+
+	checkChild(ServerScriptService, "RankService", "Script", "ServerScriptService", true, "Authoritative ranking backend.")
+	checkChild(ServerScriptService, "RankingSystemValidator", "Script", "ServerScriptService", false, "This debug validator script.")
+
+	local starterScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts")
+	checkChild(StarterPlayer, "StarterPlayerScripts", "StarterPlayerScripts", "StarterPlayer", true, "Client script container.")
+	checkChild(starterScripts, "AlexRankingSystem", "LocalScript", "StarterPlayer > StarterPlayerScripts", true, "Ranking NPC/client UI controller.")
+end
+
+local function checkRankRequirementFrame(rankPage, rankPath, requirementId, searchRootPath)
+	local requirementFrame = checkDescendant(rankPage, requirementId, "Frame", searchRootPath, true, "Requirement container for rank progress.")
+	local infoLabel = checkChild(requirementFrame, "Information2", "TextLabel", searchRootPath .. " > " .. requirementId, true, "Progress label; should keep Studio-authored completed styling.")
+	checkChild(infoLabel, "UIStroke", "UIStroke", searchRootPath .. " > " .. requirementId .. " > Information2", true, "Stroke is tinted light red while incomplete and restored when complete.")
+end
+
+local function checkRankingGui()
+	print("\n========== Ranking System Validator: RankingGui ==========")
+
+	local rankingGui = checkChild(StarterGui, "RankingGui", "ScreenGui", "StarterGui", true, "Main Ranking System UI.")
+	local mainFrame = checkChild(rankingGui, "MainFrame", "Frame", "StarterGui > RankingGui", true, "Top-level rank list container.")
+	local rankScrollingFrame = checkChild(mainFrame, "RankScrollingFrame", "ScrollingFrame", "StarterGui > RankingGui > MainFrame", true, "Contains all rank cards in ascending order.")
+	checkChild(mainFrame, "Notification", "TextLabel", "StarterGui > RankingGui > MainFrame", true, "Displays previous-rank gating messages.")
+	checkDescendant(mainFrame, "ExitButton", "ImageButton", "StarterGui > RankingGui > MainFrame", true, "Closes Alex ranking interaction.")
+
+	for _, rankName in ipairs(RANKS) do
+		local rankFrame = checkChild(rankScrollingFrame, rankName, "Frame", "StarterGui > RankingGui > MainFrame > RankScrollingFrame", true, "Rank card in ascending progression order.")
+		checkChild(rankFrame, "Accomplish", "ImageButton", "StarterGui > RankingGui > MainFrame > RankScrollingFrame > " .. rankName, true, "Opens this rank's Requirements UI.")
+		checkChild(rankFrame, "Accomplished", { "ImageLabel", "ImageButton" }, "StarterGui > RankingGui > MainFrame > RankScrollingFrame > " .. rankName, true, "Shown after rank has been claimed.")
+	end
+
+	local requirementsRoot = checkChild(rankingGui, "Requirements", { "Folder", "Frame" }, "StarterGui > RankingGui", true, "Container for each rank's Requirements UI.")
+	for _, rankName in ipairs(RANKS) do
+		local rankPagePath = "StarterGui > RankingGui > Requirements > " .. rankName
+		local rankPage = checkChild(requirementsRoot, rankName, "Frame", "StarterGui > RankingGui > Requirements", true, "Requirements UI page for " .. rankName .. ".")
+		local rankMainFrame = checkChild(rankPage, "MainFrame", "Frame", rankPagePath, true, "Page 1 main container.")
+		local requirementsFrame = checkChild(rankMainFrame, "Requirements", "Frame", rankPagePath .. " > MainFrame", true, "Page 1 requirement list.")
+
+		for index = 1, 3 do
+			checkRankRequirementFrame(requirementsFrame, rankPagePath, REQUIREMENT_IDS[index], rankPagePath .. " > MainFrame > Requirements")
+		end
+
+		checkDescendant(rankPage, "Page2", "GuiButton", rankPagePath, true, "Button that opens page 2. It may be nested inside page 1.")
+		local page2Frame = checkDescendant(rankPage, "Page2", "Frame", rankPagePath, true, "Page 2 overlay frame.")
+		local page2Main = checkChild(page2Frame, "MainFrame", "Frame", rankPagePath .. " > Page2", true, "Page 2 main container.")
+		local requirements2 = checkChild(page2Main, "Requirements2", "Frame", rankPagePath .. " > Page2 > MainFrame", true, "Page 2 requirement list.")
+
+		for index = 4, 5 do
+			checkRankRequirementFrame(requirements2, rankPagePath, REQUIREMENT_IDS[index], rankPagePath .. " > Page2 > MainFrame > Requirements2")
+		end
+
+		checkDescendant(page2Frame, "Previous", "ImageButton", rankPagePath .. " > Page2", true, "Returns from page 2 to page 1.")
+		checkDescendant(page2Frame, "Complete", "GuiButton", rankPagePath .. " > Page2", true, "Claims the rank after server validation.")
+		checkDescendant(page2Frame, "Error", "TextLabel", rankPagePath .. " > Page2", true, "Shows unfinished-requirement claim errors.")
+	end
+end
+
+local function checkAlexNpc()
+	print("\n========== Ranking System Validator: Alex NPC ==========")
+
+	local npcFolder = Workspace:FindFirstChild("NPCS") or Workspace:FindFirstChild("Npcs")
+	if not npcFolder then
+		logMissing("Workspace > NPCS or Workspace > Npcs", "Folder", false, "AlexRankingSystem can still detect prompts globally, but this folder is expected by project convention.")
+		return
+	end
+
+	logFound(npcFolder:GetFullName(), "Folder", "NPC folder located.")
+	local alex = checkChild(npcFolder, "Alex", "Model", npcFolder:GetFullName(), true, "Ranking NPC model.")
+	checkDescendant(alex, "TalkPrompt", "ProximityPrompt", npcFolder:GetFullName() .. " > Alex", true, "Prompt that opens RankingGui.")
+	checkChild(alex, "CameraAimPart", "BasePart", npcFolder:GetFullName() .. " > Alex", false, "Optional camera tween target for polished Alex interaction.")
+end
+
+local function printSummary()
+	print("\n========== Ranking System Validator: Summary ==========")
+	print(string.format("✅ Found: %d", results.Found))
+	print(string.format("❌ Missing required: %d", results.MissingRequired))
+	print(string.format("⚠️ Missing optional: %d", results.MissingOptional))
+	print(string.format("❌ Type mismatches: %d", results.TypeMismatch))
+
+	if results.MissingRequired == 0 and results.TypeMismatch == 0 then
+		print("✅ [RankingValidator] Ranking System hierarchy validation passed with no required issues.")
+	else
+		warn("❌ [RankingValidator] Ranking System hierarchy validation found required issues. Review the messages above.")
+	end
+end
+
+task.defer(function()
+	print("\n🔎 [RankingValidator] Starting Ranking System hierarchy validation...")
+	checkServiceObjects()
+	checkScripts()
+	checkRankingGui()
+	checkAlexNpc()
+	printSummary()
+end)
