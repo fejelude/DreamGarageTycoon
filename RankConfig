@@ -1,0 +1,142 @@
+-- Purpose: Central, data-only configuration for milestone ranks.
+-- Runs on: Shared ModuleScript (ReplicatedStorage.RankConfig)
+-- Notes: Edit this file to add ranks, requirements, benefits, and announcement styling.
+
+local RankConfig = {}
+
+RankConfig.BaseStorageSlots = 5
+RankConfig.DefaultResourceMultiplier = 1
+RankConfig.DefaultRankName = "Player"
+RankConfig.DefaultWithdrawalLimit = nil -- nil means use the banking system's existing default.
+
+RankConfig.Order = { "VIP", "VIP+", "MVP", "MVP+", "MVP++" }
+
+RankConfig.Values = {
+	Player = 0,
+	VIP = 1,
+	["VIP+"] = 2,
+	MVP = 3,
+	["MVP+"] = 4,
+	["MVP++"] = 5,
+}
+
+RankConfig.Ranks = {
+	VIP = {
+		PreviousRank = nil,
+		Requirements = {
+			{ Id = "Requirement1", Type = "Buy", Car = "Diva", Shop = "Common", Amount = 1 },
+			{ Id = "Requirement2", Type = "Buy", Car = "Atom", Shop = "Common", Amount = 1 },
+			{ Id = "Requirement3", Type = "Buy", Car = "Hiva", Shop = "Common", Amount = 1 },
+			{ Id = "Requirement4", Type = "Hold", Currency = "Wallet", Amount = 750000 },
+			{ Id = "Requirement5", Type = "GiftSent", Amount = 1 },
+		},
+		Benefits = { Multiplier = 2, ShopAccess = "Uncommon", ChatTag = "VIP", ExtraStorage = 2, WithdrawalLimit = 5000000000 },
+		Announcement = {
+			Template = "✨ <font color='#5CE1FF'><b>{DisplayName}</b></font> has reached the <font color='#47C7FF'><b>VIP</b></font> milestone! ✨",
+		},
+	},
+	["VIP+"] = {
+		PreviousRank = "VIP",
+		Requirements = {
+			{ Id = "Requirement1", Type = "Buy", Car = "Riva", Shop = "Common", Amount = 1 },
+			{ Id = "Requirement2", Type = "Buy", Car = "Vapid", Shop = "Uncommon", Amount = 2 },
+			{ Id = "Requirement3", Type = "Buy", Car = "BlackHead", Shop = "Uncommon", Amount = 1 },
+			{ Id = "Requirement4", Type = "Hold", Currency = "Bank", Amount = 67000000000 },
+			{ Id = "Requirement5", Type = "GiftSent", Amount = 5 },
+		},
+		Benefits = { Multiplier = 3, ShopAccess = "Rare", ChatTag = "VIP+", ExtraStorage = 3, WithdrawalLimit = 100000000000 },
+		Announcement = {
+			Template = "💎 <font color='#58F7D3'><b>{DisplayName}</b></font> ascended to <font color='#00E6A8'><b>VIP+</b></font> — premium status unlocked! 💎",
+		},
+	},
+	MVP = {
+		PreviousRank = "VIP+",
+		Requirements = {
+			{ Id = "Requirement1", Type = "Buy", Car = "Stuttgart", Shop = "Rare", Amount = 1 },
+			{ Id = "Requirement2", Type = "Buy", Car = "Vapid", Shop = "Rare", Amount = 2 },
+			{ Id = "Requirement3", Type = "Buy", Car = "Camara", Shop = "Rare", Amount = 1 },
+			{ Id = "Requirement4", Type = "Buy", Car = "Corvo", Shop = "Rare", Amount = 1 },
+			{ Id = "Requirement5", Type = "Pad", PadNumber = 12, Amount = 1 },
+		},
+		Benefits = { Multiplier = 4, ShopAccess = "Epic", ChatTag = "MVP", ExtraStorage = 4, WithdrawalLimit = 1000000000000 },
+		Announcement = {
+			Template = "🏆 <font color='#FFD166'><b>{DisplayName}</b></font> has become an <font color='#FFB703'><b>MVP</b></font> — the garage empire is rising! 🏆",
+		},
+	},
+	["MVP+"] = {
+		PreviousRank = "MVP",
+		Requirements = {
+			{ Id = "Requirement1", Type = "Buy", Car = "Sirene", Shop = "Epic", Amount = 1 },
+			{ Id = "Requirement2", Type = "Buy", Car = "Classy", Shop = "Epic", Amount = 1 },
+			{ Id = "Requirement3", Type = "GiftReceivedUnique", Amount = 5, UniquePlayers = 3 },
+			{ Id = "Requirement4", Type = "Hold", Currency = "Bank", Amount = 2000000000000 },
+			{ Id = "Requirement5", Type = "GiftSentUnique", UniquePlayers = 8 },
+		},
+		Benefits = { Multiplier = 5, ShopAccess = "Legendary", ChatTag = "MVP+", ExtraStorage = 5, WithdrawalLimit = 10000000000000 },
+		Announcement = {
+			Template = "🔥🌟 <font color='#FF7AF5'><b>{DisplayName}</b></font> shattered expectations and claimed <font color='#D946EF'><b>MVP+</b></font> glory! The server is witnessing greatness! 🌟🔥",
+		},
+	},
+	["MVP++"] = {
+		PreviousRank = "MVP+",
+		Requirements = {
+			{ Id = "Requirement1", Type = "Buy", Car = "Vortex", Shop = "Epic", Amount = 2 },
+			{ Id = "Requirement2", Type = "Craft", Car = "Neo Revuelto", Amount = 1 },
+			{ Id = "Requirement3", Type = "Obtain", Car = "Yamura", Amount = 1 },
+			{ Id = "Requirement4", Type = "Craft", Car = "La Rossa", Amount = 1 },
+			{ Id = "Requirement5", Type = "BaseLevel", Level = 2, Amount = 1 },
+		},
+		Benefits = { Multiplier = 6, ShopAccess = "Mythical", ChatTag = "MVP++", ExtraStorage = 6, WithdrawalLimit = 100000000000000 },
+		Announcement = {
+			Template = "👑⚡ <font color='#FFFFFF'><b>SERVER LEGEND:</b></font> <font color='#FF3D00'><b>{DisplayName}</b></font> has reached <font color='#FFD700'><b>MVP++</b></font>! <font color='#B388FF'><b>The ultimate Dream Garage milestone has been conquered!</b></font> ⚡👑",
+		},
+	},
+}
+
+function RankConfig.NormalizeCarName(name)
+	return tostring(name or ""):lower():gsub("%s+", ""):gsub("%-", ""):gsub("_", ""):gsub("item$", "")
+end
+
+function RankConfig.GetRankValue(rankName)
+	return RankConfig.Values[rankName] or 0
+end
+
+function RankConfig.PlayerMeetsRank(playerRank, requiredRank)
+	return RankConfig.GetRankValue(playerRank) >= RankConfig.GetRankValue(requiredRank)
+end
+
+function RankConfig.GetTotalStorageForRank(rankName)
+	local total = RankConfig.BaseStorageSlots
+	for _, orderedRank in ipairs(RankConfig.Order) do
+		local rank = RankConfig.Ranks[orderedRank]
+		if rank and RankConfig.GetRankValue(orderedRank) <= RankConfig.GetRankValue(rankName) then
+			total += rank.Benefits.ExtraStorage or 0
+		end
+	end
+	return total
+end
+
+function RankConfig.GetBenefitsForRank(rankName)
+	local benefits = {
+		Multiplier = RankConfig.DefaultResourceMultiplier,
+		WithdrawalLimit = RankConfig.DefaultWithdrawalLimit,
+		StorageSlots = RankConfig.BaseStorageSlots,
+		ShopAccess = nil,
+		ChatTag = RankConfig.DefaultRankName,
+	}
+
+	for _, orderedRank in ipairs(RankConfig.Order) do
+		local rank = RankConfig.Ranks[orderedRank]
+		if rank and RankConfig.GetRankValue(orderedRank) <= RankConfig.GetRankValue(rankName) then
+			benefits.Multiplier = rank.Benefits.Multiplier or benefits.Multiplier
+			benefits.WithdrawalLimit = rank.Benefits.WithdrawalLimit or benefits.WithdrawalLimit
+			benefits.ShopAccess = rank.Benefits.ShopAccess or benefits.ShopAccess
+			benefits.ChatTag = rank.Benefits.ChatTag or benefits.ChatTag
+		end
+	end
+
+	benefits.StorageSlots = RankConfig.GetTotalStorageForRank(rankName)
+	return benefits
+end
+
+return RankConfig

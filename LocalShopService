@@ -127,6 +127,15 @@ local function safeInvoke(bindable, timeout, ...)
 	return true, table.unpack(result, 2, result.n)
 end
 
+local function recordRankPurchase(player, carName)
+	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
+	if rankApi then
+		task.spawn(function()
+			pcall(function() rankApi:Invoke("CarObtained", player, carName, "Buy", "Common") end)
+		end)
+	end
+end
+
 -- =========================
 -- SHOP LOGIC
 -- =========================
@@ -387,12 +396,13 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		end
 
 		local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", player, realToolName)
-		if not invokeOk then
+		if not invokeOk or giveResult ~= true then
 			warn("⚠️ TycoonAdminAPI grant failed or timed out for", player.Name)
-			return false, "System Error: Inventory Grant Failed"
+			return false, giveResult == "Car storage full" and "Car Storage Full" or "System Error: Inventory Grant Failed"
 		end
 
 		wallet.Value -= carData.Price
+		recordRankPurchase(player, carName)
 
 		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
