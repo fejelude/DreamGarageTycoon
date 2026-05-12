@@ -2,6 +2,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local ServerStorage = game:GetService("ServerStorage")
 
 -- Create Remote if it doesn't exist
 local RemotesFolder = ReplicatedStorage:FindFirstChild("PlayerCarGiftingRemotes")
@@ -16,6 +17,34 @@ if not ActionRemote then
 	ActionRemote = Instance.new("RemoteEvent")
 	ActionRemote.Name = "ActionRemote"
 	ActionRemote.Parent = RemotesFolder
+end
+
+
+local function canReceiveGift(player)
+	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
+	if not rankApi then return true end
+	local ok, allowed = pcall(function() return rankApi:Invoke("CanAddCar", player, 1) end)
+	return ok and allowed == true
+end
+
+local function recordGift(giver, receiver, carId)
+	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
+	if rankApi then
+		task.spawn(function()
+			pcall(function() rankApi:Invoke("CarGiftSent", giver, receiver, carId) end)
+		end)
+	end
+end
+
+local function removeRespawnMirror(giver, toolId)
+	local starterGear = giver and giver:FindFirstChild("StarterGear")
+	if not starterGear then return end
+	for _, child in ipairs(starterGear:GetChildren()) do
+		if child:IsA("Tool") and (child.Name == toolId or child:GetAttribute("ToolId") == toolId) then
+			child:Destroy()
+			return
+		end
+	end
 end
 
 -- Track active trade sessions
@@ -134,9 +163,30 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			return
 		end
 
-		-- PROCESS THE GIFT HERE (e.g., Transfer tool, update databases)
+		if not canReceiveGift(player) then
+			ActionRemote:FireClient(session.Giver, "UpdateGiverUI", {
+				State = "NotificationFalse",
+				Text = session.Receiver.DisplayName .. " has full car storage."
+			})
+			ActionRemote:FireClient(player, "UpdateReceiverUI", {
+				Text = "Your car storage is full."
+			})
+			if session.Timer then task.cancel(session.Timer) end
+			activeGifts[giverId] = nil
+			return
+		end
+
+		-- PROCESS THE GIFT HERE (server-authoritative transfer + respawn mirror update)
 		if session.Tool and session.Tool.Parent then
+			local starterClone = session.Tool:Clone()
+			removeRespawnMirror(session.Giver, session.CarId)
 			session.Tool.Parent = player.Backpack
+			if player:FindFirstChild("StarterGear") then
+				starterClone.Parent = player.StarterGear
+			else
+				starterClone:Destroy()
+			end
+			recordGift(session.Giver, player, session.CarId)
 		else
 			ActionRemote:FireClient(session.Giver, "UpdateGiverUI", {
 				State = "NotificationFalse",
