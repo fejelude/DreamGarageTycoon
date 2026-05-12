@@ -69,6 +69,7 @@ local detector = nil
 local emptyIndicator = nil 
 
 local hiddenGuis = {}
+local hiddenGuiCount = 0
 local btnConnections = {} 
 
 local normalFov = nil
@@ -110,12 +111,14 @@ end
 -- ============================================================================
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
-		if #hiddenGuis > 0 then return end
+		if hiddenGuiCount > 0 then return end
 		table.clear(hiddenGuis)
+		hiddenGuiCount = 0
 		for _, gui in pairs(PlayerGui:GetDescendants()) do
 			if gui:IsA("ScreenGui") and gui ~= screenGui and gui.Name ~= "Confirmation" and gui.Enabled then
 				gui.Enabled = false
 				hiddenGuis[gui] = true
+				hiddenGuiCount += 1
 			end
 		end
 	else
@@ -125,6 +128,7 @@ local function toggleOtherGuis(shouldHide)
 			end
 		end
 		table.clear(hiddenGuis)
+		hiddenGuiCount = 0
 	end
 end
 
@@ -313,7 +317,7 @@ local function UpdateSlots()
 	if #validPlayers == 0 then
 		if emptyIndicator then
 			ensureEmptyFX(emptyIndicator)
-			emptyIndicator.Text = "No One To Gift In THIS SERVER :("
+			emptyIndicator.Text = "No eligible players to gift in this server."
 			emptyIndicator.Visible = true
 		end
 		if standardIndicator then standardIndicator.Visible = false end

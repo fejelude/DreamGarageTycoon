@@ -399,6 +399,10 @@ local function init()
 							warn("⚠️ _G.OpenGiftMenu is not ready yet!")
 							return
 						end
+						-- Open gifting as its own clean modal flow. Closing the shop first
+						-- prevents UniversalGiftUI from force-disabling and later
+						-- re-enabling this shop in a half-reset visual state.
+						closeShopUI()
 						_G.OpenGiftMenu(pid)
 					else
 						warn("⚠️ Robux ID is 0 for " .. carName)
