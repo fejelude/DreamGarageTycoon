@@ -14,6 +14,7 @@ local CAR_WEIGHTS = {
 	Maverick = 80,
 	Javelin = 60,
 	Stuttgart = 40,
+	Vapid = 30,
 	Velocity = 25,
 	Sadie = 15,
 	Vipera = 8,
@@ -31,6 +32,7 @@ local MAX_INTERACTION_DISTANCE = 20
 -- MODULES
 -- =========================
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 
 -- =========================
 -- REMOTES
@@ -132,6 +134,12 @@ local function recordRankPurchase(player, carName)
 			pcall(function() rankApi:Invoke("CarObtained", player, carName, "Buy", "Rare") end)
 		end)
 	end
+end
+
+local REQUIRED_RANK = RankConfig.GetRequiredRankForShop("Rare")
+
+local function hasRequiredRank(player)
+	return RankConfig.PlayerMeetsRank(player:GetAttribute("Rank") or RankConfig.DefaultRankName, REQUIRED_RANK)
 end
 
 -- =========================

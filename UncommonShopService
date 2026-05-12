@@ -63,6 +63,7 @@ validateDependencies()
 -- MODULES
 -- =========================
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 
 -- =========================
 -- REMOTES
@@ -164,6 +165,12 @@ local function recordRankPurchase(player, carName)
 			pcall(function() rankApi:Invoke("CarObtained", player, carName, "Buy", "Uncommon") end)
 		end)
 	end
+end
+
+local REQUIRED_RANK = RankConfig.GetRequiredRankForShop("Uncommon")
+
+local function hasRequiredRank(player)
+	return RankConfig.PlayerMeetsRank(player:GetAttribute("Rank") or RankConfig.DefaultRankName, REQUIRED_RANK)
 end
 
 -- =========================
