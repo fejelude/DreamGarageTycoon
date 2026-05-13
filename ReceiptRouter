@@ -275,17 +275,22 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	local buyerId = receiptInfo.PlayerId
 	local buyerPlayer = Players:GetPlayerByUserId(buyerId)
 
-	if not buyerPlayer then return Enum.ProductPurchaseDecision.NotProcessedYet end
+	if not buyerPlayer then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
 
+	local pid = receiptInfo.ProductId
 	local targetPlayer = buyerPlayer
 	local isGift = false
 	local giftReceiverId = nil
+	local consumeStaleGiftIntentAfterGrant = false
 
-	-- FIX: Peek at the gift intent WITHOUT consuming it.
-	-- Only consume after the purchase is fully granted to prevent data loss on retry.
+	-- Peek gift intent without consuming it.
+	-- Bank transfer skip is not a gift product, so it must always apply to the buyer.
 	if _G.GetGiftReceiver then
-		giftReceiverId = _G.GetGiftReceiver(buyerId, false) -- peek only
-		if giftReceiverId then
+		giftReceiverId = _G.GetGiftReceiver(buyerId, false)
+
+		if giftReceiverId and pid ~= BANK_TRANSFER_SKIP_ID then
 			local receiver = Players:GetPlayerByUserId(giftReceiverId)
 			if receiver then
 				targetPlayer = receiver
@@ -296,6 +301,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	local purchaseKey = buyerId .. "_" .. receiptInfo.PurchaseId
 	local alreadyProcessed = wasPurchaseProcessed(purchaseKey)
+
 	if alreadyProcessed == nil then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
@@ -304,7 +310,6 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 
-	local pid = receiptInfo.ProductId
 	local purchaseSuccess = false
 
 	local skinFound = nil
@@ -319,8 +324,12 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	-- ─── BANK TRANSFER LIMIT SKIP ─────────────────────────────────────────────
 	if pid == BANK_TRANSFER_SKIP_ID then
+		-- This product should never be gifted. If a gift target was pending,
+		-- consume it only after the receipt is successfully granted/persisted.
 		isGift = false
-		giftReceiverId = nil
+		targetPlayer = buyerPlayer
+		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+
 		buyerPlayer:SetAttribute(BANK_TRANSFER_USED_ATTR, 0)
 		buyerPlayer:SetAttribute(BANK_TRANSFER_RESET_AT_ATTR, 0)
 		purchaseSuccess = true
@@ -336,15 +345,17 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 			if amount > 0 then
 				pendingVal.Value = 0
+
 				local hs = targetPlayer:FindFirstChild("HiddenStats")
 				if hs and hs:FindFirstChild("Cash") then
-					hs.Cash.Value += (amount * 2)
+					hs.Cash.Value += amount * 2
 				end
 			end
+
 			purchaseSuccess = true
 		end
 
-		-- ─── SHOP REROLLS ────────────────────────────────────────────────────────
+	-- ─── SHOP REROLLS ────────────────────────────────────────────────────────
 	elseif pid == SHOP_REROLL_ID then
 		if ShopRerollFunc then
 			ShopRerollFunc:Invoke(targetPlayer)
@@ -375,27 +386,27 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			warn("⚠️ EpicShopRerollFunction missing!")
 		end
 
-		-- ─── 🟢 COMMON CAR ───────────────────────────────────────────────────────
+	-- ─── 🟢 COMMON CAR ───────────────────────────────────────────────────────
 	elseif CAR_PRODUCT_IDS[pid] then
 		local carName = CAR_PRODUCT_IDS[pid]
 		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Common", nil)
 
-		-- ─── 🔵 UNCOMMON CAR ─────────────────────────────────────────────────────
+	-- ─── 🔵 UNCOMMON CAR ─────────────────────────────────────────────────────
 	elseif UNCOMMON_CAR_PRODUCT_IDS[pid] then
 		local carName = UNCOMMON_CAR_PRODUCT_IDS[pid]
 		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Uncommon", "DarrelPurchaseFeedback")
 
-		-- ─── 🟣 RARE CAR ─────────────────────────────────────────────────────────
+	-- ─── 🟣 RARE CAR ─────────────────────────────────────────────────────────
 	elseif RARE_CAR_PRODUCT_IDS[pid] then
 		local carName = RARE_CAR_PRODUCT_IDS[pid]
 		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Rare", "JacobPurchaseFeedback")
 
-		-- ─── 🟡 EPIC CAR ─────────────────────────────────────────────────────────
+	-- ─── 🟡 EPIC CAR ─────────────────────────────────────────────────────────
 	elseif EPIC_CAR_PRODUCT_IDS[pid] then
 		local carName = EPIC_CAR_PRODUCT_IDS[pid]
 		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Epic", "RayWPurchaseFeedback")
 
-		-- ─── ⏩ SKIP CRAFT TIMES ──────────────────────────────────────────────────
+	-- ─── ⏩ SKIP CRAFT TIMES ─────────────────────────────────────────────────
 	elseif pid == LEGENDARY_SKIP_CRAFT_ID then
 		local ok, success, msg = safeInvoke(SkipLegendaryCraftFunc, 5, targetPlayer)
 		if ok and success then
@@ -412,12 +423,18 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			warn("⚠️ Mythical Craft Skip failed or no active craft: " .. tostring(msg))
 		end
 
-		-- ─── 🎨 BASE SKIN ─────────────────────────────────────────────────────────
+	-- ─── 🎨 BASE SKIN ────────────────────────────────────────────────────────
 	elseif skinFound then
 		local ownedRaw = targetPlayer:GetAttribute("OwnedBaseSkins") or "[]"
 		local ownedTable = {}
-		local decodeSuccess, _ = pcall(function() ownedTable = HttpService:JSONDecode(ownedRaw) end)
-		if not decodeSuccess then ownedTable = {} end
+
+		local decodeSuccess = pcall(function()
+			ownedTable = HttpService:JSONDecode(ownedRaw)
+		end)
+
+		if not decodeSuccess then
+			ownedTable = {}
+		end
 
 		if table.find(ownedTable, skinFound) then
 			warn("🛡️ Security: Blocked purchase! " .. targetPlayer.Name .. " already owns the " .. skinFound .. " pad.")
@@ -426,6 +443,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			table.insert(ownedTable, skinFound)
 			targetPlayer:SetAttribute("OwnedBaseSkins", HttpService:JSONEncode(ownedTable))
 			targetPlayer:SetAttribute("EquippedSkin", skinFound)
+
 			purchaseSuccess = true
 
 			if PadUnlockEvent and not isGift then
@@ -444,10 +462,12 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			return Enum.ProductPurchaseDecision.NotProcessedYet
 		end
 
-		-- FIX: NOW consume the gift intent — only after the grant and persistence succeeded.
-		-- This guarantees the intent survives ProcessReceipt retries on failure.
-		if isGift and giftReceiverId and _G.GetGiftReceiver then
-			_G.GetGiftReceiver(buyerId, true) -- consume
+		if _G.GetGiftReceiver then
+			if isGift and giftReceiverId then
+				_G.GetGiftReceiver(buyerId, true)
+			elseif consumeStaleGiftIntentAfterGrant then
+				_G.GetGiftReceiver(buyerId, true)
+			end
 		end
 
 		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
@@ -458,7 +478,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 
 		return Enum.ProductPurchaseDecision.PurchaseGranted
-	else
-		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
+
+	return Enum.ProductPurchaseDecision.NotProcessedYet
 end

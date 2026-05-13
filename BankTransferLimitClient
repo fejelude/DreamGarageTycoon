@@ -21,25 +21,44 @@ local skipButton = withdrawalFunction:WaitForChild("SkipButton", 5)
 
 local SKIP_PRODUCT_ID = 3591736957
 local RESET_SECONDS = 60 * 60
+
+-- Fallback only. The real value should come from the player rank attribute.
 local DEFAULT_TRANSFER_LIMIT = 1000000000000
+
 local TRANSFER_USED_ATTR = "BankTransferLimitUsed"
 local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
 
 local SUFFIXES = {"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"}
 
+local function trimDecimalString(value)
+	local text = string.format("%.2f", value)
+	text = text:gsub("%.00$", "")
+	text = text:gsub("(%..-)0+$", "%1")
+	return text
+end
+
 local function formatNumber(n)
-	n = tonumber(n)
-	if not n then return "0" end
-	if n < 1000 then return tostring(math.floor(n)) end
-	local i = math.floor(math.log(n, 1000))
-	local v = 1000 ^ i
-	local suffix = SUFFIXES[i] or "?"
-	return string.format("%.2f%s", n / v, suffix)
+	n = tonumber(n) or 0
+	n = math.max(0, n)
+
+	if n < 1000 then
+		return tostring(math.floor(n))
+	end
+
+	local suffixIndex = math.floor(math.log(n) / math.log(1000))
+	suffixIndex = math.clamp(suffixIndex, 1, #SUFFIXES)
+
+	local scaled = n / (1000 ^ suffixIndex)
+	return trimDecimalString(scaled) .. SUFFIXES[suffixIndex]
 end
 
 local function formatTimer(seconds)
-	seconds = math.clamp(math.ceil(seconds), 0, RESET_SECONDS)
-	local minutes = math.max(1, math.ceil(seconds / 60))
+	seconds = math.clamp(math.ceil(tonumber(seconds) or 0), 0, RESET_SECONDS)
+
+	-- Requirement: display minute buckets from 60:00 down to 1:00.
+	local minutes = math.ceil(seconds / 60)
+	minutes = math.clamp(minutes, 1, 60)
+
 	return string.format("%d:00", minutes)
 end
 
@@ -50,20 +69,23 @@ end
 local function getTransferState()
 	local used = math.max(0, tonumber(player:GetAttribute(TRANSFER_USED_ATTR)) or 0)
 	local resetAt = tonumber(player:GetAttribute(TRANSFER_RESET_AT_ATTR)) or 0
+	local now = os.time()
 
-	if resetAt > 0 and os.time() >= resetAt then
-		used = 0
-		resetAt = 0
+	if resetAt > 0 and now >= resetAt then
+		return 0, 0
 	end
 
 	return used, resetAt
 end
 
 local function updateLimitLabel()
-	if not withdrawalLimitLabel then return end
+	if not withdrawalLimitLabel then
+		return
+	end
 
 	local used, resetAt = getTransferState()
 	local limit = getTransferLimit()
+
 	local text = formatNumber(used) .. " / " .. formatNumber(limit)
 
 	if resetAt > 0 and used > 0 then
@@ -85,6 +107,7 @@ player:GetAttributeChangedSignal(TRANSFER_USED_ATTR):Connect(updateLimitLabel)
 player:GetAttributeChangedSignal(TRANSFER_RESET_AT_ATTR):Connect(updateLimitLabel)
 
 updateLimitLabel()
+
 while withdrawalFunction.Parent do
 	updateLimitLabel()
 	task.wait(1)
