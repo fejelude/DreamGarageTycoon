@@ -23,13 +23,6 @@ local playerGui = player:WaitForChild("PlayerGui")
 print("🌸 [LorraineDebug] Script Initializing...")
 
 -- ============================================================================
--- 🎨 COLOR CONFIGURATION
--- ============================================================================
-local USER_COLOR = "#55AAFF"
-local LORRAINE_COLOR = "#FF69B4"
-local SUCCESS_COLOR = "#50C878"
-
--- ============================================================================
 -- 🆔 UNIQUE IDENTIFIERS
 -- ============================================================================
 local GUI_ID = "UI_NPC_Lorraine"
@@ -56,6 +49,15 @@ local CLICK_SCALE = 0.9
 local ANIM_SPEED = 0.1
 
 local CONFIRMATION_COLORS = { Sacrifice = "#ff5757", Target = "#63b3ff", Accent = "#f4efe6" }
+
+local DIALOGUE = {
+	Greeting = "Welcome, darling. I can buy every car in your inventory at once, including any cars currently placed in your garage.",
+	NoCars = "You do not have any cars available to sell right now, darling.",
+	Cancel = "No problem, darling. Nothing has been sold, and your garage is exactly as you left it.",
+	Success = "All set, darling. I bought %d %s for $%s, and your inventory capacity has been updated.",
+	ErrorPrefix = "Oh dear, I could not complete the sale. ",
+	Goodbye = "Take care, darling. Come back whenever you are ready to sell.",
+}
 
 -- ============================================================================
 -- 🛠️ STATE VARIABLES
@@ -88,14 +90,6 @@ end)
 -- ============================================================================
 -- 🎬 INTERACTION FUNCTIONS
 -- ============================================================================
-local function playSound(id, vol)
-	if id == TYPING_SOUND_ID then
-		local s = Instance.new("Sound")
-		s.SoundId = id; s.Volume = vol or 0.1; s.Parent = SoundService; s:Play()
-		game.Debris:AddItem(s, 1)
-	end
-end
-
 local function setButtonsState(isActive)
 	local myGui = playerGui:FindFirstChild(GUI_ID)
 	if not myGui then return end
@@ -549,7 +543,7 @@ local function handleSellEverything(dialogueLabel)
 
 	local totalValue, carCount = getSellableInventoryValue()
 	if carCount <= 0 or totalValue <= 0 then
-		typewrite(dialogueLabel, "You do not have any cars available to sell right now, darling. 🌸", function()
+		typewrite(dialogueLabel, DIALOGUE.NoCars, function()
 			task.wait(2)
 			stopInteraction()
 		end)
@@ -558,16 +552,18 @@ local function handleSellEverything(dialogueLabel)
 
 	isProcessingSell = true
 
+	local carWord = carCount == 1 and "car" or "cars"
 	local confirmText = string.format(
-		"<font color='%s'>Are you sure you want to sell all of your cars for </font><b><font color='%s'>$%s</font></b><font color='%s'>? This cannot be undone, sweetie.</font>",
-		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, FormatCommas(totalValue), CONFIRMATION_COLORS.Accent
+		"<font color='%s'>Are you sure you want to sell all </font><b>%d %s</b><font color='%s'> for </font><b><font color='%s'>$%s</font></b><font color='%s'>? This cannot be undone, sweetie.</font>",
+		CONFIRMATION_COLORS.Accent, carCount, carWord, CONFIRMATION_COLORS.Accent,
+		CONFIRMATION_COLORS.Sacrifice, FormatCommas(totalValue), CONFIRMATION_COLORS.Accent
 	)
 
 	PromptConfirmation(confirmText, function(confirmed)
 		if not isInteracting then return end
 
 		if not confirmed then
-			typewrite(dialogueLabel, "No worries, darling. Your cars are staying right where they are. 🌸", function()
+			typewrite(dialogueLabel, DIALOGUE.Cancel, function()
 				isProcessingSell = false
 				task.wait(1.5)
 				stopInteraction()
@@ -576,11 +572,11 @@ local function handleSellEverything(dialogueLabel)
 		end
 
 		task.spawn(function()
-			local success, msg
+			local success, msg, serverSellAmount, serverCarCount
 			local invokeCompleted = false
 
 			local invokeThread = task.spawn(function()
-				success, msg = SellFunction:InvokeServer("SellAllCars")
+				success, msg, serverSellAmount, serverCarCount = SellFunction:InvokeServer("SellAllCars")
 				invokeCompleted = true
 			end)
 
@@ -601,13 +597,16 @@ local function handleSellEverything(dialogueLabel)
 
 			if success then
 				UIAudioConfig.PlayClick()
-				typewrite(dialogueLabel, "Wonderful. Your full car inventory has been sold, and your storage is clear now, darling. ✨", function()
+				local soldCount = tonumber(serverCarCount) or carCount
+				local soldAmount = tonumber(serverSellAmount) or totalValue
+				local soldWord = soldCount == 1 and "car" or "cars"
+				typewrite(dialogueLabel, string.format(DIALOGUE.Success, soldCount, soldWord, FormatCommas(soldAmount)), function()
 					isProcessingSell = false
 					task.wait(1.5)
 					stopInteraction()
 				end)
 			else
-				typewrite(dialogueLabel, "Oh dear... Something went wrong. " .. (msg or "Try again later.") .. " 💔", function()
+				typewrite(dialogueLabel, DIALOGUE.ErrorPrefix .. (msg or "Please try again later."), function()
 					isProcessingSell = false
 					task.wait(2)
 					stopInteraction()
@@ -659,7 +658,7 @@ local function startInteraction(npcModel)
 
 	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
 	if dialogueLabel then
-		local greeting = "Oh my~ Welcome, darling! ✨ I can purchase your entire car inventory whenever you are ready."
+		local greeting = DIALOGUE.Greeting
 
 		typewrite(dialogueLabel, greeting, function()
 			setButtonsState(true)
@@ -696,7 +695,7 @@ local function startInteraction(npcModel)
 			clearConnections()
 			setButtonsState(false)
 			if dialogueLabel then
-				local goodbyeMsg = "Toodles~! 🌸 Do come back anytime, darling. My doors are always open for a lovely customer like you~ 💖"
+				local goodbyeMsg = DIALOGUE.Goodbye
 				typewrite(dialogueLabel, goodbyeMsg)
 			end
 			task.wait(LEAVE_DELAY)
