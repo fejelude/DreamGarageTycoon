@@ -62,10 +62,10 @@ local CONFIRMATION_COLORS = {
 }
 
 local DIALOGUE = {
-	Greeting = "Welcome, darling. I can buy every car in your inventory at once, including any cars currently placed in your garage.",
+	Greeting = "Welcome, darling. I can buy every car in your inventory at once.",
 	NoCars = "You do not have any cars available to sell right now, darling.",
-	Cancel = "No problem, darling. Nothing has been sold, and your garage is exactly as you left it.",
-	Success = "All set, darling. I bought %d %s for $%s, and your inventory capacity has been updated.",
+	Cancel = "No problem, darling. Nothing has been sold.",
+	Success = "All set, darling. I bought %d %s from your inventory for $%s.",
 	ErrorPrefix = "Oh dear, I could not complete the sale. ",
 	Goodbye = "Take care, darling. Come back whenever you are ready to sell.",
 }
@@ -839,39 +839,6 @@ local function FormatCommas(num)
 	return tostring(num):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
 end
 
-local function getOwnedPlacedCarsValue()
-	local totalValue = 0
-	local totalCount = 0
-
-	local plotName = player:GetAttribute("OccupiedPlot")
-	local tycoons = Workspace:FindFirstChild("Tycoons")
-	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
-
-	if not plot then
-		return totalValue, totalCount
-	end
-
-	for _, descendant in ipairs(plot:GetDescendants()) do
-		if descendant.Name == "LinkedCar"
-			and descendant:IsA("ObjectValue")
-			and descendant.Value then
-
-			local car = descendant.Value
-
-			if car:GetAttribute("OwnerUserId") == player.UserId then
-				local details = CarSellPrices.GetDetails(car.Name)
-
-				if details and details.SellPrice and details.SellPrice > 0 then
-					totalValue += details.SellPrice
-					totalCount += 1
-				end
-			end
-		end
-	end
-
-	return totalValue, totalCount
-end
-
 local function getSellableInventoryValue()
 	local totalValue = 0
 	local totalCount = 0
@@ -905,9 +872,7 @@ local function getSellableInventoryValue()
 		scan(player.Character)
 	end
 
-	local placedValue, placedCount = getOwnedPlacedCarsValue()
-
-	return totalValue + placedValue, totalCount + placedCount
+	return totalValue, totalCount
 end
 
 -- ============================================================================

@@ -299,18 +299,6 @@ local function getCurrentStorageCount(player)
 	scan(player:FindFirstChild("Backpack"))
 	if player.Character then scan(player.Character) end
 
-	local plotName = player:GetAttribute("OccupiedPlot")
-	local plot = plotName and TycoonFolder:FindFirstChild(plotName)
-	if plot then
-		for _, descendant in ipairs(plot:GetDescendants()) do
-			if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
-				local car = descendant.Value
-				if car:GetAttribute("OwnerUserId") == player.UserId then
-					count += 1
-				end
-			end
-		end
-	end
 	return count
 end
 
@@ -609,8 +597,9 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	elseif action == "MarkInventoryCleared" and player then
 		local session = SessionData[player]
 		if session then
+			-- Lorraine only clears inventory tools. Do not mark this as a full explicit clear,
+			-- because that would bypass placed-car layout anti-wipe protection.
 			session.SacrificeOccurred = true
-			session.ExplicitClear = true
 		end
 		markDirty(player)
 		return true
