@@ -1,6 +1,8 @@
--- [[ LOCAL SCRIPT: PlotMarkerHandler (Universal V4 - Robust Edition) ]]
--- -- Indicating what the script is for: Attaches "YOUR PLOT" marker to a universal part (Guaranteed Fix).
--- FEATURES: Uses Smart-Waiting to ensure it works even if the plot loads slowly.
+-- [[ LOCAL SCRIPT: PlotMarkerHandler - Universal V5 Production Ready ]]
+-- Purpose:
+-- Attaches the "YOUR PLOT" indicator to the player's assigned plot.
+-- Built to survive fresh/new server timing, late replication, missing parts during startup,
+-- StreamingEnabled delays, plot rebuilds, and template replication delays.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -8,168 +10,497 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
-local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
 -- ============================================================================
--- ⚙️ CONFIGURATION
+-- CONFIGURATION
 -- ============================================================================
-local INDICATOR_TEMPLATE_NAME = "YourPlotIndicator" -- Name of GUI in ReplicatedStorage
-local HEIGHT_OFFSET = 12      -- Studs above the part (High enough to be seen)
-local ANIMATE_BOUNCE = true   -- Bobbing animation
+
+local INDICATOR_TEMPLATE_NAME = "YourPlotIndicator"
+local OCCUPIED_PLOT_ATTRIBUTE = "OccupiedPlot"
+local TYCOON_FOLDER_NAME = "Tycoons"
+
+local HEIGHT_OFFSET = 12
+local ANIMATE_BOUNCE = true
 local BOUNCE_SPEED = 2
 local BOUNCE_HEIGHT = 1.5
 
--- 🎯 TARGET PATHS (Priority List)
--- The script will wait for #1. If it times out, it tries #2, etc.
+local RETRY_INTERVAL = 1
+local FAST_RETRY_INTERVAL = 0.15
+local DEBUG_PRINTS = false
+
 local TARGET_PATHS = {
-	{ "GarageParts", "Garage Parts", "OwnerIndicator" },    -- 🥇 Your new requested universal part
-	{ "GarageInformation", "OwnerLabel" },                  -- 🥈 Direct Child of Level fallback
-	{ "NormalGarage", "Garage Parts", "OwnerIndicator" },   -- 🥉 Legacy fallback
-	{ "NormalGarage", "GarageInformation", "OwnerLabel" },  -- 🏅 Old fallback
-	{ "SpawnPoint" }                                        -- 💥 Last resort (Always exists)
+	{ "GarageParts", "Garage Parts", "OwnerIndicator" },
+	{ "GarageInformation", "OwnerLabel" },
+	{ "NormalGarage", "Garage Parts", "OwnerIndicator" },
+	{ "NormalGarage", "GarageInformation", "OwnerLabel" },
+	{ "SpawnPoint" },
+}
+
+local FALLBACK_DESCENDANT_NAMES = {
+	"OwnerIndicator",
+	"OwnerLabel",
+	"SpawnPoint",
+	"ClaimPart",
+	"Claim",
 }
 
 -- ============================================================================
--- 🛠️ LOGIC
+-- STATE
 -- ============================================================================
-local currentIndicator = nil
+
+local TycoonFolder = Workspace:FindFirstChild(TYCOON_FOLDER_NAME) or Workspace:WaitForChild(TYCOON_FOLDER_NAME)
+
+local currentIndicatorClone = nil
+local currentGuiObject = nil
+local currentAdornee = nil
+
 local bounceConnection = nil
-local isSearching = false -- Prevents overlapping searches
+local adorneeConnection = nil
+local plotDescendantAddedConnection = nil
+local plotDescendantRemovingConnection = nil
 
--- Helper to safely find a nested part with PATIENCE
--- Fix 12: findPartByPath Adds Up to 30s of Wait Time
--- Optimised to non-blocking FindFirstChild for intermediate layers, and a fast 0.5s timeout for final nodes.
-local function findPartByPath(root, pathArray)
-	local current = root
-	for i, name in ipairs(pathArray) do
-		if i == #pathArray then
-			-- Final node: Give it a tiny buffer in case it is actively streaming in
-			current = current:WaitForChild(name, 0.5)
-		else
-			-- Intermediate node: Check instantly
-			current = current:FindFirstChild(name)
-		end
+local currentWatchedPlot = nil
+local refreshQueued = false
+local warned = {}
 
-		if not current then return nil end
+-- ============================================================================
+-- UTILITIES
+-- ============================================================================
+
+local function debugPrint(...)
+	if DEBUG_PRINTS then
+		print("[PlotMarker]", ...)
 	end
-	return current
 end
 
-local function cleanup()
-	if currentIndicator then currentIndicator:Destroy() currentIndicator = nil end
-	if bounceConnection then bounceConnection:Disconnect() bounceConnection = nil end
+local function warnOnce(key, message)
+	if warned[key] then
+		return
+	end
+
+	warned[key] = true
+	warn(message)
 end
 
-local function updateMarker()
-	-- Prevent double-running
-	if isSearching then return end
-	isSearching = true
+local function safeDisconnect(connection)
+	if connection then
+		connection:Disconnect()
+	end
+end
 
-	cleanup() -- Reset first
-
-	-- 1. Get Assigned Plot
-	local myPlotName = player:GetAttribute("OccupiedPlot")
-	if not myPlotName then 
-		isSearching = false
-		return 
+local function isUsableAdornee(instance)
+	if not instance then
+		return false
 	end
 
-	local plot = TycoonFolder:FindFirstChild(myPlotName)
-	if not plot then 
-		-- Plot might not be loaded yet, retry in 1s
-		isSearching = false
-		task.wait(1)
-		updateMarker()
-		return 
+	if not instance.Parent then
+		return false
 	end
 
-	-- 2. Find Best Target Part (With Waiting)
-	local attachPart = nil
+	return instance:IsA("BasePart") or instance:IsA("Attachment")
+end
 
-	-- Helper to search within a specific level folder
-	local function searchInLevel(levelFolder)
-		if not levelFolder then return nil end
-		for i, path in ipairs(TARGET_PATHS) do
-			local found = findPartByPath(levelFolder, path)
-			if found then
-				print("📍 PlotMarker: Found target via Path #" .. i .. " in " .. levelFolder.Name)
-				return found
-			end
-		end
+local function getFirstUsableAdornee(instance)
+	if not instance then
 		return nil
 	end
 
-	-- Try Level 1
-	attachPart = searchInLevel(plot:FindFirstChild("Level1"))
-
-	-- Try Level 2 (if active)
-	if not attachPart then
-		attachPart = searchInLevel(plot:FindFirstChild("Level2"))
+	if isUsableAdornee(instance) then
+		return instance
 	end
 
-	-- Try direct plot children (Fallback for SpawnPoint)
-	if not attachPart then
-		for i, path in ipairs(TARGET_PATHS) do
-			attachPart = findPartByPath(plot, path)
-			if attachPart then
-				print("📍 PlotMarker: Found target via Fallback Path #" .. i .. " in " .. plot.Name)
-				break
+	if instance:IsA("BillboardGui") or instance:IsA("SurfaceGui") then
+		if isUsableAdornee(instance.Adornee) then
+			return instance.Adornee
+		end
+
+		if isUsableAdornee(instance.Parent) then
+			return instance.Parent
+		end
+	end
+
+	if instance:IsA("Model") then
+		if isUsableAdornee(instance.PrimaryPart) then
+			return instance.PrimaryPart
+		end
+
+		local part = instance:FindFirstChildWhichIsA("BasePart", true)
+		if isUsableAdornee(part) then
+			return part
+		end
+	end
+
+	local descendantPart = instance:FindFirstChildWhichIsA("BasePart", true)
+	if isUsableAdornee(descendantPart) then
+		return descendantPart
+	end
+
+	local descendantAttachment = instance:FindFirstChildWhichIsA("Attachment", true)
+	if isUsableAdornee(descendantAttachment) then
+		return descendantAttachment
+	end
+
+	return nil
+end
+
+local function findByPath(root, pathArray)
+	local current = root
+
+	for _, name in ipairs(pathArray) do
+		if not current then
+			return nil
+		end
+
+		current = current:FindFirstChild(name)
+
+		if not current then
+			return nil
+		end
+	end
+
+	return getFirstUsableAdornee(current)
+end
+
+local function getLevelFolders(plot)
+	local folders = {}
+
+	local level1 = plot:FindFirstChild("Level1")
+	local level2 = plot:FindFirstChild("Level2")
+
+	if level1 then
+		table.insert(folders, level1)
+	end
+
+	if level2 and level2 ~= level1 then
+		table.insert(folders, level2)
+	end
+
+	for _, child in ipairs(plot:GetChildren()) do
+		if child ~= level1 and child ~= level2 and child.Name:lower():match("^level") then
+			table.insert(folders, child)
+		end
+	end
+
+	return folders
+end
+
+local function findBestAdornee(plot)
+	if not plot then
+		return nil
+	end
+
+	for _, levelFolder in ipairs(getLevelFolders(plot)) do
+		for pathIndex, path in ipairs(TARGET_PATHS) do
+			local adornee = findByPath(levelFolder, path)
+			if adornee then
+				debugPrint("Found target in", levelFolder.Name, "path", pathIndex, adornee:GetFullName())
+				return adornee
 			end
 		end
 	end
 
-	-- 3. Create Marker
-	if attachPart then
-		local template = ReplicatedStorage:FindFirstChild(INDICATOR_TEMPLATE_NAME)
-		if not template then 
-			warn("⚠️ PlotMarker: Missing '"..INDICATOR_TEMPLATE_NAME.."' in ReplicatedStorage!") 
-			isSearching = false
-			return 
+	for pathIndex, path in ipairs(TARGET_PATHS) do
+		local adornee = findByPath(plot, path)
+		if adornee then
+			debugPrint("Found target in plot fallback path", pathIndex, adornee:GetFullName())
+			return adornee
 		end
-
-		currentIndicator = template:Clone()
-		currentIndicator.Parent = player.PlayerGui
-		currentIndicator.Adornee = attachPart
-
-		-- Ensure it's always on top if needed
-		if currentIndicator:IsA("BillboardGui") then
-			currentIndicator.AlwaysOnTop = true
-		end
-
-		-- Set Initial Height
-		local currentOffset = currentIndicator.StudsOffset
-		currentIndicator.StudsOffset = Vector3.new(currentOffset.X, HEIGHT_OFFSET, currentOffset.Z)
-
-		currentIndicator.Enabled = true
-
-		-- 4. Bounce Animation
-		if ANIMATE_BOUNCE then
-			local t = 0
-			bounceConnection = RunService.RenderStepped:Connect(function(dt)
-				if not currentIndicator or not currentIndicator.Adornee then cleanup() return end
-				t = t + dt * BOUNCE_SPEED
-				local bounce = math.sin(t) * BOUNCE_HEIGHT
-				currentIndicator.StudsOffset = Vector3.new(currentOffset.X, HEIGHT_OFFSET + bounce, currentOffset.Z)
-			end)
-		end
-	else
-		-- ⚠️ STILL NOT FOUND? RETRY.
-		-- This happens if the Garage hasn't been built/loaded yet.
-		-- We keep trying every 2 seconds until it appears.
-		print("⏳ PlotMarker: Target part not found yet. Retrying...")
-		task.delay(2, function()
-			isSearching = false
-			updateMarker()
-		end)
-		return -- Exit so we don't set isSearching=false immediately
 	end
 
-	isSearching = false
+	for _, fallbackName in ipairs(FALLBACK_DESCENDANT_NAMES) do
+		local found = plot:FindFirstChild(fallbackName, true)
+		local adornee = getFirstUsableAdornee(found)
+		if adornee then
+			debugPrint("Found target by descendant fallback", fallbackName, adornee:GetFullName())
+			return adornee
+		end
+	end
+
+	local anyPart = plot:FindFirstChildWhichIsA("BasePart", true)
+	if isUsableAdornee(anyPart) then
+		debugPrint("Using emergency BasePart fallback", anyPart:GetFullName())
+		return anyPart
+	end
+
+	local anyAttachment = plot:FindFirstChildWhichIsA("Attachment", true)
+	if isUsableAdornee(anyAttachment) then
+		debugPrint("Using emergency Attachment fallback", anyAttachment:GetFullName())
+		return anyAttachment
+	end
+
+	return nil
 end
 
--- 🔄 AUTO-UPDATE
-player:GetAttributeChangedSignal("OccupiedPlot"):Connect(updateMarker)
+local function findGuiObject(clone)
+	if not clone then
+		return nil
+	end
 
--- Startup Check
-task.wait(2) 
-updateMarker()
+	if clone:IsA("BillboardGui") or clone:IsA("SurfaceGui") then
+		return clone
+	end
+
+	return clone:FindFirstChildWhichIsA("BillboardGui", true)
+		or clone:FindFirstChildWhichIsA("SurfaceGui", true)
+end
+
+local function cleanupIndicator()
+	safeDisconnect(bounceConnection)
+	safeDisconnect(adorneeConnection)
+
+	bounceConnection = nil
+	adorneeConnection = nil
+
+	if currentIndicatorClone then
+		currentIndicatorClone:Destroy()
+	end
+
+	currentIndicatorClone = nil
+	currentGuiObject = nil
+	currentAdornee = nil
+end
+
+local function watchPlot(plot)
+	if currentWatchedPlot == plot then
+		return
+	end
+
+	safeDisconnect(plotDescendantAddedConnection)
+	safeDisconnect(plotDescendantRemovingConnection)
+
+	plotDescendantAddedConnection = nil
+	plotDescendantRemovingConnection = nil
+	currentWatchedPlot = plot
+
+	if not plot then
+		return
+	end
+
+	plotDescendantAddedConnection = plot.DescendantAdded:Connect(function()
+		task.delay(FAST_RETRY_INTERVAL, function()
+			refreshQueued = false
+			task.defer(function()
+				if script.Parent then
+					refreshQueued = true
+				end
+			end)
+		end)
+
+		task.delay(FAST_RETRY_INTERVAL, function()
+			if script.Parent then
+				refreshQueued = false
+				_G.__PlotMarkerForceRefresh = true
+			end
+		end)
+	end)
+
+	plotDescendantRemovingConnection = plot.DescendantRemoving:Connect(function(descendant)
+		if descendant == currentAdornee or descendant:IsAncestorOf(currentAdornee) then
+			task.delay(FAST_RETRY_INTERVAL, function()
+				if script.Parent then
+					cleanupIndicator()
+				end
+			end)
+		end
+	end)
+end
+
+-- Forward declaration.
+local requestRefresh
+
+local function createIndicator(adornee)
+	local template = ReplicatedStorage:FindFirstChild(INDICATOR_TEMPLATE_NAME)
+
+	if not template then
+		warnOnce(
+			"MissingTemplate",
+			"PlotMarker: Missing '" .. INDICATOR_TEMPLATE_NAME .. "' in ReplicatedStorage. Retrying until it appears."
+		)
+		return false
+	end
+
+	local playerGui = player:FindFirstChildOfClass("PlayerGui") or player:FindFirstChild("PlayerGui")
+
+	if not playerGui then
+		warnOnce("MissingPlayerGui", "PlotMarker: PlayerGui is not ready yet. Retrying.")
+		return false
+	end
+
+	local cloneSuccess, clone = pcall(function()
+		return template:Clone()
+	end)
+
+	if not cloneSuccess or not clone then
+		warnOnce("CloneFailed", "PlotMarker: Failed to clone '" .. INDICATOR_TEMPLATE_NAME .. "'. Retrying.")
+		return false
+	end
+
+	local guiObject = findGuiObject(clone)
+
+	if not guiObject then
+		clone:Destroy()
+		warnOnce(
+			"BadTemplate",
+			"PlotMarker: '" .. INDICATOR_TEMPLATE_NAME .. "' must be a BillboardGui/SurfaceGui or contain one."
+		)
+		return false
+	end
+
+	cleanupIndicator()
+
+	currentIndicatorClone = clone
+	currentGuiObject = guiObject
+	currentAdornee = adornee
+
+	pcall(function()
+		currentIndicatorClone.ResetOnSpawn = false
+	end)
+
+	pcall(function()
+		currentGuiObject.ResetOnSpawn = false
+	end)
+
+	currentGuiObject.Adornee = adornee
+	currentGuiObject.Enabled = true
+
+	if currentGuiObject:IsA("BillboardGui") then
+		currentGuiObject.AlwaysOnTop = true
+
+		local baseOffset = currentGuiObject.StudsOffset
+		currentGuiObject.StudsOffset = Vector3.new(baseOffset.X, HEIGHT_OFFSET, baseOffset.Z)
+
+		if ANIMATE_BOUNCE then
+			local t = 0
+
+			bounceConnection = RunService.RenderStepped:Connect(function(dt)
+				if not currentGuiObject or not currentGuiObject.Parent or not isUsableAdornee(currentAdornee) then
+					cleanupIndicator()
+					requestRefresh(RETRY_INTERVAL)
+					return
+				end
+
+				t += dt * BOUNCE_SPEED
+
+				local bounce = math.sin(t) * BOUNCE_HEIGHT
+				currentGuiObject.StudsOffset = Vector3.new(
+					baseOffset.X,
+					HEIGHT_OFFSET + bounce,
+					baseOffset.Z
+				)
+			end)
+		end
+	end
+
+	adorneeConnection = adornee.AncestryChanged:Connect(function()
+		if not isUsableAdornee(adornee) then
+			cleanupIndicator()
+			requestRefresh(FAST_RETRY_INTERVAL)
+		end
+	end)
+
+	currentIndicatorClone.Parent = playerGui
+
+	debugPrint("Indicator created on", adornee:GetFullName())
+
+	return true
+end
+
+local function refreshMarker()
+	local plotName = player:GetAttribute(OCCUPIED_PLOT_ATTRIBUTE)
+
+	if typeof(plotName) ~= "string" or plotName == "" then
+		cleanupIndicator()
+		watchPlot(nil)
+		requestRefresh(RETRY_INTERVAL)
+		return
+	end
+
+	local plot = TycoonFolder:FindFirstChild(plotName)
+
+	if not plot then
+		cleanupIndicator()
+		watchPlot(nil)
+		requestRefresh(RETRY_INTERVAL)
+		return
+	end
+
+	watchPlot(plot)
+
+	local adornee = findBestAdornee(plot)
+
+	if not adornee then
+		cleanupIndicator()
+		requestRefresh(RETRY_INTERVAL)
+		return
+	end
+
+	if currentIndicatorClone and currentIndicatorClone.Parent and currentAdornee == adornee then
+		return
+	end
+
+	local created = createIndicator(adornee)
+
+	if not created then
+		requestRefresh(RETRY_INTERVAL)
+	end
+end
+
+requestRefresh = function(delaySeconds)
+	if refreshQueued then
+		return
+	end
+
+	refreshQueued = true
+
+	task.delay(delaySeconds or 0, function()
+		refreshQueued = false
+
+		if not script.Parent then
+			return
+		end
+
+		local success, err = pcall(refreshMarker)
+
+		if not success then
+			warn("PlotMarker: Refresh failed safely, retrying. Error:", err)
+			cleanupIndicator()
+			requestRefresh(RETRY_INTERVAL)
+		end
+	end)
+end
+
+-- ============================================================================
+-- EVENT HOOKS
+-- ============================================================================
+
+player:GetAttributeChangedSignal(OCCUPIED_PLOT_ATTRIBUTE):Connect(function()
+	requestRefresh(0)
+end)
+
+TycoonFolder.ChildAdded:Connect(function()
+	requestRefresh(FAST_RETRY_INTERVAL)
+end)
+
+TycoonFolder.ChildRemoved:Connect(function(child)
+	local plotName = player:GetAttribute(OCCUPIED_PLOT_ATTRIBUTE)
+
+	if child and child.Name == plotName then
+		cleanupIndicator()
+		watchPlot(nil)
+		requestRefresh(RETRY_INTERVAL)
+	end
+end)
+
+ReplicatedStorage.ChildAdded:Connect(function(child)
+	if child.Name == INDICATOR_TEMPLATE_NAME then
+		requestRefresh(0)
+	end
+end)
+
+player.CharacterAdded:Connect(function()
+	requestRefresh(FAST_RETRY_INTERVAL)
+end)
+
+-- Initial startup attempts.
+requestRefresh(0)
+requestRefresh(RETRY_INTERVAL)
