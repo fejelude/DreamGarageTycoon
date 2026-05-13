@@ -18,15 +18,6 @@ local MAX_DISTANCE = 30 -- Max interaction distance
 
 local activeTransactions = {}
 
-local function getMainPart(obj)
-	if not obj then return nil end
-	if obj:IsA("BasePart") then return obj end
-	if obj:IsA("Model") then
-		return obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-	end
-	return nil
-end
-
 local function isPlayerNearLorraine(player)
 	local character = player.Character
 	if not character then return false, "Character not found." end
@@ -87,33 +78,6 @@ local function collectSellableInventoryTools(player)
 	return sellableTools
 end
 
-local function collectSellablePlacedCars(player)
-	local sellableCars = {}
-	local plotName = player:GetAttribute("OccupiedPlot")
-	local tycoons = workspace:FindFirstChild("Tycoons")
-	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
-	if not plot then return sellableCars end
-
-	for _, descendant in ipairs(plot:GetDescendants()) do
-		if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
-			local car = descendant.Value
-			if car.Parent and car:GetAttribute("OwnerUserId") == player.UserId then
-				local details = CarSellPrices.GetDetails(car.Name)
-				if details and details.SellPrice and details.SellPrice > 0 then
-					table.insert(sellableCars, {
-						Car = car,
-						LinkedCar = descendant,
-						PadPart = getMainPart(descendant.Parent),
-						SellPrice = details.SellPrice,
-					})
-				end
-			end
-		end
-	end
-
-	return sellableCars
-end
-
 local function clearStarterGearMirrors(player)
 	local starterGear = player:FindFirstChild("StarterGear")
 	if not starterGear then return end
@@ -121,30 +85,6 @@ local function clearStarterGearMirrors(player)
 		if getToolSellDetails(child) then
 			child:Destroy()
 		end
-	end
-end
-
-local function resetPlacedCarPad(entry)
-	local padPart = entry.PadPart
-	if not padPart then return end
-
-	local occupied = padPart:FindFirstChild("IsOccupied")
-	if occupied and occupied:IsA("BoolValue") then
-		occupied.Value = false
-	end
-
-	if entry.LinkedCar and entry.LinkedCar.Parent then
-		entry.LinkedCar.Value = nil
-	end
-
-	local placePrompt = padPart:FindFirstChild("PlacePrompt")
-	if placePrompt and placePrompt:IsA("ProximityPrompt") then
-		placePrompt.Enabled = true
-	end
-
-	local pickupPrompt = padPart:FindFirstChild("PickupPrompt")
-	if pickupPrompt and pickupPrompt:IsA("ProximityPrompt") then
-		pickupPrompt.Enabled = false
 	end
 end
 
@@ -158,15 +98,14 @@ SellFunction.OnServerInvoke = function(player, action)
 	end
 	activeTransactions[player.UserId] = true
 
-	local success, result, msg = pcall(function()
+	local success, result, msg, sellAmount, soldCount = pcall(function()
 		local nearLorraine, distanceMessage = isPlayerNearLorraine(player)
 		if not nearLorraine then
 			return false, distanceMessage
 		end
 
 		local toolsToSell = collectSellableInventoryTools(player)
-		local placedCarsToSell = collectSellablePlacedCars(player)
-		if #toolsToSell == 0 and #placedCarsToSell == 0 then
+		if #toolsToSell == 0 then
 			return false, "You do not have any cars to sell."
 		end
 
@@ -174,10 +113,6 @@ SellFunction.OnServerInvoke = function(player, action)
 		for _, entry in ipairs(toolsToSell) do
 			sellAmount += entry.SellPrice
 		end
-		for _, entry in ipairs(placedCarsToSell) do
-			sellAmount += entry.SellPrice
-		end
-
 		if sellAmount <= 0 then
 			return false, "Invalid sell amount."
 		end
@@ -195,18 +130,11 @@ SellFunction.OnServerInvoke = function(player, action)
 		end
 		clearStarterGearMirrors(player)
 
-		for _, entry in ipairs(placedCarsToSell) do
-			resetPlacedCarPad(entry)
-			if entry.Car and entry.Car.Parent then
-				entry.Car:Destroy()
-			end
-		end
-
 		wallet.Value += sellAmount
 		TycoonAdminAPI:Invoke("MarkInventoryCleared", player)
 
-		print("💰 Lorraine Sell All: " .. player.Name .. " sold " .. tostring(#toolsToSell + #placedCarsToSell) .. " cars for $" .. tostring(sellAmount))
-		return true, "Success", sellAmount, #toolsToSell + #placedCarsToSell
+		print("💰 Lorraine Sell All: " .. player.Name .. " sold " .. tostring(#toolsToSell) .. " cars for $" .. tostring(sellAmount))
+		return true, "Success", sellAmount, #toolsToSell
 	end)
 
 	if not success then
@@ -219,7 +147,7 @@ SellFunction.OnServerInvoke = function(player, action)
 		activeTransactions[player.UserId] = nil
 	end)
 
-	return result, msg
+	return result, msg, sellAmount, soldCount
 end
 
 Players.PlayerRemoving:Connect(function(player)
