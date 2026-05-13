@@ -1,0 +1,151 @@
+-- Purpose: Client-side multiplier label updater for every tycoon display.
+-- Runs on: LocalScript (StarterPlayerScripts)
+-- Notes: Updates only Multiplier.MultiplierLabel.Text so existing label styling stays untouched.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
+local BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats"))
+
+local LOCAL_PLAYER = Players.LocalPlayer
+local TYCOON_FOLDER_NAME = "Tycoons"
+local MULTIPLIER_FOLDER_NAME = "Multiplier"
+local MULTIPLIER_LABEL_NAME = "MultiplierLabel"
+local EXPECTED_TYCOON_COUNT = 6
+
+local connections = {}
+
+local function disconnectTrackedConnections()
+	for _, connection in ipairs(connections) do
+		connection:Disconnect()
+	end
+	table.clear(connections)
+end
+
+local function formatMultiplier(multiplier)
+	multiplier = tonumber(multiplier) or RankConfig.DefaultResourceMultiplier
+
+	if math.abs(multiplier - math.floor(multiplier)) < 0.001 then
+		return tostring(math.floor(multiplier)) .. "x"
+	end
+
+	return string.format("%.2fx", multiplier):gsub("0+x$", "x"):gsub("%.x$", "x")
+end
+
+local function getSavedRankMultiplier()
+	local attributeMultiplier = tonumber(LOCAL_PLAYER:GetAttribute("RankResourceMultiplier"))
+	if attributeMultiplier then
+		return attributeMultiplier
+	end
+
+	local savedRank = LOCAL_PLAYER:GetAttribute("Rank") or RankConfig.DefaultRankName
+	return RankConfig.GetBenefitsForRank(savedRank).Multiplier
+end
+
+local function getSavedSkinMultiplier()
+	local equippedSkin = LOCAL_PLAYER:GetAttribute("EquippedSkin")
+	local skinStats = equippedSkin and BaseSkinStats[equippedSkin]
+
+	return skinStats and tonumber(skinStats.Multiplier) or 1
+end
+
+local function getActiveFriendMultiplier()
+	return tonumber(LOCAL_PLAYER:GetAttribute("FriendMultiplier")) or 1
+end
+
+local function getPremiumMultiplier()
+	return LOCAL_PLAYER.MembershipType == Enum.MembershipType.Premium and 1.5 or 1
+end
+
+local function getActualEarningsMultiplier()
+	-- Mirrors TycoonEconomy's multiplier stack: friends, Premium, equipped base skin, then saved rank.
+	return getActiveFriendMultiplier() * getPremiumMultiplier() * getSavedSkinMultiplier() * getSavedRankMultiplier()
+end
+
+local function updateLabel(label, multiplierText)
+	if label and label:IsA("TextLabel") then
+		label.Text = multiplierText
+	end
+end
+
+local function updateTycoonMultiplierDisplay(tycoon, multiplierText)
+	local multiplierFolder = tycoon:FindFirstChild(MULTIPLIER_FOLDER_NAME)
+	if not multiplierFolder then return end
+
+	updateLabel(multiplierFolder:FindFirstChild(MULTIPLIER_LABEL_NAME), multiplierText)
+end
+
+local function updateAllTycoonMultiplierDisplays()
+	local tycoons = Workspace:FindFirstChild(TYCOON_FOLDER_NAME)
+	if not tycoons then return end
+
+	local multiplierText = formatMultiplier(getActualEarningsMultiplier())
+
+	for tycoonNumber = 1, EXPECTED_TYCOON_COUNT do
+		local tycoon = tycoons:FindFirstChild("Tycoon" .. tycoonNumber)
+		if tycoon then
+			updateTycoonMultiplierDisplay(tycoon, multiplierText)
+		end
+	end
+end
+
+local function watchMultiplierLabels()
+	disconnectTrackedConnections()
+
+	local tycoons = Workspace:FindFirstChild(TYCOON_FOLDER_NAME)
+	if not tycoons then return end
+
+	for tycoonNumber = 1, EXPECTED_TYCOON_COUNT do
+		local tycoon = tycoons:FindFirstChild("Tycoon" .. tycoonNumber)
+		if tycoon then
+			table.insert(connections, tycoon.ChildAdded:Connect(function(child)
+				if child.Name == MULTIPLIER_FOLDER_NAME then
+					task.defer(watchMultiplierLabels)
+					task.defer(updateAllTycoonMultiplierDisplays)
+				end
+			end))
+
+			local multiplierFolder = tycoon:FindFirstChild(MULTIPLIER_FOLDER_NAME)
+			if multiplierFolder then
+				table.insert(connections, multiplierFolder.ChildAdded:Connect(function(child)
+					if child.Name == MULTIPLIER_LABEL_NAME then
+						task.defer(updateAllTycoonMultiplierDisplays)
+					end
+				end))
+			end
+		end
+	end
+end
+
+LOCAL_PLAYER:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(updateAllTycoonMultiplierDisplays)
+LOCAL_PLAYER:GetAttributeChangedSignal("Rank"):Connect(updateAllTycoonMultiplierDisplays)
+LOCAL_PLAYER:GetAttributeChangedSignal("EquippedSkin"):Connect(updateAllTycoonMultiplierDisplays)
+LOCAL_PLAYER:GetAttributeChangedSignal("FriendMultiplier"):Connect(updateAllTycoonMultiplierDisplays)
+
+local rankRemotes = ReplicatedStorage:FindFirstChild("RankRemotes")
+local rankUpdate = rankRemotes and rankRemotes:FindFirstChild("RankUpdate")
+if rankUpdate and rankUpdate:IsA("RemoteEvent") then
+	rankUpdate.OnClientEvent:Connect(updateAllTycoonMultiplierDisplays)
+end
+
+local tycoons = Workspace:FindFirstChild(TYCOON_FOLDER_NAME)
+if tycoons then
+	tycoons.ChildAdded:Connect(function(child)
+		if child.Name:match("^Tycoon%d+$") then
+			watchMultiplierLabels()
+			task.defer(updateAllTycoonMultiplierDisplays)
+		end
+	end)
+else
+	Workspace.ChildAdded:Connect(function(child)
+		if child.Name == TYCOON_FOLDER_NAME then
+			watchMultiplierLabels()
+			task.defer(updateAllTycoonMultiplierDisplays)
+		end
+	end)
+end
+
+watchMultiplierLabels()
+updateAllTycoonMultiplierDisplays()

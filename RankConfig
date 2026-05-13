@@ -125,9 +125,17 @@ function RankConfig.PlayerCanAccessShop(playerRank, shopName)
 end
 
 function RankConfig.GetTotalStorageForRank(rankName)
-	local rank = RankConfig.Ranks[rankName]
-	local extraStorage = rank and rank.Benefits and rank.Benefits.ExtraStorage or 0
-	return RankConfig.BaseStorageSlots + extraStorage
+	local totalStorage = RankConfig.BaseStorageSlots
+	local rankValue = RankConfig.GetRankValue(rankName)
+
+	for _, orderedRank in ipairs(RankConfig.Order) do
+		local rank = RankConfig.Ranks[orderedRank]
+		if rank and RankConfig.GetRankValue(orderedRank) <= rankValue then
+			totalStorage += tonumber(rank.Benefits.ExtraStorage) or 0
+		end
+	end
+
+	return totalStorage
 end
 
 function RankConfig.GetBenefitsForRank(rankName)
