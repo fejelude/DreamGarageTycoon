@@ -7,6 +7,7 @@ local Workspace = game:GetService("Workspace")
 
 local LOCAL_PLAYER = Players.LocalPlayer
 local TYCOON_FOLDER_NAME = "Tycoons"
+local OWNER_VALUE_NAME = "Owner"
 local MULTIPLIER_PART_NAME = "Multiplier"
 local MULTIPLIER_GUI_NAME = "Multiplier"
 local MULTIPLIER_LABEL_NAME = "MultiplierLabel"
@@ -71,7 +72,13 @@ local function getMultiplierLabel(tycoon)
 	return multiplierGui:FindFirstChild(MULTIPLIER_LABEL_NAME)
 end
 
-local function updateTycoonMultiplierDisplay(tycoon, multiplierText)
+local function isTycoonVacant(tycoon)
+	local ownerValue = tycoon:FindFirstChild(OWNER_VALUE_NAME)
+	return not ownerValue or tostring(ownerValue.Value or "") == ""
+end
+
+local function updateTycoonMultiplierDisplay(tycoon, occupiedMultiplierText)
+	local multiplierText = isTycoonVacant(tycoon) and "0x" or occupiedMultiplierText
 	updateLabel(getMultiplierLabel(tycoon), multiplierText)
 end
 
@@ -102,8 +109,16 @@ local function watchMultiplierLabels()
 				if child.Name == MULTIPLIER_PART_NAME then
 					task.defer(watchMultiplierLabels)
 					task.defer(updateAllTycoonMultiplierDisplays)
+				elseif child.Name == OWNER_VALUE_NAME then
+					task.defer(watchMultiplierLabels)
+					task.defer(updateAllTycoonMultiplierDisplays)
 				end
 			end))
+
+			local ownerValue = tycoon:FindFirstChild(OWNER_VALUE_NAME)
+			if ownerValue then
+				table.insert(connections, ownerValue:GetPropertyChangedSignal("Value"):Connect(updateAllTycoonMultiplierDisplays))
+			end
 
 			local multiplierPart = tycoon:FindFirstChild(MULTIPLIER_PART_NAME)
 			if multiplierPart then
