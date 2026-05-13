@@ -118,6 +118,41 @@ local function GetSkinMultiplier(player)
 	return 1 -- Default (No Boost)
 end
 
+local function GetActualEarningsMultiplier(player)
+	if not player then return 1 end
+
+	local friendMultiplier = tonumber(player:GetAttribute("FriendMultiplier")) or 1
+	local premiumMultiplier = player.MembershipType == Enum.MembershipType.Premium and 1.5 or 1
+	local skinMultiplier = GetSkinMultiplier(player)
+	local rankMultiplier = tonumber(player:GetAttribute("RankResourceMultiplier")) or 1
+
+	return (((friendMultiplier * premiumMultiplier) * skinMultiplier) * rankMultiplier)
+end
+
+local function RefreshActualEarningsMultiplier(player)
+	if not player then return end
+	player:SetAttribute("ActualEarningsMultiplier", GetActualEarningsMultiplier(player))
+end
+
+local function watchEarningsMultiplierAttributes(player)
+	RefreshActualEarningsMultiplier(player)
+
+	player:GetAttributeChangedSignal("FriendMultiplier"):Connect(function()
+		RefreshActualEarningsMultiplier(player)
+	end)
+	player:GetAttributeChangedSignal("EquippedSkin"):Connect(function()
+		RefreshActualEarningsMultiplier(player)
+	end)
+	player:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(function()
+		RefreshActualEarningsMultiplier(player)
+	end)
+end
+
+Players.PlayerAdded:Connect(watchEarningsMultiplierAttributes)
+for _, player in ipairs(Players:GetPlayers()) do
+	watchEarningsMultiplierAttributes(player)
+end
+
 -- ============================================================================
 -- 💰 MAIN ECONOMY LOOP
 -- ============================================================================
@@ -211,35 +246,19 @@ task.spawn(function()
 					plotTotalCPS = plotTotalCPS + processPadsInFolder(activeLevelFolder:FindFirstChild("Pads")) 
 				end
 
-				-- 2. Apply Multipliers (Friends + Premium + Skins)
-				local friendMultiplier = 1
-				local premiumMultiplier = 1
-				local skinMultiplier = 1
-				local rankMultiplier = 1
+				-- 2. Apply the player's actual earnings multiplier.
+				-- Multiplier order is centralized in GetActualEarningsMultiplier so map displays and payouts stay in sync.
+				local actualEarningsMultiplier = 1
 
 				if ownerValue and ownerValue.Value ~= "" then
 					local player = Players:FindFirstChild(ownerValue.Value)
 					if player then
-						-- A. Friend Bonus
-						local bonus = player:GetAttribute("FriendMultiplier")
-						if bonus then friendMultiplier = bonus end
-
-						-- B. Premium Bonus
-						if player.MembershipType == Enum.MembershipType.Premium then
-							premiumMultiplier = 1.5 -- +50% bonus
-						end
-
-						-- C. Skin Bonus (Gold Upgrade) ✅ NEW
-						skinMultiplier = GetSkinMultiplier(player)
-
-						-- D. Rank milestone bonus (VIP through MVP++)
-						rankMultiplier = tonumber(player:GetAttribute("RankResourceMultiplier")) or 1
+						actualEarningsMultiplier = GetActualEarningsMultiplier(player)
+						player:SetAttribute("ActualEarningsMultiplier", actualEarningsMultiplier)
 					end
 				end
 
-				-- Apply the bonuses: ((((Base * Friend) * Premium) * Skin) * Rank)
-				-- Example: ((((100 CPS * 1.5 Friend) * 1.5 Premium) * 1.25 Gold) * 2 VIP)
-				plotTotalCPS = (((plotTotalCPS * friendMultiplier) * premiumMultiplier) * skinMultiplier) * rankMultiplier
+				plotTotalCPS = plotTotalCPS * actualEarningsMultiplier
 
 				-- Update attribute so TabletHandler sees the Boosted CPS (before AFK)
 				plot:SetAttribute("CurrentCPS", plotTotalCPS)
