@@ -137,6 +137,7 @@ local buttonHoverConnections = {}
 local hiddenGuis = {}
 local hiddenObjects = {}
 local promptDebounce = false  -- 🔒 Prevents duplicate ProximityPrompt triggers
+local deferredShopUiToClose = nil
 
 local function getControls()
 	local PlayerModule = player.PlayerScripts:WaitForChild("PlayerModule", math.huge)
@@ -176,7 +177,7 @@ local function toggleOtherGuis(shouldHide)
 		if #hiddenGuis > 0 then return end
 		hiddenGuis = {}
 		for _, otherGui in pairs(playerGui:GetDescendants()) do
-			if otherGui:IsA("ScreenGui") and otherGui.Name ~= GUI_ID and otherGui.Enabled == true and otherGui.Name ~= "Balance Indicator" then
+			if otherGui:IsA("ScreenGui") and otherGui.Name ~= GUI_ID and otherGui.Enabled == true and otherGui.Name ~= "Balance Indicator" and not otherGui:GetAttribute("NPCReactionKeepEnabled") then
 				otherGui.Enabled = false
 				table.insert(hiddenGuis, otherGui)
 			end
@@ -279,6 +280,30 @@ local function getRandomDialogue(poolKey, optionalCarId, optionalCPS)
 	return rawText
 end
 
+local function beginPostPurchaseShopHandoff()
+	local shopUi = playerGui:FindFirstChild("RareShopUi")
+	if not shopUi then return end
+
+	-- Keep the shop ScreenGui enabled during the NPC reaction so its own
+	-- Enabled watcher does not briefly restore HUDs/blur and cause a visual flicker.
+	shopUi:SetAttribute("NPCReactionKeepEnabled", true)
+	deferredShopUiToClose = shopUi
+
+	local shopFrame = shopUi:FindFirstChild("MainFrame")
+	if shopFrame and shopFrame:IsA("GuiObject") then
+		shopFrame.Visible = false
+	end
+end
+
+local function finishPostPurchaseShopHandoff()
+	local shopUi = deferredShopUiToClose
+	deferredShopUiToClose = nil
+	if not shopUi or not shopUi.Parent then return end
+
+	shopUi:SetAttribute("NPCReactionKeepEnabled", nil)
+	shopUi.Enabled = false
+end
+
 local function stopInteraction()
 	if not isInteracting then return end
 	isInteracting = false
@@ -286,6 +311,7 @@ local function stopInteraction()
 
 	if currentDialogueJob then pcall(task.cancel, currentDialogueJob) end
 	clearConnections()
+	finishPostPurchaseShopHandoff()
 	setFocusMode(false)
 
 	local controls = getControls()
@@ -440,15 +466,16 @@ end
 -- 📣 POST-PURCHASE REACTION EVENT LOGIC
 -- ============================================================================
 purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipientName, giftSenderName)
-	-- FIX: 0.8s delay before NPC speaks after purchase
-	task.wait(0.8)
-
 	local carData = CarStats.Cars[carId]
 	if not carData then return end
 
-	-- 🛡️ [POLISH] Close Shop UI immediately so it doesn't overlap
-	local shopUi = playerGui:FindFirstChild("RareShopUi")
-	if shopUi then shopUi.Enabled = false end
+	-- 🛡️ [POLISH] Hide the shop frame immediately without triggering its full
+	-- close/reset yet; the NPC reaction keeps the focus layer alive.
+	beginPostPurchaseShopHandoff()
+
+	-- Keep the intentional beat before the NPC speaks, without leaving the shop
+	-- frame visible long enough to flicker over the dialogue transition.
+	task.wait(0.8)
 
 	-- 🛡️ [POLISH] Refresh camera reference to prevent stale object bugs
 	local camera = Workspace.CurrentCamera
@@ -489,6 +516,7 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipi
 	else
 		-- Safety: couldn't find GUI, abort gracefully
 		isInteracting = false
+		finishPostPurchaseShopHandoff()
 		setFocusMode(false)
 	end
 end)
