@@ -2,36 +2,35 @@
 -- Runs on: Shared ModuleScript (ReplicatedStorage.RankConfig)
 -- Notes: Edit this file to add ranks, requirements, benefits, and announcement styling.
 
-local RankConfig = {}
+local RankConfig = {
+	BaseStorageSlots = 5,
+	DefaultResourceMultiplier = 1,
+	DefaultRankName = "Player",
+	-- DefaultWithdrawalLimit intentionally stays nil so banking uses its existing default.
 
-RankConfig.BaseStorageSlots = 5
-RankConfig.DefaultResourceMultiplier = 1
-RankConfig.DefaultRankName = "Player"
-RankConfig.DefaultWithdrawalLimit = nil -- nil means use the banking system's existing default.
+	Order = { "VIP", "VIP+", "MVP", "MVP+", "MVP++" },
 
-RankConfig.Order = { "VIP", "VIP+", "MVP", "MVP+", "MVP++" }
+	ShopRequirements = {
+		Common = nil,
+		Uncommon = "VIP",
+		Rare = "VIP+",
+		Epic = "MVP",
+		Legendary = "MVP+",
+		Mythical = "MVP++",
+		Mythic = "MVP++",
+	},
 
-RankConfig.ShopRequirements = {
-	Common = nil,
-	Uncommon = "VIP",
-	Rare = "VIP+",
-	Epic = "MVP",
-	Legendary = "MVP+",
-	Mythical = "MVP++",
-	Mythic = "MVP++",
-}
+	Values = {
+		Player = 0,
+		VIP = 1,
+		["VIP+"] = 2,
+		MVP = 3,
+		["MVP+"] = 4,
+		["MVP++"] = 5,
+	},
 
-RankConfig.Values = {
-	Player = 0,
-	VIP = 1,
-	["VIP+"] = 2,
-	MVP = 3,
-	["MVP+"] = 4,
-	["MVP++"] = 5,
-}
-
-RankConfig.Ranks = {
-	VIP = {
+	Ranks = {
+		VIP = {
 		PreviousRank = nil,
 		Requirements = {
 			{ Id = "Requirement1", Type = "Buy", Car = "Diva", Shop = "Common", Amount = 1 },
@@ -101,6 +100,7 @@ RankConfig.Ranks = {
 			Template = "👑⚡ <font color='#FFFFFF'><b>SERVER LEGEND:</b></font> <font color='#FF3D00'><b>{DisplayName}</b></font> has reached <font color='#FFD700'><b>MVP++</b></font>! <font color='#B388FF'><b>The ultimate Dream Garage milestone has been conquered!</b></font> ⚡👑",
 		},
 	},
+	},
 }
 
 function RankConfig.NormalizeCarName(name)
@@ -125,9 +125,17 @@ function RankConfig.PlayerCanAccessShop(playerRank, shopName)
 end
 
 function RankConfig.GetTotalStorageForRank(rankName)
-	local rank = RankConfig.Ranks[rankName]
-	local extraStorage = rank and rank.Benefits and rank.Benefits.ExtraStorage or 0
-	return RankConfig.BaseStorageSlots + extraStorage
+	local totalStorage = RankConfig.BaseStorageSlots
+	local rankValue = RankConfig.GetRankValue(rankName)
+
+	for _, orderedRank in ipairs(RankConfig.Order) do
+		local rank = RankConfig.Ranks[orderedRank]
+		if rank and RankConfig.GetRankValue(orderedRank) <= rankValue then
+			totalStorage += tonumber(rank.Benefits.ExtraStorage) or 0
+		end
+	end
+
+	return totalStorage
 end
 
 function RankConfig.GetBenefitsForRank(rankName)
