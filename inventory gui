@@ -44,6 +44,21 @@
 -- FIX #28 CarInfoLabel inside each hotbar slot now displays the car's
 --         base CPS from CarStats. Formatted as +5M$/s, +833.7K$/s, etc.
 -- ============================================================
+-- FIX LOG (v6 — Mobile-Safe Inventory)
+-- FIX #29 Removed destructive mobile long-press clear on hotbar slots.
+--         Touch hold no longer removes cars. Use right-click/gamepad/drag
+--         to inventory for intentional clearing.
+-- FIX #30 Inventory item source buttons are never hidden at drag start.
+--         This prevents mobile long-press/touch-cancel from making an item
+--         look like it disappeared from the inventory.
+-- FIX #31 Inventory renders no longer skip the currently dragged car.
+--         Display count remains authoritative and visible unless a drop
+--         actually succeeds.
+-- FIX #32 Hotbar drags no longer clear hotbarData before the drop is
+--         confirmed. Failed/cancelled mobile drags cannot lose slot data.
+-- FIX #33 endDrag() performs a final safe visual refresh so cancelled
+--         drags recover immediately.
+-- ============================================================
 
 -- Services
 local Players          = game:GetService("Players")
@@ -287,6 +302,11 @@ local function endDrag(success)
 	if hotbarScrollFrame then
 		hotbarScrollFrame.ScrollingEnabled = true
 	end
+
+	-- FIX #33: cancelled drags should repaint immediately so mobile touch
+	-- cancellations cannot leave a dimmed/hidden visual behind.
+	if updateHotbarUI then updateHotbarUI() end
+	if isOpen and renderCurrentTab then renderCurrentTab() end
 end
 
 local function getSlotAtPosition(screenPos)
@@ -705,17 +725,19 @@ local function startDrag(carName, iconImage, startPos, itemCount, sourceType, so
 	dragSourceSlot   = sourceSlot
 	dragSourceButton = sourceBtn
 
-	-- FIX #12: Hide the source immediately so no ghost remains
+	-- FIX #30: Never hide the inventory source button on mobile.
+	-- A cancelled/touch-interrupted drag can otherwise leave the item looking
+	-- like it disappeared. The drag icon already communicates movement.
 	if dragSourceType == "inventory" and dragSourceButton then
-		dragSourceButton.Visible = false
+		dragSourceButton.Visible = true
 	elseif dragSourceType == "hotbar" and dragSourceSlot and slotsFolder then
-		-- hotbarData[srcSlot] was already cleared by the slot init code.
-		-- Just dim the slot visually during the drag.
+		-- FIX #32: hotbarData is NOT cleared before a confirmed drop.
+		-- Only dim the slot visually while dragging.
 		local srcSlotBtn = slotsFolder:FindFirstChild("Slot" .. dragSourceSlot)
 		if srcSlotBtn then
-			srcSlotBtn.ImageTransparency = 0.85
-			local nl = srcSlotBtn:FindFirstChild("__SlotName")
-			if nl then nl.Visible = false end
+			srcSlotBtn.ImageTransparency = 0.35
+			local nl = srcSlotBtn:FindFirstChild("CarName") or srcSlotBtn:FindFirstChild("__SlotName")
+			if nl then nl.Visible = true end
 		end
 	end
 
@@ -1391,11 +1413,9 @@ function renderCurrentTab()
 	local renderedAny = false
 
 	for carName, count in pairs(counts) do
-		-- FIX #18: skip the item currently being dragged from inventory so it
-		-- never ghosts back into view during a mid-drag re-render.
-		if draggingCar == carName and dragSourceType == "inventory" then
-			continue
-		end
+		-- FIX #31: Do NOT skip the currently dragged inventory car.
+		-- On mobile, a touch-cancel can interrupt drag cleanup; keeping the
+		-- authoritative display count visible prevents false disappearance.
 
 		local assignedCount = 0
 		for i = 1, SLOT_COUNT do
@@ -1786,13 +1806,14 @@ if slotsFolder then
 				local startPos = input.Position
 				isDragging     = false
 
-				-- FIX #24: Long-press clear (touch only — 0.65s hold without movement)
+				-- FIX #29: Mobile long-press must NEVER clear/remove a car.
+				-- Keep a harmless hold timer only to absorb long-tap state; clearing
+				-- remains available through PC right-click, gamepad ButtonX, or
+				-- dragging a hotbar car back into the open inventory frame.
 				if isTouch then
 					holdThread = task.delay(0.65, function()
-						if not isDragging then
-							holdThread = nil
-							clearSlot(i)
-						end
+						holdThread = nil
+						-- intentionally no clearSlot(i) here
 					end)
 				end
 
@@ -1816,9 +1837,8 @@ if slotsFolder then
 						local carName = hotbarData[i]
 						if carName and CarStats and CarStats.Cars and CarStats.Cars[carName] then
 							local stats = CarStats.Cars[carName]
-							-- FIX #12: clear hotbarData BEFORE startDrag so endDrag(false)
-							-- can restore via draggingCar.
-							hotbarData[i] = nil
+							-- FIX #32: do not clear hotbarData here. Only mutate data
+							-- inside the drop handler after success is confirmed.
 							startDrag(
 								carName,
 								stats.Image or CONFIG.Images.Default,
@@ -1905,3 +1925,4 @@ if tierContainer then
 		end
 	end
 end
+
