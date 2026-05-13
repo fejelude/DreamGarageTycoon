@@ -12,12 +12,12 @@ local Workspace = game:GetService("Workspace")
 local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local ProximityPromptService = game:GetService("ProximityPromptService")
 
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 local CarSellPrices = require(ReplicatedStorage:WaitForChild("CarSellPrices"))
 
 local player = Players.LocalPlayer
-local camera = Workspace.CurrentCamera
 local playerGui = player:WaitForChild("PlayerGui")
 
 print("🌸 [LorraineDebug] Script Initializing...")
@@ -25,30 +25,41 @@ print("🌸 [LorraineDebug] Script Initializing...")
 -- ============================================================================
 -- 🆔 UNIQUE IDENTIFIERS
 -- ============================================================================
+
 local GUI_ID = "UI_NPC_Lorraine"
 local CONTAINER_ID = "UI_NPC_Lorraine_Frame_Container"
 local TEXT_ID = "Text_Lorraine_Dialogue"
-local BUTTONS_FOLDER = "Buttons"
+local BUTTONS_FRAME_ID = "Buttons"
 
 local BTN_SELL_EVERYTHING_ID = "Btn_SellEverything"
 local BTN_LEAVE_ID = "Btn_Leave"
-local ALL_BUTTON_IDS = {BTN_SELL_EVERYTHING_ID, BTN_LEAVE_ID}
 
 local TARGET_NPC = "Lorraine"
 local CAMERA_PART = "CameraAimPart"
 local PROMPT_NAME = "TalkPrompt"
 
-local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+-- ============================================================================
+-- ⚙️ SETTINGS
+-- ============================================================================
+
+local CAMERA_TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TYPEWRITER_SPEED = 0.02
-local LEAVE_DELAY = 3.5
+local DIALOGUE_PAUSE = 1
+local LEAVE_DELAY = 1.5
 
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
 
-local HOVER_SCALE = 1.1
-local CLICK_SCALE = 0.9
-local ANIM_SPEED = 0.1
+-- Darrel-style button feedback.
+local HOVER_SCALE = 1.05
+local CLICK_SCALE = 0.95
+local NORMAL_SCALE = 1
+local BUTTON_TWEEN_INFO = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 
-local CONFIRMATION_COLORS = { Sacrifice = "#ff5757", Target = "#63b3ff", Accent = "#f4efe6" }
+local CONFIRMATION_COLORS = {
+	Sacrifice = "#ff5757",
+	Target = "#63b3ff",
+	Accent = "#f4efe6",
+}
 
 local DIALOGUE = {
 	Greeting = "Welcome, darling. I can buy every car in your inventory at once, including any cars currently placed in your garage.",
@@ -62,74 +73,284 @@ local DIALOGUE = {
 -- ============================================================================
 -- 🛠️ STATE VARIABLES
 -- ============================================================================
+
 local isInteracting = false
 local isLeaving = false
 local isProcessingSell = false
+local promptDebounce = false
+
 local currentDialogueJob = nil
 local buttonConnections = {}
 local buttonHoverConnections = {}
 local confirmConnections = {}
 local hiddenGuis = {}
 local hiddenObjects = {}
-local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
 
+local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
 local SellFunction = ReplicatedStorage:WaitForChild("LorraineSellFunction")
 
 -- ============================================================================
--- 🔒 FORCE HIDE UI ON LOAD
+-- 🔎 WRAPPER-SAFE UI HELPERS
 -- ============================================================================
-task.spawn(function()
-	local myGui = playerGui:WaitForChild(GUI_ID, 10)
-	if myGui then
-		myGui.Enabled = false
-		local container = myGui:FindFirstChild(CONTAINER_ID, true)
-		if container then container.Visible = false end
+
+local function resolveButtonPair(root, objectName)
+	if not root then
+		return nil, nil
 	end
-end)
 
--- ============================================================================
--- 🎬 INTERACTION FUNCTIONS
--- ============================================================================
-local function setButtonsState(isActive)
-	local myGui = playerGui:FindFirstChild(GUI_ID)
-	if not myGui then return end
-	local container = myGui:FindFirstChild(CONTAINER_ID, true)
-	if not container then return end
-	local buttons = container:FindFirstChild(BUTTONS_FOLDER)
-	if not buttons then return end
+	local visualObject = root:FindFirstChild(objectName, true)
+	if not visualObject then
+		return nil, nil
+	end
 
-	for _, btnID in ipairs(ALL_BUTTON_IDS) do
-		local btn = buttons:FindFirstChild(btnID, true)
-		if btn then
-			btn.Visible = isActive
-			btn.Active = isActive
+	if visualObject:IsA("GuiButton") then
+		return visualObject, visualObject
+	end
+
+	for _, descendant in ipairs(visualObject:GetDescendants()) do
+		if descendant:IsA("GuiButton") then
+			return visualObject, descendant
 		end
 	end
+
+	return visualObject, nil
+end
+
+local function getUIElements()
+	local myGui = playerGui:FindFirstChild(GUI_ID)
+	if not myGui then
+		return nil
+	end
+
+	local container = myGui:FindFirstChild(CONTAINER_ID, true)
+	if not container then
+		return myGui, nil
+	end
+
+	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
+	local buttonsFrame = container:FindFirstChild(BUTTONS_FRAME_ID, true)
+
+	local sellVisual, sellButton = resolveButtonPair(buttonsFrame, BTN_SELL_EVERYTHING_ID)
+	local leaveVisual, leaveButton = resolveButtonPair(buttonsFrame, BTN_LEAVE_ID)
+
+	return myGui, container, dialogueLabel, buttonsFrame, sellVisual, sellButton, leaveVisual, leaveButton
+end
+
+local function getOrCreateUIScale(guiObject)
+	if not guiObject or not guiObject:IsA("GuiObject") then
+		return nil
+	end
+
+	local uiScale = guiObject:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = NORMAL_SCALE
+		uiScale.Parent = guiObject
+	end
+
+	return uiScale
+end
+
+local function resetVisualScale(visualObject)
+	local uiScale = getOrCreateUIScale(visualObject)
+	if not uiScale then
+		return
+	end
+
+	TweenService:Create(uiScale, TweenInfo.new(0.12, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+		Scale = NORMAL_SCALE,
+	}):Play()
+end
+
+local function setButtonPairState(visualObject, realButton, isActive)
+	if visualObject and visualObject:IsA("GuiObject") then
+		visualObject.Visible = isActive
+
+		if not isActive then
+			resetVisualScale(visualObject)
+		end
+	end
+
+	if realButton and realButton:IsA("GuiButton") then
+		realButton.Active = isActive
+		realButton.AutoButtonColor = false
+
+		pcall(function()
+			realButton.Interactable = isActive
+		end)
+	end
+end
+
+local function setButtonsState(isActive)
+	local _, _, _, buttonsFrame, sellVisual, sellButton, leaveVisual, leaveButton = getUIElements()
+
+	-- The whole holder is hidden first/last.
+	-- This prevents Sell Everything from flashing before Leave.
+	if buttonsFrame and buttonsFrame:IsA("GuiObject") then
+		buttonsFrame.Visible = isActive
+	end
+
+	-- Apply both button states while holder is hidden/shown together.
+	setButtonPairState(leaveVisual, leaveButton, isActive)
+	setButtonPairState(sellVisual, sellButton, isActive)
 end
 
 local function clearConnections()
 	for _, conn in pairs(buttonConnections) do
-		if conn then conn:Disconnect() end
+		if conn then
+			conn:Disconnect()
+		end
 	end
 	buttonConnections = {}
+
 	for _, conn in pairs(buttonHoverConnections) do
-		if conn then conn:Disconnect() end
+		if conn then
+			conn:Disconnect()
+		end
 	end
 	buttonHoverConnections = {}
 
-	-- Reset HoverBound attribute so effects re-bind on next interaction
-	local myGui = playerGui:FindFirstChild(GUI_ID)
-	if myGui then
-		for _, btnID in ipairs(ALL_BUTTON_IDS) do
-			local btn = myGui:FindFirstChild(btnID, true)
-			if btn then btn:SetAttribute("HoverBound", nil) end
+	local _, container = getUIElements()
+	if container then
+		for _, descendant in ipairs(container:GetDescendants()) do
+			if descendant:IsA("GuiObject") then
+				descendant:SetAttribute("HoverBound", nil)
+
+				local uiScale = descendant:FindFirstChildOfClass("UIScale")
+				if uiScale then
+					uiScale.Scale = NORMAL_SCALE
+				end
+			end
 		end
 	end
 end
 
+-- ============================================================================
+-- 🎧 DARREL-STYLE BUTTON HOVER / CLICK FEEDBACK
+-- ============================================================================
+
+local function animateButton(visualObject, realButton)
+	if not visualObject or not realButton then
+		return
+	end
+
+	if not visualObject:IsA("GuiObject") or not realButton:IsA("GuiButton") then
+		return
+	end
+
+	if visualObject:GetAttribute("HoverBound") then
+		return
+	end
+
+	visualObject:SetAttribute("HoverBound", true)
+
+	local uiScale = getOrCreateUIScale(visualObject)
+	if not uiScale then
+		return
+	end
+
+	local isHovering = false
+	local isPressed = false
+
+	local function updateScale()
+		local targetScale = NORMAL_SCALE
+
+		if isPressed then
+			targetScale = CLICK_SCALE
+		elseif isHovering then
+			targetScale = HOVER_SCALE
+		end
+
+		TweenService:Create(uiScale, BUTTON_TWEEN_INFO, {
+			Scale = targetScale,
+		}):Play()
+	end
+
+	table.insert(buttonHoverConnections, realButton.MouseEnter:Connect(function()
+		if not realButton.Active then
+			return
+		end
+
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end))
+
+	table.insert(buttonHoverConnections, realButton.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed = false
+		updateScale()
+	end))
+
+	table.insert(buttonHoverConnections, realButton.InputBegan:Connect(function(input)
+		if not realButton.Active then
+			return
+		end
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+
+			isPressed = true
+			updateScale()
+		end
+	end))
+
+	table.insert(buttonHoverConnections, realButton.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+
+			isPressed = false
+
+			-- On mobile, MouseEnter/MouseLeave may not behave the same way.
+			-- This gives touch users the clean press-and-release animation.
+			if UserInputService.TouchEnabled then
+				isHovering = false
+			end
+
+			updateScale()
+		end
+	end))
+end
+
+local function bindDialogueButton(visualObject, realButton, callback)
+	if not visualObject or not realButton then
+		return
+	end
+
+	if not realButton:IsA("GuiButton") then
+		return
+	end
+
+	animateButton(visualObject, realButton)
+
+	local fired = false
+
+	local conn = realButton.Activated:Connect(function()
+		if fired or not realButton.Active then
+			return
+		end
+
+		fired = true
+
+		UIAudioConfig.PlayClick()
+		setButtonsState(false)
+
+		callback()
+	end)
+
+	table.insert(buttonConnections, conn)
+end
+
+-- ============================================================================
+-- 👁️ FOCUS MODE / HUD HIDING
+-- ============================================================================
+
 local function toggleNamedGuiObjects(shouldHide, objectName)
 	if shouldHide then
-		if #hiddenObjects > 0 then return end
+		if #hiddenObjects > 0 then
+			return
+		end
+
 		for _, obj in pairs(playerGui:GetDescendants()) do
 			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
 				obj.Visible = false
@@ -142,20 +363,27 @@ local function toggleNamedGuiObjects(shouldHide, objectName)
 				obj.Visible = true
 			end
 		end
+
 		hiddenObjects = {}
 	end
 end
 
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
-		if #hiddenGuis > 0 then return end
+		if #hiddenGuis > 0 then
+			return
+		end
+
 		hiddenGuis = {}
+
 		for _, otherGui in pairs(playerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui")
 				and otherGui.Name ~= GUI_ID
 				and otherGui.Name ~= "Confirmation"
 				and otherGui.Enabled == true
-				and otherGui.Name ~= "Balance Indicator" then
+				and otherGui.Name ~= "Balance Indicator"
+				and not otherGui:GetAttribute("NPCReactionKeepEnabled") then
+
 				otherGui.Enabled = false
 				table.insert(hiddenGuis, otherGui)
 			end
@@ -166,6 +394,7 @@ local function toggleOtherGuis(shouldHide)
 				otherGui.Enabled = true
 			end
 		end
+
 		hiddenGuis = {}
 	end
 end
@@ -173,7 +402,15 @@ end
 local function setFocusMode(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
+
+	if player.Character then
+		player:SetAttribute("MovementLock", active)
+	end
 end
+
+-- ============================================================================
+-- ⌨️ TYPEWRITER
+-- ============================================================================
 
 local function getCleanTextLength(str)
 	local cleanStr = string.gsub(str, "<[^>]+>", "")
@@ -181,7 +418,10 @@ local function getCleanTextLength(str)
 end
 
 local function typewrite(label, text, onComplete)
-	if not label then return end
+	if not label then
+		return
+	end
+
 	label.RichText = true
 
 	if currentDialogueJob then
@@ -196,17 +436,24 @@ local function typewrite(label, text, onComplete)
 
 	currentDialogueJob = task.spawn(function()
 		for i = 1, len do
-			if not isInteracting and not isLeaving then break end
+			if not isInteracting and not isLeaving then
+				break
+			end
+
 			label.MaxVisibleGraphemes = i
+
 			if i % 3 == 0 then
-				local s = Instance.new("Sound", SoundService)
+				local s = Instance.new("Sound")
 				s.SoundId = TYPING_SOUND_ID
 				s.Volume = 0.1
 				s.PlayOnRemove = true
+				s.Parent = SoundService
 				s:Destroy()
 			end
+
 			task.wait(TYPEWRITER_SPEED)
 		end
+
 		label.MaxVisibleGraphemes = -1
 		currentDialogueJob = nil
 
@@ -216,11 +463,15 @@ local function typewrite(label, text, onComplete)
 	end)
 end
 
+-- ============================================================================
+-- 🧹 STOP / CLEANUP
+-- ============================================================================
+
 local function stopInteraction()
-	-- Safety cleanup, regardless of isInteracting flag
 	isInteracting = false
 	isLeaving = false
 	isProcessingSell = false
+	promptDebounce = false
 
 	if currentDialogueJob then
 		pcall(task.cancel, currentDialogueJob)
@@ -228,161 +479,214 @@ local function stopInteraction()
 	end
 
 	clearConnections()
-	setFocusMode(false) -- Restores GUIs even if bypassed previously
+	setButtonsState(false)
+	setFocusMode(false)
 
-	camera.CameraType = Enum.CameraType.Custom
-	if controls then controls:Enable() end
+	local camera = Workspace.CurrentCamera
+	if camera then
+		camera.CameraType = Enum.CameraType.Custom
+	end
+
+	if controls then
+		controls:Enable()
+	end
 
 	if player.Character then
 		player:SetAttribute("MovementLock", false)
 	end
 
-	local myGui = playerGui:FindFirstChild(GUI_ID)
+	local myGui, container = getUIElements()
+
+	if container then
+		container.Visible = false
+	end
+
 	if myGui then
 		myGui.Enabled = false
+	end
+
+	local cGui = playerGui:FindFirstChild("Confirmation")
+	local cMain = cGui and cGui:FindFirstChild("MainFrame")
+
+	if cGui then
+		cGui.Enabled = false
+	end
+
+	if cMain and cMain:IsA("GuiObject") then
+		cMain.Visible = false
+	end
+end
+
+-- ============================================================================
+-- 🔒 FORCE HIDE UI ON LOAD
+-- ============================================================================
+
+task.spawn(function()
+	local myGui = playerGui:WaitForChild(GUI_ID, 10)
+
+	if myGui then
 		local container = myGui:FindFirstChild(CONTAINER_ID, true)
-		if container then container.Visible = false end
-	end
+		local buttonsFrame = container and container:FindFirstChild(BUTTONS_FRAME_ID, true)
 
-	local cGui, cMain = playerGui:FindFirstChild("Confirmation"), playerGui:FindFirstChild("Confirmation") and playerGui.Confirmation:FindFirstChild("MainFrame")
-	if cGui then cGui.Enabled = false end
-	if cMain and cMain:IsA("GuiObject") then cMain.Visible = false end
-end
-
-local function animateButton(btn)
-	if btn:GetAttribute("HoverBound") then return end
-	btn:SetAttribute("HoverBound", true)
-
-	local uiScale = btn:FindFirstChildOfClass("UIScale")
-	if not uiScale then
-		uiScale = Instance.new("UIScale")
-		uiScale.Scale = 1.0
-		uiScale.Parent = btn
-	end
-
-	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
-	local isHovering = false
-	local isPressed  = false
-	local function updateScale()
-		local target = 1.0
-		if isPressed      then target = 0.95
-		elseif isHovering then target = 1.05
+		if buttonsFrame and buttonsFrame:IsA("GuiObject") then
+			buttonsFrame.Visible = false
 		end
-		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
-	end
 
-	table.insert(buttonHoverConnections, btn.MouseEnter:Connect(function()
-		isHovering = true
-		UIAudioConfig.PlayHover()
-		updateScale()
-	end))
-	table.insert(buttonHoverConnections, btn.MouseLeave:Connect(function()
-		isHovering = false
-		isPressed  = false
-		updateScale()
-	end))
-	table.insert(buttonHoverConnections, btn.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = true
-			updateScale()
+		if container then
+			container.Visible = false
 		end
-	end))
-	table.insert(buttonHoverConnections, btn.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = false
-			updateScale()
-		end
-	end))
-end
+
+		myGui.Enabled = false
+		setButtonsState(false)
+	end
+end)
 
 -- ============================================================================
 -- 🧠 CONFIRMATION UI
 -- ============================================================================
 
 local function clearConfirmationConnections()
-	for _, c in ipairs(confirmConnections) do if c then c:Disconnect() end end
+	for _, c in ipairs(confirmConnections) do
+		if c then
+			c:Disconnect()
+		end
+	end
+
 	confirmConnections = {}
 end
 
 local function addConfirmationConnection(conn)
-	if conn then table.insert(confirmConnections, conn) end
+	if conn then
+		table.insert(confirmConnections, conn)
+	end
 end
 
 local function resolveConfirmationUi()
-	local cGui  = playerGui:FindFirstChild("Confirmation") or playerGui:WaitForChild("Confirmation", 5)
-	if not cGui then return nil, nil end
+	local cGui = playerGui:FindFirstChild("Confirmation") or playerGui:WaitForChild("Confirmation", 5)
+	if not cGui then
+		return nil, nil
+	end
+
 	local cMain = cGui:FindFirstChild("MainFrame") or cGui:WaitForChild("MainFrame", 5)
+
 	return cGui, cMain
 end
 
 local function resolveGuiButton(target)
-	if not target then return nil end
-	if target:IsA("GuiButton") then return target end
-	for _, d in ipairs(target:GetDescendants()) do
-		if d:IsA("GuiButton") then return d end
+	if not target then
+		return nil
 	end
+
+	if target:IsA("GuiButton") then
+		return target
+	end
+
+	for _, d in ipairs(target:GetDescendants()) do
+		if d:IsA("GuiButton") then
+			return d
+		end
+	end
+
 	return nil
 end
 
 local function resolveNamedConfirmationButton(root, exactName, aliases)
-	if not root then return nil end
+	if not root then
+		return nil
+	end
+
 	local direct = resolveGuiButton(root:FindFirstChild(exactName, true))
-	if direct then return direct end
+	if direct then
+		return direct
+	end
+
 	local lowered = { string.lower(exactName) }
-	for _, a in ipairs(aliases or {}) do table.insert(lowered, string.lower(a)) end
+
+	for _, a in ipairs(aliases or {}) do
+		table.insert(lowered, string.lower(a))
+	end
+
 	for _, d in ipairs(root:GetDescendants()) do
 		if d:IsA("GuiButton") then
-			local bn = string.lower(d.Name)
-			for _, k in ipairs(lowered) do
-				if bn == k or string.find(bn, k, 1, true) then return d end
+			local buttonName = string.lower(d.Name)
+
+			for _, keyword in ipairs(lowered) do
+				if buttonName == keyword or string.find(buttonName, keyword, 1, true) then
+					return d
+				end
 			end
 		end
 	end
+
 	return nil
 end
 
 local function playConfirmationOpenTween(cMain)
-	if not cMain or not cMain:IsA("GuiObject") then return end
+	if not cMain or not cMain:IsA("GuiObject") then
+		return
+	end
+
 	if not cMain:GetAttribute("BasePosStored") then
-		cMain:SetAttribute("BasePosStored",  true)
-		cMain:SetAttribute("BasePosXScale",  cMain.Position.X.Scale)
+		cMain:SetAttribute("BasePosStored", true)
+		cMain:SetAttribute("BasePosXScale", cMain.Position.X.Scale)
 		cMain:SetAttribute("BasePosXOffset", cMain.Position.X.Offset)
-		cMain:SetAttribute("BasePosYScale",  cMain.Position.Y.Scale)
+		cMain:SetAttribute("BasePosYScale", cMain.Position.Y.Scale)
 		cMain:SetAttribute("BasePosYOffset", cMain.Position.Y.Offset)
 	end
-	local bp = UDim2.new(
-		cMain:GetAttribute("BasePosXScale"),  cMain:GetAttribute("BasePosXOffset"),
-		cMain:GetAttribute("BasePosYScale"),  cMain:GetAttribute("BasePosYOffset")
+
+	local basePosition = UDim2.new(
+		cMain:GetAttribute("BasePosXScale"),
+		cMain:GetAttribute("BasePosXOffset"),
+		cMain:GetAttribute("BasePosYScale"),
+		cMain:GetAttribute("BasePosYOffset")
 	)
-	cMain.Position = UDim2.new(bp.X.Scale, bp.X.Offset, bp.Y.Scale, bp.Y.Offset + 18)
-	TweenService:Create(cMain, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Position = bp }):Play()
+
+	cMain.Position = UDim2.new(
+		basePosition.X.Scale,
+		basePosition.X.Offset,
+		basePosition.Y.Scale,
+		basePosition.Y.Offset + 18
+	)
+
+	TweenService:Create(
+		cMain,
+		TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Position = basePosition }
+	):Play()
 end
 
 local function applyConfirmationButtonFeedback(button)
-	if not button then return nil end
-
-	local uiScale = button:FindFirstChildOfClass("UIScale")
-	if not uiScale then
-		uiScale = Instance.new("UIScale")
-		uiScale.Scale = 1.0
-		uiScale.Parent = button
+	if not button then
+		return nil
 	end
 
-	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	local uiScale = getOrCreateUIScale(button)
+	if not uiScale then
+		return button
+	end
+
 	local isHovering = false
-	local isPressed  = false
+	local isPressed = false
 
 	local function updateScale()
-		local target = 1.0
-		if isPressed      then target = 0.95
-		elseif isHovering then target = 1.05
+		local targetScale = NORMAL_SCALE
+
+		if isPressed then
+			targetScale = CLICK_SCALE
+		elseif isHovering then
+			targetScale = HOVER_SCALE
 		end
-		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+
+		TweenService:Create(uiScale, BUTTON_TWEEN_INFO, {
+			Scale = targetScale,
+		}):Play()
 	end
 
 	addConfirmationConnection(button.MouseEnter:Connect(function()
+		if not button.Active then
+			return
+		end
+
 		isHovering = true
 		UIAudioConfig.PlayHover()
 		updateScale()
@@ -394,18 +698,29 @@ local function applyConfirmationButtonFeedback(button)
 		updateScale()
 	end))
 
-	addConfirmationConnection(button.InputBegan:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1
-			or i.UserInputType == Enum.UserInputType.Touch then
+	addConfirmationConnection(button.InputBegan:Connect(function(input)
+		if not button.Active then
+			return
+		end
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+
 			isPressed = true
 			updateScale()
 		end
 	end))
 
-	addConfirmationConnection(button.InputEnded:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1
-			or i.UserInputType == Enum.UserInputType.Touch then
+	addConfirmationConnection(button.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+
 			isPressed = false
+
+			if UserInputService.TouchEnabled then
+				isHovering = false
+			end
+
 			updateScale()
 		end
 	end))
@@ -414,71 +729,111 @@ local function applyConfirmationButtonFeedback(button)
 end
 
 local function bindConfirmationButton(button, callback)
-	if not button then return end
-	button.Active = true
-	button.Interactable = true
+	if not button then
+		return
+	end
 
-	-- Apply standard hover/press feedback
+	button.Active = true
+	button.AutoButtonColor = false
+
+	pcall(function()
+		button.Interactable = true
+	end)
+
 	applyConfirmationButtonFeedback(button)
 
 	local fired = false
-	local function hp() 
-		if fired then return end
+
+	addConfirmationConnection(button.Activated:Connect(function()
+		if fired or not button.Active then
+			return
+		end
+
 		fired = true
 
 		UIAudioConfig.PlayClick()
 
-		-- Immediately lock button to prevent double-fire
 		button.Active = false
-		pcall(function() button.Interactable = false end)
 
-		callback() 
-	end
+		pcall(function()
+			button.Interactable = false
+		end)
 
-	-- Only use Activated for all devices as requested
-	addConfirmationConnection(button.Activated:Connect(hp))
+		callback()
+	end))
 end
 
 local function PromptConfirmation(text, callback)
 	local cGui, cMain = resolveConfirmationUi()
+
 	if not cGui or not cMain then
 		callback(false)
 		return
 	end
 
 	clearConfirmationConnections()
+
 	local infoLabel = cMain:FindFirstChild("Information", true)
-	local btnYes    = resolveNamedConfirmationButton(cMain, "Yes",  { "Confirm", "Accept", "Okay", "Ok" })
-	local btnNo     = resolveNamedConfirmationButton(cMain, "No",   { "Cancel", "Decline", "Back", "Close" })
+	local btnYes = resolveNamedConfirmationButton(cMain, "Yes", { "Confirm", "Accept", "Okay", "Ok" })
+	local btnNo = resolveNamedConfirmationButton(cMain, "No", { "Cancel", "Decline", "Back", "Close" })
 
 	if infoLabel then
-		pcall(function() infoLabel.RichText = true; infoLabel.TextWrapped = true; infoLabel.Text = text end)
+		pcall(function()
+			infoLabel.RichText = true
+			infoLabel.TextWrapped = true
+			infoLabel.Text = text
+		end)
 	end
 
-	local myGui = playerGui:FindFirstChild(GUI_ID)
-	local container = myGui and myGui:FindFirstChild(CONTAINER_ID, true)
-	if container then container.Visible = false end
+	local _, container = getUIElements()
+
+	if container then
+		container.Visible = false
+	end
 
 	cGui.Enabled = true
-	if cMain:IsA("GuiObject") then cMain.Visible = true; cMain.Active = true end
+
+	if cMain:IsA("GuiObject") then
+		cMain.Visible = true
+		cMain.Active = true
+	end
+
 	pcall(function()
 		if cGui:IsA("ScreenGui") then
 			cGui.DisplayOrder = math.max(cGui.DisplayOrder, 100)
 		end
 	end)
+
 	playConfirmationOpenTween(cMain)
 
 	local function finishChoice(confirmed)
 		clearConfirmationConnections()
-		if cMain:IsA("GuiObject") then cMain.Visible = false end
+
+		if cMain:IsA("GuiObject") then
+			cMain.Visible = false
+		end
+
 		cGui.Enabled = false
-		if container then container.Visible = true end
+
+		if container and isInteracting then
+			container.Visible = true
+		end
+
 		callback(confirmed)
 	end
 
-	bindConfirmationButton(btnYes, function() finishChoice(true)  end)
-	bindConfirmationButton(btnNo,  function() finishChoice(false) end)
+	bindConfirmationButton(btnYes, function()
+		finishChoice(true)
+	end)
+
+	bindConfirmationButton(btnNo, function()
+		finishChoice(false)
+	end)
 end
+
+-- ============================================================================
+-- 💰 SELL HELPERS
+-- ============================================================================
 
 local function FormatCommas(num)
 	return tostring(num):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
@@ -487,16 +842,25 @@ end
 local function getOwnedPlacedCarsValue()
 	local totalValue = 0
 	local totalCount = 0
+
 	local plotName = player:GetAttribute("OccupiedPlot")
 	local tycoons = Workspace:FindFirstChild("Tycoons")
 	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
-	if not plot then return totalValue, totalCount end
+
+	if not plot then
+		return totalValue, totalCount
+	end
 
 	for _, descendant in ipairs(plot:GetDescendants()) do
-		if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
+		if descendant.Name == "LinkedCar"
+			and descendant:IsA("ObjectValue")
+			and descendant.Value then
+
 			local car = descendant.Value
+
 			if car:GetAttribute("OwnerUserId") == player.UserId then
 				local details = CarSellPrices.GetDetails(car.Name)
+
 				if details and details.SellPrice and details.SellPrice > 0 then
 					totalValue += details.SellPrice
 					totalCount += 1
@@ -514,11 +878,18 @@ local function getSellableInventoryValue()
 	local seen = {}
 
 	local function scan(container)
-		if not container then return end
+		if not container then
+			return
+		end
+
 		for _, child in ipairs(container:GetChildren()) do
-			if child:IsA("Tool") and child:GetAttribute("IssuedByServer") == true and not seen[child] then
+			if child:IsA("Tool")
+				and child:GetAttribute("IssuedByServer") == true
+				and not seen[child] then
+
 				local toolId = child:GetAttribute("ToolId") or child.Name
 				local details = CarSellPrices.GetDetails(toolId)
+
 				if details and details.SellPrice and details.SellPrice > 0 then
 					seen[child] = true
 					totalValue += details.SellPrice
@@ -529,38 +900,55 @@ local function getSellableInventoryValue()
 	end
 
 	scan(player:FindFirstChild("Backpack"))
-	if player.Character then scan(player.Character) end
+
+	if player.Character then
+		scan(player.Character)
+	end
 
 	local placedValue, placedCount = getOwnedPlacedCarsValue()
+
 	return totalValue + placedValue, totalCount + placedCount
 end
 
 -- ============================================================================
 -- 🗣️ DIALOGUE ACTIONS
 -- ============================================================================
+
 local function handleSellEverything(dialogueLabel)
-	if isProcessingSell then return end
+	if isProcessingSell then
+		return
+	end
 
 	local totalValue, carCount = getSellableInventoryValue()
+
 	if carCount <= 0 or totalValue <= 0 then
 		typewrite(dialogueLabel, DIALOGUE.NoCars, function()
 			task.wait(2)
 			stopInteraction()
 		end)
+
 		return
 	end
 
 	isProcessingSell = true
 
 	local carWord = carCount == 1 and "car" or "cars"
+
 	local confirmText = string.format(
 		"<font color='%s'>Are you sure you want to sell all </font><b>%d %s</b><font color='%s'> for </font><b><font color='%s'>$%s</font></b><font color='%s'>? This cannot be undone, sweetie.</font>",
-		CONFIRMATION_COLORS.Accent, carCount, carWord, CONFIRMATION_COLORS.Accent,
-		CONFIRMATION_COLORS.Sacrifice, FormatCommas(totalValue), CONFIRMATION_COLORS.Accent
+		CONFIRMATION_COLORS.Accent,
+		carCount,
+		carWord,
+		CONFIRMATION_COLORS.Accent,
+		CONFIRMATION_COLORS.Sacrifice,
+		FormatCommas(totalValue),
+		CONFIRMATION_COLORS.Accent
 	)
 
 	PromptConfirmation(confirmText, function(confirmed)
-		if not isInteracting then return end
+		if not isInteracting then
+			return
+		end
 
 		if not confirmed then
 			typewrite(dialogueLabel, DIALOGUE.Cancel, function()
@@ -568,6 +956,7 @@ local function handleSellEverything(dialogueLabel)
 				task.wait(1.5)
 				stopInteraction()
 			end)
+
 			return
 		end
 
@@ -582,6 +971,7 @@ local function handleSellEverything(dialogueLabel)
 
 			local elapsed = 0
 			local timeoutLimit = 10
+
 			while not invokeCompleted and elapsed < timeoutLimit do
 				elapsed += task.wait()
 			end
@@ -589,17 +979,22 @@ local function handleSellEverything(dialogueLabel)
 			if not invokeCompleted then
 				pcall(task.cancel, invokeThread)
 				warn("⚠️ LorraineSellFunction InvokeServer timed out.")
+
 				success = false
 				msg = "The server is taking too long to respond."
 			end
 
-			if not isInteracting then return end
+			if not isInteracting then
+				return
+			end
 
 			if success then
 				UIAudioConfig.PlayClick()
+
 				local soldCount = tonumber(serverCarCount) or carCount
 				local soldAmount = tonumber(serverSellAmount) or totalValue
 				local soldWord = soldCount == 1 and "car" or "cars"
+
 				typewrite(dialogueLabel, string.format(DIALOGUE.Success, soldCount, soldWord, FormatCommas(soldAmount)), function()
 					isProcessingSell = false
 					task.wait(1.5)
@@ -619,125 +1014,154 @@ end
 -- ============================================================================
 -- 🟢 MAIN INTERACTION START
 -- ============================================================================
+
 local function startInteraction(npcModel)
-	if isInteracting or isLeaving then return end
-
-	-- Safety clear in case a previous interaction didn't clean up properly
-	stopInteraction()
-
-	isInteracting = true
-	isProcessingSell = false
-	clearConnections()
-
-	local camPart = npcModel:FindFirstChild(CAMERA_PART)
-	if not camPart then
-		warn("❌ [LorraineDebug] Error: Missing '" .. CAMERA_PART .. "'")
-		isInteracting = false
+	if isInteracting or isLeaving or promptDebounce then
 		return
 	end
 
-	if controls then controls:Disable() end
-	setFocusMode(true)
+	promptDebounce = true
 
-	if player.Character then
-		player:SetAttribute("MovementLock", true)
+	-- Hard cleanup from previous interaction.
+	stopInteraction()
+
+	isInteracting = true
+	isLeaving = false
+	isProcessingSell = false
+	promptDebounce = true
+
+	clearConnections()
+
+	local camPart = npcModel:FindFirstChild(CAMERA_PART)
+
+	if not camPart then
+		warn("❌ [LorraineDebug] Error: Missing '" .. CAMERA_PART .. "'")
+		stopInteraction()
+		return
 	end
 
+	if controls then
+		controls:Disable()
+	end
+
+	setFocusMode(true)
+
+	local camera = Workspace.CurrentCamera
 	camera.CameraType = Enum.CameraType.Scriptable
-	TweenService:Create(camera, TWEEN_INFO, {CFrame = camPart.CFrame}):Play()
+
+	TweenService:Create(camera, CAMERA_TWEEN_INFO, {
+		CFrame = camPart.CFrame,
+	}):Play()
 
 	local myGui = playerGui:WaitForChild(GUI_ID, 5)
-	if not myGui then warn("❌ [LorraineDebug] Missing GUI") stopInteraction() return end
 
-	myGui.Enabled = true
-	local container = myGui:FindFirstChild(CONTAINER_ID, true)
-	if not container then warn("❌ [LorraineDebug] Missing Frame") stopInteraction() return end
+	if not myGui then
+		warn("❌ [LorraineDebug] Missing GUI")
+		stopInteraction()
+		return
+	end
 
-	container.Visible = true
+	local _, container, dialogueLabel, buttonsFrame, sellVisual, sellButton, leaveVisual, leaveButton = getUIElements()
+
+	if not container then
+		warn("❌ [LorraineDebug] Missing Frame")
+		stopInteraction()
+		return
+	end
+
+	-- Critical:
+	-- Hide buttons BEFORE enabling/showing the dialogue.
+	-- This prevents Btn_SellEverything from appearing first.
+	if buttonsFrame and buttonsFrame:IsA("GuiObject") then
+		buttonsFrame.Visible = false
+	end
+
 	setButtonsState(false)
 
-	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
-	if dialogueLabel then
-		local greeting = DIALOGUE.Greeting
+	myGui.Enabled = true
+	container.Visible = true
 
-		typewrite(dialogueLabel, greeting, function()
-			setButtonsState(true)
-		end)
+	setButtonsState(false)
 
-		local function connectBtn(btnName, func)
-			local buttons = container:FindFirstChild(BUTTONS_FOLDER)
-			local btn = buttons and buttons:FindFirstChild(btnName, true)
-			if btn and btn:IsA("GuiButton") then
-				animateButton(btn)
+	if not dialogueLabel then
+		warn("❌ [LorraineDebug] ERROR: Could not find TextLabel named '" .. TEXT_ID .. "' inside Container!")
+		setButtonsState(true)
+		return
+	end
 
-				local conn
-				if UserInputService.TouchEnabled then
-					conn = btn.Activated:Connect(function()
-						UIAudioConfig.PlayClick()
-						func()
-					end)
-				else
-					conn = btn.MouseButton1Click:Connect(function()
-						UIAudioConfig.PlayClick()
-						func()
-					end)
-				end
+	if not sellButton then
+		warn("⚠️ [LorraineDebug] Could not find real GuiButton inside '" .. BTN_SELL_EVERYTHING_ID .. "'.")
+	end
 
-				table.insert(buttonConnections, conn)
-			else
-				warn("⚠️ [LorraineDebug] Warning: Could not find button '" .. btnName .. "' in UI.")
-			end
+	if not leaveButton then
+		warn("⚠️ [LorraineDebug] Could not find real GuiButton inside '" .. BTN_LEAVE_ID .. "'.")
+	end
+
+	typewrite(dialogueLabel, DIALOGUE.Greeting, function()
+		task.wait(DIALOGUE_PAUSE)
+		setButtonsState(true)
+	end)
+
+	bindDialogueButton(leaveVisual, leaveButton, function()
+		if isLeaving then
+			return
 		end
 
-		connectBtn(BTN_LEAVE_ID, function()
-			if isLeaving then return end
-			isLeaving = true
-			clearConnections()
-			setButtonsState(false)
-			if dialogueLabel then
-				local goodbyeMsg = DIALOGUE.Goodbye
-				typewrite(dialogueLabel, goodbyeMsg)
-			end
+		isLeaving = true
+		clearConnections()
+		setButtonsState(false)
+
+		typewrite(dialogueLabel, DIALOGUE.Goodbye, function()
 			task.wait(LEAVE_DELAY)
 			stopInteraction()
 		end)
+	end)
 
-		connectBtn(BTN_SELL_EVERYTHING_ID, function()
-			setButtonsState(false)
-			handleSellEverything(dialogueLabel)
-		end)
-	else
-		warn("❌ [LorraineDebug] ERROR: Could not find TextLabel named '" .. TEXT_ID .. "' inside Container!")
-		setButtonsState(true)
-	end
+	bindDialogueButton(sellVisual, sellButton, function()
+		handleSellEverything(dialogueLabel)
+	end)
 end
 
 -- ============================================================================
 -- 🔌 PROXIMITY PROMPT SETUP
 -- ============================================================================
-local ProximityPromptService = game:GetService("ProximityPromptService")
 
 local function isTargetPrompt(prompt)
-	if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+	if not prompt or not prompt:IsA("ProximityPrompt") then
+		return false
+	end
+
 	return string.lower(prompt.Name) == string.lower(PROMPT_NAME)
 end
 
 local function findTargetNPCFromPrompt(prompt)
 	local current = prompt and prompt.Parent
+
 	while current do
-		if current:IsA("Model") and string.find(current.Name, TARGET_NPC) then return current end
+		if current:IsA("Model") and string.find(current.Name, TARGET_NPC) then
+			return current
+		end
+
 		current = current.Parent
 	end
+
 	return nil
 end
 
 local function setupNPC()
 	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
-		if triggerPlayer == player and isTargetPrompt(prompt) then
-			local npc = findTargetNPCFromPrompt(prompt)
-			if npc and string.find(npc.Name, TARGET_NPC) then
-				startInteraction(npc)
-			end
+		if triggerPlayer ~= player then
+			return
+		end
+
+		if not isTargetPrompt(prompt) then
+			return
+		end
+
+		local npc = findTargetNPCFromPrompt(prompt)
+
+		if npc and string.find(npc.Name, TARGET_NPC) then
+			startInteraction(npc)
 		end
 	end)
 end
