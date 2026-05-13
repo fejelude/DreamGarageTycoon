@@ -1252,6 +1252,7 @@ local LIMIT_INDICATOR_SAFE_COLOR = Color3.fromRGB(80, 220, 120)
 local LIMIT_INDICATOR_NEAR_COLOR = Color3.fromRGB(255, 120, 120)
 local LIMIT_INDICATOR_NEAR_RATIO = 0.8
 local DEFAULT_STORAGE_LIMIT = 5
+local limitWatchConnections = {}
 
 local function getStorageLimit()
 	local limit = tonumber(player:GetAttribute("RankStorageLimit"))
@@ -1281,20 +1282,75 @@ local function countInventoryTools()
 	return total
 end
 
+local function countPlacedCars()
+	local plotName = player:GetAttribute("OccupiedPlot")
+	local tycoons = Workspace:FindFirstChild("Tycoons")
+	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
+	if not plot then return 0 end
+
+	local total = 0
+	for _, descendant in ipairs(plot:GetDescendants()) do
+		if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
+			local car = descendant.Value
+			if car:GetAttribute("OwnerUserId") == player.UserId then
+				total += 1
+			end
+		end
+	end
+	return total
+end
+
 local function updateLimitIndicator()
 	if not limitIndicatorLabel or not limitIndicatorLabel:IsA("TextLabel") then return end
 
 	local limit = getStorageLimit()
-	local current = math.clamp(countInventoryTools(), 0, limit)
+	local current = math.clamp(countInventoryTools() + countPlacedCars(), 0, limit)
 	limitIndicatorLabel.Text = tostring(current) .. "/" .. tostring(limit)
 	limitIndicatorLabel.TextColor3 = (current / math.max(limit, 1)) >= LIMIT_INDICATOR_NEAR_RATIO
 		and LIMIT_INDICATOR_NEAR_COLOR
 		or LIMIT_INDICATOR_SAFE_COLOR
 end
 
+local function clearLimitWatchConnections()
+	for _, conn in ipairs(limitWatchConnections) do
+		if conn then conn:Disconnect() end
+	end
+	limitWatchConnections = {}
+end
+
+local function bindLimitPlotWatch()
+	clearLimitWatchConnections()
+	local plotName = player:GetAttribute("OccupiedPlot")
+	local tycoons = Workspace:FindFirstChild("Tycoons")
+	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
+	if not plot then
+		updateLimitIndicator()
+		return
+	end
+
+	local function watchLinkedCar(obj)
+		if obj.Name == "LinkedCar" and obj:IsA("ObjectValue") then
+			table.insert(limitWatchConnections, obj:GetPropertyChangedSignal("Value"):Connect(updateLimitIndicator))
+		end
+	end
+
+	for _, descendant in ipairs(plot:GetDescendants()) do
+		watchLinkedCar(descendant)
+	end
+	table.insert(limitWatchConnections, plot.DescendantAdded:Connect(function(descendant)
+		watchLinkedCar(descendant)
+		task.defer(updateLimitIndicator)
+	end))
+	table.insert(limitWatchConnections, plot.DescendantRemoving:Connect(function()
+		task.defer(updateLimitIndicator)
+	end))
+	updateLimitIndicator()
+end
+
 player:GetAttributeChangedSignal("RankStorageLimit"):Connect(updateLimitIndicator)
 player:GetAttributeChangedSignal("Rank"):Connect(updateLimitIndicator)
-task.defer(updateLimitIndicator)
+player:GetAttributeChangedSignal("OccupiedPlot"):Connect(bindLimitPlotWatch)
+task.defer(bindLimitPlotWatch)
 
 -- ========= UI POOL =========
 local poolFolder = Instance.new("Folder")
@@ -1983,4 +2039,3 @@ if tierContainer then
 		end
 	end
 end
-
