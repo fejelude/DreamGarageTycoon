@@ -22,6 +22,10 @@ local ActivePurchaseHistory = nil
 -- 🟢 COMMON SHOP CONFIG
 local TABLET_2X_ID = 3509697462
 local SHOP_REROLL_ID = 3520990584
+local BANK_TRANSFER_SKIP_ID = 3591736957
+
+local BANK_TRANSFER_USED_ATTR = "BankTransferLimitUsed"
+local BANK_TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
 
 local CAR_PRODUCT_IDS = {
 	[3524326648] = "Delta",
@@ -313,8 +317,16 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 	end
 
+	-- ─── BANK TRANSFER LIMIT SKIP ─────────────────────────────────────────────
+	if pid == BANK_TRANSFER_SKIP_ID then
+		isGift = false
+		giftReceiverId = nil
+		buyerPlayer:SetAttribute(BANK_TRANSFER_USED_ATTR, 0)
+		buyerPlayer:SetAttribute(BANK_TRANSFER_RESET_AT_ATTR, 0)
+		purchaseSuccess = true
+
 	-- ─── 2X TABLET ───────────────────────────────────────────────────────────
-	if pid == TABLET_2X_ID then
+	elseif pid == TABLET_2X_ID then
 		local myPlotName = targetPlayer:GetAttribute("OccupiedPlot")
 		local plot = myPlotName and TycoonFolder:FindFirstChild(myPlotName)
 

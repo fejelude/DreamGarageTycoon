@@ -1,12 +1,12 @@
--- Purpose: Handles UI verification, animations, and remote communication for withdrawing bank funds.
+-- Purpose: Handles UI verification, animations, and remote communication for bank transfers.
 -- Runs on: Client
--- Location: PlayerGui -> BankGui -> Withdraw Button
--- Dependencies: ReplicatedStorage, TweenService, SoundService, Players
+-- Location: PlayerGui -> BankGui -> TransferFrame -> WithdrawalFunction -> WithdrawButton
+-- Dependencies: ReplicatedStorage, TweenService, Players
 -- Public API: None
 -- Networking: Invokes "WithdrawFunction" (RemoteFunction)
--- Security: Client-side validation prevents negative or excessive requests before invoking the server.
--- Performance: Uses single Tween instances and cleans up temporary sounds using Debris.
--- Notes: Click sound is safely integrated after the cooldown check to prevent audio spam.
+-- Security: Client-side validation prevents negative, unavailable, or over-limit requests before invoking the server.
+-- Performance: Reuses label state so repeated messages stack instead of overlapping.
+-- Notes: Click and hover sounds are routed through UIAudioConfig to match the rest of the bank UI.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -15,95 +15,149 @@ local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
 local withdrawBtn = script.Parent
-local mainWindow = withdrawBtn.Parent 
+local mainWindow = withdrawBtn.Parent
+local transferFrame = mainWindow and mainWindow.Parent
+local stateLabels = transferFrame and transferFrame:WaitForChild("StateLabels", 5)
 
 -- 🔄 REMOTE FUNCTION
 local withdrawFunc = ReplicatedStorage:WaitForChild("WithdrawFunction")
 
 -- 📂 UI REFERENCES
 local amountInput = mainWindow:WaitForChild("AmountInput", 5)
-local VerifyLabel = mainWindow:WaitForChild("VerifyLabel", 5) 
-local SuccessLabel = mainWindow:WaitForChild("SuccessLabel", 5)
-local ErrorLabel = mainWindow:WaitForChild("ErrorLabel", 5)
+local verifyLabel = mainWindow:FindFirstChild("VerifyLabel")
+local successLabel = stateLabels and stateLabels:WaitForChild("Success", 5) or mainWindow:FindFirstChild("SuccessLabel")
+local failedLabel = stateLabels and stateLabels:WaitForChild("Failed", 5) or mainWindow:FindFirstChild("ErrorLabel")
 
--- 🔇 All sounds routed through UIAudioConfig (PlayClick / PlayHover).
--- No legacy sound IDs or throwaway Sound instances are used here.
+-- ⚙️ TRANSFER LIMIT CONFIG
+local TRANSFER_USED_ATTR = "BankTransferLimitUsed"
+local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
+local DEFAULT_TRANSFER_LIMIT = 1000000000000
 
 -- ⚙️ STATE VARIABLES
 local currentVerifyTween = nil
 local isCoolingDown = false
+local messageState = {}
 
 -- ============================================================================
--- 🛠️ HELPER FUNCTIONS (Formatting)
+-- 🛠️ HELPER FUNCTIONS
 -- ============================================================================
 
--- ✅ Parses "10k", "5.5m", "1,000" into numbers
+-- ✅ Parses "10k", "5.5m", "1,000", "2t" into numbers
 local function parseAmount(text)
 	if not text then return 0 end
-	text = text:lower():gsub(",", "") 
+	text = text:lower():gsub(",", "")
 
-	local multiplier = 1
-	if text:match("k") then multiplier = 1000 end
-	if text:match("m") then multiplier = 1000000 end
-	if text:match("b") then multiplier = 1000000000 end
+	local multipliers = {
+		k = 1000,
+		m = 1000000,
+		b = 1000000000,
+		t = 1000000000000,
+		qa = 1000000000000000,
+	}
 
-	local cleanNum = tonumber(text:match("[%d%.]+")) 
-	if cleanNum then 
-		return math.floor(cleanNum * multiplier) 
+	local suffix = text:match("%a+")
+	local multiplier = suffix and multipliers[suffix] or 1
+	local cleanNum = tonumber(text:match("[%d%.]+"))
+	if cleanNum then
+		return math.floor(cleanNum * multiplier)
 	end
 	return 0
 end
 
-local function animateResult(uiObject)
-	if not uiObject then return end
+local function getTransferLimit()
+	return tonumber(player:GetAttribute("MaxBankWithdrawal")) or DEFAULT_TRANSFER_LIMIT
+end
 
-	-- 1. Show
-	uiObject.Visible = true
-	uiObject.ZIndex = 20 
-	if uiObject:IsA("ImageLabel") then uiObject.ImageTransparency = 0 end
-	if uiObject:IsA("TextLabel") then uiObject.TextTransparency = 0 end
-	-- FIX: Sync UIStroke on show
-	local stroke = uiObject:FindFirstChildOfClass("UIStroke")
-	if stroke then stroke.Transparency = 0 end
+local function getTransferUsed()
+	local used = tonumber(player:GetAttribute(TRANSFER_USED_ATTR)) or 0
+	local resetAt = tonumber(player:GetAttribute(TRANSFER_RESET_AT_ATTR)) or 0
+	if resetAt > 0 and os.time() >= resetAt then
+		return 0
+	end
+	return math.max(0, math.floor(used))
+end
 
-	-- 2. Wait
-	task.wait(2)
+local function getRemainingTransferLimit()
+	return math.max(0, getTransferLimit() - getTransferUsed())
+end
 
-	-- 3. Fade Out
-	local goals = {}
-	if uiObject:IsA("ImageLabel") then goals.ImageTransparency = 1 end
-	if uiObject:IsA("TextLabel") then goals.TextTransparency = 1 end
+local function setLabelInstant(label, visible, transparency)
+	if not label then return end
+	label.Visible = visible
+	if label:IsA("TextLabel") then label.TextTransparency = transparency end
+	local stroke = label:FindFirstChildOfClass("UIStroke")
+	if stroke then stroke.Transparency = transparency end
+end
 
-	local tweenOut = TweenService:Create(uiObject, TweenInfo.new(0.5), goals)
-	tweenOut:Play()
-	-- FIX: Fade UIStroke in sync with parent
-	if stroke then TweenService:Create(stroke, TweenInfo.new(0.5), {Transparency = 1}):Play() end
-	tweenOut.Completed:Wait()
+local function animateStackedResult(label, baseText)
+	if not label then return end
 
-	uiObject.Visible = false
+	local state = messageState[label]
+	if not state then
+		state = { count = 0, token = 0, baseText = baseText }
+		messageState[label] = state
+	end
+
+	if state.baseText == baseText and label.Visible then
+		state.count += 1
+	else
+		state.count = 1
+		state.baseText = baseText
+	end
+	state.token += 1
+	local token = state.token
+
+	label.Text = state.count > 1 and (baseText .. " x" .. state.count) or baseText
+	label.Visible = true
+	label.ZIndex = 20
+
+	local stroke = label:FindFirstChildOfClass("UIStroke")
+	if label:IsA("TextLabel") then label.TextTransparency = 1 end
+	if stroke then stroke.Transparency = 1 end
+
+	local fadeInGoals = {}
+	if label:IsA("TextLabel") then fadeInGoals.TextTransparency = 0 end
+	local fadeIn = TweenService:Create(label, TweenInfo.new(0.25, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), fadeInGoals)
+	fadeIn:Play()
+	if stroke then TweenService:Create(stroke, TweenInfo.new(0.25, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), { Transparency = 0 }):Play() end
+
+	task.delay(2, function()
+		if state.token ~= token then return end
+
+		local fadeOutGoals = {}
+		if label:IsA("TextLabel") then fadeOutGoals.TextTransparency = 1 end
+		local fadeOut = TweenService:Create(label, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.In), fadeOutGoals)
+		fadeOut:Play()
+		if stroke then TweenService:Create(stroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.In), { Transparency = 1 }):Play() end
+		fadeOut.Completed:Wait()
+
+		if state.token == token then
+			label.Visible = false
+			state.count = 0
+		end
+	end)
 end
 
 local function startVerifying()
-	if not VerifyLabel then return end
-	VerifyLabel.Visible = true
-	VerifyLabel.ZIndex = 20
+	if not verifyLabel then return end
+	verifyLabel.Visible = true
+	verifyLabel.ZIndex = 20
 
 	local pulseInfo = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
 	local goals = {}
 
-	if VerifyLabel:IsA("ImageLabel") then 
-		VerifyLabel.ImageTransparency = 1 
-		goals.ImageTransparency = 0 
+	if verifyLabel:IsA("ImageLabel") then
+		verifyLabel.ImageTransparency = 1
+		goals.ImageTransparency = 0
 	end
-	if VerifyLabel:IsA("TextLabel") then 
-		VerifyLabel.TextTransparency = 1 
-		goals.TextTransparency = 0 
+	if verifyLabel:IsA("TextLabel") then
+		verifyLabel.TextTransparency = 1
+		goals.TextTransparency = 0
 	end
-	-- FIX: Sync UIStroke during verify pulse
-	local vStroke = VerifyLabel:FindFirstChildOfClass("UIStroke")
+	local vStroke = verifyLabel:FindFirstChildOfClass("UIStroke")
 	if vStroke then vStroke.Transparency = 1 end
 
-	currentVerifyTween = TweenService:Create(VerifyLabel, pulseInfo, goals)
+	currentVerifyTween = TweenService:Create(verifyLabel, pulseInfo, goals)
 	currentVerifyTween:Play()
 end
 
@@ -112,64 +166,58 @@ local function stopVerifying()
 		currentVerifyTween:Cancel()
 		currentVerifyTween = nil
 	end
-	if VerifyLabel then VerifyLabel.Visible = false end
+	if verifyLabel then verifyLabel.Visible = false end
+end
+
+local function showFailure(reason)
+	if reason == "Transfer Limit Reached" then
+		animateStackedResult(failedLabel, "Transfer Limit Reached")
+	else
+		animateStackedResult(failedLabel, "Transfer Unsuccessful")
+	end
 end
 
 -- ============================================================================
 -- 🟢 MAIN TRANSFER BUTTON LOGIC
 -- ============================================================================
 withdrawBtn.MouseButton1Click:Connect(function()
-
-	-- 🛑 1. CHECK COOLDOWN
 	if isCoolingDown then return end
-	isCoolingDown = true 
+	isCoolingDown = true
 
-	-- 🔊 1.5 PLAY INITIAL CLICK SOUND
 	UIAudioConfig.PlayClick()
-
-	-- 2. DISABLE BUTTON VISUALLY
 	withdrawBtn.Active = false
 	withdrawBtn.AutoButtonColor = false
 
-	-- 3. START VFX
 	startVerifying()
-	task.wait(1.5) -- "Thinking" Time
+	task.wait(1.5)
 
-	-- 4. PREPARE DATA
-	local amount = parseAmount(amountInput.Text) 
+	local amount = parseAmount(amountInput.Text)
 	local hiddenStats = player:WaitForChild("HiddenStats")
 	local currentBank = hiddenStats:WaitForChild("Cash").Value
+	local remainingLimit = getRemainingTransferLimit()
 
-	-- 5. VALIDATION
 	if (amount <= 0) or (amount > currentBank) then
 		stopVerifying()
 		print("❌ Invalid Input or Insufficient Funds")
-		task.spawn(function() animateResult(ErrorLabel) end)
-
-		-- Reset Button
-		task.wait(1)
-		isCoolingDown = false
-		withdrawBtn.Active = true
-		withdrawBtn.AutoButtonColor = true
-		return
-	end
-
-	-- 6. SERVER REQUEST (Transfer Bank -> ATM)
-	local success, msg = withdrawFunc:InvokeServer(amount, "Transfer")
-
-	-- 7. FINISH
-	stopVerifying()
-
-	if success then
-		print("✅ Transaction Approved")
-		amountInput.Text = ""
-		task.spawn(function() animateResult(SuccessLabel) end)
+		showFailure("Transfer Unsuccessful")
+	elseif amount > remainingLimit then
+		stopVerifying()
+		print("❌ Transfer limit reached")
+		showFailure("Transfer Limit Reached")
 	else
-		print("❌ Transaction Denied: " .. msg)
-		task.spawn(function() animateResult(ErrorLabel) end)
+		local success, msg = withdrawFunc:InvokeServer(amount, "Transfer")
+		stopVerifying()
+
+		if success then
+			print("✅ Transaction Approved")
+			amountInput.Text = ""
+			animateStackedResult(successLabel, "Transfer Successful")
+		else
+			print("❌ Transaction Denied: " .. tostring(msg))
+			showFailure(msg)
+		end
 	end
 
-	-- 8. RESET
 	task.wait(1)
 	isCoolingDown = false
 	withdrawBtn.Active = true
@@ -177,6 +225,6 @@ withdrawBtn.MouseButton1Click:Connect(function()
 end)
 
 -- Initialize Visuals
-if VerifyLabel then VerifyLabel.Visible = false end
-if SuccessLabel then SuccessLabel.Visible = false end
-if ErrorLabel then ErrorLabel.Visible = false end
+if verifyLabel then verifyLabel.Visible = false end
+setLabelInstant(successLabel, false, 1)
+setLabelInstant(failedLabel, false, 1)
