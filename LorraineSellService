@@ -18,148 +18,197 @@ local MAX_DISTANCE = 30 -- Max interaction distance
 
 local activeTransactions = {}
 
--- Retrieve player's equipped car strictly on the server
-local function getServerEquippedCar(player)
-	if not player.Character then return nil, nil end
-	for _, child in ipairs(player.Character:GetChildren()) do
-		if child:IsA("Tool") then
-			local id = child:GetAttribute("ToolId") or child.Name
-			return id, child
-		end
+local function getMainPart(obj)
+	if not obj then return nil end
+	if obj:IsA("BasePart") then return obj end
+	if obj:IsA("Model") then
+		return obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
 	end
-	return nil, nil
+	return nil
 end
 
-SellFunction.OnServerInvoke = function(player, requestedCarId)
-	-- 1. Argument validation
-	if type(requestedCarId) ~= "string" then
+local function isPlayerNearLorraine(player)
+	local character = player.Character
+	if not character then return false, "Character not found." end
+
+	local pRoot = character:FindFirstChild("HumanoidRootPart")
+	local npcFolder = workspace:FindFirstChild("NPCS")
+	local lorraineNpc = npcFolder and npcFolder:FindFirstChild("Lorraine")
+	if not pRoot or not lorraineNpc then
+		return false, "Security check failed: distance could not be verified."
+	end
+
+	local npcRoot = lorraineNpc:FindFirstChild("HumanoidRootPart") or lorraineNpc.PrimaryPart
+	if not npcRoot then
+		return false, "NPC not found."
+	end
+
+	if (pRoot.Position - npcRoot.Position).Magnitude > MAX_DISTANCE then
+		return false, "You are too far away."
+	end
+
+	return true
+end
+
+local function getToolSellDetails(tool)
+	if not tool or not tool:IsA("Tool") then return nil end
+	if tool:GetAttribute("IssuedByServer") ~= true then return nil end
+
+	local toolId = tool:GetAttribute("ToolId") or tool.Name
+	local cleanId = CarSellPrices.CleanId(toolId)
+	local details = CarSellPrices.GetDetails(cleanId)
+	if not details or not details.SellPrice or details.SellPrice <= 0 then return nil end
+
+	return cleanId, details
+end
+
+local function collectSellableInventoryTools(player)
+	local sellableTools = {}
+	local seen = {}
+
+	local function scan(container)
+		if not container then return end
+		for _, child in ipairs(container:GetChildren()) do
+			local cleanId, details = getToolSellDetails(child)
+			if cleanId and not seen[child] then
+				seen[child] = true
+				table.insert(sellableTools, {
+					Tool = child,
+					CleanId = cleanId,
+					SellPrice = details.SellPrice,
+				})
+			end
+		end
+	end
+
+	scan(player:FindFirstChild("Backpack"))
+	if player.Character then scan(player.Character) end
+
+	return sellableTools
+end
+
+local function collectSellablePlacedCars(player)
+	local sellableCars = {}
+	local plotName = player:GetAttribute("OccupiedPlot")
+	local tycoons = workspace:FindFirstChild("Tycoons")
+	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
+	if not plot then return sellableCars end
+
+	for _, descendant in ipairs(plot:GetDescendants()) do
+		if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
+			local car = descendant.Value
+			if car.Parent and car:GetAttribute("OwnerUserId") == player.UserId then
+				local details = CarSellPrices.GetDetails(car.Name)
+				if details and details.SellPrice and details.SellPrice > 0 then
+					table.insert(sellableCars, {
+						Car = car,
+						LinkedCar = descendant,
+						PadPart = getMainPart(descendant.Parent),
+						SellPrice = details.SellPrice,
+					})
+				end
+			end
+		end
+	end
+
+	return sellableCars
+end
+
+local function clearStarterGearMirrors(player)
+	local starterGear = player:FindFirstChild("StarterGear")
+	if not starterGear then return end
+	for _, child in ipairs(starterGear:GetChildren()) do
+		if getToolSellDetails(child) then
+			child:Destroy()
+		end
+	end
+end
+
+local function resetPlacedCarPad(entry)
+	local padPart = entry.PadPart
+	if not padPart then return end
+
+	local occupied = padPart:FindFirstChild("IsOccupied")
+	if occupied and occupied:IsA("BoolValue") then
+		occupied.Value = false
+	end
+
+	if entry.LinkedCar and entry.LinkedCar.Parent then
+		entry.LinkedCar.Value = nil
+	end
+
+	local placePrompt = padPart:FindFirstChild("PlacePrompt")
+	if placePrompt and placePrompt:IsA("ProximityPrompt") then
+		placePrompt.Enabled = true
+	end
+
+	local pickupPrompt = padPart:FindFirstChild("PickupPrompt")
+	if pickupPrompt and pickupPrompt:IsA("ProximityPrompt") then
+		pickupPrompt.Enabled = false
+	end
+end
+
+SellFunction.OnServerInvoke = function(player, action)
+	if action ~= "SellAllCars" then
 		return false, "Invalid request format."
 	end
 
-	-- 2. Transaction Lock (Prevents Spam/Race Conditions)
 	if activeTransactions[player.UserId] then
 		return false, "Transaction in progress. Please wait."
 	end
 	activeTransactions[player.UserId] = true
 
 	local success, result, msg = pcall(function()
-		-- 3. Validation: Verify character and distance to Lorraine
-		local character = player.Character
-		if not character then
-			return false, "Character not found."
+		local nearLorraine, distanceMessage = isPlayerNearLorraine(player)
+		if not nearLorraine then
+			return false, distanceMessage
 		end
 
-		local pRoot = character:FindFirstChild("HumanoidRootPart")
-		local npcFolder = workspace:FindFirstChild("NPCS")
-		if not npcFolder then
-			warn("⚠️ NPCS folder not found in workspace!")
-			return false, "Security Check Failed: Distance could not be verified."
+		local toolsToSell = collectSellableInventoryTools(player)
+		local placedCarsToSell = collectSellablePlacedCars(player)
+		if #toolsToSell == 0 and #placedCarsToSell == 0 then
+			return false, "You do not have any cars to sell."
 		end
 
-		local lorraineNpc = npcFolder:FindFirstChild("Lorraine")
-
-		if not pRoot or not lorraineNpc then
-			if not lorraineNpc then
-				warn("⚠️ Lorraine NPC not found in NPCS folder!")
-			end
-			return false, "Security Check Failed: Distance could not be verified."
+		local sellAmount = 0
+		for _, entry in ipairs(toolsToSell) do
+			sellAmount += entry.SellPrice
+		end
+		for _, entry in ipairs(placedCarsToSell) do
+			sellAmount += entry.SellPrice
 		end
 
-		local npcRoot = lorraineNpc:FindFirstChild("HumanoidRootPart") or lorraineNpc.PrimaryPart
-		if not npcRoot then
-			return false, "NPC not found."
-		end
-
-		if (pRoot.Position - npcRoot.Position).Magnitude > MAX_DISTANCE then
-			return false, "You are too far away!"
-		end
-
-		-- 4. Validation: Check equipped tool strictly on server
-		local actualCarId, actualTool = getServerEquippedCar(player)
-		if not actualCarId or not actualTool then
-			return false, "You are not holding a car."
-		end
-
-		-- Sanitize ID mapping (matching `safeFindCarTool` pattern in `TycoonDataHandler`)
-		local cleanRequestedId = CarSellPrices.CleanId(requestedCarId)
-		local cleanActualId = CarSellPrices.CleanId(actualCarId)
-
-		if cleanRequestedId ~= cleanActualId then
-			warn("⚠️ Sell Exploit Attempt: " .. player.Name .. " requested to sell " .. cleanRequestedId .. " but is holding " .. cleanActualId)
-			return false, "Item mismatch detected."
-		end
-
-		-- 5. Validation: Get Sell Price and Check limits
-		local details = CarSellPrices.GetDetails(cleanActualId)
-		if not details or not details.SellPrice then
-			return false, "This item cannot be sold."
-		end
-
-		local sellAmount = details.SellPrice
 		if sellAmount <= 0 then
 			return false, "Invalid sell amount."
 		end
 
-		-- 6. Execution: Remove item via TycoonAdminAPI & clean up all instances
-		-- TycoonDataHandler's `RemoveTool` scans Backpack → StarterGear → Character
-		-- and stops after destroying `requestedAmount` matches.
-		-- We request 1 removal, then manually clean up any remaining instances
-		-- (the held tool in Character, or a lingering StarterGear clone).
-
-		local removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, cleanActualId, 1)
-		if not removeSuccess then
-			-- Fallback: try removing with exact `actualCarId` just in case the API strictly needs the raw name
-			removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, actualCarId, 1)
-		end
-
-		-- CRITICAL: If both attempts to remove the tool fail, abort the transaction completely.
-		-- Do not give the player cash if we could not guarantee the car was removed from their data.
-		if not removeSuccess then
-			return false, "Failed to remove the car from your inventory. Transaction aborted."
-		end
-
-		-- FIX (Double Removal): Only destroy the held tool if RemoveTool didn't already get it.
-		-- RemoveTool scans Backpack first, so it usually destroys a Backpack/StarterGear clone
-		-- and leaves the Character tool alive. We clean it up here without double-counting.
-		if actualTool and actualTool.Parent then
-			actualTool:Destroy()
-		end
-
-		-- FIX: Also clean up any remaining StarterGear clone so the sold car
-		-- doesn't respawn into the player's inventory on death.
-		local starterGear = player:FindFirstChild("StarterGear")
-		if starterGear then
-			for _, child in ipairs(starterGear:GetChildren()) do
-				if child:IsA("Tool") then
-					local childId = child:GetAttribute("ToolId") or child.Name
-					local cleanChildId = CarSellPrices.CleanId(childId)
-					if cleanChildId == cleanActualId then
-						child:Destroy()
-						break
-					end
-				end
-			end
-		end
-
-		-- 7. Execution: Add Funds
 		local leaderstats = player:FindFirstChild("leaderstats")
 		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
-
 		if not wallet then
-			-- Highly unlikely, but refund if leaderstats is suddenly missing
-			TycoonAdminAPI:Invoke("GiveTool", player, actualCarId)
 			return false, "Could not locate wallet."
 		end
 
-		wallet.Value += sellAmount
-		print("💰 Lorraine Sell: " .. player.Name .. " sold " .. cleanActualId .. " for $" .. sellAmount)
+		for _, entry in ipairs(toolsToSell) do
+			if entry.Tool and entry.Tool.Parent then
+				entry.Tool:Destroy()
+			end
+		end
+		clearStarterGearMirrors(player)
 
-		return true, "Success"
+		for _, entry in ipairs(placedCarsToSell) do
+			resetPlacedCarPad(entry)
+			if entry.Car and entry.Car.Parent then
+				entry.Car:Destroy()
+			end
+		end
+
+		wallet.Value += sellAmount
+		TycoonAdminAPI:Invoke("MarkInventoryCleared", player)
+
+		print("💰 Lorraine Sell All: " .. player.Name .. " sold " .. tostring(#toolsToSell + #placedCarsToSell) .. " cars for $" .. tostring(sellAmount))
+		return true, "Success", sellAmount, #toolsToSell + #placedCarsToSell
 	end)
 
-	-- FIX (Transaction Lock): Release immediately after completion with a brief
-	-- anti-spam cooldown. The old 5-second fixed delay conflicted with the
-	-- immediate release in the error path, and blocked legitimate retries too long.
 	if not success then
 		warn("⚠️ Lorraine Transaction Error for " .. player.Name .. ": " .. tostring(result))
 		activeTransactions[player.UserId] = nil
@@ -173,7 +222,6 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 	return result, msg
 end
 
--- Cleanup locks on leave
 Players.PlayerRemoving:Connect(function(player)
 	activeTransactions[player.UserId] = nil
 end)
