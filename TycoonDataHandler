@@ -605,6 +605,14 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	elseif action == "MarkDirty" and player then
 		markDirty(player)
 		return true
+
+	elseif action == "MarkInventoryCleared" and player then
+		local session = SessionData[player]
+		if session then
+			session.SacrificeOccurred = true
+		end
+		markDirty(player)
+		return true
 	end
 
 	return false
@@ -997,6 +1005,7 @@ local function save(player, isClosing)
 		session.IsDirty = false
 		session.LastSave = os.time()
 		session.SacrificeOccurred = false
+		session.ExplicitClear = false
 	end
 
 	if isClosing then

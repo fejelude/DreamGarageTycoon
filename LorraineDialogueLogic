@@ -38,10 +38,10 @@ local CONTAINER_ID = "UI_NPC_Lorraine_Frame_Container"
 local TEXT_ID = "Text_Lorraine_Dialogue"
 local BUTTONS_FOLDER = "Buttons"
 
-local BTN_QUESTION_ID = "Btn_Question"
+local BTN_SELL_EVERYTHING_ID = "Btn_SellEverything"
 local BTN_SELL_ID = "Btn_Sell"
 local BTN_LEAVE_ID = "Btn_Leave"
-local ALL_BUTTON_IDS = {BTN_QUESTION_ID, BTN_SELL_ID, BTN_LEAVE_ID}
+local ALL_BUTTON_IDS = {BTN_SELL_EVERYTHING_ID, BTN_SELL_ID, BTN_LEAVE_ID}
 
 local TARGET_NPC = "Lorraine"
 local CAMERA_PART = "CameraAimPart"
@@ -512,30 +512,109 @@ end
 -- ============================================================================
 -- 🗣️ DIALOGUE ACTIONS
 -- ============================================================================
-local function handleQuestion(dialogueLabel)
-	local equippedCarId = getEquippedCar()
-	if not equippedCarId then
-		-- No car equipped
-		typewrite(dialogueLabel, "Hmm~ I'd love to help, but darling, you aren't holding anything~ Equip a car first and come back to me! 🌸", function()
+local function getInventorySellTotal()
+	local totalValue = 0
+	local totalCount = 0
+	local seen = {}
+
+	local function scan(container)
+		if not container then return end
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and child:GetAttribute("IssuedByServer") == true and not seen[child] then
+				local toolId = child:GetAttribute("ToolId") or child.Name
+				local details = CarSellPrices.GetDetails(toolId)
+				if details and details.SellPrice and details.SellPrice > 0 then
+					seen[child] = true
+					totalValue += details.SellPrice
+					totalCount += 1
+				end
+			end
+		end
+	end
+
+	scan(player:FindFirstChild("Backpack"))
+	if player.Character then scan(player.Character) end
+
+	return totalValue, totalCount
+end
+
+local function handleSellEverything(dialogueLabel)
+	if isProcessingSell then return end
+
+	local totalValue, carCount = getInventorySellTotal()
+	if carCount <= 0 or totalValue <= 0 then
+		typewrite(dialogueLabel, "Oh sweetheart~ I don't see any cars in your inventory to buy right now. Your placed garage cars will stay safe and untouched. 🌸", function()
+			isProcessingSell = false
 			task.wait(2)
 			stopInteraction()
 		end)
 		return
 	end
 
-	local details = CarSellPrices.GetDetails(equippedCarId)
-	if not details then
-		-- Unknown item
-		typewrite(dialogueLabel, "Oh my~ I'm afraid I don't know the value of that item, darling. Are you sure it's a car? ✨", function()
-			task.wait(2)
-			stopInteraction()
-		end)
-		return
-	end
+	isProcessingSell = true
 
-	local msg = "Oh how lovely~ That beautiful <b>[" .. details.Name .. "]</b> ✨ I'd be willing to offer you a generous <b><font color='" .. PRICE_COLOR .. "'>$" .. FormatCommas(details.SellPrice) .. "</font></b> for it~ How does that sound, darling? 💎"
-	typewrite(dialogueLabel, msg, function()
-		setButtonsState(true)
+	local carWord = carCount == 1 and "car" or "cars"
+	local confirmText = string.format(
+		"<font color='%s'>Are you sure you want to sell all </font><b><font color='%s'>%d inventory %s</font></b><font color='%s'> for </font><b><font color='%s'>$%s</font></b><font color='%s'>? This cannot be undone, sweetie.</font>",
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target, carCount, carWord,
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, FormatCommas(totalValue),
+		CONFIRMATION_COLORS.Accent
+	)
+
+	PromptConfirmation(confirmText, function(confirmed)
+		if not isInteracting then return end
+
+		if not confirmed then
+			typewrite(dialogueLabel, "That's perfectly okay, darling~ Nothing has been sold. Take all the time you need. 💖", function()
+				isProcessingSell = false
+				task.wait(1.5)
+				stopInteraction()
+			end)
+			return
+		end
+
+		task.spawn(function()
+			local success, msg, serverSellAmount, serverCarCount
+			local invokeCompleted = false
+
+			local invokeThread = task.spawn(function()
+				success, msg, serverSellAmount, serverCarCount = SellFunction:InvokeServer("SellAllCars")
+				invokeCompleted = true
+			end)
+
+			local elapsed = 0
+			local timeoutLimit = 10
+			while not invokeCompleted and elapsed < timeoutLimit do
+				elapsed += task.wait()
+			end
+
+			if not invokeCompleted then
+				pcall(task.cancel, invokeThread)
+				warn("⚠️ LorraineSellFunction InvokeServer timed out.")
+				success = false
+				msg = "The server is taking too long to respond."
+			end
+
+			if not isInteracting then return end
+
+			if success then
+				UIAudioConfig.PlayClick()
+				local soldCount = tonumber(serverCarCount) or carCount
+				local soldAmount = tonumber(serverSellAmount) or totalValue
+				local soldWord = soldCount == 1 and "car" or "cars"
+				typewrite(dialogueLabel, "All done, darling~ I bought " .. soldCount .. " inventory " .. soldWord .. " for <b><font color='" .. PRICE_COLOR .. "'>$" .. FormatCommas(soldAmount) .. "</font></b>. Your garage cars were left just as they were. ✨", function()
+					isProcessingSell = false
+					task.wait(1.5)
+					stopInteraction()
+				end)
+			else
+				typewrite(dialogueLabel, "Oh dear... I couldn't finish that sale. " .. (msg or "Try again later.") .. " 💔", function()
+					isProcessingSell = false
+					task.wait(2)
+					stopInteraction()
+				end)
+			end
+		end)
 	end)
 end
 
@@ -681,7 +760,7 @@ local function startInteraction(npcModel)
 
 	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
 	if dialogueLabel then
-		local greeting = "Oh my~ Welcome, darling! ✨ Looking to part ways with one of your precious automobiles? I do pay handsomely~"
+		local greeting = "Oh my~ Welcome, darling! ✨ I can buy one special car you are holding, or all the cars in your inventory if you prefer~"
 
 		typewrite(dialogueLabel, greeting, function()
 			setButtonsState(true)
@@ -725,9 +804,9 @@ local function startInteraction(npcModel)
 			stopInteraction()
 		end)
 
-		connectBtn(BTN_QUESTION_ID, function()
+		connectBtn(BTN_SELL_EVERYTHING_ID, function()
 			setButtonsState(false)
-			handleQuestion(dialogueLabel)
+			handleSellEverything(dialogueLabel)
 		end)
 
 		connectBtn(BTN_SELL_ID, function()
