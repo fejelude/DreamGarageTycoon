@@ -28,7 +28,6 @@ print("🌸 [LorraineDebug] Script Initializing...")
 local USER_COLOR = "#55AAFF"
 local LORRAINE_COLOR = "#FF69B4"
 local SUCCESS_COLOR = "#50C878"
-local PRICE_COLOR = "#FFD700"
 
 -- ============================================================================
 -- 🆔 UNIQUE IDENTIFIERS
@@ -38,10 +37,9 @@ local CONTAINER_ID = "UI_NPC_Lorraine_Frame_Container"
 local TEXT_ID = "Text_Lorraine_Dialogue"
 local BUTTONS_FOLDER = "Buttons"
 
-local BTN_QUESTION_ID = "Btn_Question"
-local BTN_SELL_ID = "Btn_Sell"
+local BTN_SELL_EVERYTHING_ID = "Btn_SellEverything"
 local BTN_LEAVE_ID = "Btn_Leave"
-local ALL_BUTTON_IDS = {BTN_QUESTION_ID, BTN_SELL_ID, BTN_LEAVE_ID}
+local ALL_BUTTON_IDS = {BTN_SELL_EVERYTHING_ID, BTN_LEAVE_ID}
 
 local TARGET_NPC = "Lorraine"
 local CAMERA_PART = "CameraAimPart"
@@ -492,70 +490,66 @@ local function FormatCommas(num)
 	return tostring(num):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
 end
 
-local function escapeRichText(text)
-	text = tostring(text)
-	return text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;")
-end
+local function getOwnedPlacedCarsValue()
+	local totalValue = 0
+	local totalCount = 0
+	local plotName = player:GetAttribute("OccupiedPlot")
+	local tycoons = Workspace:FindFirstChild("Tycoons")
+	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
+	if not plot then return totalValue, totalCount end
 
-local function getEquippedCar()
-	if player.Character then
-		for _, child in ipairs(player.Character:GetChildren()) do
-			if child:IsA("Tool") then
-				local toolId = child:GetAttribute("ToolId") or child.Name
-				return toolId
+	for _, descendant in ipairs(plot:GetDescendants()) do
+		if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
+			local car = descendant.Value
+			if car:GetAttribute("OwnerUserId") == player.UserId then
+				local details = CarSellPrices.GetDetails(car.Name)
+				if details and details.SellPrice and details.SellPrice > 0 then
+					totalValue += details.SellPrice
+					totalCount += 1
+				end
 			end
 		end
 	end
-	return nil
+
+	return totalValue, totalCount
+end
+
+local function getSellableInventoryValue()
+	local totalValue = 0
+	local totalCount = 0
+	local seen = {}
+
+	local function scan(container)
+		if not container then return end
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and child:GetAttribute("IssuedByServer") == true and not seen[child] then
+				local toolId = child:GetAttribute("ToolId") or child.Name
+				local details = CarSellPrices.GetDetails(toolId)
+				if details and details.SellPrice and details.SellPrice > 0 then
+					seen[child] = true
+					totalValue += details.SellPrice
+					totalCount += 1
+				end
+			end
+		end
+	end
+
+	scan(player:FindFirstChild("Backpack"))
+	if player.Character then scan(player.Character) end
+
+	local placedValue, placedCount = getOwnedPlacedCarsValue()
+	return totalValue + placedValue, totalCount + placedCount
 end
 
 -- ============================================================================
 -- 🗣️ DIALOGUE ACTIONS
 -- ============================================================================
-local function handleQuestion(dialogueLabel)
-	local equippedCarId = getEquippedCar()
-	if not equippedCarId then
-		-- No car equipped
-		typewrite(dialogueLabel, "Hmm~ I'd love to help, but darling, you aren't holding anything~ Equip a car first and come back to me! 🌸", function()
-			task.wait(2)
-			stopInteraction()
-		end)
-		return
-	end
-
-	local details = CarSellPrices.GetDetails(equippedCarId)
-	if not details then
-		-- Unknown item
-		typewrite(dialogueLabel, "Oh my~ I'm afraid I don't know the value of that item, darling. Are you sure it's a car? ✨", function()
-			task.wait(2)
-			stopInteraction()
-		end)
-		return
-	end
-
-	local msg = "Oh how lovely~ That beautiful <b>[" .. details.Name .. "]</b> ✨ I'd be willing to offer you a generous <b><font color='" .. PRICE_COLOR .. "'>$" .. FormatCommas(details.SellPrice) .. "</font></b> for it~ How does that sound, darling? 💎"
-	typewrite(dialogueLabel, msg, function()
-		setButtonsState(true)
-	end)
-end
-
-local function handleSell(dialogueLabel)
+local function handleSellEverything(dialogueLabel)
 	if isProcessingSell then return end
 
-	local equippedCarId = getEquippedCar()
-	if not equippedCarId then
-		-- No car equipped
-		typewrite(dialogueLabel, "Hmm~ I'd love to help, but darling, you aren't holding anything~ Equip a car first and come back to me! 🌸", function()
-			task.wait(2)
-			stopInteraction()
-		end)
-		return
-	end
-
-	local details = CarSellPrices.GetDetails(equippedCarId)
-	if not details then
-		-- Unknown item
-		typewrite(dialogueLabel, "Oh my~ I'm afraid I don't know the value of that item, darling. Are you sure it's a car? ✨", function()
+	local totalValue, carCount = getSellableInventoryValue()
+	if carCount <= 0 or totalValue <= 0 then
+		typewrite(dialogueLabel, "You do not have any cars available to sell right now, darling. 🌸", function()
 			task.wait(2)
 			stopInteraction()
 		end)
@@ -565,17 +559,15 @@ local function handleSell(dialogueLabel)
 	isProcessingSell = true
 
 	local confirmText = string.format(
-		"<font color='%s'>Are you absolutely sure, darling~? 💔 You wish to sell your </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>$%s</font></b><font color='%s'>? This cannot be undone~</font>",
-		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target, escapeRichText(details.Name),
-		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, FormatCommas(details.SellPrice),
-		CONFIRMATION_COLORS.Accent
+		"<font color='%s'>Are you sure you want to sell all of your cars for </font><b><font color='%s'>$%s</font></b><font color='%s'>? This cannot be undone, sweetie.</font>",
+		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, FormatCommas(totalValue), CONFIRMATION_COLORS.Accent
 	)
 
 	PromptConfirmation(confirmText, function(confirmed)
 		if not isInteracting then return end
 
 		if not confirmed then
-			typewrite(dialogueLabel, "Oh, changed your mind~? That's perfectly fine, darling 💅 Take all the time you need~", function()
+			typewrite(dialogueLabel, "No worries, darling. Your cars are staying right where they are. 🌸", function()
 				isProcessingSell = false
 				task.wait(1.5)
 				stopInteraction()
@@ -583,29 +575,15 @@ local function handleSell(dialogueLabel)
 			return
 		end
 
-		-- Confirmed, execute sell via server with a timeout protection
 		task.spawn(function()
-			-- FIX (Stale Car ID): Re-read equipped car in case the player
-			-- switched tools while the confirmation dialog was open.
-			local freshCarId = getEquippedCar()
-			if not freshCarId or CarSellPrices.CleanId(freshCarId) ~= CarSellPrices.CleanId(equippedCarId) then
-				typewrite(dialogueLabel, "Oh my~ It seems you changed what you're holding, darling. Let's start over~ 🌸", function()
-					isProcessingSell = false
-					task.wait(2)
-					stopInteraction()
-				end)
-				return
-			end
-
 			local success, msg
 			local invokeCompleted = false
 
 			local invokeThread = task.spawn(function()
-				success, msg = SellFunction:InvokeServer(equippedCarId)
+				success, msg = SellFunction:InvokeServer("SellAllCars")
 				invokeCompleted = true
 			end)
 
-			-- Timeout mechanism (No artificial waiting, immediately breaks once invokeCompleted)
 			local elapsed = 0
 			local timeoutLimit = 10
 			while not invokeCompleted and elapsed < timeoutLimit do
@@ -623,7 +601,7 @@ local function handleSell(dialogueLabel)
 
 			if success then
 				UIAudioConfig.PlayClick()
-				typewrite(dialogueLabel, "Wonderful~ 🌟 It was a pleasure doing business with you, darling! Your wallet is looking quite fabulous now~ ✨", function()
+				typewrite(dialogueLabel, "Wonderful. Your full car inventory has been sold, and your storage is clear now, darling. ✨", function()
 					isProcessingSell = false
 					task.wait(1.5)
 					stopInteraction()
@@ -681,7 +659,7 @@ local function startInteraction(npcModel)
 
 	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
 	if dialogueLabel then
-		local greeting = "Oh my~ Welcome, darling! ✨ Looking to part ways with one of your precious automobiles? I do pay handsomely~"
+		local greeting = "Oh my~ Welcome, darling! ✨ I can purchase your entire car inventory whenever you are ready."
 
 		typewrite(dialogueLabel, greeting, function()
 			setButtonsState(true)
@@ -725,14 +703,9 @@ local function startInteraction(npcModel)
 			stopInteraction()
 		end)
 
-		connectBtn(BTN_QUESTION_ID, function()
+		connectBtn(BTN_SELL_EVERYTHING_ID, function()
 			setButtonsState(false)
-			handleQuestion(dialogueLabel)
-		end)
-
-		connectBtn(BTN_SELL_ID, function()
-			setButtonsState(false)
-			handleSell(dialogueLabel)
+			handleSellEverything(dialogueLabel)
 		end)
 	else
 		warn("❌ [LorraineDebug] ERROR: Could not find TextLabel named '" .. TEXT_ID .. "' inside Container!")

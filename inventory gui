@@ -118,6 +118,7 @@ local tierFrame     = mainWindow:WaitForChild("TierFrame", 10)
 local tierContainer = tierFrame:WaitForChild("TierContainer", 10)
 
 local emptyIndicatorLabel = mainWindow:FindFirstChild("Indicator-v2", true)
+local limitIndicatorLabel = mainWindow:FindFirstChild("LimitIndicator", true)
 
 -- 🛠️ HOTBAR REFERENCES
 local hotbarFrame = mainWindow.Parent:FindFirstChild("HotBarFrame") or mainWindow:WaitForChild("HotBarFrame", 10)
@@ -193,6 +194,11 @@ local isOpen     = false
 local CarStats = nil
 pcall(function()
 	CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5))
+end)
+
+local RankConfig = nil
+pcall(function()
+	RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig", 5))
 end)
 
 -- =========================================================
@@ -1241,6 +1247,111 @@ local function scanContainer(container)
 	end
 end
 
+-- ========= INVENTORY LIMIT INDICATOR =========
+local LIMIT_INDICATOR_SAFE_COLOR = Color3.fromRGB(80, 220, 120)
+local LIMIT_INDICATOR_NEAR_COLOR = Color3.fromRGB(255, 120, 120)
+local LIMIT_INDICATOR_NEAR_RATIO = 0.8
+local DEFAULT_STORAGE_LIMIT = 5
+local limitWatchConnections = {}
+
+local function getStorageLimit()
+	local limit = tonumber(player:GetAttribute("RankStorageLimit"))
+	if limit and limit > 0 then return limit end
+	if RankConfig and RankConfig.GetBenefitsForRank then
+		local benefits = RankConfig.GetBenefitsForRank(player:GetAttribute("Rank") or RankConfig.DefaultRankName)
+		limit = benefits and tonumber(benefits.StorageSlots)
+		if limit and limit > 0 then return limit end
+	end
+	return DEFAULT_STORAGE_LIMIT
+end
+
+local function countInventoryTools()
+	local total = 0
+	local seen = {}
+	local function scan(container)
+		if not container then return end
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and child:GetAttribute("ToolId") and not seen[child] then
+				seen[child] = true
+				total += 1
+			end
+		end
+	end
+	scan(player:FindFirstChild("Backpack"))
+	if player.Character then scan(player.Character) end
+	return total
+end
+
+local function countPlacedCars()
+	local plotName = player:GetAttribute("OccupiedPlot")
+	local tycoons = Workspace:FindFirstChild("Tycoons")
+	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
+	if not plot then return 0 end
+
+	local total = 0
+	for _, descendant in ipairs(plot:GetDescendants()) do
+		if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
+			local car = descendant.Value
+			if car:GetAttribute("OwnerUserId") == player.UserId then
+				total += 1
+			end
+		end
+	end
+	return total
+end
+
+local function updateLimitIndicator()
+	if not limitIndicatorLabel or not limitIndicatorLabel:IsA("TextLabel") then return end
+
+	local limit = getStorageLimit()
+	local current = math.clamp(countInventoryTools() + countPlacedCars(), 0, limit)
+	limitIndicatorLabel.Text = tostring(current) .. "/" .. tostring(limit)
+	limitIndicatorLabel.TextColor3 = (current / math.max(limit, 1)) >= LIMIT_INDICATOR_NEAR_RATIO
+		and LIMIT_INDICATOR_NEAR_COLOR
+		or LIMIT_INDICATOR_SAFE_COLOR
+end
+
+local function clearLimitWatchConnections()
+	for _, conn in ipairs(limitWatchConnections) do
+		if conn then conn:Disconnect() end
+	end
+	limitWatchConnections = {}
+end
+
+local function bindLimitPlotWatch()
+	clearLimitWatchConnections()
+	local plotName = player:GetAttribute("OccupiedPlot")
+	local tycoons = Workspace:FindFirstChild("Tycoons")
+	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
+	if not plot then
+		updateLimitIndicator()
+		return
+	end
+
+	local function watchLinkedCar(obj)
+		if obj.Name == "LinkedCar" and obj:IsA("ObjectValue") then
+			table.insert(limitWatchConnections, obj:GetPropertyChangedSignal("Value"):Connect(updateLimitIndicator))
+		end
+	end
+
+	for _, descendant in ipairs(plot:GetDescendants()) do
+		watchLinkedCar(descendant)
+	end
+	table.insert(limitWatchConnections, plot.DescendantAdded:Connect(function(descendant)
+		watchLinkedCar(descendant)
+		task.defer(updateLimitIndicator)
+	end))
+	table.insert(limitWatchConnections, plot.DescendantRemoving:Connect(function()
+		task.defer(updateLimitIndicator)
+	end))
+	updateLimitIndicator()
+end
+
+player:GetAttributeChangedSignal("RankStorageLimit"):Connect(updateLimitIndicator)
+player:GetAttributeChangedSignal("Rank"):Connect(updateLimitIndicator)
+player:GetAttributeChangedSignal("OccupiedPlot"):Connect(bindLimitPlotWatch)
+task.defer(bindLimitPlotWatch)
+
 -- ========= UI POOL =========
 local poolFolder = Instance.new("Folder")
 poolFolder.Name = "__InventoryUIPool"
@@ -1566,6 +1677,7 @@ function scheduleRender()
 		refreshQueued = false
 		if isOpen then renderCurrentTab() end
 		updateHotbarUI()
+		updateLimitIndicator()
 	end)
 end
 
@@ -1574,6 +1686,7 @@ end
 local function forceRender()
 	if isOpen then renderCurrentTab() end
 	updateHotbarUI()
+	updateLimitIndicator()
 	refreshQueued = false -- allow the next scheduleRender to also fire
 end
 
@@ -1656,6 +1769,7 @@ player.CharacterAdded:Connect(function(char)
 	task.defer(function()
 		onCharacter(char)
 		scheduleRender()
+		updateLimitIndicator()
 	end)
 end)
 
