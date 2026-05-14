@@ -1,7 +1,7 @@
 -- Purpose: Handles main Bank UI visuals, FOV camera tweens, sounds, player avatar, focus mode, and hover effects.
 -- Runs on: Client
 -- Location: StarterGui -> MainButtons -> Buttons -> BankingApp (open btn) | BankGui -> Local Script for Bank
--- Dependencies: Players, TweenService, SoundService, Workspace
+-- Dependencies: Players, TweenService, Workspace
 -- Public API: None
 -- Networking: None (Visuals only)
 -- Security: Client-side UI logic only.
@@ -13,7 +13,6 @@ print("🛠️ STARTING BANK UI SCRIPT (SILENT MODE)...")
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
-local SoundService = game:GetService("SoundService")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
@@ -60,6 +59,7 @@ local transferButton = mainWindow:FindFirstChild("TransferButton", true)
 
 local backButton = transferFrame and transferFrame:FindFirstChild("BackButton", true)
 local withdrawButton = transferFrame and transferFrame:FindFirstChild("WithdrawButton", true) -- ✅ Found the Confirm button
+local skipButton = transferFrame and transferFrame:FindFirstChild("SkipButton", true)
 local transferExitButton = transferFrame and (
 	transferFrame:FindFirstChild("ExitButton", true)
 		or transferFrame:FindFirstChild("CloseButton", true)
@@ -300,6 +300,7 @@ addHover(closeButton)
 if transferButton then addHover(transferButton) end
 if backButton then addHover(backButton) end
 if withdrawButton then addHover(withdrawButton) end -- ✅ Applied to Confirm button
+if skipButton then addHover(skipButton) end
 if transferExitButton then addHover(transferExitButton) end
 
 local maxButton =

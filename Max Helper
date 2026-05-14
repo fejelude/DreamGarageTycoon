@@ -1,6 +1,6 @@
--- Purpose: Updates the AmountInput with the maximum available balance, or toggles to 0 if already at max.
+-- Purpose: Updates the AmountInput with the maximum transferable balance, capped by the remaining transfer limit.
 -- Runs on: Client
--- Location: StarterGui / PlayerGui -> BankGui -> MaxButton
+-- Location: StarterGui / PlayerGui -> BankGui -> TransferFrame -> WithdrawalFunction -> MaxButton
 -- Dependencies: Players, ReplicatedStorage (UIAudioConfig)
 -- Public API: None
 -- Networking: None (UI display only)
@@ -8,51 +8,59 @@
 -- Performance: Minimal memory footprint.
 -- Notes: Uses stateless toggle logic to prevent desyncs if the user manually types in the box.
 
-print("✅ Max Button Script Loaded (Toggle Edition)")
+print("✅ Max Button Script Loaded (Transfer Limit Edition)")
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Require the centralized audio module
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
 local hiddenStats = player:WaitForChild("HiddenStats", 10)
 local button = script.Parent
-local mainWindow = button.Parent 
+local mainWindow = button.Parent
 
 -- 📂 UI REFERENCES
 local AmountInput = mainWindow:WaitForChild("AmountInput", 5)
 
+-- ⚙️ TRANSFER LIMIT CONFIG
+local TRANSFER_USED_ATTR = "BankTransferLimitUsed"
+local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
+local DEFAULT_TRANSFER_LIMIT = 1000000000000
+
+local function getRemainingTransferLimit()
+	local limit = tonumber(player:GetAttribute("MaxBankWithdrawal")) or DEFAULT_TRANSFER_LIMIT
+	local used = tonumber(player:GetAttribute(TRANSFER_USED_ATTR)) or 0
+	local resetAt = tonumber(player:GetAttribute(TRANSFER_RESET_AT_ATTR)) or 0
+
+	if resetAt > 0 and os.time() >= resetAt then
+		used = 0
+	end
+
+	return math.max(0, math.floor(limit - used))
+end
+
 button.MouseButton1Click:Connect(function()
 	print("🖱️ MAX Button Clicked")
 
-	-- 1. Get Current Bank Balance
 	local currentBank = 0
 	local cashValue = hiddenStats and hiddenStats:FindFirstChild("Cash")
 	if cashValue then
 		currentBank = math.floor(cashValue.Value)
 	end
 
-	-- 2. Play Click Sound (Centralized)
 	UIAudioConfig.PlayClick()
 
-	-- 3. Toggle Logic
 	if AmountInput then
-		local maxBankString = tostring(currentBank)
+		local maxTransferable = math.max(0, math.min(currentBank, getRemainingTransferLimit()))
+		local maxTransferString = tostring(maxTransferable)
 
-		-- If the input box already matches the max amount exactly, toggle it to 0
-		if AmountInput.Text == maxBankString and currentBank > 0 then
+		if AmountInput.Text == maxTransferString and maxTransferable > 0 then
 			AmountInput.Text = "0"
 			print("🔄 Toggled back to 0")
 		else
-			-- Otherwise, fill it with the max amount
-			if currentBank > 0 then
-				AmountInput.Text = maxBankString
-				print("✅ Input auto-filled with: " .. AmountInput.Text)
-			else
-				AmountInput.Text = "0"
-			end
+			AmountInput.Text = maxTransferString
+			print("✅ Input auto-filled with transfer-safe max: " .. AmountInput.Text)
 		end
 	else
 		warn("⚠️ AmountInput not found in parent frame! Cannot auto-fill.")

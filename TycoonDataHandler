@@ -781,6 +781,13 @@ local function save(player, isClosing)
 			currentHotbar[i] = (v and v ~= "") and v or ""
 		end
 
+		local currentTransferUsed = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitUsed")) or 0))
+		local currentTransferResetAt = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitResetAt")) or 0))
+		if currentTransferResetAt > 0 and os.time() >= currentTransferResetAt then
+			currentTransferUsed = 0
+			currentTransferResetAt = 0
+		end
+
 		local inventory = {}
 		local invCount = 0
 		local seenInstances = {}
@@ -977,6 +984,8 @@ local function save(player, isClosing)
 					oldData.Rank = currentRank
 					oldData.RankData = currentRankData
 					oldData.HotbarSlots = currentHotbar
+					oldData.BankTransferLimitUsed = currentTransferUsed
+					oldData.BankTransferLimitResetAt = currentTransferResetAt
 
 					oldData.LastUpdated  = os.time()
 					oldData.DataVersion  = "V38_Fixed"
@@ -1114,6 +1123,8 @@ local function InitializePlayer(player)
 	data.BaseLevel              = data.BaseLevel              or 1
 	data.Rank                   = data.Rank                   or "Player"
 	data.RankData               = data.RankData               or {}
+	data.BankTransferLimitUsed  = data.BankTransferLimitUsed  or 0
+	data.BankTransferLimitResetAt = data.BankTransferLimitResetAt or 0
 
 	local function sanitizeMoney(value)
 		value = tonumber(value) or 0
@@ -1154,6 +1165,15 @@ local function InitializePlayer(player)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
 	player:SetAttribute("Rank", data.Rank)
 
+	local transferUsed = math.max(0, math.floor(tonumber(data.BankTransferLimitUsed) or 0))
+	local transferResetAt = math.max(0, math.floor(tonumber(data.BankTransferLimitResetAt) or 0))
+	if transferResetAt > 0 and os.time() >= transferResetAt then
+		transferUsed = 0
+		transferResetAt = 0
+	end
+	player:SetAttribute("BankTransferLimitUsed", transferUsed)
+	player:SetAttribute("BankTransferLimitResetAt", transferResetAt)
+
 	local rankPersistenceBindable = ServerStorage:WaitForChild("RankPersistenceFunction", 10)
 	if rankPersistenceBindable then
 		data.RankData.LegacyRank = data.Rank
@@ -1173,6 +1193,8 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
 	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rank"):Connect(setDirty)
+	player:GetAttributeChangedSignal("BankTransferLimitUsed"):Connect(setDirty)
+	player:GetAttributeChangedSignal("BankTransferLimitResetAt"):Connect(setDirty)
 	for i = 1, 6 do
 		player:GetAttributeChangedSignal("HotbarSlot" .. i):Connect(setDirty)
 	end

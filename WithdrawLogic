@@ -1,182 +1,212 @@
--- Purpose: Handles UI verification, animations, and remote communication for withdrawing bank funds.
+-- Purpose: Handles UI verification, state labels, and remote communication for bank transfers.
 -- Runs on: Client
--- Location: PlayerGui -> BankGui -> Withdraw Button
--- Dependencies: ReplicatedStorage, TweenService, SoundService, Players
+-- Location: PlayerGui -> BankGui -> TransferFrame -> WithdrawalFunction -> WithdrawButton
+-- Dependencies: ReplicatedStorage, Players
 -- Public API: None
--- Networking: Invokes "WithdrawFunction" (RemoteFunction)
--- Security: Client-side validation prevents negative or excessive requests before invoking the server.
--- Performance: Uses single Tween instances and cleans up temporary sounds using Debris.
--- Notes: Click sound is safely integrated after the cooldown check to prevent audio spam.
+-- Networking: Invokes "WithdrawFunction" RemoteFunction.
+-- Security: Client-side validation is only UX; server remains authoritative.
+-- Performance: Reuses one Success label and one Failed label so repeated messages stack instead of overlapping.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
+
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
-local withdrawBtn = script.Parent
-local mainWindow = withdrawBtn.Parent 
+local playerGui = player:WaitForChild("PlayerGui")
+local bankGui = playerGui:WaitForChild("BankGui")
+local transferFrame = bankGui:WaitForChild("TransferFrame")
+local stateLabels = transferFrame:WaitForChild("StateLabels")
 
--- 🔄 REMOTE FUNCTION
+local withdrawBtn = script.Parent
+local mainWindow = withdrawBtn.Parent
+
 local withdrawFunc = ReplicatedStorage:WaitForChild("WithdrawFunction")
 
--- 📂 UI REFERENCES
 local amountInput = mainWindow:WaitForChild("AmountInput", 5)
-local VerifyLabel = mainWindow:WaitForChild("VerifyLabel", 5) 
-local SuccessLabel = mainWindow:WaitForChild("SuccessLabel", 5)
-local ErrorLabel = mainWindow:WaitForChild("ErrorLabel", 5)
+local verifyLabel = mainWindow:FindFirstChild("VerifyLabel")
 
--- 🔇 All sounds routed through UIAudioConfig (PlayClick / PlayHover).
--- No legacy sound IDs or throwaway Sound instances are used here.
+local successLabel = stateLabels:WaitForChild("Success")
+local failedLabel = stateLabels:WaitForChild("Failed")
 
--- ⚙️ STATE VARIABLES
-local currentVerifyTween = nil
+local TRANSFER_USED_ATTR = "BankTransferLimitUsed"
+local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
+
+-- Fallback only. The server remains authoritative.
+local DEFAULT_TRANSFER_LIMIT = 1000000000000
+
 local isCoolingDown = false
+local messageState = {}
 
--- ============================================================================
--- 🛠️ HELPER FUNCTIONS (Formatting)
--- ============================================================================
+local MULTIPLIERS = {
+	k = 1000,
+	m = 1000000,
+	b = 1000000000,
+	t = 1000000000000,
+	qa = 1000000000000000,
+	qi = 1000000000000000000,
+	sx = 1000000000000000000000,
+	sp = 1000000000000000000000000,
+	oc = 1000000000000000000000000000,
+	no = 1000000000000000000000000000000,
+	dc = 1000000000000000000000000000000000,
+}
 
--- ✅ Parses "10k", "5.5m", "1,000" into numbers
 local function parseAmount(text)
-	if not text then return 0 end
-	text = text:lower():gsub(",", "") 
+	if not text then
+		return 0
+	end
+
+	text = tostring(text):lower():gsub(",", "")
+	local numberPart, suffix = text:match("^%s*([%d%.]+)%s*(%a*)%s*$")
+
+	if not numberPart then
+		return 0
+	end
+
+	local numberValue = tonumber(numberPart)
+	if not numberValue then
+		return 0
+	end
 
 	local multiplier = 1
-	if text:match("k") then multiplier = 1000 end
-	if text:match("m") then multiplier = 1000000 end
-	if text:match("b") then multiplier = 1000000000 end
-
-	local cleanNum = tonumber(text:match("[%d%.]+")) 
-	if cleanNum then 
-		return math.floor(cleanNum * multiplier) 
+	if suffix ~= "" then
+		multiplier = MULTIPLIERS[suffix]
+		if not multiplier then
+			return 0
+		end
 	end
-	return 0
+
+	return math.floor(numberValue * multiplier)
 end
 
-local function animateResult(uiObject)
-	if not uiObject then return end
-
-	-- 1. Show
-	uiObject.Visible = true
-	uiObject.ZIndex = 20 
-	if uiObject:IsA("ImageLabel") then uiObject.ImageTransparency = 0 end
-	if uiObject:IsA("TextLabel") then uiObject.TextTransparency = 0 end
-	-- FIX: Sync UIStroke on show
-	local stroke = uiObject:FindFirstChildOfClass("UIStroke")
-	if stroke then stroke.Transparency = 0 end
-
-	-- 2. Wait
-	task.wait(2)
-
-	-- 3. Fade Out
-	local goals = {}
-	if uiObject:IsA("ImageLabel") then goals.ImageTransparency = 1 end
-	if uiObject:IsA("TextLabel") then goals.TextTransparency = 1 end
-
-	local tweenOut = TweenService:Create(uiObject, TweenInfo.new(0.5), goals)
-	tweenOut:Play()
-	-- FIX: Fade UIStroke in sync with parent
-	if stroke then TweenService:Create(stroke, TweenInfo.new(0.5), {Transparency = 1}):Play() end
-	tweenOut.Completed:Wait()
-
-	uiObject.Visible = false
+local function getTransferLimit()
+	return tonumber(player:GetAttribute("MaxBankWithdrawal")) or DEFAULT_TRANSFER_LIMIT
 end
 
-local function startVerifying()
-	if not VerifyLabel then return end
-	VerifyLabel.Visible = true
-	VerifyLabel.ZIndex = 20
+local function getTransferUsed()
+	local used = tonumber(player:GetAttribute(TRANSFER_USED_ATTR)) or 0
+	local resetAt = tonumber(player:GetAttribute(TRANSFER_RESET_AT_ATTR)) or 0
 
-	local pulseInfo = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
-	local goals = {}
-
-	if VerifyLabel:IsA("ImageLabel") then 
-		VerifyLabel.ImageTransparency = 1 
-		goals.ImageTransparency = 0 
+	if resetAt > 0 and os.time() >= resetAt then
+		return 0
 	end
-	if VerifyLabel:IsA("TextLabel") then 
-		VerifyLabel.TextTransparency = 1 
-		goals.TextTransparency = 0 
-	end
-	-- FIX: Sync UIStroke during verify pulse
-	local vStroke = VerifyLabel:FindFirstChildOfClass("UIStroke")
-	if vStroke then vStroke.Transparency = 1 end
 
-	currentVerifyTween = TweenService:Create(VerifyLabel, pulseInfo, goals)
-	currentVerifyTween:Play()
+	return math.max(0, math.floor(used))
 end
 
-local function stopVerifying()
-	if currentVerifyTween then
-		currentVerifyTween:Cancel()
-		currentVerifyTween = nil
-	end
-	if VerifyLabel then VerifyLabel.Visible = false end
+local function getRemainingTransferLimit()
+	return math.max(0, getTransferLimit() - getTransferUsed())
 end
 
--- ============================================================================
--- 🟢 MAIN TRANSFER BUTTON LOGIC
--- ============================================================================
-withdrawBtn.MouseButton1Click:Connect(function()
-
-	-- 🛑 1. CHECK COOLDOWN
-	if isCoolingDown then return end
-	isCoolingDown = true 
-
-	-- 🔊 1.5 PLAY INITIAL CLICK SOUND
-	UIAudioConfig.PlayClick()
-
-	-- 2. DISABLE BUTTON VISUALLY
-	withdrawBtn.Active = false
-	withdrawBtn.AutoButtonColor = false
-
-	-- 3. START VFX
-	startVerifying()
-	task.wait(1.5) -- "Thinking" Time
-
-	-- 4. PREPARE DATA
-	local amount = parseAmount(amountInput.Text) 
-	local hiddenStats = player:WaitForChild("HiddenStats")
-	local currentBank = hiddenStats:WaitForChild("Cash").Value
-
-	-- 5. VALIDATION
-	if (amount <= 0) or (amount > currentBank) then
-		stopVerifying()
-		print("❌ Invalid Input or Insufficient Funds")
-		task.spawn(function() animateResult(ErrorLabel) end)
-
-		-- Reset Button
-		task.wait(1)
-		isCoolingDown = false
-		withdrawBtn.Active = true
-		withdrawBtn.AutoButtonColor = true
+local function showStateLabel(label, baseText)
+	if not label then
+		warn("⚠️ Bank transfer state label missing for message: " .. tostring(baseText))
 		return
 	end
 
-	-- 6. SERVER REQUEST (Transfer Bank -> ATM)
-	local success, msg = withdrawFunc:InvokeServer(amount, "Transfer")
-
-	-- 7. FINISH
-	stopVerifying()
-
-	if success then
-		print("✅ Transaction Approved")
-		amountInput.Text = ""
-		task.spawn(function() animateResult(SuccessLabel) end)
-	else
-		print("❌ Transaction Denied: " .. msg)
-		task.spawn(function() animateResult(ErrorLabel) end)
+	local state = messageState[label]
+	if not state then
+		state = {
+			count = 0,
+			baseText = baseText,
+		}
+		messageState[label] = state
 	end
 
-	-- 8. RESET
-	task.wait(1)
-	isCoolingDown = false
-	withdrawBtn.Active = true
-	withdrawBtn.AutoButtonColor = true
+	if state.baseText == baseText and label.Visible then
+		state.count += 1
+	else
+		state.count = 1
+		state.baseText = baseText
+	end
+
+	label.Text = state.count > 1 and (baseText .. " x" .. state.count) or baseText
+	label.Visible = true
+end
+
+local function startVerifying()
+	if verifyLabel then
+		verifyLabel.Visible = true
+	end
+end
+
+local function stopVerifying()
+	if verifyLabel then
+		verifyLabel.Visible = false
+	end
+end
+
+local function showFailure(reason)
+	if reason == "Transfer Limit Reached" then
+		showStateLabel(failedLabel, "Transfer Limit Reached")
+	else
+		showStateLabel(failedLabel, "Transfer Unsuccessful")
+	end
+end
+
+local function releaseButtonSoon()
+	task.delay(0.15, function()
+		if withdrawBtn and withdrawBtn.Parent then
+			withdrawBtn.Active = true
+		end
+		isCoolingDown = false
+	end)
+end
+
+withdrawBtn.MouseButton1Click:Connect(function()
+	if isCoolingDown then
+		return
+	end
+
+	isCoolingDown = true
+	withdrawBtn.Active = false
+
+	UIAudioConfig.PlayClick()
+	startVerifying()
+
+	local amount = parseAmount(amountInput and amountInput.Text or "")
+	local hiddenStats = player:FindFirstChild("HiddenStats") or player:WaitForChild("HiddenStats", 5)
+	local cashValue = hiddenStats and hiddenStats:FindFirstChild("Cash")
+	local currentBank = cashValue and cashValue.Value or 0
+	local remainingLimit = getRemainingTransferLimit()
+
+	if amount <= 0 or amount > currentBank then
+		stopVerifying()
+		showFailure("Transfer Unsuccessful")
+		releaseButtonSoon()
+		return
+	end
+
+	if amount > remainingLimit then
+		stopVerifying()
+		showFailure("Transfer Limit Reached")
+		releaseButtonSoon()
+		return
+	end
+
+	-- Call the server immediately so a successful transfer starts the reset timer right away.
+	local invokeOk, success, message = pcall(function()
+		return withdrawFunc:InvokeServer(amount, "Transfer")
+	end)
+
+	stopVerifying()
+
+	if not invokeOk then
+		warn("⚠️ Bank transfer InvokeServer failed: " .. tostring(success))
+		showFailure("Transfer Unsuccessful")
+	elseif success then
+		if amountInput then
+			amountInput.Text = ""
+		end
+		showStateLabel(successLabel, "Transfer Successful")
+	else
+		showFailure(message)
+	end
+
+	releaseButtonSoon()
 end)
 
--- Initialize Visuals
-if VerifyLabel then VerifyLabel.Visible = false end
-if SuccessLabel then SuccessLabel.Visible = false end
-if ErrorLabel then ErrorLabel.Visible = false end
+if verifyLabel then
+	verifyLabel.Visible = false
+end

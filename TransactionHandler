@@ -1,4 +1,4 @@
--- Purpose: Handles secure Bank <-> ATM <-> Wallet transfers with transaction locking and rate limits.
+-- Purpose: Handles secure Bank <-> ATM <-> Wallet transfers with transaction locking and transfer limits.
 -- Runs on: Server
 -- Location: ServerScriptService
 -- Dependencies: ReplicatedStorage, Workspace, Players
@@ -18,20 +18,62 @@ local NPC_FOLDER_NAME = "NPCS"
 local MANAGER_NAME = "AfraiC4t"
 local MAX_DISTANCE = 20 -- Studs (For Physical Withdraw only)
 local MAX_AMOUNT_LIMIT = 100000000000000 -- 100 Trillion absolute safety cap
+local TRANSFER_RESET_SECONDS = 60 * 60
+
+local TRANSFER_USED_ATTR = "BankTransferLimitUsed"
+local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
 
 -- 🛡️ SECURITY: Transaction Locks
 local activeTransactions = {}
 
-local function getPlayerWithdrawalLimit(player)
+local function initializeTransferAttributes(player)
+	if player:GetAttribute(TRANSFER_USED_ATTR) == nil then
+		player:SetAttribute(TRANSFER_USED_ATTR, 0)
+	end
+	if player:GetAttribute(TRANSFER_RESET_AT_ATTR) == nil then
+		player:SetAttribute(TRANSFER_RESET_AT_ATTR, 0)
+	end
+end
+
+local function getPlayerTransferLimit(player)
 	return tonumber(player:GetAttribute("MaxBankWithdrawal")) or 1000000000000
 end
 
-local function validateWithdrawalLimit(player, amount)
-	local limit = getPlayerWithdrawalLimit(player)
-	if amount > limit then
-		return false, "Amount exceeds your current withdrawal limit."
+local function getTransferState(player)
+	local now = os.time()
+	local used = math.max(0, tonumber(player:GetAttribute(TRANSFER_USED_ATTR)) or 0)
+	local resetAt = tonumber(player:GetAttribute(TRANSFER_RESET_AT_ATTR)) or 0
+
+	if resetAt > 0 and now >= resetAt then
+		used = 0
+		resetAt = 0
+		player:SetAttribute(TRANSFER_USED_ATTR, used)
+		player:SetAttribute(TRANSFER_RESET_AT_ATTR, resetAt)
 	end
+
+	return used, resetAt
+end
+
+local function validateTransferLimit(player, amount)
+	local limit = getPlayerTransferLimit(player)
+	local used = getTransferState(player)
+	local remaining = math.max(0, limit - used)
+
+	if remaining <= 0 or amount > remaining then
+		return false, "Transfer Limit Reached"
+	end
+
 	return true
+end
+
+local function recordTransferProgress(player, amount)
+	local used, resetAt = getTransferState(player)
+	local now = os.time()
+
+	player:SetAttribute(TRANSFER_USED_ATTR, used + amount)
+	if resetAt <= now then
+		player:SetAttribute(TRANSFER_RESET_AT_ATTR, now + TRANSFER_RESET_SECONDS)
+	end
 end
 
 -- [[ 1. TRANSFER: BANK -> ATM (Remote / App) ]]
@@ -45,12 +87,13 @@ local function TransferToATM(player, amount)
 
 	if not bank or not atm then return false, "Missing Values" end
 
-	local withinLimit, limitMessage = validateWithdrawalLimit(player, amount)
+	local withinLimit, limitMessage = validateTransferLimit(player, amount)
 	if not withinLimit then return false, limitMessage end
 
 	if bank.Value >= amount then
 		bank.Value -= amount
 		atm.Value += amount
+		recordTransferProgress(player, amount)
 		print("📱 Mobile Transfer: " .. player.Name .. " moved $"..amount.." to ATM.")
 		return true, "Transfer Successful! Visit ATM to collect."
 	else
@@ -88,9 +131,6 @@ local function WithdrawFromATM(player, amount)
 
 	if not atm or not wallet or not hiddenStats then return false, "Data Error" end
 
-	local withinLimit, limitMessage = validateWithdrawalLimit(player, amount)
-	if not withinLimit then return false, limitMessage end
-
 	if atm.Value >= amount then
 		atm.Value -= amount
 		wallet.Value += amount
@@ -105,7 +145,7 @@ end
 withdrawFunc.OnServerInvoke = function(player, amount, actionType)
 	-- 1. Strict Type & Bound Validation
 	if type(actionType) ~= "string" then return false, "Invalid Action Type" end
-	if type(amount) ~= "number" or amount <= 0 or amount ~= amount or amount >= MAX_AMOUNT_LIMIT then
+	if type(amount) ~= "number" or amount <= 0 or amount ~= amount or amount > MAX_AMOUNT_LIMIT then
 		return false, "Invalid Amount"
 	end
 	amount = math.floor(amount)
@@ -140,6 +180,11 @@ withdrawFunc.OnServerInvoke = function(player, amount, actionType)
 end
 
 -- Cleanup locks if a player leaves mid-transaction
+Players.PlayerAdded:Connect(initializeTransferAttributes)
+for _, player in ipairs(Players:GetPlayers()) do
+	initializeTransferAttributes(player)
+end
+
 Players.PlayerRemoving:Connect(function(player)
 	activeTransactions[player.UserId] = nil
 end)
