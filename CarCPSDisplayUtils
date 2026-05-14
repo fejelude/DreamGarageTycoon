@@ -1,0 +1,188 @@
+-- Purpose: Shared helpers for car BillboardGui CPS display values.
+-- Runs on: Shared ModuleScript (ReplicatedStorage)
+-- Notes: Displays base CPS multiplied by the owning player's current earnings multiplier.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
+local CarCPSDisplayUtils = {}
+
+local BASE_CPS_ATTR = "BaseCPS"
+local MODEL_OWNER_ATTR = "CPSDisplayOwnerUserId"
+
+local modelConnections = setmetatable({}, { __mode = "k" })
+local toolStates = setmetatable({}, { __mode = "k" })
+
+function CarCPSDisplayUtils.FormatCommas(value)
+	value = math.floor(tonumber(value) or 0)
+	local text = tostring(value)
+
+	while true do
+		local formatted, replacements = text:gsub("^(-?%d+)(%d%d%d)", "%1,%2")
+		text = formatted
+		if replacements == 0 then break end
+	end
+
+	return text
+end
+
+function CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player)
+	if not player then return 1 end
+
+	return tonumber(player:GetAttribute("ActualEarningsMultiplier"))
+		or tonumber(player:GetAttribute("RankResourceMultiplier"))
+		or 1
+end
+
+function CarCPSDisplayUtils.GetCPSLabel(carObject)
+	local billboard = carObject and carObject:FindFirstChild("BillboardGui", true)
+	local body = billboard and billboard:FindFirstChild("Body")
+	local cashPerSecond = body and body:FindFirstChild("Cash-Per-Second")
+	local cpsLabel = cashPerSecond and cashPerSecond:FindFirstChild("CPS")
+
+	if cpsLabel and cpsLabel:IsA("TextLabel") then
+		return cpsLabel
+	end
+
+	return nil
+end
+
+local function cleanToolName(name)
+	if not name or typeof(name) ~= "string" then return nil end
+	return name:gsub(" Item", ""):gsub("Item", "")
+end
+
+local function parseCPSFromLabel(cpsLabel)
+	local numberText = tostring(cpsLabel.Text or ""):gsub(",", ""):match("%-?%d+%.?%d*")
+	return numberText and tonumber(numberText) or nil
+end
+
+function CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
+	local storedBase = tonumber(cpsLabel:GetAttribute(BASE_CPS_ATTR))
+	if storedBase then return storedBase end
+
+	local stats = carModel and CarStats.Cars[carModel.Name]
+	local baseCPS = stats and tonumber(stats.CPS)
+	if not baseCPS then
+		baseCPS = parseCPSFromLabel(cpsLabel)
+	end
+
+	if baseCPS then
+		cpsLabel:SetAttribute(BASE_CPS_ATTR, baseCPS)
+	end
+
+	return baseCPS
+end
+
+function CarCPSDisplayUtils.GetToolBaseCPS(tool, carModel, cpsLabel)
+	local storedBase = tonumber(cpsLabel:GetAttribute(BASE_CPS_ATTR))
+	if storedBase then return storedBase end
+
+	local toolId = tool and tool:GetAttribute("ToolId")
+	local cleanToolId = cleanToolName(toolId)
+	local cleanName = tool and cleanToolName(tool.Name)
+
+	local stats = (toolId and CarStats.Cars[toolId])
+		or (cleanToolId and CarStats.Cars[cleanToolId])
+		or (tool and CarStats.Cars[tool.Name])
+		or (cleanName and CarStats.Cars[cleanName])
+		or (carModel and CarStats.Cars[carModel.Name])
+
+	local baseCPS = stats and tonumber(stats.CPS)
+	if not baseCPS then
+		baseCPS = parseCPSFromLabel(cpsLabel)
+	end
+
+	if baseCPS then
+		cpsLabel:SetAttribute(BASE_CPS_ATTR, baseCPS)
+	end
+
+	return baseCPS
+end
+
+function CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
+	local cpsLabel = CarCPSDisplayUtils.GetCPSLabel(carModel)
+	if not cpsLabel then return end
+
+	local baseCPS = CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
+	if not baseCPS then return end
+
+	cpsLabel.Text = CarCPSDisplayUtils.FormatCommas(baseCPS * CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player))
+end
+
+function CarCPSDisplayUtils.BindModelCPSDisplay(carModel, player)
+	CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
+	if not carModel or not player then return end
+	if carModel:GetAttribute(MODEL_OWNER_ATTR) == player.UserId and modelConnections[carModel] then return end
+
+	if modelConnections[carModel] then
+		modelConnections[carModel]:Disconnect()
+		modelConnections[carModel] = nil
+	end
+
+	carModel:SetAttribute(MODEL_OWNER_ATTR, player.UserId)
+	modelConnections[carModel] = player:GetAttributeChangedSignal("ActualEarningsMultiplier"):Connect(function()
+		if carModel.Parent then
+			CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
+		elseif modelConnections[carModel] then
+			modelConnections[carModel]:Disconnect()
+			modelConnections[carModel] = nil
+		end
+	end)
+end
+
+local function getToolOwner(tool, playersService)
+	local parent = tool and tool.Parent
+	if not parent then return nil end
+
+	if parent:IsA("Backpack") or parent:IsA("StarterGear") then
+		return parent.Parent
+	end
+
+	return playersService:GetPlayerFromCharacter(parent)
+end
+
+function CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
+	local carModel = tool and tool:FindFirstChildWhichIsA("Model")
+	local cpsLabel = CarCPSDisplayUtils.GetCPSLabel(carModel or tool)
+	if not cpsLabel then return end
+
+	local baseCPS = CarCPSDisplayUtils.GetToolBaseCPS(tool, carModel, cpsLabel)
+	if not baseCPS then return end
+
+	local player = getToolOwner(tool, playersService)
+	cpsLabel.Text = CarCPSDisplayUtils.FormatCommas(baseCPS * CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player))
+end
+
+function CarCPSDisplayUtils.BindToolCPSDisplay(tool, playersService)
+	if not tool or toolStates[tool] then return end
+
+	local state = {}
+	toolStates[tool] = state
+
+	local function rebindPlayerMultiplier()
+		if state.playerConnection then
+			state.playerConnection:Disconnect()
+			state.playerConnection = nil
+		end
+
+		local player = getToolOwner(tool, playersService)
+		if player then
+			state.playerConnection = player:GetAttributeChangedSignal("ActualEarningsMultiplier"):Connect(function()
+				CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
+			end)
+		end
+
+		CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
+	end
+
+	state.ancestryConnection = tool.AncestryChanged:Connect(rebindPlayerMultiplier)
+	state.toolIdConnection = tool:GetAttributeChangedSignal("ToolId"):Connect(function()
+		CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
+	end)
+
+	task.defer(rebindPlayerMultiplier)
+end
+
+return CarCPSDisplayUtils
