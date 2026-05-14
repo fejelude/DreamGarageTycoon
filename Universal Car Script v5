@@ -13,9 +13,11 @@
 ]]
 
 local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players    = game:GetService("Players")
 local Tool       = script.Parent
 local Handle     = Tool:WaitForChild("Handle")
+local CarCPSDisplayUtils = require(ReplicatedStorage:WaitForChild("CarCPSDisplayUtils"))
 
 local isGiftActive = false
 local TRIGGER_COOLDOWN = 2
@@ -26,6 +28,7 @@ local BATCH_SIZE    = 200   -- lower = smoother, higher = finishes faster
 local FIND_TIMEOUT  = 10    -- seconds to wait for a Model child
 local PREPARED_ATTR = "CarToolPrepared"
 -- =================
+
 
 -- Handle: set once at startup
 Handle.CanCollide  = false
@@ -147,6 +150,7 @@ local function prepareOnce()
 
 	-- Fix #2: Pivot AFTER all welds are live — model moves as one rigid body
 	CarModel:PivotTo(Handle.CFrame * CFrame.new(0, HEIGHT_OFFSET, 0))
+	CarCPSDisplayUtils.UpdateToolCPSDisplay(Tool, Players)
 
 	-- Clean up any leftover ProximityPrompt on the car model from old versions
 	local legacyPrompt = primary:FindFirstChild("GiftCarPrompt")
@@ -158,3 +162,5 @@ end
 -- Start preparing immediately (not on equip) — zero lag when player picks it up
 task.spawn(prepareOnce)
 
+
+CarCPSDisplayUtils.BindToolCPSDisplay(Tool, Players)

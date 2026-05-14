@@ -30,6 +30,7 @@ local TycoonFolder = Workspace:WaitForChild("Tycoons")
 -- 📚 MODULES
 local CarStats
 pcall(function() CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5)) end)
+local CarCPSDisplayUtils = require(ReplicatedStorage:WaitForChild("CarCPSDisplayUtils"))
 
 -- 🛡️ STATE MANAGEMENT
 local processingTracks = {} 
@@ -118,6 +119,7 @@ local function getMainPart(obj)
 	return nil
 end
 
+
 local function getPlotFolder(obj)
 	-- Because plots might be moved to ReplicatedStorage.TycoonLevelStorage (via PadProgressionHandler)
 	-- we must check if it's currently parented there as well!
@@ -176,6 +178,7 @@ local function validatePadState(padObject, occupiedVal, linkedCarVal, placePromp
 
 	elseif occupiedVal.Value == true then
 		-- Car is placed
+		CarCPSDisplayUtils.BindModelCPSDisplay(car, ownerPlayer)
 		placePrompt.Enabled = false
 		pickupPrompt.Enabled = true
 
@@ -207,7 +210,7 @@ local function removeToolFromPlayer(player, toolName)
 	return found
 end
 
-local function spawnCarOnPad(padPart, carModel, plot)
+local function spawnCarOnPad(padPart, carModel, plot, player)
 	local placedCar = carModel:Clone()
 	local padTop = padPart.CFrame * CFrame.new(0, (padPart.Size.Y / 2) + CONSTANTS.VERTICAL_OFFSET + 1, 0)
 	placedCar:PivotTo(padTop)
@@ -225,6 +228,7 @@ local function spawnCarOnPad(padPart, carModel, plot)
 			part.CanCollide = true 
 		end
 	end
+	CarCPSDisplayUtils.BindModelCPSDisplay(placedCar, player)
 	return placedCar
 end
 
@@ -282,7 +286,7 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 
 		if removed then
 			local success, result = pcall(function()
-				return spawnCarOnPad(padPart, realCar, thisPlot)
+				return spawnCarOnPad(padPart, realCar, thisPlot, player)
 			end)
 
 			if success and result then
