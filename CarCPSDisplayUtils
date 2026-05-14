@@ -1,6 +1,14 @@
 -- Purpose: Shared helpers for car BillboardGui CPS display values.
 -- Runs on: Shared ModuleScript (ReplicatedStorage)
--- Notes: Displays base CPS multiplied by the owning player's current earnings multiplier.
+-- Notes:
+--   Displays base CPS multiplied by the owning player's current earnings multiplier.
+--   Updated to survive messy car UI hierarchy:
+--     - BillboardGui may be named BillboardGUI / BillbordGUI / BillBoard Tier
+--     - Some cars have a Model named BillboardGui
+--     - CPS label may be nested deeper than expected
+--     - Some labels use Cash Per Second / Cash-Per-Second naming
+--   Display format:
+--     156,384/s
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -27,6 +35,10 @@ function CarCPSDisplayUtils.FormatCommas(value)
 	return text
 end
 
+function CarCPSDisplayUtils.FormatCPS(value)
+	return CarCPSDisplayUtils.FormatCommas(value) .. "/s"
+end
+
 function CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player)
 	if not player then return 1 end
 
@@ -35,14 +47,134 @@ function CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player)
 		or 1
 end
 
-function CarCPSDisplayUtils.GetCPSLabel(carObject)
-	local billboard = carObject and carObject:FindFirstChild("BillboardGui", true)
-	local body = billboard and billboard:FindFirstChild("Body")
-	local cashPerSecond = body and body:FindFirstChild("Cash-Per-Second")
-	local cpsLabel = cashPerSecond and cashPerSecond:FindFirstChild("CPS")
+local function normalizeName(name)
+	name = tostring(name or "")
+	name = string.lower(name)
+	name = name:gsub("%s+", "")
+	name = name:gsub("%-", "")
+	name = name:gsub("_", "")
+	return name
+end
 
-	if cpsLabel and cpsLabel:IsA("TextLabel") then
-		return cpsLabel
+local function isLikelyCPSLabel(textLabel)
+	if not textLabel or not textLabel:IsA("TextLabel") then
+		return false
+	end
+
+	local normalizedName = normalizeName(textLabel.Name)
+
+	if normalizedName == "cps" then
+		return true
+	end
+
+	if normalizedName == "cashpersecond" then
+		return true
+	end
+
+	local parent = textLabel.Parent
+	local parentName = parent and normalizeName(parent.Name) or ""
+
+	if parentName == "cashpersecond" then
+		return true
+	end
+
+	return false
+end
+
+local function scoreCPSLabel(textLabel)
+	local score = 0
+	local normalizedName = normalizeName(textLabel.Name)
+
+	if normalizedName == "cps" then
+		score += 100
+	end
+
+	if normalizedName == "cashpersecond" then
+		score += 80
+	end
+
+	local parent = textLabel.Parent
+	if parent then
+		local parentName = normalizeName(parent.Name)
+
+		if parentName == "cashpersecond" then
+			score += 60
+		end
+
+		if parentName == "body" then
+			score += 20
+		end
+	end
+
+	local current = textLabel.Parent
+	while current do
+		local currentName = normalizeName(current.Name)
+
+		if currentName == "body" then
+			score += 15
+		elseif currentName == "billboardgui" then
+			score += 15
+		elseif currentName == "billboardtier" then
+			score += 10
+		elseif currentName == "billboard" then
+			score += 8
+		end
+
+		current = current.Parent
+	end
+
+	return score
+end
+
+function CarCPSDisplayUtils.GetCPSLabel(carObject)
+	if not carObject then
+		return nil
+	end
+
+	-- 1. Try the original expected hierarchy first.
+	local billboard = carObject:FindFirstChild("BillboardGui", true)
+	if billboard and billboard:IsA("BillboardGui") then
+		local body = billboard:FindFirstChild("Body")
+		local cashPerSecond = body and body:FindFirstChild("Cash-Per-Second")
+		local cpsLabel = cashPerSecond and cashPerSecond:FindFirstChild("CPS")
+
+		if cpsLabel and cpsLabel:IsA("TextLabel") then
+			return cpsLabel
+		end
+	end
+
+	-- 2. Search for the best actual TextLabel named CPS / Cash-Per-Second anywhere.
+	local bestLabel = nil
+	local bestScore = -1
+
+	for _, inst in ipairs(carObject:GetDescendants()) do
+		if inst:IsA("TextLabel") and isLikelyCPSLabel(inst) then
+			local score = scoreCPSLabel(inst)
+
+			if score > bestScore then
+				bestScore = score
+				bestLabel = inst
+			end
+		end
+	end
+
+	if bestLabel then
+		return bestLabel
+	end
+
+	-- 3. Final fallback:
+	-- If there is no label named CPS, look for a TextLabel inside something named Cash-Per-Second.
+	for _, inst in ipairs(carObject:GetDescendants()) do
+		if inst:IsA("TextLabel") then
+			local parent = inst.Parent
+			while parent and parent ~= carObject do
+				local parentName = normalizeName(parent.Name)
+				if parentName == "cashpersecond" then
+					return inst
+				end
+				parent = parent.Parent
+			end
+		end
 	end
 
 	return nil
@@ -54,7 +186,13 @@ local function cleanToolName(name)
 end
 
 local function parseCPSFromLabel(cpsLabel)
-	local numberText = tostring(cpsLabel.Text or ""):gsub(",", ""):match("%-?%d+%.?%d*")
+	local rawText = tostring(cpsLabel.Text or "")
+	rawText = rawText:gsub(",", "")
+	rawText = rawText:gsub("/s", "")
+	rawText = rawText:gsub("per second", "")
+	rawText = rawText:gsub("Per Second", "")
+
+	local numberText = rawText:match("%-?%d+%.?%d*")
 	return numberText and tonumber(numberText) or nil
 end
 
@@ -64,6 +202,13 @@ function CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
 
 	local stats = carModel and CarStats.Cars[carModel.Name]
 	local baseCPS = stats and tonumber(stats.CPS)
+
+	if not baseCPS then
+		local cleanName = carModel and cleanToolName(carModel.Name)
+		stats = cleanName and CarStats.Cars[cleanName]
+		baseCPS = stats and tonumber(stats.CPS)
+	end
+
 	if not baseCPS then
 		baseCPS = parseCPSFromLabel(cpsLabel)
 	end
@@ -82,14 +227,17 @@ function CarCPSDisplayUtils.GetToolBaseCPS(tool, carModel, cpsLabel)
 	local toolId = tool and tool:GetAttribute("ToolId")
 	local cleanToolId = cleanToolName(toolId)
 	local cleanName = tool and cleanToolName(tool.Name)
+	local cleanModelName = carModel and cleanToolName(carModel.Name)
 
 	local stats = (toolId and CarStats.Cars[toolId])
 		or (cleanToolId and CarStats.Cars[cleanToolId])
 		or (tool and CarStats.Cars[tool.Name])
 		or (cleanName and CarStats.Cars[cleanName])
 		or (carModel and CarStats.Cars[carModel.Name])
+		or (cleanModelName and CarStats.Cars[cleanModelName])
 
 	local baseCPS = stats and tonumber(stats.CPS)
+
 	if not baseCPS then
 		baseCPS = parseCPSFromLabel(cpsLabel)
 	end
@@ -108,7 +256,8 @@ function CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
 	local baseCPS = CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
 	if not baseCPS then return end
 
-	cpsLabel.Text = CarCPSDisplayUtils.FormatCommas(baseCPS * CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player))
+	local multiplier = CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player)
+	cpsLabel.Text = CarCPSDisplayUtils.FormatCPS(baseCPS * multiplier)
 end
 
 function CarCPSDisplayUtils.BindModelCPSDisplay(carModel, player)
@@ -117,19 +266,32 @@ function CarCPSDisplayUtils.BindModelCPSDisplay(carModel, player)
 	if carModel:GetAttribute(MODEL_OWNER_ATTR) == player.UserId and modelConnections[carModel] then return end
 
 	if modelConnections[carModel] then
-		modelConnections[carModel]:Disconnect()
+		for _, connection in ipairs(modelConnections[carModel]) do
+			connection:Disconnect()
+		end
 		modelConnections[carModel] = nil
 	end
 
 	carModel:SetAttribute(MODEL_OWNER_ATTR, player.UserId)
-	modelConnections[carModel] = player:GetAttributeChangedSignal("ActualEarningsMultiplier"):Connect(function()
+
+	local connections = {}
+	modelConnections[carModel] = connections
+
+	local function safeUpdate()
 		if carModel.Parent then
 			CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
-		elseif modelConnections[carModel] then
-			modelConnections[carModel]:Disconnect()
-			modelConnections[carModel] = nil
+		else
+			if modelConnections[carModel] then
+				for _, connection in ipairs(modelConnections[carModel]) do
+					connection:Disconnect()
+				end
+				modelConnections[carModel] = nil
+			end
 		end
-	end)
+	end
+
+	table.insert(connections, player:GetAttributeChangedSignal("ActualEarningsMultiplier"):Connect(safeUpdate))
+	table.insert(connections, player:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(safeUpdate))
 end
 
 local function getToolOwner(tool, playersService)
@@ -152,7 +314,9 @@ function CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
 	if not baseCPS then return end
 
 	local player = getToolOwner(tool, playersService)
-	cpsLabel.Text = CarCPSDisplayUtils.FormatCommas(baseCPS * CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player))
+	local multiplier = CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player)
+
+	cpsLabel.Text = CarCPSDisplayUtils.FormatCPS(baseCPS * multiplier)
 end
 
 function CarCPSDisplayUtils.BindToolCPSDisplay(tool, playersService)
@@ -161,24 +325,45 @@ function CarCPSDisplayUtils.BindToolCPSDisplay(tool, playersService)
 	local state = {}
 	toolStates[tool] = state
 
-	local function rebindPlayerMultiplier()
-		if state.playerConnection then
-			state.playerConnection:Disconnect()
-			state.playerConnection = nil
+	local function disconnectPlayerConnections()
+		if state.playerConnections then
+			for _, connection in ipairs(state.playerConnections) do
+				connection:Disconnect()
+			end
 		end
+
+		state.playerConnections = nil
+	end
+
+	local function rebindPlayerMultiplier()
+		disconnectPlayerConnections()
 
 		local player = getToolOwner(tool, playersService)
 		if player then
-			state.playerConnection = player:GetAttributeChangedSignal("ActualEarningsMultiplier"):Connect(function()
-				CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
-			end)
+			state.playerConnections = {
+				player:GetAttributeChangedSignal("ActualEarningsMultiplier"):Connect(function()
+					CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
+				end),
+
+				player:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(function()
+					CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
+				end),
+			}
 		end
 
 		CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
 	end
 
 	state.ancestryConnection = tool.AncestryChanged:Connect(rebindPlayerMultiplier)
+
 	state.toolIdConnection = tool:GetAttributeChangedSignal("ToolId"):Connect(function()
+		local carModel = tool:FindFirstChildWhichIsA("Model")
+		local cpsLabel = CarCPSDisplayUtils.GetCPSLabel(carModel or tool)
+
+		if cpsLabel then
+			cpsLabel:SetAttribute(BASE_CPS_ATTR, nil)
+		end
+
 		CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
 	end)
 
