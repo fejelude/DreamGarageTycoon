@@ -86,7 +86,7 @@ local function updateLimitLabels()
 		if resetAt > 0 and used > 0 then
 			resetTimeLabel.Text = formatTimer(resetAt - os.time())
 		else
-			resetTimeLabel.Text = "00:00"
+			resetTimeLabel.Text = " -- "
 		end
 	end
 end
