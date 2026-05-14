@@ -98,7 +98,8 @@ end
 
 if skipButton then
 	skipButton.MouseButton1Click:Connect(function()
-		UIAudioConfig.PlayClick()
+		UIAudioConfig.PlayRobux()
+		UIAudioConfig.ShowPurchaseLoading()
 		MarketplaceService:PromptProductPurchase(player, SKIP_PRODUCT_ID)
 	end)
 end
