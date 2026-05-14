@@ -1,14 +1,13 @@
--- Purpose: Handles UI verification, animations, and remote communication for bank transfers.
+-- Purpose: Handles UI verification, state labels, and remote communication for bank transfers.
 -- Runs on: Client
 -- Location: PlayerGui -> BankGui -> TransferFrame -> WithdrawalFunction -> WithdrawButton
--- Dependencies: ReplicatedStorage, TweenService, Players
+-- Dependencies: ReplicatedStorage, Players
 -- Public API: None
 -- Networking: Invokes "WithdrawFunction" RemoteFunction.
 -- Security: Client-side validation is only UX; server remains authoritative.
 -- Performance: Reuses one Success label and one Failed label so repeated messages stack instead of overlapping.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
 
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
@@ -17,26 +16,20 @@ local player = Players.LocalPlayer
 local withdrawBtn = script.Parent
 local mainWindow = withdrawBtn.Parent
 local transferFrame = mainWindow and mainWindow.Parent
-local stateLabels = transferFrame and transferFrame:FindFirstChild("StateLabels")
+local stateLabels = transferFrame and transferFrame:WaitForChild("StateLabels", 5)
 
 local withdrawFunc = ReplicatedStorage:WaitForChild("WithdrawFunction")
 
 local amountInput = mainWindow:WaitForChild("AmountInput", 5)
 local verifyLabel = mainWindow:FindFirstChild("VerifyLabel")
 
-local function findStateLabel(labelName, legacyName)
+local function findStateLabel(labelName)
 	stateLabels = stateLabels or (transferFrame and transferFrame:FindFirstChild("StateLabels"))
-
-	local label = stateLabels and stateLabels:FindFirstChild(labelName)
-	if label then
-		return label
-	end
-
-	return mainWindow:FindFirstChild(legacyName)
+	return stateLabels and stateLabels:FindFirstChild(labelName)
 end
 
-local successLabel = findStateLabel("Success", "SuccessLabel")
-local failedLabel = findStateLabel("Failed", "ErrorLabel")
+local successLabel = findStateLabel("Success")
+local failedLabel = findStateLabel("Failed")
 
 local TRANSFER_USED_ATTR = "BankTransferLimitUsed"
 local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
@@ -45,10 +38,7 @@ local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
 local DEFAULT_TRANSFER_LIMIT = 1000000000000
 
 local isCoolingDown = false
-local currentVerifyTween = nil
-
 local messageState = {}
-local labelDefaults = {}
 
 local MULTIPLIERS = {
 	k = 1000,
@@ -111,85 +101,20 @@ local function getRemainingTransferLimit()
 	return math.max(0, getTransferLimit() - getTransferUsed())
 end
 
-local function captureLabelDefaults(label)
-	if not label or labelDefaults[label] then
-		return
-	end
-
-	local stroke = label:FindFirstChildOfClass("UIStroke")
-	local textTransparency = label:IsA("TextLabel") and label.TextTransparency or 0
-	local strokeTransparency = stroke and stroke.Transparency or 0
-
-	-- Labels are stored hidden in Studio. If a hidden label was authored or left
-	-- fully transparent, fade it back to visible text/stroke instead of tweening
-	-- from 1 to 1 and appearing invisible.
-	if textTransparency >= 1 then
-		textTransparency = 0
-	end
-	if strokeTransparency >= 1 then
-		strokeTransparency = 0
-	end
-
-	labelDefaults[label] = {
-		textTransparency = textTransparency,
-		strokeTransparency = strokeTransparency,
-	}
-end
-
-local function setLabelHidden(label)
-	if not label then
-		return
-	end
-
-	captureLabelDefaults(label)
-
-	label.Visible = false
-
-	if label:IsA("TextLabel") then
-		label.TextTransparency = 1
-	end
-
-	local stroke = label:FindFirstChildOfClass("UIStroke")
-	if stroke then
-		stroke.Transparency = 1
-	end
-end
-
-local function cancelTween(tween)
-	if tween then
-		pcall(function()
-			tween:Cancel()
-		end)
-	end
-end
-
-local function animateStackedResult(label, baseText)
+local function showStateLabel(label, baseText)
 	if not label then
 		warn("⚠️ Bank transfer state label missing for message: " .. tostring(baseText))
 		return
 	end
 
-	captureLabelDefaults(label)
-
-	local defaults = labelDefaults[label] or {
-		textTransparency = 0,
-		strokeTransparency = 0,
-	}
-
 	local state = messageState[label]
 	if not state then
 		state = {
 			count = 0,
-			token = 0,
 			baseText = baseText,
 		}
 		messageState[label] = state
 	end
-
-	cancelTween(state.fadeInTween)
-	cancelTween(state.fadeOutTween)
-	cancelTween(state.strokeFadeInTween)
-	cancelTween(state.strokeFadeOutTween)
 
 	if state.baseText == baseText and label.Visible then
 		state.count += 1
@@ -198,124 +123,29 @@ local function animateStackedResult(label, baseText)
 		state.baseText = baseText
 	end
 
-	state.token += 1
-	local token = state.token
-
 	label.Text = state.count > 1 and (baseText .. " x" .. state.count) or baseText
 	label.Visible = true
-
-	local stroke = label:FindFirstChildOfClass("UIStroke")
-
-	if label:IsA("TextLabel") then
-		label.TextTransparency = 1
-	end
-
-	if stroke then
-		stroke.Transparency = 1
-	end
-
-	if label:IsA("TextLabel") then
-		state.fadeInTween = TweenService:Create(
-			label,
-			TweenInfo.new(0.25, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
-			{ TextTransparency = defaults.textTransparency }
-		)
-		state.fadeInTween:Play()
-	end
-
-	if stroke then
-		state.strokeFadeInTween = TweenService:Create(
-			stroke,
-			TweenInfo.new(0.25, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
-			{ Transparency = defaults.strokeTransparency }
-		)
-		state.strokeFadeInTween:Play()
-	end
-
-	task.delay(2, function()
-		if state.token ~= token then
-			return
-		end
-
-		if label:IsA("TextLabel") then
-			state.fadeOutTween = TweenService:Create(
-				label,
-				TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.In),
-				{ TextTransparency = 1 }
-			)
-			state.fadeOutTween:Play()
-		end
-
-		if stroke then
-			state.strokeFadeOutTween = TweenService:Create(
-				stroke,
-				TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.In),
-				{ Transparency = 1 }
-			)
-			state.strokeFadeOutTween:Play()
-		end
-
-		if state.fadeOutTween then
-			state.fadeOutTween.Completed:Wait()
-		else
-			task.wait(0.5)
-		end
-
-		if state.token == token then
-			label.Visible = false
-			state.count = 0
-		end
-	end)
 end
 
 local function startVerifying()
-	if not verifyLabel then
-		return
-	end
-
-	verifyLabel.Visible = true
-
-	local goals = {}
-	local pulseInfo = TweenInfo.new(
-		0.5,
-		Enum.EasingStyle.Sine,
-		Enum.EasingDirection.InOut,
-		-1,
-		true
-	)
-
-	if verifyLabel:IsA("ImageLabel") then
-		verifyLabel.ImageTransparency = 1
-		goals.ImageTransparency = 0
-	elseif verifyLabel:IsA("TextLabel") then
-		verifyLabel.TextTransparency = 1
-		goals.TextTransparency = 0
-	end
-
-	if next(goals) then
-		currentVerifyTween = TweenService:Create(verifyLabel, pulseInfo, goals)
-		currentVerifyTween:Play()
+	if verifyLabel then
+		verifyLabel.Visible = true
 	end
 end
 
 local function stopVerifying()
-	if currentVerifyTween then
-		currentVerifyTween:Cancel()
-		currentVerifyTween = nil
-	end
-
 	if verifyLabel then
 		verifyLabel.Visible = false
 	end
 end
 
 local function showFailure(reason)
-	failedLabel = failedLabel or findStateLabel("Failed", "ErrorLabel")
+	failedLabel = failedLabel or findStateLabel("Failed")
 
 	if reason == "Transfer Limit Reached" then
-		animateStackedResult(failedLabel, "Transfer Limit Reached")
+		showStateLabel(failedLabel, "Transfer Limit Reached")
 	else
-		animateStackedResult(failedLabel, "Transfer Unsuccessful")
+		showStateLabel(failedLabel, "Transfer Unsuccessful")
 	end
 end
 
@@ -373,8 +203,8 @@ withdrawBtn.MouseButton1Click:Connect(function()
 		if amountInput then
 			amountInput.Text = ""
 		end
-		successLabel = successLabel or findStateLabel("Success", "SuccessLabel")
-		animateStackedResult(successLabel, "Transfer Successful")
+		successLabel = successLabel or findStateLabel("Success")
+		showStateLabel(successLabel, "Transfer Successful")
 	else
 		showFailure(message)
 	end
@@ -382,12 +212,6 @@ withdrawBtn.MouseButton1Click:Connect(function()
 	releaseButtonSoon()
 end)
 
-captureLabelDefaults(successLabel)
-captureLabelDefaults(failedLabel)
-
 if verifyLabel then
 	verifyLabel.Visible = false
 end
-
-setLabelHidden(successLabel)
-setLabelHidden(failedLabel)
