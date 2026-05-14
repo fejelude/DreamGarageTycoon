@@ -284,7 +284,7 @@ end
 -- ----------------------------------------------------------------------------
 -- 🎁 GIVE TOOL
 -- ----------------------------------------------------------------------------
-local function getCurrentStorageCount(player)
+local function getCurrentInventoryCount(player)
 	local count = 0
 	local seen = {}
 	local function scan(container)
@@ -299,18 +299,6 @@ local function getCurrentStorageCount(player)
 	scan(player:FindFirstChild("Backpack"))
 	if player.Character then scan(player.Character) end
 
-	local plotName = player:GetAttribute("OccupiedPlot")
-	local plot = plotName and TycoonFolder:FindFirstChild(plotName)
-	if plot then
-		for _, descendant in ipairs(plot:GetDescendants()) do
-			if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
-				local car = descendant.Value
-				if car:GetAttribute("OwnerUserId") == player.UserId then
-					count += 1
-				end
-			end
-		end
-	end
 	return count
 end
 
@@ -325,7 +313,7 @@ local function canAddCarToStorage(player, amount)
 	end
 
 	local limit = tonumber(player:GetAttribute("RankStorageLimit")) or DEFAULT_CAR_STORAGE_LIMIT
-	return getCurrentStorageCount(player) + amount <= limit
+	return getCurrentInventoryCount(player) + amount <= limit
 end
 
 local function giveTool(player, toolName, customAttributes)

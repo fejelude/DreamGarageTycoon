@@ -4,7 +4,7 @@
 -- Dependencies: ReplicatedStorage, Workspace, Players
 -- Public API: WithdrawFunction (RemoteFunction)
 -- Networking: Client invokes WithdrawFunction -> Server processes -> Returns boolean, string
--- Security: Transaction locks prevent race conditions, strict type validation, upper limits on amount.
+-- Security: Transaction locks prevent race conditions and strict type validation.
 -- Performance: Early exit checks prevent expensive Workspace lookups for malformed requests.
 -- Notes: Failsafe distance check included. Requires ATM Manager NPC to be loaded.
 
@@ -17,7 +17,7 @@ local withdrawFunc = ReplicatedStorage:WaitForChild("WithdrawFunction")
 local NPC_FOLDER_NAME = "NPCS"
 local MANAGER_NAME = "AfraiC4t"
 local MAX_DISTANCE = 20 -- Studs (For Physical Withdraw only)
-local MAX_AMOUNT_LIMIT = 100000000000000 -- 100 Trillion absolute safety cap
+local MAX_TRANSFER_AMOUNT_LIMIT = 100000000000000 -- 100 Trillion absolute safety cap for Bank -> ATM transfers only
 local TRANSFER_RESET_SECONDS = 60 * 60
 
 local TRANSFER_USED_ATTR = "BankTransferLimitUsed"
@@ -145,10 +145,15 @@ end
 withdrawFunc.OnServerInvoke = function(player, amount, actionType)
 	-- 1. Strict Type & Bound Validation
 	if type(actionType) ~= "string" then return false, "Invalid Action Type" end
-	if type(amount) ~= "number" or amount <= 0 or amount ~= amount or amount > MAX_AMOUNT_LIMIT then
+	if type(amount) ~= "number" or amount <= 0 or amount ~= amount or amount == math.huge then
 		return false, "Invalid Amount"
 	end
 	amount = math.floor(amount)
+
+	-- Keep the existing transfer cap untouched, but do not apply it to physical ATM withdrawals.
+	if actionType == "Transfer" and amount > MAX_TRANSFER_AMOUNT_LIMIT then
+		return false, "Invalid Amount"
+	end
 
 	-- 2. Transaction Lock (Prevents Race Conditions & Spam)
 	if activeTransactions[player.UserId] then
