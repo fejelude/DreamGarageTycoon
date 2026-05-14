@@ -106,10 +106,22 @@ local function captureLabelDefaults(label)
 	end
 
 	local stroke = label:FindFirstChildOfClass("UIStroke")
+	local textTransparency = label:IsA("TextLabel") and label.TextTransparency or 0
+	local strokeTransparency = stroke and stroke.Transparency or 0
+
+	-- Labels are stored hidden in Studio. If a hidden label was authored or left
+	-- fully transparent, fade it back to visible text/stroke instead of tweening
+	-- from 1 to 1 and appearing invisible.
+	if textTransparency >= 1 then
+		textTransparency = 0
+	end
+	if strokeTransparency >= 1 then
+		strokeTransparency = 0
+	end
 
 	labelDefaults[label] = {
-		textTransparency = label:IsA("TextLabel") and label.TextTransparency or 0,
-		strokeTransparency = stroke and stroke.Transparency or 0,
+		textTransparency = textTransparency,
+		strokeTransparency = strokeTransparency,
 	}
 end
 

@@ -17,11 +17,10 @@ local player = Players.LocalPlayer
 local withdrawalFunction = script.Parent
 
 local withdrawalLimitLabel = withdrawalFunction:WaitForChild("WithdrawalLimit", 5)
+local resetTimeLabel = withdrawalFunction:WaitForChild("ResetTime", 5)
 local skipButton = withdrawalFunction:WaitForChild("SkipButton", 5)
 
 local SKIP_PRODUCT_ID = 3591736957
-local RESET_SECONDS = 60 * 60
-
 -- Fallback only. The real value should come from the player rank attribute.
 local DEFAULT_TRANSFER_LIMIT = 1000000000000
 
@@ -53,13 +52,10 @@ local function formatNumber(n)
 end
 
 local function formatTimer(seconds)
-	seconds = math.clamp(math.ceil(tonumber(seconds) or 0), 0, RESET_SECONDS)
-
-	-- Requirement: display minute buckets from 60:00 down to 1:00.
-	local minutes = math.ceil(seconds / 60)
-	minutes = math.clamp(minutes, 1, 60)
-
-	return string.format("%d:00", minutes)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	local minutes = math.floor(seconds / 60)
+	local remainingSeconds = seconds % 60
+	return string.format("%02d:%02d", minutes, remainingSeconds)
 end
 
 local function getTransferLimit()
@@ -78,21 +74,21 @@ local function getTransferState()
 	return used, resetAt
 end
 
-local function updateLimitLabel()
-	if not withdrawalLimitLabel then
-		return
-	end
-
+local function updateLimitLabels()
 	local used, resetAt = getTransferState()
 	local limit = getTransferLimit()
 
-	local text = formatNumber(used) .. " / " .. formatNumber(limit)
-
-	if resetAt > 0 and used > 0 then
-		text = text .. "  |  " .. formatTimer(resetAt - os.time())
+	if withdrawalLimitLabel then
+		withdrawalLimitLabel.Text = formatNumber(used) .. " / " .. formatNumber(limit)
 	end
 
-	withdrawalLimitLabel.Text = text
+	if resetTimeLabel then
+		if resetAt > 0 and used > 0 then
+			resetTimeLabel.Text = formatTimer(resetAt - os.time())
+		else
+			resetTimeLabel.Text = "00:00"
+		end
+	end
 end
 
 if skipButton then
@@ -102,13 +98,13 @@ if skipButton then
 	end)
 end
 
-player:GetAttributeChangedSignal("MaxBankWithdrawal"):Connect(updateLimitLabel)
-player:GetAttributeChangedSignal(TRANSFER_USED_ATTR):Connect(updateLimitLabel)
-player:GetAttributeChangedSignal(TRANSFER_RESET_AT_ATTR):Connect(updateLimitLabel)
+player:GetAttributeChangedSignal("MaxBankWithdrawal"):Connect(updateLimitLabels)
+player:GetAttributeChangedSignal(TRANSFER_USED_ATTR):Connect(updateLimitLabels)
+player:GetAttributeChangedSignal(TRANSFER_RESET_AT_ATTR):Connect(updateLimitLabels)
 
-updateLimitLabel()
+updateLimitLabels()
 
 while withdrawalFunction.Parent do
-	updateLimitLabel()
+	updateLimitLabels()
 	task.wait(1)
 end
