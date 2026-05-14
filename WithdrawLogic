@@ -1,14 +1,15 @@
 -- Purpose: Handles UI verification, state labels, and remote communication for bank transfers.
 -- Runs on: Client
 -- Location: PlayerGui -> BankGui -> TransferFrame -> WithdrawalFunction -> WithdrawButton
--- Dependencies: ReplicatedStorage, Players
+-- Dependencies: ReplicatedStorage, Players, TweenService
 -- Public API: None
--- Networking: Invokes "WithdrawFunction" RemoteFunction.
+-- Networking: Invokes "WithdrawFunction" RemoteFunction. Listens to "BankTimerResetFeedback" RemoteEvent.
 -- Security: Client-side validation is only UX; server remains authoritative.
 -- Performance: Reuses one Success label and one Failed label so repeated messages stack instead of overlapping.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
 
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
@@ -22,6 +23,7 @@ local withdrawBtn = script.Parent
 local mainWindow = withdrawBtn.Parent
 
 local withdrawFunc = ReplicatedStorage:WaitForChild("WithdrawFunction")
+local timerResetFeedbackEvent = ReplicatedStorage:WaitForChild("BankTimerResetFeedback")
 
 local amountInput = mainWindow:WaitForChild("AmountInput", 5)
 local verifyLabel = mainWindow:FindFirstChild("VerifyLabel")
@@ -38,6 +40,12 @@ local DEFAULT_TRANSFER_LIMIT = 1000000000000
 local isCoolingDown = false
 local messageState = {}
 
+local LABEL_SHOW_SECONDS = 3
+local LABEL_FADE_OUT_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+local labelHideToken = {}
+local labelTweens = {}
+
 local MULTIPLIERS = {
 	k = 1000,
 	m = 1000000,
@@ -50,6 +58,27 @@ local MULTIPLIERS = {
 	oc = 1000000000000000000000000000,
 	no = 1000000000000000000000000000000,
 	dc = 1000000000000000000000000000000000,
+}
+
+local function getLabelUIStroke(label)
+	if not label then
+		return nil
+	end
+
+	return label:FindFirstChildOfClass("UIStroke")
+end
+
+local labelDefaults = {
+	[successLabel] = {
+		TextTransparency = successLabel.TextTransparency,
+		TextStrokeTransparency = successLabel.TextStrokeTransparency,
+		UIStrokeTransparency = getLabelUIStroke(successLabel) and getLabelUIStroke(successLabel).Transparency or nil,
+	},
+	[failedLabel] = {
+		TextTransparency = failedLabel.TextTransparency,
+		TextStrokeTransparency = failedLabel.TextStrokeTransparency,
+		UIStrokeTransparency = getLabelUIStroke(failedLabel) and getLabelUIStroke(failedLabel).Transparency or nil,
+	},
 }
 
 local function parseAmount(text)
@@ -99,11 +128,146 @@ local function getRemainingTransferLimit()
 	return math.max(0, getTransferLimit() - getTransferUsed())
 end
 
+local function resetMessageState(label)
+	local state = messageState[label]
+	if state then
+		state.count = 0
+		state.baseText = nil
+	end
+end
+
+local function cancelLabelTween(label)
+	if not label then
+		return
+	end
+
+	local tweens = labelTweens[label]
+	if tweens then
+		for _, tween in pairs(tweens) do
+			if tween then
+				tween:Cancel()
+			end
+		end
+
+		labelTweens[label] = nil
+	end
+end
+
+local function resetLabelTransparency(label)
+	if not label then
+		return
+	end
+
+	local defaults = labelDefaults[label]
+
+	if defaults then
+		label.TextTransparency = defaults.TextTransparency
+		label.TextStrokeTransparency = defaults.TextStrokeTransparency
+
+		local uiStroke = getLabelUIStroke(label)
+		if uiStroke and defaults.UIStrokeTransparency ~= nil then
+			uiStroke.Transparency = defaults.UIStrokeTransparency
+		end
+	else
+		label.TextTransparency = 0
+		label.TextStrokeTransparency = 0
+
+		local uiStroke = getLabelUIStroke(label)
+		if uiStroke then
+			uiStroke.Transparency = 0
+		end
+	end
+end
+
+local function hideStateLabel(label)
+	if not label then
+		return
+	end
+
+	cancelLabelTween(label)
+
+	labelHideToken[label] = (labelHideToken[label] or 0) + 1
+	label.Visible = false
+
+	resetLabelTransparency(label)
+	resetMessageState(label)
+end
+
+local function fadeOutStateLabel(label)
+	if not label or not label.Visible then
+		return
+	end
+
+	cancelLabelTween(label)
+
+	local uiStroke = getLabelUIStroke(label)
+
+	local textTween = TweenService:Create(label, LABEL_FADE_OUT_INFO, {
+		TextTransparency = 1,
+		TextStrokeTransparency = 1,
+	})
+
+	local strokeTween = nil
+	if uiStroke then
+		strokeTween = TweenService:Create(uiStroke, LABEL_FADE_OUT_INFO, {
+			Transparency = 1,
+		})
+	end
+
+	local activeTweens = {
+		Text = textTween,
+		UIStroke = strokeTween,
+	}
+
+	labelTweens[label] = activeTweens
+
+	local connection
+	connection = textTween.Completed:Connect(function()
+		if connection then
+			connection:Disconnect()
+		end
+
+		if labelTweens[label] ~= activeTweens then
+			return
+		end
+
+		labelTweens[label] = nil
+		label.Visible = false
+
+		resetLabelTransparency(label)
+		resetMessageState(label)
+	end)
+
+	textTween:Play()
+
+	if strokeTween then
+		strokeTween:Play()
+	end
+end
+
+local function getOppositeStateLabel(label)
+	if label == successLabel then
+		return failedLabel
+	elseif label == failedLabel then
+		return successLabel
+	end
+
+	return nil
+end
+
 local function showStateLabel(label, baseText)
 	if not label then
 		warn("⚠️ Bank transfer state label missing for message: " .. tostring(baseText))
 		return
 	end
+
+	local otherLabel = getOppositeStateLabel(label)
+
+	-- Before showing this label, hide the opposite one so they can never overlap.
+	hideStateLabel(otherLabel)
+
+	cancelLabelTween(label)
+	resetLabelTransparency(label)
 
 	local state = messageState[label]
 	if not state then
@@ -121,8 +285,22 @@ local function showStateLabel(label, baseText)
 		state.baseText = baseText
 	end
 
-	label.Text = state.count > 1 and (baseText .. " x" .. state.count) or baseText
+	label.Text = baseText .. " x" .. state.count
 	label.Visible = true
+
+	labelHideToken[label] = (labelHideToken[label] or 0) + 1
+	local thisToken = labelHideToken[label]
+
+	task.delay(LABEL_SHOW_SECONDS, function()
+		if labelHideToken[label] == thisToken and label.Visible then
+			fadeOutStateLabel(label)
+		end
+	end)
+end
+
+local function clearStateLabels()
+	hideStateLabel(successLabel)
+	hideStateLabel(failedLabel)
 end
 
 local function startVerifying()
@@ -145,11 +323,25 @@ local function showFailure(reason)
 	end
 end
 
+local function showTimerResetFeedback(success, message)
+	if success then
+		showStateLabel(successLabel, message or "Timer Reset Successful")
+	else
+		showStateLabel(failedLabel, message or "Timer Reset Failed")
+	end
+end
+
+timerResetFeedbackEvent.OnClientEvent:Connect(function(success, message)
+	stopVerifying()
+	showTimerResetFeedback(success, message)
+end)
+
 local function releaseButtonSoon()
 	task.delay(0.15, function()
 		if withdrawBtn and withdrawBtn.Parent then
 			withdrawBtn.Active = true
 		end
+
 		isCoolingDown = false
 	end)
 end
@@ -199,6 +391,7 @@ withdrawBtn.MouseButton1Click:Connect(function()
 		if amountInput then
 			amountInput.Text = ""
 		end
+
 		showStateLabel(successLabel, "Transfer Successful")
 	else
 		showFailure(message)
@@ -207,6 +400,15 @@ withdrawBtn.MouseButton1Click:Connect(function()
 	releaseButtonSoon()
 end)
 
+clearStateLabels()
+
 if verifyLabel then
 	verifyLabel.Visible = false
 end
+
+transferFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+	if transferFrame.Visible then
+		clearStateLabels()
+		stopVerifying()
+	end
+end)
