@@ -8,7 +8,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
-local Workspace = game:GetService("Workspace")
 
 local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 local RankTags = ServerStorage:WaitForChild("RankTags", 10)
@@ -105,7 +104,7 @@ local function increment(dictionary, key, amount)
 	dictionary[key] = (tonumber(dictionary[key]) or 0) + (amount or 1)
 end
 
-local function getHeldAndStoredCarCount(player)
+local function getInventoryCarCount(player)
 	local count = 0
 	local seen = {}
 	local function scan(container)
@@ -121,20 +120,6 @@ local function getHeldAndStoredCarCount(player)
 	scan(player:FindFirstChild("Backpack"))
 	if player.Character then scan(player.Character) end
 
-	local plotName = player:GetAttribute("OccupiedPlot")
-	local tycoons = Workspace:FindFirstChild("Tycoons")
-	local plot = plotName and tycoons and tycoons:FindFirstChild(plotName)
-	if plot then
-		for _, descendant in ipairs(plot:GetDescendants()) do
-			if descendant.Name == "LinkedCar" and descendant:IsA("ObjectValue") and descendant.Value then
-				local car = descendant.Value
-				if car:GetAttribute("OwnerUserId") == player.UserId then
-					count += 1
-				end
-			end
-		end
-	end
-
 	return count
 end
 
@@ -144,7 +129,7 @@ end
 
 local function canAddCar(player, amount)
 	amount = math.max(1, tonumber(amount) or 1)
-	return getHeldAndStoredCarCount(player) + amount <= getStorageLimit(player)
+	return getInventoryCarCount(player) + amount <= getStorageLimit(player)
 end
 
 local function Action_SetRankVisual(player, rankName)
@@ -389,7 +374,7 @@ RankProgressAPI.OnInvoke = function(action, player, ...)
 	if not player then return false end
 	if action == "CanAddCar" then
 		local amount = ...
-		return canAddCar(player, amount), getStorageLimit(player), getHeldAndStoredCarCount(player)
+		return canAddCar(player, amount), getStorageLimit(player), getInventoryCarCount(player)
 	elseif action == "CarObtained" then
 		local carName, source, shopName = ...
 		recordCarObtained(player, carName, source, shopName)
