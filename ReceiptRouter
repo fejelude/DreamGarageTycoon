@@ -94,7 +94,7 @@ local TycoonFolder = Workspace:WaitForChild("Tycoons")
 -- Bindable Functions Reference Setup
 local ShopRerollFunc = ServerStorage:WaitForChild("ShopRerollFunction", 30)
 local UncommonShopRerollFunc = ServerStorage:WaitForChild("UncommonShopRerollFunction", 30)
-local RareShopRerollFunc = ServerStorage:WaitForChild("RareShopRerollFunction", 30) 
+local RareShopRerollFunc = ServerStorage:WaitForChild("RareShopRerollFunction", 30)
 local EpicShopRerollFunc = ServerStorage:WaitForChild("EpicShopRerollFunction", 30)
 
 local BindableFunctions = ReplicatedStorage:WaitForChild("BindableFunctions")
@@ -107,6 +107,9 @@ local Remotes = ReplicatedStorage:WaitForChild("GiftRemotes")
 local NotifyGiftReceived = Remotes:WaitForChild("NotifyGiftReceived")
 
 local GlobalChatBroadcast = Remotes:WaitForChild("GlobalChatBroadcast", 10)
+
+-- RemoteEvent must be directly inside ReplicatedStorage.
+local BankTimerResetFeedback = ReplicatedStorage:WaitForChild("BankTimerResetFeedback")
 
 local BaseSkinStats
 pcall(function()
@@ -218,15 +221,19 @@ local function giveCarTool(targetPlayer, carName)
 	return invokeOk and giveResult == true
 end
 
-
 local function recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, rarity)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
 	if not rankApi then return end
+
 	task.spawn(function()
 		if isGift then
-			pcall(function() rankApi:Invoke("CarGiftSent", buyerPlayer, targetPlayer, carName) end)
+			pcall(function()
+				rankApi:Invoke("CarGiftSent", buyerPlayer, targetPlayer, carName)
+			end)
 		else
-			pcall(function() rankApi:Invoke("CarObtained", targetPlayer, carName, "Buy", rarity) end)
+			pcall(function()
+				rankApi:Invoke("CarObtained", targetPlayer, carName, "Buy", rarity)
+			end)
 		end
 	end)
 end
@@ -237,6 +244,7 @@ end
 local function handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, rarity, npcFeedbackName)
 	local purchaseSuccess = giveCarTool(targetPlayer, carName)
 	if not purchaseSuccess then return false end
+
 	recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, rarity)
 
 	local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
@@ -247,7 +255,7 @@ local function handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carNa
 		if feedbackRemote then
 			feedbackRemote:FireClient(buyerPlayer, carName, true, targetPlayer.Name)
 		end
-		
+
 		-- Replace Receiver private notification with server-wide broadcast
 		if GlobalChatBroadcast then
 			GlobalChatBroadcast:FireAllClients({
@@ -264,7 +272,7 @@ local function handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carNa
 			feedbackRemote:FireClient(targetPlayer, carName, true)
 		end
 	end
-	
+
 	return true
 end
 
@@ -311,6 +319,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	end
 
 	local purchaseSuccess = false
+	local bankResetFeedback = nil
 
 	local skinFound = nil
 	if BaseSkinStats then
@@ -330,11 +339,26 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		targetPlayer = buyerPlayer
 		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 
-		buyerPlayer:SetAttribute(BANK_TRANSFER_USED_ATTR, 0)
-		buyerPlayer:SetAttribute(BANK_TRANSFER_RESET_AT_ATTR, 0)
-		purchaseSuccess = true
+		local resetOk, resetErr = pcall(function()
+			buyerPlayer:SetAttribute(BANK_TRANSFER_USED_ATTR, 0)
+			buyerPlayer:SetAttribute(BANK_TRANSFER_RESET_AT_ATTR, 0)
+		end)
 
-	-- ─── 2X TABLET ───────────────────────────────────────────────────────────
+		if resetOk then
+			purchaseSuccess = true
+			bankResetFeedback = {
+				success = true,
+				message = "Timer Reset Successful",
+			}
+		else
+			warn("⚠️ Bank timer reset failed: " .. tostring(resetErr))
+
+			if BankTimerResetFeedback then
+				BankTimerResetFeedback:FireClient(buyerPlayer, false, "Timer Reset Failed")
+			end
+		end
+
+		-- ─── 2X TABLET ───────────────────────────────────────────────────────────
 	elseif pid == TABLET_2X_ID then
 		local myPlotName = targetPlayer:GetAttribute("OccupiedPlot")
 		local plot = myPlotName and TycoonFolder:FindFirstChild(myPlotName)
@@ -355,7 +379,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			purchaseSuccess = true
 		end
 
-	-- ─── SHOP REROLLS ────────────────────────────────────────────────────────
+		-- ─── SHOP REROLLS ────────────────────────────────────────────────────────
 	elseif pid == SHOP_REROLL_ID then
 		if ShopRerollFunc then
 			ShopRerollFunc:Invoke(targetPlayer)
@@ -386,27 +410,27 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			warn("⚠️ EpicShopRerollFunction missing!")
 		end
 
-	-- ─── 🟢 COMMON CAR ───────────────────────────────────────────────────────
+		-- ─── 🟢 COMMON CAR ───────────────────────────────────────────────────────
 	elseif CAR_PRODUCT_IDS[pid] then
 		local carName = CAR_PRODUCT_IDS[pid]
 		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Common", nil)
 
-	-- ─── 🔵 UNCOMMON CAR ─────────────────────────────────────────────────────
+		-- ─── 🔵 UNCOMMON CAR ─────────────────────────────────────────────────────
 	elseif UNCOMMON_CAR_PRODUCT_IDS[pid] then
 		local carName = UNCOMMON_CAR_PRODUCT_IDS[pid]
 		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Uncommon", "DarrelPurchaseFeedback")
 
-	-- ─── 🟣 RARE CAR ─────────────────────────────────────────────────────────
+		-- ─── 🟣 RARE CAR ─────────────────────────────────────────────────────────
 	elseif RARE_CAR_PRODUCT_IDS[pid] then
 		local carName = RARE_CAR_PRODUCT_IDS[pid]
 		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Rare", "JacobPurchaseFeedback")
 
-	-- ─── 🟡 EPIC CAR ─────────────────────────────────────────────────────────
+		-- ─── 🟡 EPIC CAR ─────────────────────────────────────────────────────────
 	elseif EPIC_CAR_PRODUCT_IDS[pid] then
 		local carName = EPIC_CAR_PRODUCT_IDS[pid]
 		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Epic", "RayWPurchaseFeedback")
 
-	-- ─── ⏩ SKIP CRAFT TIMES ─────────────────────────────────────────────────
+		-- ─── ⏩ SKIP CRAFT TIMES ─────────────────────────────────────────────────
 	elseif pid == LEGENDARY_SKIP_CRAFT_ID then
 		local ok, success, msg = safeInvoke(SkipLegendaryCraftFunc, 5, targetPlayer)
 		if ok and success then
@@ -423,7 +447,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			warn("⚠️ Mythical Craft Skip failed or no active craft: " .. tostring(msg))
 		end
 
-	-- ─── 🎨 BASE SKIN ────────────────────────────────────────────────────────
+		-- ─── 🎨 BASE SKIN ────────────────────────────────────────────────────────
 	elseif skinFound then
 		local ownedRaw = targetPlayer:GetAttribute("OwnedBaseSkins") or "[]"
 		local ownedTable = {}
@@ -475,6 +499,14 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			task.spawn(function()
 				safeInvoke(TycoonAdminAPI, 2, "MarkDirty", targetPlayer)
 			end)
+		end
+
+		if bankResetFeedback and BankTimerResetFeedback then
+			BankTimerResetFeedback:FireClient(
+				buyerPlayer,
+				bankResetFeedback.success,
+				bankResetFeedback.message
+			)
 		end
 
 		return Enum.ProductPurchaseDecision.PurchaseGranted
