@@ -13,23 +13,21 @@ local Players = game:GetService("Players")
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local bankGui = playerGui:WaitForChild("BankGui")
+local transferFrame = bankGui:WaitForChild("TransferFrame")
+local stateLabels = transferFrame:WaitForChild("StateLabels")
+
 local withdrawBtn = script.Parent
 local mainWindow = withdrawBtn.Parent
-local transferFrame = mainWindow and mainWindow.Parent
-local stateLabels = transferFrame and transferFrame:WaitForChild("StateLabels", 5)
 
 local withdrawFunc = ReplicatedStorage:WaitForChild("WithdrawFunction")
 
 local amountInput = mainWindow:WaitForChild("AmountInput", 5)
 local verifyLabel = mainWindow:FindFirstChild("VerifyLabel")
 
-local function findStateLabel(labelName)
-	stateLabels = stateLabels or (transferFrame and transferFrame:FindFirstChild("StateLabels"))
-	return stateLabels and stateLabels:FindFirstChild(labelName)
-end
-
-local successLabel = findStateLabel("Success")
-local failedLabel = findStateLabel("Failed")
+local successLabel = stateLabels:WaitForChild("Success")
+local failedLabel = stateLabels:WaitForChild("Failed")
 
 local TRANSFER_USED_ATTR = "BankTransferLimitUsed"
 local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
@@ -140,8 +138,6 @@ local function stopVerifying()
 end
 
 local function showFailure(reason)
-	failedLabel = failedLabel or findStateLabel("Failed")
-
 	if reason == "Transfer Limit Reached" then
 		showStateLabel(failedLabel, "Transfer Limit Reached")
 	else
@@ -203,7 +199,6 @@ withdrawBtn.MouseButton1Click:Connect(function()
 		if amountInput then
 			amountInput.Text = ""
 		end
-		successLabel = successLabel or findStateLabel("Success")
 		showStateLabel(successLabel, "Transfer Successful")
 	else
 		showFailure(message)
