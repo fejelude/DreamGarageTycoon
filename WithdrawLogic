@@ -17,15 +17,26 @@ local player = Players.LocalPlayer
 local withdrawBtn = script.Parent
 local mainWindow = withdrawBtn.Parent
 local transferFrame = mainWindow and mainWindow.Parent
-local stateLabels = transferFrame and transferFrame:WaitForChild("StateLabels", 5)
+local stateLabels = transferFrame and transferFrame:FindFirstChild("StateLabels")
 
 local withdrawFunc = ReplicatedStorage:WaitForChild("WithdrawFunction")
 
 local amountInput = mainWindow:WaitForChild("AmountInput", 5)
 local verifyLabel = mainWindow:FindFirstChild("VerifyLabel")
 
-local successLabel = stateLabels and stateLabels:WaitForChild("Success", 5) or mainWindow:FindFirstChild("SuccessLabel")
-local failedLabel = stateLabels and stateLabels:WaitForChild("Failed", 5) or mainWindow:FindFirstChild("ErrorLabel")
+local function findStateLabel(labelName, legacyName)
+	stateLabels = stateLabels or (transferFrame and transferFrame:FindFirstChild("StateLabels"))
+
+	local label = stateLabels and stateLabels:FindFirstChild(labelName)
+	if label then
+		return label
+	end
+
+	return mainWindow:FindFirstChild(legacyName)
+end
+
+local successLabel = findStateLabel("Success", "SuccessLabel")
+local failedLabel = findStateLabel("Failed", "ErrorLabel")
 
 local TRANSFER_USED_ATTR = "BankTransferLimitUsed"
 local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
@@ -154,6 +165,7 @@ end
 
 local function animateStackedResult(label, baseText)
 	if not label then
+		warn("⚠️ Bank transfer state label missing for message: " .. tostring(baseText))
 		return
 	end
 
@@ -298,6 +310,8 @@ local function stopVerifying()
 end
 
 local function showFailure(reason)
+	failedLabel = failedLabel or findStateLabel("Failed", "ErrorLabel")
+
 	if reason == "Transfer Limit Reached" then
 		animateStackedResult(failedLabel, "Transfer Limit Reached")
 	else
@@ -359,6 +373,7 @@ withdrawBtn.MouseButton1Click:Connect(function()
 		if amountInput then
 			amountInput.Text = ""
 		end
+		successLabel = successLabel or findStateLabel("Success", "SuccessLabel")
 		animateStackedResult(successLabel, "Transfer Successful")
 	else
 		showFailure(message)

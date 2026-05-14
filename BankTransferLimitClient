@@ -30,9 +30,8 @@ local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
 local SUFFIXES = {"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"}
 
 local function trimDecimalString(value)
-	local text = string.format("%.2f", value)
-	text = text:gsub("%.00$", "")
-	text = text:gsub("(%..-)0+$", "%1")
+	local text = tostring(value)
+	text = text:gsub("%.0$", "")
 	return text
 end
 
@@ -48,7 +47,13 @@ local function formatNumber(n)
 	suffixIndex = math.clamp(suffixIndex, 1, #SUFFIXES)
 
 	local scaled = n / (1000 ^ suffixIndex)
-	return trimDecimalString(scaled) .. SUFFIXES[suffixIndex]
+	if scaled < 10 then
+		-- Keep one compact decimal for small suffix values, truncated so
+		-- 5.67K displays as 5.6K instead of expanding or rounding upward.
+		return trimDecimalString(string.format("%.1f", math.floor(scaled * 10) / 10)) .. SUFFIXES[suffixIndex]
+	end
+
+	return tostring(math.floor(scaled)) .. SUFFIXES[suffixIndex]
 end
 
 local function formatTimer(seconds)
