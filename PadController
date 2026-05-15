@@ -295,8 +295,10 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 				result:SetAttribute("OwnerUserId", player.UserId)
 				result:SetAttribute("CarGUID", tostring(player.UserId) .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000,9999)))
 
-				-- Update State immediately
+				-- Update State immediately and refresh every placed car display because
+				-- Mythical CPS can depend on the best non-Mythical car on the base.
 				validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+				CarCPSDisplayUtils.RefreshPlotCPSDisplays(thisPlot, player)
 
 				if player.Character then
 					local edgeOffset = (padPart.Size.Z / 2) + CONSTANTS.EJECT_DISTANCE
@@ -370,8 +372,10 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 		occupiedVal.Value = false
 		linkedCarVal.Value = nil
 
-		-- Update State immediately
+		-- Update State immediately and refresh every placed car display because
+		-- Mythical CPS can depend on the best non-Mythical car on the base.
 		validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+		CarCPSDisplayUtils.RefreshPlotCPSDisplays(thisPlot, player)
 
 		playSound("EquipSound", padPart)
 	else
