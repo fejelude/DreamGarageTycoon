@@ -341,32 +341,90 @@ CarStats.Cars = {
 	-- ====================================================================
 	["Centurion"] = {
 		Name = "Bugatti Chiron",
-		CPS = 3004761,
+		CPS = 500000,
+		MythicalBestCarMultiplier = 1.5,
 		Rarity = "Mythic",
 		Price = 85000000000000, -- 85.0T
 		Image = "rbxassetid://119034017910791"
 	},
 	["Grotti-Ferocious"] = {
 		Name = "Ferrari 250",
-		CPS = 3605713,
+		CPS = 750000,
+		MythicalBestCarMultiplier = 1.8,
 		Rarity = "Mythic",
 		Price = 122700000000000, -- 122.7T
 		Image = "rbxassetid://73109344994067"
 	},
 	["Solitaire"] = {
 		Name = "Lamborghini Egoista",
-		CPS = 4759540,
+		CPS = 1000000,
+		MythicalBestCarMultiplier = 2.2,
 		Rarity = "Mythic",
 		Price = 214300000000000, -- 214.3T
 		Image = "rbxassetid://72773579287906"
 	},
 	["Hyperspace"] = {
 		Name = "Lamborghini Vision",
-		CPS = 5000000,
+		CPS = 1500000,
+		MythicalBestCarMultiplier = 2.5,
 		Rarity = "Mythic",
 		Price = 236600000000000, -- 236.6T
 		Image = "rbxassetid://117059311536102"
 	}
 }
+
+local normalizedCarLookup = {}
+
+local function normalizeCarName(name)
+	name = tostring(name or "")
+	name = string.lower(name)
+	name = name:gsub("%s+", "")
+	name = name:gsub("%-", "")
+	name = name:gsub("_", "")
+	return name
+end
+
+for carId, stats in pairs(CarStats.Cars) do
+	normalizedCarLookup[normalizeCarName(carId)] = carId
+	if stats.Name then
+		normalizedCarLookup[normalizeCarName(stats.Name)] = carId
+	end
+end
+
+function CarStats.GetCarId(carName)
+	if not carName then return nil end
+	if CarStats.Cars[carName] then return carName end
+	return normalizedCarLookup[normalizeCarName(carName)]
+end
+
+function CarStats.GetCarStats(carName)
+	local carId = CarStats.GetCarId(carName)
+	return carId and CarStats.Cars[carId] or nil, carId
+end
+
+function CarStats.IsMythicalCar(carNameOrStats)
+	local stats = typeof(carNameOrStats) == "table" and carNameOrStats or CarStats.GetCarStats(carNameOrStats)
+	return stats and stats.Rarity == "Mythic" and tonumber(stats.MythicalBestCarMultiplier) ~= nil
+end
+
+function CarStats.GetMythicalStrengthPercent(carNameOrStats)
+	local stats = typeof(carNameOrStats) == "table" and carNameOrStats or CarStats.GetCarStats(carNameOrStats)
+	local multiplier = stats and tonumber(stats.MythicalBestCarMultiplier)
+	return multiplier and math.floor((multiplier * 100) + 0.5) or nil
+end
+
+function CarStats.CalculateEffectiveBaseCPS(carNameOrStats, bestPlacedBaseCPS)
+	local stats = typeof(carNameOrStats) == "table" and carNameOrStats or CarStats.GetCarStats(carNameOrStats)
+	if not stats then return nil end
+
+	local baseCPS = tonumber(stats.CPS) or 0
+	local mythicalMultiplier = tonumber(stats.MythicalBestCarMultiplier)
+	if stats.Rarity ~= "Mythic" or not mythicalMultiplier then
+		return baseCPS
+	end
+
+	local scaledCPS = (tonumber(bestPlacedBaseCPS) or 0) * mythicalMultiplier
+	return math.max(baseCPS, scaledCPS)
+end
 
 return CarStats

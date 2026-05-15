@@ -418,17 +418,53 @@ local function formatCPS(value)
 	end
 end
 
+local function getCarStats(carName)
+	if not carName or not CarStats or not CarStats.Cars then return nil end
+	return (CarStats.GetCarStats and CarStats.GetCarStats(carName)) or CarStats.Cars[carName]
+end
+
+local function isMythicalCarStats(stats)
+	if not stats then return false end
+	return (CarStats.IsMythicalCar and CarStats.IsMythicalCar(stats))
+		or (stats.Rarity == "Mythic" and tonumber(stats.MythicalBestCarMultiplier) ~= nil)
+end
+
+local function getMythicalStrengthPercent(stats)
+	if not stats then return nil end
+	if CarStats.GetMythicalStrengthPercent then
+		return CarStats.GetMythicalStrengthPercent(stats)
+	end
+	local multiplier = tonumber(stats.MythicalBestCarMultiplier)
+	return multiplier and math.floor((multiplier * 100) + 0.5) or nil
+end
+
 local function updateCarInfoLabel(slot, carName)
 	local carInfo = slot:FindFirstChild("CarInfo")
-	if not carInfo then return end
-	local infoLabel = carInfo:FindFirstChild("CarInfoLabel")
-	if not infoLabel then return end
+	local premiumCarInfo = slot:FindFirstChild("CarInfoPremium")
+	local stats = getCarStats(carName)
+	local baseCPS = stats and (stats.CPS or 0) or nil
 
-	if carName and CarStats and CarStats.Cars and CarStats.Cars[carName] then
-		local baseCPS = CarStats.Cars[carName].CPS or 0
-		infoLabel.Text = formatCPS(baseCPS)
-	else
-		infoLabel.Text = ""
+	if carInfo then
+		local infoLabel = carInfo:FindFirstChild("CarInfoLabel")
+		if infoLabel then
+			infoLabel.Text = baseCPS and formatCPS(baseCPS) or ""
+		end
+		carInfo.Visible = false
+	end
+
+	if premiumCarInfo then
+		local premiumInfoLabel = premiumCarInfo:FindFirstChild("CarInfoLabel")
+		if premiumInfoLabel then
+			premiumInfoLabel.Text = baseCPS and formatCPS(baseCPS) or ""
+		end
+
+		local strongerLabel = premiumCarInfo:FindFirstChild("StrongerCarInfoLabel")
+		if strongerLabel then
+			local strengthPercent = getMythicalStrengthPercent(stats)
+			strongerLabel.Text = strengthPercent and (tostring(strengthPercent) .. "% stronger than your best car") or ""
+		end
+
+		premiumCarInfo.Visible = false
 	end
 end
 
@@ -1531,6 +1567,8 @@ function renderCurrentTab()
 				countTag.Text    = "x" .. tostring(displayCount)
 				countTag.Visible = true
 
+				updateCarInfoLabel(btn, carName)
+
 				local equipped      = (char and char:FindFirstChild((tool and tool.Name) or carName)) ~= nil
 				local existingStroke = btn:FindFirstChild("__EquippedStroke")
 				local existingTag    = btn:FindFirstChild("__EquippedTag")
@@ -1543,6 +1581,24 @@ function renderCurrentTab()
 
 				local hoverCons = addButtonEffects(btn, function() return baseBg end)
 				for _, c in ipairs(hoverCons) do table.insert(cons, c) end
+
+				local carInfoImg = btn:FindFirstChild("CarInfo")
+				local premiumCarInfoImg = btn:FindFirstChild("CarInfoPremium")
+				if carInfoImg then carInfoImg.Visible = false end
+				if premiumCarInfoImg then premiumCarInfoImg.Visible = false end
+
+				if carInfoImg or premiumCarInfoImg then
+					table.insert(cons, btn.MouseEnter:Connect(function()
+						local showPremium = isMythicalCarStats(stats)
+						if carInfoImg then carInfoImg.Visible = not showPremium end
+						if premiumCarInfoImg then premiumCarInfoImg.Visible = showPremium end
+					end))
+
+					table.insert(cons, btn.MouseLeave:Connect(function()
+						if carInfoImg then carInfoImg.Visible = false end
+						if premiumCarInfoImg then premiumCarInfoImg.Visible = false end
+					end))
+				end
 
 				-- 👆 DRAG INITIATION (inventory → anywhere)
 				-- FIX #19: Only allow drag when inventory is open
@@ -1822,17 +1878,28 @@ if slotsFolder then
 			-- guard runs BEFORE Visible is ever set to true, so empty slots never
 			-- flash the tooltip for even a single frame.
 			local carInfoImg = slot:FindFirstChild("CarInfo")
-			if carInfoImg then
-				carInfoImg.Visible = false
+			local premiumCarInfoImg = slot:FindFirstChild("CarInfoPremium")
+			if carInfoImg then carInfoImg.Visible = false end
+			if premiumCarInfoImg then premiumCarInfoImg.Visible = false end
+
+			if carInfoImg or premiumCarInfoImg then
 				local slotIndex = i
 				slot.MouseEnter:Connect(function()
-					if hotbarData[slotIndex] then
-						carInfoImg.Visible = true
+					local carName = hotbarData[slotIndex]
+					local stats = getCarStats(carName)
+					local showPremium = isMythicalCarStats(stats)
+
+					if carInfoImg then
+						carInfoImg.Visible = carName ~= nil and not showPremium
 					end
-					-- slot is empty → carInfoImg stays false, nothing to do
+					if premiumCarInfoImg then
+						premiumCarInfoImg.Visible = carName ~= nil and showPremium
+					end
+					-- slot is empty → both stay false, nothing to do
 				end)
 				slot.MouseLeave:Connect(function()
-					carInfoImg.Visible = false
+					if carInfoImg then carInfoImg.Visible = false end
+					if premiumCarInfoImg then premiumCarInfoImg.Visible = false end
 				end)
 			end
 

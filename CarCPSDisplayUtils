@@ -13,6 +13,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 
 local CarCPSDisplayUtils = {}
 
@@ -200,12 +201,12 @@ function CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
 	local storedBase = tonumber(cpsLabel:GetAttribute(BASE_CPS_ATTR))
 	if storedBase then return storedBase end
 
-	local stats = carModel and CarStats.Cars[carModel.Name]
+	local stats = carModel and (CarStats.GetCarStats and CarStats.GetCarStats(carModel.Name) or CarStats.Cars[carModel.Name])
 	local baseCPS = stats and tonumber(stats.CPS)
 
 	if not baseCPS then
 		local cleanName = carModel and cleanToolName(carModel.Name)
-		stats = cleanName and CarStats.Cars[cleanName]
+		stats = cleanName and (CarStats.GetCarStats and CarStats.GetCarStats(cleanName) or CarStats.Cars[cleanName])
 		baseCPS = stats and tonumber(stats.CPS)
 	end
 
@@ -229,12 +230,13 @@ function CarCPSDisplayUtils.GetToolBaseCPS(tool, carModel, cpsLabel)
 	local cleanName = tool and cleanToolName(tool.Name)
 	local cleanModelName = carModel and cleanToolName(carModel.Name)
 
-	local stats = (toolId and CarStats.Cars[toolId])
-		or (cleanToolId and CarStats.Cars[cleanToolId])
-		or (tool and CarStats.Cars[tool.Name])
-		or (cleanName and CarStats.Cars[cleanName])
-		or (carModel and CarStats.Cars[carModel.Name])
-		or (cleanModelName and CarStats.Cars[cleanModelName])
+	local getStats = CarStats.GetCarStats or function(name) return CarStats.Cars[name] end
+	local stats = (toolId and getStats(toolId))
+		or (cleanToolId and getStats(cleanToolId))
+		or (tool and getStats(tool.Name))
+		or (cleanName and getStats(cleanName))
+		or (carModel and getStats(carModel.Name))
+		or (cleanModelName and getStats(cleanModelName))
 
 	local baseCPS = stats and tonumber(stats.CPS)
 
@@ -249,11 +251,102 @@ function CarCPSDisplayUtils.GetToolBaseCPS(tool, carModel, cpsLabel)
 	return baseCPS
 end
 
+
+local function getStatForObjectName(name)
+	if not name then return nil end
+	return (CarStats.GetCarStats and CarStats.GetCarStats(name)) or CarStats.Cars[name]
+end
+
+local function getMainPart(obj)
+	if not obj then return nil end
+	if obj:IsA("BasePart") then return obj end
+	if obj:IsA("Model") then
+		return obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+	end
+	return nil
+end
+
+local function getLinkedCarValue(pad)
+	local direct = pad:FindFirstChild("LinkedCar")
+	if direct then return direct.Value end
+
+	local mainPart = getMainPart(pad)
+	if mainPart then
+		local linked = mainPart:FindFirstChild("LinkedCar")
+		if linked then return linked.Value end
+	end
+
+	for _, child in ipairs(pad:GetChildren()) do
+		local linked = child:FindFirstChild("LinkedCar")
+		if linked then return linked.Value end
+	end
+
+	return nil
+end
+
+local function findPlotFromCarModel(carModel)
+	local current = carModel
+	while current do
+		if current:FindFirstChild("Owner") or current.Name == "Tycoons" or current.Name == "TycoonLevelStorage" then
+			return current.Name == "Tycoons" and nil or current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function getActiveLevelFolder(plot, player)
+	if not plot or not player then return nil end
+	local playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+	local levelName = "Level" .. tostring(playerBaseLevel)
+	local spacedLevelName = "Level " .. tostring(playerBaseLevel)
+	local activeLevelFolder = plot:FindFirstChild(levelName) or plot:FindFirstChild(spacedLevelName)
+
+	if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+		local storedPlot = dedicatedFolder[plot.Name]
+		activeLevelFolder = storedPlot:FindFirstChild(levelName) or storedPlot:FindFirstChild(spacedLevelName)
+	end
+
+	return activeLevelFolder
+end
+
+function CarCPSDisplayUtils.GetBestPlacedBaseCPSForModel(carModel, player)
+	local plot = findPlotFromCarModel(carModel)
+	local activeLevelFolder = getActiveLevelFolder(plot, player)
+	local padsFolder = activeLevelFolder and activeLevelFolder:FindFirstChild("Pads")
+	if not padsFolder then return 0 end
+
+	local bestBaseCPS = 0
+	for _, pad in ipairs(padsFolder:GetChildren()) do
+		local linkedCar = getLinkedCarValue(pad)
+		if linkedCar and linkedCar.Parent then
+			local stats = getStatForObjectName(linkedCar.Name)
+			if stats and not CarStats.IsMythicalCar(stats) then
+				bestBaseCPS = math.max(bestBaseCPS, tonumber(stats.CPS) or 0)
+			end
+		end
+	end
+
+	return bestBaseCPS
+end
+
+function CarCPSDisplayUtils.GetEffectiveModelBaseCPS(carModel, cpsLabel, player)
+	local baseCPS = CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
+	if not baseCPS then return nil end
+
+	local stats = carModel and getStatForObjectName(carModel.Name)
+	if stats and CarStats.IsMythicalCar(stats) then
+		return CarStats.CalculateEffectiveBaseCPS(stats, CarCPSDisplayUtils.GetBestPlacedBaseCPSForModel(carModel, player))
+	end
+
+	return baseCPS
+end
+
 function CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
 	local cpsLabel = CarCPSDisplayUtils.GetCPSLabel(carModel)
 	if not cpsLabel then return end
 
-	local baseCPS = CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
+	local baseCPS = CarCPSDisplayUtils.GetEffectiveModelBaseCPS(carModel, cpsLabel, player)
 	if not baseCPS then return end
 
 	local multiplier = CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player)
@@ -368,6 +461,16 @@ function CarCPSDisplayUtils.BindToolCPSDisplay(tool, playersService)
 	end)
 
 	task.defer(rebindPlayerMultiplier)
+end
+
+function CarCPSDisplayUtils.RefreshPlotCPSDisplays(plot, player)
+	if not plot or not player then return end
+	local placedCarsFolder = plot:FindFirstChild("PlacedCars")
+	if not placedCarsFolder then return end
+
+	for _, carModel in ipairs(placedCarsFolder:GetChildren()) do
+		CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
+	end
 end
 
 return CarCPSDisplayUtils

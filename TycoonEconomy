@@ -23,8 +23,12 @@ local FriendCache = {} -- [UserId] = { [FriendId] = true }
 local CarLookup = {}
 for id, stats in pairs(CarStats.Cars) do
 	-- Since multiple cars can have the same real "Name" (e.g. "Toyota Hilux"),
-	-- we strictly use their unique dictionary ID keys (e.g. "Rustix", "Ricky", "Ironclad") to avoid collisions!
+	-- keep direct ID lookups fast while falling back through CarStats.GetCarStats for model-name lookups.
 	CarLookup[id] = stats
+end
+
+local function getCarStats(carName)
+	return CarLookup[carName] or (CarStats.GetCarStats and CarStats.GetCarStats(carName))
 end
 
 -- ============================================================================
@@ -179,28 +183,55 @@ local function getLinkedCarValue(pad)
 	return nil
 end
 
--- Helper to gather all pads from a Level Folder
-local function processPadsInFolder(padsFolder)
-	local folderCPS = 0
-	if not padsFolder then return folderCPS end
+local function getPlacedCarsInFolder(padsFolder)
+	local placedCars = {}
+	if not padsFolder then return placedCars end
 
 	for _, pad in pairs(padsFolder:GetChildren()) do
 		local linkedCar = getLinkedCarValue(pad)
-
 		if linkedCar and linkedCar.Parent then
-			-- [[ AUDIT FIX: O(1) LOOKUP ]]
-			local stats = CarLookup[linkedCar.Name]
+			table.insert(placedCars, { Pad = pad, Car = linkedCar })
+		end
+	end
 
-			if stats then
-				folderCPS = folderCPS + stats.CPS
-			else
-				if not pad:GetAttribute("WarnedMissing") then
-					warn("⚠️ Economy Warning: No stats found for '" .. linkedCar.Name .. "'")
-					pad:SetAttribute("WarnedMissing", true)
-				end
+	return placedCars
+end
+
+local function getBestPlacedBaseCPS(placedCars)
+	local bestBaseCPS = 0
+
+	for _, placed in ipairs(placedCars) do
+		local stats = getCarStats(placed.Car.Name)
+		if stats and not CarStats.IsMythicalCar(stats) then
+			bestBaseCPS = math.max(bestBaseCPS, tonumber(stats.CPS) or 0)
+		end
+	end
+
+	return bestBaseCPS
+end
+
+-- Helper to gather all pads from a Level Folder. Mythical cars use the best
+-- non-Mythical car currently placed in this same active base level, not inventory.
+local function processPadsInFolder(padsFolder)
+	local folderCPS = 0
+	local placedCars = getPlacedCarsInFolder(padsFolder)
+	local bestPlacedBaseCPS = getBestPlacedBaseCPS(placedCars)
+
+	for _, placed in ipairs(placedCars) do
+		local linkedCar = placed.Car
+		local stats = getCarStats(linkedCar.Name)
+
+		if stats then
+			folderCPS = folderCPS + CarStats.CalculateEffectiveBaseCPS(stats, bestPlacedBaseCPS)
+		else
+			local pad = placed.Pad
+			if not pad:GetAttribute("WarnedMissing") then
+				warn("⚠️ Economy Warning: No stats found for '" .. linkedCar.Name .. "'")
+				pad:SetAttribute("WarnedMissing", true)
 			end
 		end
 	end
+
 	return folderCPS
 end
 
