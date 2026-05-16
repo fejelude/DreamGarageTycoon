@@ -93,6 +93,8 @@ end
 -- ============================================================================
 function UIButtonUtils.SetupButton(button, onClickCallback)
 	if not button or not button:IsA("GuiButton") then return end
+	if button:GetAttribute("UIButtonUtilsBound") then return end
+	button:SetAttribute("UIButtonUtilsBound", true)
 
 	local uiScale = getOrCreateUIScale(button)
 	wireHoverEffects(button, uiScale)
@@ -113,6 +115,8 @@ end
 -- ============================================================================
 function UIButtonUtils.SetupStandardButton(button, informationFrame, onClickCallback)
 	if not button or not button:IsA("GuiButton") then return end
+	if button:GetAttribute("UIButtonUtilsBound") then return end
+	button:SetAttribute("UIButtonUtilsBound", true)
 
 	if informationFrame then
 		informationFrame.Visible = false

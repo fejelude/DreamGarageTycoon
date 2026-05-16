@@ -1,9 +1,9 @@
 -- [[ MODULE SCRIPT: ShopFrontendKit (Advanced Audio + Wiggle) ]]
 local TweenService = game:GetService("TweenService")
-local SoundService = game:GetService("SoundService")
-local Debris = game:GetService("Debris")
 local RunService = game:GetService("RunService") 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local Kit = {}
 local player = Players.LocalPlayer
@@ -14,58 +14,9 @@ local player = Players.LocalPlayer
 local SoundCtrl = {}
 SoundCtrl.Enabled = true
 
-local SFX_MAP = {
-	Open = {
-		{ Id = "rbxassetid://9083627113", Vol = 0.6, Pitch = 1.0, Var = 0.05 },
-		{ Id = "rbxassetid://148752521", Vol = 0.4, Pitch = 0.8, Var = 0.1 },
-	},
-	Hover = "rbxassetid://6895079853",
-	Click = "rbxassetid://9083627113",
-
-	-- ✅ CAR PURCHASE (Cash/Robux Car)
-	BuySuccess = "rbxassetid://140072726814802",
-
-	-- ❌ FAIL SOUND
-	BuyFail = "rbxassetid://83517496538471",
-
-	-- 🔄 PAID REROLL (Now fully controllable!)
-	-- I changed this to a table so you can tweak Pitch/Volume specifically for this.
-	PaidReroll = {
-		{ 
-			Id = "rbxassetid://140072726814802", -- ⬅️ REPLACE THIS WITH YOUR UNIQUE REROLL SOUND ID
-			Vol = 1.0,    -- Louder?
-			Pitch = 4.0 ,  -- Higher pitch (Makes it sound faster/different)
-			Var = 0.     -- Slight random variation
-		}
-	}, 
-
-	AutoRestock = "rbxassetid://134952684776633",
-	Restock     = "rbxassetid://134952684776633"  -- Alias so Kit.Sound:Play("Restock") works
-}
-
-local function playInstance(id, vol, pitch, variance)
-	local s = Instance.new("Sound")
-	s.SoundId = id
-	s.Volume = vol or 0.5
-	s.PlaybackSpeed = (pitch or 1) + (math.random() * 2 - 1) * (variance or 0.05)
-	s.Name = "SFX_Advanced"
-	s.Parent = SoundService
-	s:Play()
-	Debris:AddItem(s, 2)
-end
-
 function SoundCtrl:Play(name)
 	if not self.Enabled then return end
-	local data = SFX_MAP[name]
-	if not data then return end
-
-	if type(data) == "string" then
-		playInstance(data, 0.5, 1, 0.05)
-	elseif type(data) == "table" then
-		for _, layer in ipairs(data) do
-			playInstance(layer.Id, layer.Vol, layer.Pitch, layer.Var)
-		end
-	end
+	UIAudioConfig.PlayNamed(name)
 end
 Kit.Sound = SoundCtrl
 
@@ -146,7 +97,6 @@ function TweenCtrl:SetupButton(btn, onClick)
 		uiScale.Parent = btn
 	end
 
-	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
 
 	local isHovering = false
 	local isPressed  = false

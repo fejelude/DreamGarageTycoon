@@ -39,6 +39,7 @@ mainFrame.Visible = true
 gui.Enabled       = false
 
 local Kit      = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
+local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
 
 -- ============================================================================
 -- ⚙️  CONFIG
@@ -635,12 +636,17 @@ local function closeShopUI(forceDialogueClose)
 	if _panel then _panel.Visible = false end
 	mainFrame.Visible = true
 	gui.Enabled       = false
+	shopFeedback:Clear()
 	setFocusMode(false)
 	if forceDialogueClose then forceCloseDialogue() end
 end
 
 local function showFeedback(text, color)
-	Kit.Toast:Show(text, color)
+	if color == FEEDBACK_COLORS.Success then
+		shopFeedback:Success(text, color)
+	else
+		shopFeedback:Failed(text, color)
+	end
 end
 
 -- ============================================================================
@@ -1327,6 +1333,7 @@ local function init()
 		setFocusMode(true)
 		Kit.Sound:Play("Open")
 		gui.Enabled          = true
+		shopFeedback:Clear()
 		mainFrame.Visible    = false
 		activeCarFocus       = nil
 		isProcessingPurchase = false

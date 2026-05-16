@@ -30,6 +30,17 @@ local ROBUX_SFX_ID = "rbxassetid://117986449113759"   -- 💎 Robux purchase ini
 -- previous hover chirp to finish.
 local HOVER_POOL_SIZE = 10
 
+local lastNamedPlay = {}
+local function canPlayDedupe(key, window)
+	local now = os.clock()
+	local last = lastNamedPlay[key]
+	if last and now - last < window then
+		return false
+	end
+	lastNamedPlay[key] = now
+	return true
+end
+
 local function isSFXMuted()
 	return SoundService:GetAttribute("SFXMuted") == true
 end
@@ -110,20 +121,268 @@ function UIAudioConfig.PlayHover()
 	sound:Play()
 end
 
--- Play click — single-trigger; no cooldown needed (click = deliberate action).
+-- Play click once per intentional UI action, suppressing same-frame duplicate callers.
 function UIAudioConfig.PlayClick()
 	if isSFXMuted() then return end
+	if not canPlayDedupe("Click", 0.08) then return end
 
 	clickSound.Volume = UIAudioConfig.CLICK_VOLUME
+	clickSound.TimePosition = 0
 	clickSound:Play()
 end
 
 -- Play Robux — distinct sound for any MarketplaceService purchase initiation.
 function UIAudioConfig.PlayRobux()
 	if isSFXMuted() then return end
+	if not canPlayDedupe("Robux", 0.12) then return end
 
 	robuxSound.Volume = UIAudioConfig.ROBUX_VOLUME
+	robuxSound.TimePosition = 0
 	robuxSound:Play()
+end
+
+
+-- ============================================================================
+-- 🔊 SHARED NAMED UI / SHOP SFX
+-- ============================================================================
+local Debris = game:GetService("Debris")
+
+local NAMED_SFX = {
+	Open = { Id = "rbxassetid://9083627113", Volume = 0.6, Pitch = 1.0, Variance = 0.03, Dedupe = 0.25 },
+	BuySuccess = { Id = "rbxassetid://140072726814802", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 0.12 },
+	BuyFail = { Id = "rbxassetid://83517496538471", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 0.12 },
+	PaidReroll = { Id = "rbxassetid://140072726814802", Volume = 1.0, Pitch = 4.0, Variance = 0, Dedupe = 0.3 },
+	AutoRestock = { Id = "rbxassetid://134952684776633", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 2.0, Key = "Restock" },
+	Restock = { Id = "rbxassetid://134952684776633", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 2.0, Key = "Restock" },
+	GlobalRestock = { Id = "rbxassetid://81822437427070", Volume = 1.0, Pitch = 1.0, Variance = 0, Dedupe = 2.0, Key = "Restock" },
+}
+
+
+local function playOneShot(id, volume, pitch, variance)
+	if isSFXMuted() then return end
+
+	local sound = Instance.new("Sound")
+	sound.SoundId = id
+	sound.Volume = volume or 0.5
+	sound.PlaybackSpeed = (pitch or 1) + (math.random() * 2 - 1) * (variance or 0)
+	sound.Name = "GlobalUISFX"
+	sound.RollOffMaxDistance = 0
+	sound.Parent = SoundService
+	sound:Play()
+	Debris:AddItem(sound, 3)
+end
+
+function UIAudioConfig.PlayNamed(name)
+	local data = NAMED_SFX[name]
+	if not data then return end
+
+	local key = data.Key or name
+	if not canPlayDedupe(key, data.Dedupe or 0.05) then
+		return
+	end
+
+	playOneShot(data.Id, data.Volume, data.Pitch, data.Variance)
+end
+
+function UIAudioConfig.PlayRestock()
+	UIAudioConfig.PlayNamed("GlobalRestock")
+end
+
+-- ============================================================================
+-- 🏷️ REUSABLE STATE LABEL FEEDBACK (Bank Transfer style)
+-- ============================================================================
+function UIAudioConfig.CreateStateFeedback(container)
+	local stateLabels = nil
+	local successLabel = nil
+	local failedLabel = nil
+	local legacyIndicator = nil
+
+	local feedback = {}
+	local messageState = {}
+	local labelHideToken = {}
+	local labelTweens = {}
+	local labelDefaults = {}
+	local LABEL_SHOW_SECONDS = 3
+	local LABEL_FADE_OUT_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+	local function getStroke(label)
+		return label and label:FindFirstChildOfClass("UIStroke")
+	end
+
+	local function rememberDefaults(label)
+		if not label or labelDefaults[label] then return end
+		local stroke = getStroke(label)
+		labelDefaults[label] = {
+			TextTransparency = label.TextTransparency,
+			TextStrokeTransparency = label.TextStrokeTransparency,
+			TextColor3 = label.TextColor3,
+			UIStrokeTransparency = stroke and stroke.Transparency or nil,
+		}
+	end
+
+	local function resolveLabels()
+		if container then
+			stateLabels = stateLabels or container:FindFirstChild("StateLabels") or container:FindFirstChild("StateLabels", true)
+			successLabel = successLabel or (stateLabels and stateLabels:FindFirstChild("Success"))
+			failedLabel = failedLabel or (stateLabels and stateLabels:FindFirstChild("Failed"))
+
+			if not (successLabel and failedLabel) then
+				legacyIndicator = legacyIndicator or container:FindFirstChild("Indicator-purchase", true)
+			end
+		end
+
+		rememberDefaults(successLabel)
+		rememberDefaults(failedLabel)
+		rememberDefaults(legacyIndicator)
+	end
+
+	resolveLabels()
+
+	local function resetMessageState(label)
+		local state = messageState[label]
+		if state then
+			state.count = 0
+			state.baseText = nil
+		end
+	end
+
+	local function cancelLabelTween(label)
+		local tweens = labelTweens[label]
+		if not tweens then return end
+		for _, tween in pairs(tweens) do
+			if tween then tween:Cancel() end
+		end
+		labelTweens[label] = nil
+	end
+
+	local function resetLabelTransparency(label)
+		if not label then return end
+		local defaults = labelDefaults[label]
+		if defaults then
+			label.TextTransparency = defaults.TextTransparency
+			label.TextStrokeTransparency = defaults.TextStrokeTransparency
+			if defaults.TextColor3 then label.TextColor3 = defaults.TextColor3 end
+			local stroke = getStroke(label)
+			if stroke and defaults.UIStrokeTransparency ~= nil then
+				stroke.Transparency = defaults.UIStrokeTransparency
+			end
+		else
+			label.TextTransparency = 0
+			label.TextStrokeTransparency = 0
+			local stroke = getStroke(label)
+			if stroke then stroke.Transparency = 0 end
+		end
+	end
+
+	local function hideLabel(label)
+		if not label then return end
+		cancelLabelTween(label)
+		labelHideToken[label] = (labelHideToken[label] or 0) + 1
+		label.Visible = false
+		resetLabelTransparency(label)
+		resetMessageState(label)
+	end
+
+	local function fadeOutLabel(label)
+		if not label or not label.Visible then return end
+		cancelLabelTween(label)
+		local stroke = getStroke(label)
+		local textTween = TweenService:Create(label, LABEL_FADE_OUT_INFO, {
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		})
+		local strokeTween = nil
+		if stroke then
+			strokeTween = TweenService:Create(stroke, LABEL_FADE_OUT_INFO, { Transparency = 1 })
+		end
+		local activeTweens = { Text = textTween, UIStroke = strokeTween }
+		labelTweens[label] = activeTweens
+		local connection
+		connection = textTween.Completed:Connect(function()
+			if connection then connection:Disconnect() end
+			if labelTweens[label] ~= activeTweens then return end
+			labelTweens[label] = nil
+			label.Visible = false
+			resetLabelTransparency(label)
+			resetMessageState(label)
+		end)
+		textTween:Play()
+		if strokeTween then strokeTween:Play() end
+	end
+
+	local function getOpposite(label)
+		if label == successLabel then return failedLabel end
+		if label == failedLabel then return successLabel end
+		return nil
+	end
+
+	function feedback:Show(label, baseText, color)
+		if not label then
+			resolveLabels()
+		end
+
+		if not label then
+			if legacyIndicator then
+				label = legacyIndicator
+			else
+				warn("[UIAudioConfig] StateLabels.Success/Failed missing for feedback: " .. tostring(baseText))
+				return
+			end
+		end
+
+		local other = getOpposite(label)
+		hideLabel(other)
+		cancelLabelTween(label)
+		resetLabelTransparency(label)
+
+		if color then
+			label.TextColor3 = color
+		end
+
+		local state = messageState[label]
+		if not state then
+			state = { count = 0, baseText = baseText }
+			messageState[label] = state
+		end
+
+		if state.baseText == baseText and label.Visible then
+			state.count += 1
+		else
+			state.count = 1
+			state.baseText = baseText
+		end
+
+		label.Text = baseText .. " x" .. state.count
+		label.Visible = true
+
+		labelHideToken[label] = (labelHideToken[label] or 0) + 1
+		local thisToken = labelHideToken[label]
+		task.delay(LABEL_SHOW_SECONDS, function()
+			if labelHideToken[label] == thisToken and label.Visible then
+				fadeOutLabel(label)
+			end
+		end)
+	end
+
+	function feedback:Success(text, color)
+		resolveLabels()
+		self:Show(successLabel, text, color)
+	end
+
+	function feedback:Failed(text, color)
+		resolveLabels()
+		self:Show(failedLabel, text, color)
+	end
+
+	function feedback:Clear()
+		resolveLabels()
+		hideLabel(successLabel)
+		hideLabel(failedLabel)
+		hideLabel(legacyIndicator)
+	end
+
+	feedback:Clear()
+	return feedback
 end
 
 -- ============================================================================
