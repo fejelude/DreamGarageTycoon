@@ -72,6 +72,13 @@ local hiddenGuis = {}
 local hiddenObjects = {}
 local btnConnections = {} 
 
+local SHOP_GUIS_WITH_DISABLE_CLEANUP = {
+	"UncommonShopUi",
+	"RareShopUi",
+	"EpicShopUi",
+}
+
+
 local normalFov = nil
 local openFov = nil
 
@@ -292,6 +299,27 @@ local function ensureEmptyFX(label)
 	shimmerTween:Play()
 
 	EmptyFX = { stroke = stroke, grad = grad, shine = shine }
+end
+
+
+local function closeShopGuisThatRestoreUIOnDisable()
+	local closedAnyShop = false
+
+	for _, shopGuiName in ipairs(SHOP_GUIS_WITH_DISABLE_CLEANUP) do
+		local shopGui = PlayerGui:FindFirstChild(shopGuiName)
+		if shopGui and shopGui:IsA("ScreenGui") and shopGui.Enabled then
+			shopGui.Enabled = false
+			closedAnyShop = true
+		end
+	end
+
+	-- Uncommon/Rare/Epic shop controllers restore their previously hidden UI from
+	-- their Enabled=false cleanup listener. Wait one frame so GiftUI captures and
+	-- hides that restored UI itself, instead of the shop restoring it after the
+	-- gift menu is already open.
+	if closedAnyShop then
+		task.wait()
+	end
 end
 
 -- ============================================================================
@@ -535,6 +563,8 @@ _G.OpenGiftMenu = function(productId)
 	currentProductId = productId
 	SetIndicator("Select a player to gift", Color3.fromRGB(255, 255, 255))
 	UpdateSlots()
+
+	closeShopGuisThatRestoreUIOnDisable()
 
 	playSfx(SFX.Open, 0.5, screenGui)
 	setFocusMode(true)
