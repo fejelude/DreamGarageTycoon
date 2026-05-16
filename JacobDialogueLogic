@@ -301,6 +301,29 @@ local function stopInteraction()
 	currentCamera.FieldOfView = 70
 end
 
+local function beginPurchaseReactionFocus(shopGuiName)
+	-- Purchase reactions are opened from the shop, not from the original prompt
+	-- flow. Reset any stale dialogue focus first, let the shop finish its own
+	-- Enabled=false cleanup, then apply the exact same focus hide/lock behavior
+	-- used by startInteraction().
+	setFocusMode(false)
+
+	local shopUi = playerGui:FindFirstChild(shopGuiName)
+	if shopUi then
+		shopUi.Enabled = false
+	end
+
+	task.wait()
+
+	isInteracting = true
+	clearConnections()
+
+	local controls = getControls()
+	if controls then controls:Disable() end
+
+	setFocusMode(true)
+end
+
 local function animateButton(btn)
 	if btn:GetAttribute("HoverBound") then return end
 	btn:SetAttribute("HoverBound", true)
@@ -446,9 +469,8 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipi
 	local carData = CarStats.Cars[carId]
 	if not carData then return end
 
-	-- 🛡️ [POLISH] Close Shop UI immediately so it doesn't overlap
-	local shopUi = playerGui:FindFirstChild("RareShopUi")
-	if shopUi then shopUi.Enabled = false end
+	-- Use the same focus/UI hiding lifecycle as the original dialogue open flow.
+	beginPurchaseReactionFocus("RareShopUi")
 
 	-- 🛡️ [POLISH] Refresh camera reference to prevent stale object bugs
 	local camera = Workspace.CurrentCamera
@@ -465,9 +487,6 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipi
 
 	print("💬 [JacobLogic] Triggering Post-Purchase Reaction. Car: " .. carId .. " | Robux: " .. tostring(isRobux))
 	
-	isInteracting = true
-	setFocusMode(true) -- Focus on the NPC dialogue
-
 	local myGui, container, dialogueLabel = getUIElements()
 	if myGui and container and dialogueLabel then
 		myGui.Enabled = true
@@ -487,9 +506,8 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipi
 			stopInteraction() -- Fully close everything
 		end)
 	else
-		-- Safety: couldn't find GUI, abort gracefully
-		isInteracting = false
-		setFocusMode(false)
+		-- Safety: couldn't find GUI, abort gracefully using the same full cleanup path.
+		stopInteraction()
 	end
 end)
 
