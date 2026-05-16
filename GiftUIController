@@ -78,6 +78,13 @@ local SHOP_GUIS_WITH_DISABLE_CLEANUP = {
 	"EpicShopUi",
 }
 
+local GIFT_FOCUS_GUI_OBJECTS_TO_HIDE = {
+	"FriendBoost",
+	"FriendsBoost",
+	"PremiumBoost",
+	"PremiumBonus",
+}
+
 
 local normalFov = nil
 local openFov = nil
@@ -134,6 +141,12 @@ local function toggleNamedGuiObjects(shouldHide, objectName)
 	end
 end
 
+local function toggleGiftFocusGuiObjects(shouldHide)
+	for _, objectName in ipairs(GIFT_FOCUS_GUI_OBJECTS_TO_HIDE) do
+		toggleNamedGuiObjects(shouldHide, objectName)
+	end
+end
+
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
 		if next(hiddenGuis) ~= nil then return end
@@ -142,7 +155,6 @@ local function toggleOtherGuis(shouldHide)
 			if gui:IsA("ScreenGui")
 				and gui ~= screenGui
 				and gui.Name ~= "Confirmation"
-				and gui.Name ~= "Balance Indicator"
 				and gui.Enabled then
 
 				gui.Enabled = false
@@ -336,14 +348,14 @@ local function setFocusMode(isFocused)
 		screenGui.Enabled = true
 		mainFrame.Visible = true
 		toggleOtherGuis(true)
-		toggleNamedGuiObjects(true, "FriendBoost")
+		toggleGiftFocusGuiObjects(true)
 		setMovementLocked(true)
 		tweenFov(openFov)
 	else
 		mainFrame.Visible = false
 		screenGui.Enabled = false
 		toggleOtherGuis(false)
-		toggleNamedGuiObjects(false, "FriendBoost")
+		toggleGiftFocusGuiObjects(false)
 		setMovementLocked(false)
 		tweenFov(normalFov)
 	end
@@ -478,7 +490,7 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 					-- Force cleanup of other GUIs and FOV since setFocusMode(false) 
 					-- would return early now that isMenuOpen is false.
 					toggleOtherGuis(false)
-					toggleNamedGuiObjects(false, "FriendBoost")
+					toggleGiftFocusGuiObjects(false)
 					setMovementLocked(false)
 					tweenFov(normalFov)
 				end)
