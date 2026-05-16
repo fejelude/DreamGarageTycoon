@@ -1,519 +1,1037 @@
 -- Purpose: Handles Dialogue Logic and UI for Jacob NPC (Rare Shop) with Cash & Robux Purchase Reactions.
+
 -- Runs on: Client
+
 -- Location: StarterPlayerScripts > JacobDialogueLogic
+
 -- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage, CarStats
 
+
+
 local TweenService = game:GetService("TweenService")
+
 local Players = game:GetService("Players")
+
 local Workspace = game:GetService("Workspace")
+
 local SoundService = game:GetService("SoundService")
+
 local UserInputService = game:GetService("UserInputService")
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+
+
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 
+
+
 local player = Players.LocalPlayer
+
 local playerGui = player:WaitForChild("PlayerGui")
+
 local leaderstats = player:WaitForChild("leaderstats", 10)
+
 local walletValue = leaderstats and leaderstats:WaitForChild("Wallet", 10)
 
+
+
 -- 📡 NETWORKING
+
 local remotes = ReplicatedStorage:WaitForChild("ShopRemotes")
+
 local openRareRemote = remotes:WaitForChild("OpenRareShop")
+
 local purchaseFeedbackRemote = remotes:WaitForChild("JacobPurchaseFeedback")
 
+
+
 -- 🎨 COLOR CONFIGURATION
+
 local USER_COLOR = "#55AAFF"
+
 local RARE_COLOR = "#8A2BE2"
+
 local MONEY_COLOR = "#55FF7F"
+
 local CPS_COLOR = "#FFD700"
+
 local ROBUX_COLOR = "#FFD700" -- Gold color for Robux text
 
+
+
 -- 🆔 UNIQUE IDENTIFIERS
+
 local GUI_ID = "UI_NPC_Jacob"
+
 local CONTAINER_ID = "Frame_Jacob_Container"
+
 local TEXT_ID = "Text_Jacob_Dialogue"
+
 local BUTTONS_FRAME_ID = "Buttons"
+
 local BTN_BUY_ID = "Btn_Jacob_Buy"
+
 local BTN_LEAVE_ID = "Btn_Jacob_Leave"
 
+
+
 -- 📍 NPC CONFIGURATION
+
 local NPC_FOLDER = "NPCS"
+
 local TARGET_NPC = "Jacob"
+
 local PROMPT_NAME = "TalkPrompt"
 
+
+
 -- 🎥 SETTINGS
+
 local TYPEWRITER_SPEED = 0.02
+
 local DIALOGUE_PAUSE = 1
+
 local REACTION_PAUSE = 3.0 -- Slightly longer wait for Robux thanks
 
+
+
 -- ✨ ANIMATION SETTINGS
+
 local HOVER_SCALE = 1.1
+
 local CLICK_SCALE = 0.9
+
 local ANIM_SPEED = 0.1
 
+
+
 -- 🔊 SOUNDS
+
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
 
+
+
 -- ============================================================================
+
 -- 👑 RANK HELPER
+
 -- ============================================================================
+
 local RANK_VALUES = {
+
 	["VIP"] = 1,
+
 	["VIP+"] = 2,
+
 	["MVP"] = 3,
+
 	["MVP+"] = 4,
+
 	["MVP++"] = 5
+
 }
+
+
 
 local function getPlayerRankValue()
+
 	local rank = player:GetAttribute("Rank")
+
 	return RANK_VALUES[rank] or 0
+
 end
+
+
 
 local function hasRequiredRank(requiredRankName)
+
 	local requiredValue = RANK_VALUES[requiredRankName] or 0
+
 	return getPlayerRankValue() >= requiredValue
+
 end
 
+
+
 -- ============================================================================
+
 -- 📊 FORMATTING HELPER
+
 -- ============================================================================
+
 local SUFFIXES = {"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"}
 
+
+
 local function formatMoney(n)
+
 	n = tonumber(n) or 0
+
 	if n < 1000 then return tostring(math.floor(n)) .. "$" end
+
 	local i = math.floor(math.log(n, 1000))
+
 	local v = 1000 ^ i
+
 	local suffix = SUFFIXES[i] or "?"
+
 	return string.format("%.2f%s$", n / v, suffix)
+
 end
+
+
 
 -- 💬 DIALOGUE POOLS
+
 local DIALOGUE_POOLS = {
+
 	Greetings = {
+
 		"Yo, {player}! Looking for something with a bit more... kick?",
+
 		"Ah, {player}! Wallet looking heavy at <font color='"..MONEY_COLOR.."'>{money}</font>. Ready to drop it on something <font color='"..RARE_COLOR.."'><b>Rare</b></font>?",
+
 		"Step right up, my friend. Let's get you something that actually turns heads.",
+
 		"Welcome back! I heard your Tycoon is booming. Time for an upgrade!",
+
 		"What's up, {player}? The <font color='"..RARE_COLOR.."'><b>Rare</b></font> shop is officially open for business!"
+
 	},
+
 	Buy = {
+
 		"Alright, alright! Let's see what I can hook you up with.",
+
 		"Good choice coming to me. Let's check the inventory.",
+
 		"Let's get down to business. Here's what I've got in the back."
+
 	},
+
 	RankGate = {
+
 		"This stuff is too hot for you right now. Come back when you're <font color='#FF4444'><b>VIP+</b></font>.",
+
 		"Sorry, {player}, but I only deal with <font color='#FF4444'><b>VIP+</b></font> and up.",
+
 		"You're not ready for this speed. <font color='#FF4444'><b>VIP+</b></font> required."
+
 	},
+
 	Leave = {
+
 		"Catch ya later! Don't let those tires go cold.",
+
 		"Keep hustling, {player}! I'll be right here.",
+
 		"See ya! Come back when you need that real speed."
+
 	},
+
 	Reactions = { -- IN-GAME CASH REACTIONS
+
 		"Haha, excellent choice! The <font color='"..RARE_COLOR.."'><b>{carName}</b></font> is a beast. Watch it pull in <font color='"..CPS_COLOR.."'>{cps} CPS</font>!",
+
 		"Ooh, the <font color='"..RARE_COLOR.."'><b>{carName}</b></font>? You're gonna love it. It's practically printing <font color='"..CPS_COLOR.."'>{cps} CPS</font> for you.",
+
 		"Smooth transaction! Can't wait to see your <font color='"..RARE_COLOR.."'><b>{carName}</b></font> racking up that <font color='"..CPS_COLOR.."'>{cps} CPS</font>."
+
 	},
+
 	RobuxReactions = { -- ROBUX SPECIFIC REACTIONS
+
 		"Whoa, <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>? You must really want that <font color='"..RARE_COLOR.."'><b>{carName}</b></font>! Thanks, {player}!",
+
 		"Now THAT'S what I'm talking about! <font color='"..ROBUX_COLOR.."'><b>Robux</b></font> accepted, enjoy your new <font color='"..RARE_COLOR.."'><b>{carName}</b></font> pulling <font color='"..CPS_COLOR.."'>{cps} CPS</font>!",
+
 		"Dropping <font color='"..ROBUX_COLOR.."'><b>Robux</b></font>? You're my favorite customer today, {player}. Have fun with the <font color='"..RARE_COLOR.."'><b>{carName}</b></font>!"
+
 	}
+
 }
 
+
+
 -- ============================================================================
+
 -- 🛠️ STATE VARIABLES & UI HIDING
+
 -- ============================================================================
+
 local isInteracting = false
+
 local currentDialogueJob = nil
+
 local buttonConnections = {}
+
 local buttonHoverConnections = {}
+
 local hiddenGuis = {}
+
 local hiddenObjects = {}
+
 local promptDebounce = false  -- 🔒 Prevents duplicate ProximityPrompt triggers
 
+
+
 local function getControls()
+
 	local PlayerModule = player.PlayerScripts:WaitForChild("PlayerModule", math.huge)
+
 	return require(PlayerModule):GetControls()
+
 end
+
+
 
 local function getUIElements()
+
 	local myGui = playerGui:FindFirstChild(GUI_ID)
+
 	if not myGui then return nil end
+
 	local container = myGui:FindFirstChild(CONTAINER_ID)
+
 	if not container then return myGui, nil end
+
 	local textLabel = container:FindFirstChild(TEXT_ID)
+
 	local buttonsFrame = container:FindFirstChild(BUTTONS_FRAME_ID)
+
 	local buyBtn = buttonsFrame and buttonsFrame:FindFirstChild(BTN_BUY_ID)
+
 	local leaveBtn = buttonsFrame and buttonsFrame:FindFirstChild(BTN_LEAVE_ID)
+
 	return myGui, container, textLabel, buttonsFrame, buyBtn, leaveBtn
+
 end
+
+
 
 local function toggleNamedGuiObjects(shouldHide, objectName)
+
 	if shouldHide then
+
 		for _, obj in pairs(playerGui:GetDescendants()) do
+
 			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
+
 				obj.Visible = false
+
 				table.insert(hiddenObjects, obj)
+
 			end
+
 		end
+
 	else
+
 		for _, obj in pairs(hiddenObjects) do
+
 			if obj and obj.Parent and obj:IsA("GuiObject") then obj.Visible = true end
+
 		end
+
 		hiddenObjects = {}
+
 	end
+
 end
+
+
 
 local function toggleOtherGuis(shouldHide)
+
 	if shouldHide then
+
 		if #hiddenGuis > 0 then return end
+
 		hiddenGuis = {}
+
 		for _, otherGui in pairs(playerGui:GetDescendants()) do
+
 			if otherGui:IsA("ScreenGui") and otherGui.Name ~= GUI_ID and otherGui.Enabled == true and otherGui.Name ~= "Balance Indicator" then
+
 				otherGui.Enabled = false
+
 				table.insert(hiddenGuis, otherGui)
+
 			end
+
 		end
+
 	else
+
 		for _, otherGui in pairs(hiddenGuis) do
+
 			if otherGui and otherGui.Parent then otherGui.Enabled = true end
+
 		end
+
 		hiddenGuis = {}
+
 	end
+
 end
+
+
 
 local function setFocusMode(active)
+
 	toggleOtherGuis(active)
+
 	toggleNamedGuiObjects(active, "FriendBoost")
 
+
+
 	if player.Character then
+
 		player:SetAttribute("MovementLock", active)
+
 	end
+
 end
 
+
+
 -- ============================================================================
+
 -- 🎬 INTERACTION FUNCTIONS
+
 -- ============================================================================
+
 local function setButtonsState(isActive)
+
 	local _, _, _, _, buyBtn, leaveBtn = getUIElements()
+
 	if buyBtn then buyBtn.Visible = isActive; buyBtn.Active = isActive end
+
 	if leaveBtn then leaveBtn.Visible = isActive; leaveBtn.Active = isActive end
+
 end
+
+
 
 local function clearConnections()
+
 	for _, conn in pairs(buttonConnections) do if conn then conn:Disconnect() end end
+
 	buttonConnections = {}
+
 	for _, conn in pairs(buttonHoverConnections) do if conn then conn:Disconnect() end end
+
 	buttonHoverConnections = {}
 
+
+
 	-- Reset HoverBound attribute so effects re-bind on next interaction
+
 	local myGui, container = getUIElements()
+
 	if container then
+
 		for _, btn in pairs(container:GetDescendants()) do
+
 			if btn:IsA("GuiButton") then btn:SetAttribute("HoverBound", nil) end
+
 		end
+
 	end
+
 end
+
+
 
 local function playSound(id, vol)
+
 	if id == TYPING_SOUND_ID then
+
 		local s = Instance.new("Sound")
+
 		s.SoundId = id; s.Volume = vol or 0.1; s.Parent = SoundService; s:Play()
+
 		game.Debris:AddItem(s, 1)
+
 	end
+
 end
 
+
+
 local function typewrite(label, text, onComplete)
+
 	if not label then return end
+
 	label.RichText = true
+
+
 
 	if currentDialogueJob then pcall(task.cancel, currentDialogueJob); currentDialogueJob = nil end
 
+
+
 	label.Text = text
+
 	label.MaxVisibleGraphemes = 0
 
+
+
 	local cleanStr = string.gsub(text, "<[^>]+>", "")
+
 	local len = utf8.len(cleanStr) or #cleanStr
 
+
+
 	currentDialogueJob = task.spawn(function()
+
 		for i = 1, len do
+
 			if not isInteracting then break end
+
 			label.MaxVisibleGraphemes = i
+
 			if i % 3 == 0 then
+
 				local s = Instance.new("Sound", SoundService)
+
 				s.SoundId = TYPING_SOUND_ID; s.Volume = 0.1; s.PlayOnRemove = true; s:Destroy()
+
 			end
+
 			task.wait(TYPEWRITER_SPEED)
+
 		end
+
 		label.MaxVisibleGraphemes = -1
+
 		currentDialogueJob = nil
+
 		if onComplete and isInteracting then task.spawn(onComplete) end
+
 	end)
+
 end
+
+
 
 local function getRandomDialogue(poolKey, optionalCarId, optionalCPS)
+
 	local pool = DIALOGUE_POOLS[poolKey]
+
 	if not pool or #pool == 0 then return "..." end
 
+
+
 	local rawText = pool[math.random(1, #pool)]
+
 	local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
+
 	rawText = string.gsub(rawText, "{player}", coloredName)
 
+
+
 	if string.find(rawText, "{money}") then
+
 		local currentCash = walletValue and walletValue.Value or 0
+
 		rawText = string.gsub(rawText, "{money}", formatMoney(currentCash))
+
 	end
+
+
 
 	if optionalCarId and optionalCPS then
+
 		rawText = string.gsub(rawText, "{carName}", optionalCarId)
+
 		rawText = string.gsub(rawText, "{cps}", tostring(optionalCPS))
+
 	end
+
+
 
 	return rawText
+
 end
+
+
 
 local function stopInteraction()
+
 	if not isInteracting then return end
+
 	isInteracting = false
+
 	promptDebounce = false  -- 🔒 Release prompt lock
 
+
+
 	if currentDialogueJob then pcall(task.cancel, currentDialogueJob) end
+
 	clearConnections()
+
 	setFocusMode(false)
 
+
+
 	local controls = getControls()
+
 	if controls then controls:Enable() end
 
+
+
 	local myGui, container = getUIElements()
+
 	if myGui then myGui.Enabled = false end
+
 	if container then container.Visible = false end
 
+
+
 	-- Restore camera to default
+
 	local currentCamera = Workspace.CurrentCamera
+
 	currentCamera.CameraType = Enum.CameraType.Custom
+
 	currentCamera.FieldOfView = 70
+
 end
+
+
 
 local function animateButton(btn)
+
 	if btn:GetAttribute("HoverBound") then return end
+
 	btn:SetAttribute("HoverBound", true)
 
+
+
 	local uiScale = btn:FindFirstChildOfClass("UIScale")
+
 	if not uiScale then
+
 		uiScale = Instance.new("UIScale")
+
 		uiScale.Scale = 1.0
+
 		uiScale.Parent = btn
+
 	end
+
+
 
 	local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+
 	local isHovering = false
+
 	local isPressed  = false
 
+
+
 	local function updateScale()
+
 		local target = 1.0
+
 		if isPressed      then target = 0.95
+
 		elseif isHovering then target = 1.05
+
 		end
+
 		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+
 	end
+
+
 
 	table.insert(buttonHoverConnections, btn.MouseEnter:Connect(function()
+
 		isHovering = true
+
 		UIAudioConfig.PlayHover()
+
 		updateScale()
+
 	end))
+
 	table.insert(buttonHoverConnections, btn.MouseLeave:Connect(function()
+
 		isHovering = false
+
 		isPressed  = false
+
 		updateScale()
+
 	end))
+
 	table.insert(buttonHoverConnections, btn.InputBegan:Connect(function(input)
+
 		if input.UserInputType == Enum.UserInputType.MouseButton1
+
 			or input.UserInputType == Enum.UserInputType.Touch then
+
 			isPressed = true
+
 			updateScale()
+
 		end
+
 	end))
+
 	table.insert(buttonHoverConnections, btn.InputEnded:Connect(function(input)
+
 		if input.UserInputType == Enum.UserInputType.MouseButton1
+
 			or input.UserInputType == Enum.UserInputType.Touch then
+
 			isPressed = false
+
 			updateScale()
+
 		end
+
 	end))
+
 end
+
+
 
 local function startInteraction(npcModel)
+
 	if isInteracting then return end
+
 	isInteracting = true
+
 	clearConnections()
 
+
+
 	local controls = getControls()
+
 	if controls then controls:Disable() end
+
 	setFocusMode(true)
 
+
+
 	if player.Character then
+
 		local humanoid = player.Character:FindFirstChild("Humanoid")
+
 		if humanoid then
+
 			local deathConn
+
 			deathConn = humanoid.Died:Connect(function()
+
 				if deathConn then deathConn:Disconnect() end
+
 				stopInteraction()
+
 			end)
+
 			table.insert(buttonConnections, deathConn)
+
 		end
+
 	end
+
+
 
 	-- Refresh camera reference to prevent stale object bugs
+
 	local camera = Workspace.CurrentCamera
+
 	local camPart = npcModel:FindFirstChild("CameraAimPart")
+
 	if camPart then
+
 		camera.CameraType = Enum.CameraType.Scriptable
+
 		TweenService:Create(camera, TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
+
 			CFrame = camPart.CFrame
+
 		}):Play()
+
 	end
+
+
 
 	local myGui = playerGui:WaitForChild(GUI_ID, 5)
+
 	if not myGui then return end
 
+
+
 	local _, container, dialogueLabel, buttonsFrame, buyBtn, leaveBtn = getUIElements()
+
 	myGui.Enabled = true
+
 	container.Visible = true
+
 	setButtonsState(false)
 
+
+
 	local greeting = getRandomDialogue("Greetings")
+
 	typewrite(dialogueLabel, greeting, function()
+
 		task.wait(DIALOGUE_PAUSE)
+
 		setButtonsState(true)
+
 	end)
+
+
 
 	local function setupBtn(btn, func)
+
 		if btn and btn:IsA("GuiButton") then
+
 			animateButton(btn)
+
 			local conn = btn.MouseButton1Click:Connect(function()
+
 				UIAudioConfig.PlayClick()
+
 				func()
+
 			end)
+
 			table.insert(buttonConnections, conn)
+
 		end
+
 	end
+
+
 
 	setupBtn(buyBtn, function()
+
 		setButtonsState(false)
+
+
 
 		if not hasRequiredRank("VIP+") then
+
 			local responseText = getRandomDialogue("RankGate")
+
 			typewrite(dialogueLabel, responseText, function()
+
 				task.wait(DIALOGUE_PAUSE + 1)
+
 				stopInteraction()
+
 			end)
+
 			return
+
 		end
+
+
 
 		local responseText = getRandomDialogue("Buy")
+
 		typewrite(dialogueLabel, responseText, function()
+
 			task.wait(DIALOGUE_PAUSE)
+
 			stopInteraction()
+
 			openRareRemote:FireServer()
+
 		end)
+
 	end)
+
+
 
 	setupBtn(leaveBtn, function()
+
 		setButtonsState(false)
+
 		local responseText = getRandomDialogue("Leave")
+
 		typewrite(dialogueLabel, responseText, function()
+
 			task.wait(DIALOGUE_PAUSE)
+
 			stopInteraction()
+
 		end)
+
 	end)
+
 end
 
+
+
 -- ============================================================================
+
 -- 📣 POST-PURCHASE REACTION EVENT LOGIC
+
 -- ============================================================================
+
 purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipientName, giftSenderName)
+
 	-- FIX: 0.8s delay before NPC speaks after purchase
+
 	task.wait(0.8)
 
+
+
 	local carData = CarStats.Cars[carId]
+
 	if not carData then return end
 
+
+
 	-- 🛡️ [POLISH] Close Shop UI immediately so it doesn't overlap
+
 	local shopUi = playerGui:FindFirstChild("RareShopUi")
+
 	if shopUi then shopUi.Enabled = false end
 
+
+
 	-- 🛡️ [POLISH] Refresh camera reference to prevent stale object bugs
+
 	local camera = Workspace.CurrentCamera
+
 	local npcFolder = Workspace:FindFirstChild(NPC_FOLDER)
+
 	local npcModel = npcFolder and npcFolder:FindFirstChild(TARGET_NPC)
+
 	local camPart = npcModel and npcModel:FindFirstChild("CameraAimPart")
-	
+
+
+
 	if camPart then
+
 		camera.CameraType = Enum.CameraType.Scriptable
+
 		TweenService:Create(camera, TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
+
 			CFrame = camPart.CFrame
+
 		}):Play()
+
 	end
+
+
 
 	print("💬 [JacobLogic] Triggering Post-Purchase Reaction. Car: " .. carId .. " | Robux: " .. tostring(isRobux))
-	
+
+
+
 	isInteracting = true
+
 	setFocusMode(true) -- Focus on the NPC dialogue
 
+
+
 	local myGui, container, dialogueLabel = getUIElements()
+
 	if myGui and container and dialogueLabel then
+
 		myGui.Enabled = true
+
 		container.Visible = true
+
 		setButtonsState(false)
 
+
+
 		local reactionText = ""
+
 		if giftRecipientName then
+
 			reactionText = "Gift sent! <font color='"..USER_COLOR.."'><b>" .. giftRecipientName .. "</b></font> received the <font color='"..RARE_COLOR.."'><b>" .. carId .. "</b></font>."
+
 		else
+
 			local poolToUse = isRobux and "RobuxReactions" or "Reactions"
+
 			reactionText = getRandomDialogue(poolToUse, carId, carData.CPS)
+
 		end
+
+
 
 		typewrite(dialogueLabel, reactionText, function()
+
 			task.wait(REACTION_PAUSE)
+
 			stopInteraction() -- Fully close everything
+
 		end)
+
 	else
+
 		-- Safety: couldn't find GUI, abort gracefully
+
 		isInteracting = false
+
 		setFocusMode(false)
+
 	end
+
 end)
 
+
+
 -- ============================================================================
+
 -- 🚀 DYNAMIC NPC SETUP
+
 -- ============================================================================
+
 local ProximityPromptService = game:GetService("ProximityPromptService")
 
+
+
 local function setupNPC()
+
 	ProximityPromptService.PromptTriggered:Connect(function(prompt, triggerPlayer)
+
 		if triggerPlayer == player and prompt.Name == PROMPT_NAME then
+
 			local npc = prompt.Parent and prompt.Parent.Parent
+
 			if npc and npc.Name == TARGET_NPC then
+
 				-- 🔒 Guard: prevent duplicate trigger events from double-firing
+
 				if promptDebounce then return end
+
 				promptDebounce = true
+
 				startInteraction(npc)
+
 			end
+
 		end
+
 	end)
+
 end
+
+
 
 setupNPC()
 
+
+
 player.CharacterAdded:Connect(function()
+
 	stopInteraction()
+
 end)
