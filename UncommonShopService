@@ -27,7 +27,13 @@ local ALWAYS_STOCK = {}
 
 local RESTOCK_INTERVAL = 1800
 local PURCHASE_COOLDOWN = 1.0
-local MAX_STOCK = 1
+local MAX_STOCK = 3
+local MIN_FEATURED_CARS = 1
+local FEATURED_COUNT_ROLLS = {
+	{ Threshold = 0.80, Count = 3 },
+	{ Threshold = 0.35, Count = 2 },
+}
+local STOCK_UPGRADE_CHANCES = { [2] = 0.62, [3] = 0.30 }
 local MAX_INTERACTION_DISTANCE = 20
 
 -- =========================
@@ -180,33 +186,70 @@ local function getGlobalSeedID()
 	return math.floor(os.time() / RESTOCK_INTERVAL)
 end
 
+local function chooseFeaturedCarCount(rng, poolSize)
+	local count = math.min(MIN_FEATURED_CARS, poolSize)
+	local roll = rng:NextNumber()
+	for _, rule in ipairs(FEATURED_COUNT_ROLLS) do
+		if roll >= rule.Threshold then
+			count = math.max(count, rule.Count)
+			break
+		end
+	end
+	return math.clamp(count, 1, poolSize)
+end
+
+local function calculateRarityMultiplier(weight, highestWeight)
+	if highestWeight <= 0 then return 0.1 end
+	local normalizedWeight = math.clamp(weight / highestWeight, 0, 1)
+	-- Common cars should refill deeper more often, while chase cars stay scarce.
+	return 0.1 + (0.9 * (normalizedWeight ^ 0.65))
+end
+
+local function rollStockAmount(rng, carName, poolWeights, highestWeight)
+	if MAX_STOCK <= 1 then return 1 end
+
+	local rarityMultiplier = calculateRarityMultiplier(poolWeights[carName] or 0, highestWeight)
+	local amount = 1
+	for nextAmount = 2, MAX_STOCK do
+		local baseChance = STOCK_UPGRADE_CHANCES[nextAmount] or 0
+		local upgradeChance = math.clamp(baseChance * rarityMultiplier, 0, 0.85)
+		if rng:NextNumber() <= upgradeChance then
+			amount = nextAmount
+		else
+			break
+		end
+	end
+	return amount
+end
+
 local function generateStockConfiguration(seedValue)
 	local rng = Random.new(seedValue)
 	local featuredFlags = {}
 	local stockLimits = {}
+
 	local poolKeys = {}
 	local poolWeights = {}
 	local totalWeight = 0
-
+	local highestWeight = 0
 	for name, weight in pairs(CAR_WEIGHTS) do
 		table.insert(poolKeys, name)
 		poolWeights[name] = weight
 		totalWeight += weight
+		highestWeight = math.max(highestWeight, weight)
 	end
 
 	if totalWeight <= 0 or #poolKeys == 0 then
 		return { Featured = featuredFlags, Limits = stockLimits }
 	end
 
-	-- Dopamine-driven variable rewards & near-miss mechanics
-	-- Pick 1 to 3 cars to be featured
-	local numToPick = 1
-	local multiRoll = rng:NextNumber()
-	if multiRoll > 0.95 then
-		numToPick = 3
-	elseif multiRoll > 0.80 then
-		numToPick = 2
-	end
+	-- Retention-focused restock philosophy:
+	--   • More than one car can appear in most lower-tier refreshes so rank progress
+	--     feels achievable instead of blocked by a single slot.
+	--   • Every featured car has at least 1 stock; no stressful "featured but sold out"
+	--     near-miss states.
+	--   • Extra copies are capped by shop tier and scaled by rarity weight, so common
+	--     cars can refill deeper while rare chase cars remain valuable.
+	local numToPick = chooseFeaturedCarCount(rng, #poolKeys)
 
 	local tempPoolKeys = {}
 	for _, k in ipairs(poolKeys) do table.insert(tempPoolKeys, k) end
@@ -236,18 +279,7 @@ local function generateStockConfiguration(seedValue)
 		if picked then
 			table.remove(tempPoolKeys, pickedIdx)
 			featuredFlags[picked] = true
-
-			-- Variable stock and near-miss
-			local stockRoll = rng:NextNumber()
-			if stockRoll > 0.98 then
-				-- Near miss! Appears sold out immediately
-				stockLimits[picked] = 0
-			elseif stockRoll > 0.90 then
-				-- Jackpot! More stock
-				stockLimits[picked] = MAX_STOCK + rng:NextInteger(1, 2)
-			else
-				stockLimits[picked] = MAX_STOCK
-			end
+			stockLimits[picked] = rollStockAmount(rng, picked, poolWeights, highestWeight)
 		end
 	end
 
@@ -470,10 +502,14 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 			return false, "System Error: Admin API Missing"
 		end
 
-		local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", player, realToolName)
+		local invokeOk, giveResult, giveMessage = safeInvoke(TycoonAdminAPI, 3, "GiveTool", player, realToolName)
 		if not invokeOk or giveResult ~= true then
-			warn("⚠️ [UncommonShop] TycoonAdminAPI grant failed for", player.Name)
-			return false, giveResult == "Car storage full" and "Car Storage Full" or "System Error: Inventory Grant Failed"
+			warn("⚠️ [UncommonShop] TycoonAdminAPI grant failed for", player.Name, giveResult, giveMessage)
+			local failureReason = giveMessage or giveResult
+			if failureReason == "Car storage full" then
+				return false, "Inventory Full"
+			end
+			return false, "Unable to add car to inventory. Please try again."
 		end
 
 		wallet.Value -= carData.Price

@@ -130,12 +130,20 @@ local function setBlur(enable)
 		end
 		TweenService:Create(currentBlur, TweenInfo.new(0.5), {Size = BLUR_SIZE}):Play()
 	else
-		if currentBlur then
-			local t = TweenService:Create(currentBlur, TweenInfo.new(0.5), {Size = 0})
+		local blurToRemove = currentBlur or Lighting:FindFirstChild("EpicShopBlur")
+		currentBlur = blurToRemove
+		if blurToRemove then
+			local t = TweenService:Create(blurToRemove, TweenInfo.new(0.5), {Size = 0})
 			t:Play()
 			t.Completed:Connect(function()
-				if currentBlur then currentBlur:Destroy() currentBlur = nil end
+				if blurToRemove and blurToRemove.Parent then blurToRemove:Destroy() end
+				if currentBlur == blurToRemove then currentBlur = nil end
 			end)
+		end
+		for _, effect in ipairs(Lighting:GetChildren()) do
+			if effect:IsA("BlurEffect") and effect.Name == "EpicShopBlur" and effect ~= blurToRemove then
+				effect:Destroy()
+			end
 		end
 	end
 end
@@ -192,6 +200,22 @@ local function setFocusMode(active)
 		player:SetAttribute("MovementLock", active)
 	end
 end
+
+local function closeShopUI()
+	setFocusMode(false)
+	gui.Enabled = false
+	mainFrame.Visible = true
+	isShopOpen = false
+	camera.CameraType = Enum.CameraType.Custom
+end
+
+gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+	if not gui.Enabled then
+		setFocusMode(false)
+		isShopOpen = false
+		camera.CameraType = Enum.CameraType.Custom
+	end
+end)
 
 -- ============================================================================
 -- 🧠 RENDER LOGIC
@@ -305,8 +329,10 @@ local function AttemptBuy(carName, scrollFrame)
 				showFeedback("Insufficient money", FEEDBACK_COLORS.FailCash) 
 			elseif msg == "Out of Stock" then
 				showFeedback("Out of Stock!", FEEDBACK_COLORS.FailCash)
+			elseif msg == "Inventory Full" or msg == "Car Storage Full" then
+				showFeedback("Inventory full", FEEDBACK_COLORS.FailCash)
 			else
-				showFeedback(msg, FEEDBACK_COLORS.FailCash)
+				showFeedback(msg or "Purchase failed", FEEDBACK_COLORS.FailCash)
 			end
 		end
 		UpdateDisplay(scrollFrame)
@@ -330,12 +356,7 @@ local function init()
 		MarketplaceService:PromptProductPurchase(player, REROLL_PRODUCT_ID)
 	end)
 
-	Kit.Tween:SetupButton(closeBtn, function() 
-		isShopOpen = false
-		setFocusMode(false) 
-		gui.Enabled = false
-		camera.CameraType = Enum.CameraType.Custom
-	end)
+	Kit.Tween:SetupButton(closeBtn, closeShopUI)
 
 	for _, carName in ipairs(SHOP_CARS) do
 		local card = scrollFrame:WaitForChild(carName, 5)
@@ -381,6 +402,10 @@ local function init()
 							warn("⚠️ _G.OpenGiftMenu is not ready yet!")
 							return
 						end
+						-- Open gifting as its own clean modal flow. Closing the shop first
+						-- prevents UniversalGiftUI from force-disabling and later
+						-- re-enabling this shop in a half-reset visual state.
+						closeShopUI()
 						_G.OpenGiftMenu(pid)
 					else
 						warn("⚠️ Robux ID is 0 for " .. carName)
@@ -454,6 +479,7 @@ local function init()
 
 		setFocusMode(true) 
 		Kit.Sound:Play("Open")
+		mainFrame.Visible = true
 		gui.Enabled = true 
 
 		-- 🛠️ FIX: Mask the ugly Studio placeholder text immediately
