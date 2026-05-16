@@ -69,6 +69,7 @@ local detector = nil
 local emptyIndicator = nil 
 
 local hiddenGuis = {}
+local hiddenObjects = {}
 local btnConnections = {} 
 
 local normalFov = nil
@@ -108,12 +109,35 @@ end
 -- ============================================================================
 -- 👁️ GUI HIDING
 -- ============================================================================
+local function toggleNamedGuiObjects(shouldHide, objectName)
+	if shouldHide then
+		for _, obj in pairs(PlayerGui:GetDescendants()) do
+			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
+				obj.Visible = false
+				table.insert(hiddenObjects, obj)
+			end
+		end
+	else
+		for _, obj in ipairs(hiddenObjects) do
+			if obj and obj.Parent and obj:IsA("GuiObject") then
+				obj.Visible = true
+			end
+		end
+		table.clear(hiddenObjects)
+	end
+end
+
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
-		if #hiddenGuis > 0 then return end
+		if next(hiddenGuis) ~= nil then return end
 		table.clear(hiddenGuis)
-		for _, gui in pairs(PlayerGui:GetDescendants()) do
-			if gui:IsA("ScreenGui") and gui ~= screenGui and gui.Name ~= "Confirmation" and gui.Enabled then
+		for _, gui in pairs(PlayerGui:GetChildren()) do
+			if gui:IsA("ScreenGui")
+				and gui ~= screenGui
+				and gui.Name ~= "Confirmation"
+				and gui.Name ~= "Balance Indicator"
+				and gui.Enabled then
+
 				gui.Enabled = false
 				hiddenGuis[gui] = true
 			end
@@ -284,12 +308,14 @@ local function setFocusMode(isFocused)
 		screenGui.Enabled = true
 		mainFrame.Visible = true
 		toggleOtherGuis(true)
+		toggleNamedGuiObjects(true, "FriendBoost")
 		setMovementLocked(true)
 		tweenFov(openFov)
 	else
 		mainFrame.Visible = false
 		screenGui.Enabled = false
 		toggleOtherGuis(false)
+		toggleNamedGuiObjects(false, "FriendBoost")
 		setMovementLocked(false)
 		tweenFov(normalFov)
 	end
@@ -424,6 +450,7 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 					-- Force cleanup of other GUIs and FOV since setFocusMode(false) 
 					-- would return early now that isMenuOpen is false.
 					toggleOtherGuis(false)
+					toggleNamedGuiObjects(false, "FriendBoost")
 					setMovementLocked(false)
 					tweenFov(normalFov)
 				end)
