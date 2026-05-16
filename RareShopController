@@ -1,517 +1,939 @@
 -- Purpose: Controls the UI, display, and client-side interactions for the Rare Car Shop.
+
 -- Runs on: Client
+
 -- Location: StarterPlayerScripts
+
 -- Dependencies: ReplicatedStorage.CarStats, ReplicatedStorage.ShopFrontendKit
+
 -- Public API: None (Event-driven)
+
 -- Networking: Listens to OpenRareShop, RareShopUpdate. Invokes GetRareShopState, BuyRareCar.
+
 -- Security: UI debounces to prevent spam. Server acts as absolute authority for stock and funds.
+
 -- Performance: Blur and UI hiding optimized. O(1) dictionary lookups for products.
+
 -- Notes: Timer upgraded to HH:MM:SS format for 1hr+ restock intervals.
 
+
+
 local Players = game:GetService("Players")
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
 local MarketplaceService = game:GetService("MarketplaceService")
+
 local SoundService = game:GetService("SoundService")
+
 local Debris = game:GetService("Debris")
+
 local Lighting = game:GetService("Lighting")
+
 local TweenService = game:GetService("TweenService")
 
+
+
 local player = Players.LocalPlayer
+
 local PlayerGui = player:WaitForChild("PlayerGui")
 
+
+
 -- 🛑 IMMEDIATE HIDE
+
 local gui = PlayerGui:WaitForChild("RareShopUi")
+
 local mainFrame = gui:WaitForChild("MainFrame")
-mainFrame.Visible = true 
-gui.Enabled = false 
+
+mainFrame.Visible = true
+
+gui.Enabled = false
+
+
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
 local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
+
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
+
+
 -- ⚙️ CONFIGURATION
-local REROLL_PRODUCT_ID = 3556132134 
+
+local REROLL_PRODUCT_ID = 3556132134
+
 local SHOP_CARS = {"Maverick", "Javelin", "Stuttgart", "Velocity", "Sadie", "Vipera", "Camara", "Corvo"}
-local SPECIAL_SFX_ID = "rbxassetid://140072726814802" 
-local BLUR_SIZE = 24 
+
+local SPECIAL_SFX_ID = "rbxassetid://140072726814802"
+
+local BLUR_SIZE = 24
+
+
 
 -- 🎨 FEEDBACK CONFIGURATION
+
 local FEEDBACK_COLORS = {
-	Success = Color3.fromRGB(80, 200, 120),   
-	FailRobux = Color3.fromRGB(255, 95, 95),  
-	FailCash = Color3.fromRGB(255, 170, 60),  
-	TooFast = Color3.fromRGB(255, 200, 50)    
+
+	Success = Color3.fromRGB(80, 200, 120),
+
+	FailRobux = Color3.fromRGB(255, 95, 95),
+
+	FailCash = Color3.fromRGB(255, 170, 60),
+
+	TooFast = Color3.fromRGB(255, 200, 50)
+
 }
+
+
 
 -- 🔴 ROBUX IDS (CORRECTED RARE IDS)
+
 local ROBUX_PRODUCTS = {
+
 	Maverick  = 3556129501,
+
 	Javelin   = 3556127982,
+
 	Stuttgart = 3556128765,
+
 	Velocity  = 3556130011, -- ✅ Verified unique ID
 
+
+
 	-- 🟣 NEW CARS
+
 	Sadie     = 3556536171,
+
 	Vipera    = 3569702085,
+
 	Camara    = 3569702417,
+
 	Corvo     = 3569702782
+
 }
 
+
+
 -- 📡 REMOTES (ISOLATED FOR RARE)
+
 local Remotes = ReplicatedStorage:WaitForChild("ShopRemotes")
+
 local RemoteOpen = Remotes:WaitForChild("OpenRareShop")
+
 local RemoteUpdate = Remotes:WaitForChild("RareShopUpdate")
+
 local FuncGetState = Remotes:WaitForChild("GetRareShopState")
+
 local FuncBuyCar = Remotes:WaitForChild("BuyRareCar")
 
+
+
 -- 🛡️ STATE
+
 local currentState = nil
-local purchaseDebounce = {} 
-local isProcessingPurchase = false 
-local hiddenGuis = {} 
-local hiddenObjects = {} 
-local currentBlur = nil 
-local feedbackTween = nil 
+
+local purchaseDebounce = {}
+
+local isProcessingPurchase = false
+
+local hiddenGuis = {}
+
+local hiddenObjects = {}
+
+local currentBlur = nil
+
+local feedbackTween = nil
+
+
 
 -- 🛑 UI REFERENCES
+
 local function getUI()
-	return gui, mainFrame, mainFrame:WaitForChild("ScrollingFrame"), mainFrame:WaitForChild("TimerLabel"), 
-	mainFrame:WaitForChild("RerollButton"), mainFrame:WaitForChild("CloseButton"), mainFrame:FindFirstChild("Indicator-purchase")
+
+	return gui, mainFrame, mainFrame:WaitForChild("ScrollingFrame"), mainFrame:WaitForChild("TimerLabel"),
+
+	mainFrame:WaitForChild("RerollButton"), mainFrame:WaitForChild("CloseButton"), mainFrame:WaitForChild("Indicator-purchase", 5)
+
 end
 
+
+
 -- ============================================================================
+
 -- 👁️ FEEDBACK LOGIC
+
 -- ============================================================================
+
 local function showFeedback(text, color)
-	local isSuccess = color == FEEDBACK_COLORS.Success
-	if Kit.Feedback:Show(mainFrame, text, isSuccess) then
-		return
-	end
 
 	local _, _, _, _, _, _, indicator = getUI()
-	if not indicator then return end
+
+
+
+	if not indicator then
+
+		warn("⚠️ 'Indicator-purchase' not found in MainFrame!")
+
+		return
+
+	end
+
+
 
 	if feedbackTween then feedbackTween:Cancel() end
+
 	indicator.Visible = true
+
 	indicator.TextTransparency = 0
+
 	indicator.Text = text
+
 	indicator.TextColor3 = color
+
+	-- FIX: Sync UIStroke on show
+
 	local indStroke = indicator:FindFirstChildOfClass("UIStroke")
+
 	if indStroke then indStroke.Transparency = 0 end
 
+
+
 	task.delay(1.5, function()
+
 		if indicator.Text == text and indicator.Visible then
+
 			local t = TweenService:Create(indicator, TweenInfo.new(0.5), {TextTransparency = 1})
+
 			t:Play()
+
 			feedbackTween = t
+
+			-- FIX: Fade UIStroke in sync
+
 			if indStroke then TweenService:Create(indStroke, TweenInfo.new(0.5), {Transparency = 1}):Play() end
+
+
+
 			t.Completed:Connect(function()
+
 				if indicator.TextTransparency >= 0.95 then
+
 					indicator.Visible = false
+
 				end
+
 			end)
+
 		end
+
 	end)
+
 end
 
+
+
 -- ============================================================================
+
 -- 👁️ FOCUS MODE (BLUR + HIDE UI)
+
 -- ============================================================================
+
 local function setBlur(enable)
+
 	if enable then
+
 		if not currentBlur then
+
 			currentBlur = Instance.new("BlurEffect")
+
 			currentBlur.Size = 0
+
 			currentBlur.Parent = Lighting
+
 			currentBlur.Name = "RareShopBlur"
+
 		end
+
 		TweenService:Create(currentBlur, TweenInfo.new(0.5), {Size = BLUR_SIZE}):Play()
+
 	else
+
 		if currentBlur then
+
 			local t = TweenService:Create(currentBlur, TweenInfo.new(0.5), {Size = 0})
+
 			t:Play()
+
 			t.Completed:Connect(function()
+
 				if currentBlur then currentBlur:Destroy() currentBlur = nil end
+
 			end)
+
 		end
+
 	end
+
 end
+
+
 
 local function toggleNamedGuiObjects(shouldHide, objectName)
+
 	if shouldHide then
+
 		for _, obj in pairs(PlayerGui:GetDescendants()) do
+
 			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
+
 				obj.Visible = false
+
 				table.insert(hiddenObjects, obj)
+
 			end
+
 		end
+
 	else
+
 		for _, obj in pairs(hiddenObjects) do
+
 			if obj and obj.Parent and obj:IsA("GuiObject") then
+
 				obj.Visible = true
+
 			end
+
 		end
+
 		hiddenObjects = {}
+
 	end
+
 end
+
+
 
 local function toggleOtherGuis(shouldHide)
+
 	if shouldHide then
+
 		if #hiddenGuis > 0 then return end
+
 		hiddenGuis = {}
+
 		for _, otherGui in pairs(PlayerGui:GetDescendants()) do
-			if otherGui:IsA("ScreenGui") 
-				and otherGui ~= gui 
-				and otherGui.Enabled == true 
+
+			if otherGui:IsA("ScreenGui")
+
+				and otherGui ~= gui
+
+				and otherGui.Enabled == true
+
 				and otherGui.Name ~= "Balance Indicator" then
 
+
+
 				otherGui.Enabled = false
+
 				table.insert(hiddenGuis, otherGui)
+
 			end
+
 		end
+
 	else
+
 		for _, otherGui in pairs(hiddenGuis) do
+
 			if otherGui and otherGui.Parent then
+
 				otherGui.Enabled = true
+
 			end
+
 		end
+
 		hiddenGuis = {}
+
 	end
+
 end
+
+
 
 local function setFocusMode(active)
+
 	setBlur(active)
+
 	toggleOtherGuis(active)
+
 	toggleNamedGuiObjects(active, "FriendBoost")
 
-	local character = player.Character
-	if character then
+
+
+	if char then
+
 		player:SetAttribute("MovementLock", active)
+
 	end
+
 end
 
+
+
 -- ============================================================================
+
 -- 🧠 RENDER LOGIC
--- ============================================================================
-local function resolveCardImage(card, carName)
-	local container = card:FindFirstChild("CarImageContainer")
-	if container then
-		return container:FindFirstChild("CarImage")
-			or container:FindFirstChild(carName .. "-Image")
-			or container:FindFirstChildWhichIsA("ImageLabel", true)
-			or container:FindFirstChildWhichIsA("ImageButton", true)
-	end
 
-	return card:FindFirstChild("CarImage")
-		or card:FindFirstChild(carName .. "-Image")
-		or card:FindFirstChildWhichIsA("ImageLabel", true)
-		or card:FindFirstChildWhichIsA("ImageButton", true)
-end
+-- ============================================================================
 
 local function RenderCard(card, carName, state)
-	local carImage = resolveCardImage(card, carName)
-	local stockLabel = card:FindFirstChild("StockInformation") 
+
+	local carImage = card:FindFirstChild("CarImage")
+
+	local stockLabel = card:FindFirstChild("StockInformation")
+
 	local buyBtn = card:FindFirstChild("BuyButton")
-	local robuxBtn = card:FindFirstChild("RobuxButton") 
+
+	local robuxBtn = card:FindFirstChild("RobuxButton")
+
 	local giftBtn = card:FindFirstChild("GiftButton")
+
 	local noStockInd = card:FindFirstChild("NoStockIndicator")
+
+
 
 	if carImage and state.Image then carImage.Image = state.Image end
 
+
+
 	if stockLabel then
+
 		stockLabel.Visible = true
+
 		if state.CanBuy then
+
 			stockLabel.Text = "On Stock x " .. state.StockAmount
-			stockLabel.TextColor3 = Color3.fromRGB(85, 255, 127) 
+
+			stockLabel.TextColor3 = Color3.fromRGB(85, 255, 127)
+
 		else
+
 			stockLabel.Text = "No Stock"
-			stockLabel.TextColor3 = Color3.fromRGB(255, 80, 80) 
+
+			stockLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+
 		end
+
 	end
+
+
 
 	if buyBtn then
+
 		if state.CanBuy then
+
 			buyBtn.Visible = true; buyBtn.Active = true
-			if noStockInd then noStockInd.Visible = false end 
+
+			if noStockInd then noStockInd.Visible = false end
+
+
 
 			if buyBtn:IsA("TextButton") then
+
 				if state.IsPurchasing then
+
 					buyBtn.Text = "..."
+
 					buyBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+
 				else
+
 					buyBtn.Text = "$" .. state.Price
+
 					buyBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+
 				end
+
 			end
+
 			if buyBtn:IsA("ImageButton") then buyBtn.ImageColor3 = Color3.new(1,1,1) end
+
 		else
+
 			buyBtn.Visible = false; buyBtn.Active = false
-			if noStockInd then noStockInd.Visible = true end 
+
+			if noStockInd then noStockInd.Visible = true end
+
 		end
+
 	end
 
-	if robuxBtn then 
-		robuxBtn.Visible = state.CanRobux 
+
+
+	if robuxBtn then
+
+		robuxBtn.Visible = state.CanRobux
+
 		robuxBtn.Active = true
+
 		robuxBtn.Selectable = true
+
 		pcall(function() robuxBtn.ZIndex = 10 end)
+
 	end
+
+
 
 	if giftBtn then
+
 		giftBtn.Visible = true
+
 		giftBtn.Active = true
+
 	end
+
 end
+
+
 
 local function UpdateDisplay(scrollFrame)
+
 	if not currentState then return end
 
+
+
 	for _, carName in ipairs(SHOP_CARS) do
+
 		local card = scrollFrame:FindFirstChild(carName)
+
 		if card then
+
 			local data = CarStats.Cars[carName]
+
 			local isFeatured = currentState.Featured[carName] == true
+
 			local currentStock = currentState.Stock and currentState.Stock[carName] or 0
+
 			local isPurchasing = purchaseDebounce[carName]
 
+
+
 			local vm = {
+
 				Image = data.Image,
+
 				Price = data.Price,
+
 				IsPurchasing = isPurchasing,
+
 				IsFeatured = isFeatured,
+
 				StockAmount = currentStock,
+
 				CanBuy = (isFeatured and currentStock > 0),
+
 				CanRobux = (ROBUX_PRODUCTS[carName] ~= nil and ROBUX_PRODUCTS[carName] ~= 0)
+
 			}
+
 			RenderCard(card, carName, vm)
+
 		end
+
 	end
+
 end
 
+
+
 -- ============================================================================
+
 -- 🛒 PURCHASE LOGIC
+
 -- ============================================================================
+
 local function AttemptBuy(carName, scrollFrame)
+
 	if purchaseDebounce[carName] then return end
+
 	purchaseDebounce[carName] = true
-	isProcessingPurchase = true 
+
+	isProcessingPurchase = true
+
 	UpdateDisplay(scrollFrame)
 
-	task.spawn(function()
-		local invokeOk, success, msg = pcall(function()
-			return FuncBuyCar:InvokeServer(carName)
-		end)
 
-		if not invokeOk then
-			warn("⚠️ [" .. script.Name .. "] Purchase invoke failed for " .. tostring(carName) .. ": " .. tostring(success))
-			success = false
-			msg = "Purchase Failed"
-		end
+
+	task.spawn(function()
+
+		local success, msg = FuncBuyCar:InvokeServer(carName)
 
 		purchaseDebounce[carName] = false
-		isProcessingPurchase = false 
+
+		isProcessingPurchase = false
+
+
 
 		if success then
+
 			Kit.Sound:Play("BuySuccess")
+
 			showFeedback("Purchase Success", FEEDBACK_COLORS.Success)
+
 		else
+
 			Kit.Sound:Play("BuyFail")
+
 			Kit.Toast:Show(msg, Color3.fromRGB(255, 80, 80))
+
 			local card = scrollFrame:FindFirstChild(carName)
+
 			if card then Kit.Tween:Shake(card) end
 
+
+
 			if msg == "Slow down" or msg == "Purchase in progress" then
-				showFeedback("Too Fast!", FEEDBACK_COLORS.TooFast) 
+
+				showFeedback("Too Fast!", FEEDBACK_COLORS.TooFast)
+
 			elseif msg == "Insufficient Cash (Withdraw from ATM)" or msg == "Wallet Not Found" then
-				showFeedback("Insufficient money", FEEDBACK_COLORS.FailCash) 
+
+				showFeedback("Insufficient money", FEEDBACK_COLORS.FailCash)
+
 			elseif msg == "Out of Stock" then
+
 				showFeedback("Out of Stock!", FEEDBACK_COLORS.FailCash)
+
 			else
+
 				showFeedback(msg, FEEDBACK_COLORS.FailCash)
+
 			end
+
 		end
+
 		UpdateDisplay(scrollFrame)
+
 	end)
+
 end
 
+
+
 -- ============================================================================
+
 -- 🚀 INIT & EVENTS
+
 -- ============================================================================
+
 local function init()
+
 	local gui, mainFrame, scrollFrame, timerLabel, rerollBtn, closeBtn, indicatorLabel = getUI()
 
-	Kit.Feedback:Clear(mainFrame)
+
+
 	if indicatorLabel then indicatorLabel.Visible = false end
 
-	gui.Enabled = false 
+
+
+	gui.Enabled = false
+
 	Kit.Inventory:Init(SHOP_CARS)
 
-	-- External systems (NPC post-purchase dialogue, gift flow, etc.) may hide the
-	-- shop ScreenGui directly. Always release shop focus/blur when that happens
-	-- so purchase reactions can finish without leaving the player blurred/stuck.
-	gui:GetPropertyChangedSignal("Enabled"):Connect(function()
-		if not gui.Enabled then
-			isProcessingPurchase = false
-			purchaseDebounce = {}
-			setFocusMode(false)
-			Kit.Feedback:Clear(mainFrame)
-			UpdateDisplay(scrollFrame)
-		end
-	end)
+
 
 	Kit.Tween:SetupButton(rerollBtn, function()
+
 		UIAudioConfig.PlayRobux()
+
 		UIAudioConfig.ShowPurchaseLoading()
+
 		MarketplaceService:PromptProductPurchase(player, REROLL_PRODUCT_ID)
+
 	end)
 
-	Kit.Tween:SetupButton(closeBtn, function() 
-		setFocusMode(false) 
-		gui.Enabled = false 
+
+
+	Kit.Tween:SetupButton(closeBtn, function()
+
+		setFocusMode(false)
+
+		gui.Enabled = false
+
 	end)
+
+
 
 	for _, carName in ipairs(SHOP_CARS) do
+
 		local card = scrollFrame:WaitForChild(carName, 5)
+
 		if card then
+
 			local container = card:FindFirstChild("CarImageContainer")
+
 			local imageButton = nil
 
+
+
 			if container then
+
 				imageButton = container:FindFirstChild("CarImage")
+
 			else
+
 				local specificImageName = carName .. "-Image"
+
 				imageButton = card:FindFirstChild(specificImageName)
+
 				if not imageButton then imageButton = card:FindFirstChild("CarImage") end
+
 			end
+
+
 
 			local buyBtn = card:FindFirstChild("BuyButton")
+
 			if buyBtn then
+
 				Kit.Tween:SetupButton(buyBtn, function()
+
 					if buyBtn.Visible and buyBtn.Active then AttemptBuy(carName, scrollFrame) end
+
 				end)
+
 			end
+
+
 
 			local robuxBtn = card:FindFirstChild("RobuxButton")
+
 			if robuxBtn then
+
 				Kit.Tween:SetupButton(robuxBtn, function()
+
 					local pid = ROBUX_PRODUCTS[carName]
+
 					if pid and pid > 0 then
+
 						UIAudioConfig.PlayRobux()
+
 						UIAudioConfig.ShowPurchaseLoading()
+
 						MarketplaceService:PromptProductPurchase(player, pid)
+
 					else
+
 						warn("⚠️ Robux ID is 0 for " .. carName)
+
 					end
+
 				end)
+
 			end
+
+
 
 			local giftBtn = card:FindFirstChild("GiftButton")
+
 			if giftBtn then
+
 				Kit.Tween:SetupButton(giftBtn, function()
+
 					local pid = ROBUX_PRODUCTS[carName]
+
 					if pid and pid > 0 then
+
 						if not _G.OpenGiftMenu then
+
 							warn("⚠️ _G.OpenGiftMenu is not ready yet!")
+
 							return
+
 						end
+
 						_G.OpenGiftMenu(pid)
+
 					else
+
 						warn("⚠️ Robux ID is 0 for " .. carName)
+
 					end
+
 				end)
+
 			end
+
+
 
 			local noStockBtn = card:FindFirstChild("NoStockIndicator")
+
 			if noStockBtn then
+
 				noStockBtn.Active = false
+
 			end
+
 		end
+
 	end
 
+
+
 	MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, isPurchased)
+
 		if userId ~= player.UserId then return end
 
+
+
 		local isRelevant = false
+
 		if productId == REROLL_PRODUCT_ID then isRelevant = true end
+
 		for _, id in pairs(ROBUX_PRODUCTS) do
+
 			if id == productId then isRelevant = true; break end
+
 		end
+
+
 
 		if not isRelevant then return end
 
-		UIAudioConfig.HidePurchaseLoading()
+
 
 		if isPurchased then
+
 			if productId == REROLL_PRODUCT_ID then
+
 				showFeedback("Successfully Restocked", FEEDBACK_COLORS.Success)
+
 				Kit.Sound:Play("PaidReroll")
+
 			else
+
 				showFeedback("Purchase Success", FEEDBACK_COLORS.Success)
+
 			end
+
 		else
-			Kit.Sound:Play("BuyFail") 
+
+			Kit.Sound:Play("BuyFail")
+
 			if productId == REROLL_PRODUCT_ID then
+
 				showFeedback("Restock Failed", FEEDBACK_COLORS.FailRobux)
+
 			else
+
 				showFeedback("Purchase Failed", FEEDBACK_COLORS.FailRobux)
+
 			end
+
 		end
+
 	end)
+
+
 
 	task.spawn(function()
+
 		while true do
+
 			task.wait(1)
+
 			if gui.Enabled then
+
 				local now = os.time()
+
 				local target = currentState and currentState.NextRestock
+
 				if target then
+
 					local secondsLeft = math.max(target - now, 0)
 
+
+
 					-- ✅ UPDATED FOR RARE SHOP (Hours:Minutes:Seconds)
+
 					local hoursLeft = math.floor(secondsLeft / 3600)
+
 					local minsLeft = math.floor((secondsLeft % 3600) / 60)
+
 					local secsLeft = secondsLeft % 60
 
+
+
 					if hoursLeft > 0 then
+
 						timerLabel.Text = string.format("Restock in : %02d:%02d:%02d", hoursLeft, minsLeft, secsLeft)
+
 					else
+
 						timerLabel.Text = string.format("Restock in : %02d:%02d", minsLeft, secsLeft)
+
 					end
+
 				end
+
 			end
+
 		end
+
 	end)
+
+
 
 	RemoteOpen.OnClientEvent:Connect(function()
-		setFocusMode(true) 
+
+		setFocusMode(true)
+
 		Kit.Sound:Play("Open")
-		gui.Enabled = true 
+
+		gui.Enabled = true
+
+
 
 		if timerLabel then
+
 			timerLabel.Text = "Loading Restock Timer..."
+
 		end
+
+
 
 		currentState = {Featured = {}, Stock = {}, StockLimit = {}, Purchased = {}}
+
 		UpdateDisplay(scrollFrame)
 
-		local stateOk, realState = pcall(function()
-			return FuncGetState:InvokeServer()
-		end)
-		if stateOk and realState then
-			currentState = realState
-		else
-			warn("⚠️ [" .. script.Name .. "] Failed to load shop state: " .. tostring(realState))
-			showFeedback("Shop Load Failed", FEEDBACK_COLORS.FailCash)
-		end
+
+
+		local realState = FuncGetState:InvokeServer()
+
+		currentState = realState
+
 		UpdateDisplay(scrollFrame)
+
 	end)
+
+
 
 	RemoteUpdate.OnClientEvent:Connect(function(newState)
+
 		currentState = newState
+
 		UpdateDisplay(scrollFrame)
+
 		if not isProcessingPurchase then Kit.Sound:Play("Restock") end
+
 	end)
+
 end
 
-if player.Character then init() else player.CharacterAdded:Wait(); init() end
 
+
+if player.Character then init() else player.CharacterAdded:Wait(); init() end

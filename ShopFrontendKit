@@ -4,11 +4,9 @@ local SoundService = game:GetService("SoundService")
 local Debris = game:GetService("Debris")
 local RunService = game:GetService("RunService") 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Kit = {}
 local player = Players.LocalPlayer
-local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- ============================================================================
 -- 🔊 ADVANCED SOUND CONTROLLER
@@ -57,16 +55,7 @@ local function playInstance(id, vol, pitch, variance)
 end
 
 function SoundCtrl:Play(name)
-	if not self.Enabled or UIAudioConfig.IsSFXMuted() then return end
-	local actionKey = (name == "Restock" or name == "AutoRestock") and "RestockSfx" or ("ShopSound_" .. tostring(name))
-	local cooldown = (name == "Restock" or name == "AutoRestock") and 1.0 or nil
-	if not UIAudioConfig.ShouldPlayAction(actionKey, cooldown) then return end
-
-	if name == "Click" or name == "Open" then
-		UIAudioConfig.PlayClick()
-		return
-	end
-
+	if not self.Enabled then return end
 	local data = SFX_MAP[name]
 	if not data then return end
 
@@ -157,6 +146,8 @@ function TweenCtrl:SetupButton(btn, onClick)
 		uiScale.Parent = btn
 	end
 
+	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
+
 	local isHovering = false
 	local isPressed  = false
 	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
@@ -230,15 +221,6 @@ function ToastCtrl:Show(msg, color)
 	-- Do not create custom TextLabels or ScreenGuis from script.
 end
 Kit.Toast = ToastCtrl
-
-local FeedbackCtrl = {}
-function FeedbackCtrl:Show(container, text, isSuccess)
-	return UIAudioConfig.ShowStateLabel(container, isSuccess == true, text)
-end
-function FeedbackCtrl:Clear(container)
-	return UIAudioConfig.ClearStateLabels(container)
-end
-Kit.Feedback = FeedbackCtrl
 
 local InvCtrl = {} 
 function InvCtrl:Init(names) end
