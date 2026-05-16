@@ -171,7 +171,7 @@ end
 -- Repeated identical messages are rendered as "Message x1", "Message x2", etc.
 -- ============================================================================
 
-local STATE_LABEL_SHOW_SECONDS = 3
+local STATE_LABEL_SHOW_SECONDS = 3.5
 local STATE_LABEL_FADE_OUT_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local stateLabelControllers = setmetatable({}, { __mode = "k" })
 
@@ -204,6 +204,7 @@ local function getStateLabelController(stateLabels, successLabel, failedLabel)
 		Labels = { Success = successLabel, Failed = failedLabel },
 		MessageState = {},
 		HideToken = {},
+		DisplayToken = {},
 		Tweens = {},
 		Defaults = {},
 	}
@@ -226,10 +227,12 @@ end
 local function cancelStateLabelTween(controller, label)
 	local tweens = controller.Tweens[label]
 	if tweens then
+		-- Clear before cancelling so Tween.Completed callbacks from cancelled fades
+		-- cannot hide a freshly-updated message or reset its x-count.
+		controller.Tweens[label] = nil
 		for _, tween in pairs(tweens) do
 			if tween then tween:Cancel() end
 		end
-		controller.Tweens[label] = nil
 	end
 end
 
@@ -255,6 +258,7 @@ local function resetStateMessage(controller, label)
 	if state then
 		state.count = 0
 		state.baseText = nil
+		state.isActive = false
 	end
 end
 
@@ -262,13 +266,15 @@ local function hideStateLabel(controller, label)
 	if not label then return end
 	cancelStateLabelTween(controller, label)
 	controller.HideToken[label] = (controller.HideToken[label] or 0) + 1
+	controller.DisplayToken[label] = (controller.DisplayToken[label] or 0) + 1
 	label.Visible = false
 	resetStateLabelTransparency(controller, label)
 	resetStateMessage(controller, label)
 end
 
-local function fadeOutStateLabel(controller, label)
+local function fadeOutStateLabel(controller, label, expectedDisplayToken)
 	if not label or not label.Visible then return end
+	if expectedDisplayToken and controller.DisplayToken[label] ~= expectedDisplayToken then return end
 	cancelStateLabelTween(controller, label)
 
 	local uiStroke = getLabelUIStroke(label)
@@ -281,9 +287,13 @@ local function fadeOutStateLabel(controller, label)
 	controller.Tweens[label] = activeTweens
 
 	local connection
-	connection = textTween.Completed:Connect(function()
+	local fadeDisplayToken = controller.DisplayToken[label]
+	connection = textTween.Completed:Connect(function(playbackState)
 		if connection then connection:Disconnect() end
+		if playbackState ~= Enum.PlaybackState.Completed then return end
 		if controller.Tweens[label] ~= activeTweens then return end
+		if controller.DisplayToken[label] ~= fadeDisplayToken then return end
+
 		controller.Tweens[label] = nil
 		label.Visible = false
 		resetStateLabelTransparency(controller, label)
@@ -316,12 +326,16 @@ function UIAudioConfig.ShowStateLabel(container, isSuccess, baseText)
 		controller.MessageState[label] = state
 	end
 
-	if state.baseText == baseText and label.Visible then
+	if state.baseText == baseText and state.isActive then
 		state.count += 1
 	else
 		state.count = 1
 		state.baseText = baseText
 	end
+	state.isActive = true
+
+	controller.DisplayToken[label] = (controller.DisplayToken[label] or 0) + 1
+	local displayToken = controller.DisplayToken[label]
 
 	label.Text = tostring(baseText) .. " x" .. state.count
 	label.Visible = true
@@ -329,8 +343,11 @@ function UIAudioConfig.ShowStateLabel(container, isSuccess, baseText)
 	controller.HideToken[label] = (controller.HideToken[label] or 0) + 1
 	local thisToken = controller.HideToken[label]
 	task.delay(STATE_LABEL_SHOW_SECONDS, function()
-		if controller.HideToken[label] == thisToken and label.Visible then
-			fadeOutStateLabel(controller, label)
+		if controller.HideToken[label] == thisToken
+			and controller.DisplayToken[label] == displayToken
+			and label.Visible
+		then
+			fadeOutStateLabel(controller, label, displayToken)
 		end
 	end)
 

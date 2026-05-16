@@ -319,6 +319,17 @@ local function init()
 	gui.Enabled = false 
 	Kit.Inventory:Init(SHOP_CARS)
 
+	-- External systems (NPC post-purchase dialogue, gift flow, etc.) may hide the
+	-- shop ScreenGui directly. Always release shop focus/blur when that happens
+	-- so purchase reactions can finish without leaving the player blurred/stuck.
+	gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if not gui.Enabled then
+			isProcessingPurchase = false
+			setFocusMode(false)
+			Kit.Feedback:Clear(mainFrame)
+		end
+	end)
+
 	Kit.Tween:SetupButton(rerollBtn, function()
 		UIAudioConfig.PlayRobux()
 		UIAudioConfig.ShowPurchaseLoading()
