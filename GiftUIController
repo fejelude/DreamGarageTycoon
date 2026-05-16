@@ -81,8 +81,16 @@ local SHOP_GUIS_WITH_DISABLE_CLEANUP = {
 local GIFT_FOCUS_GUI_OBJECTS_TO_HIDE = {
 	"FriendBoost",
 	"FriendsBoost",
+	"FriendBonus",
+	"FriendsBonus",
 	"PremiumBoost",
 	"PremiumBonus",
+	"Premium",
+}
+
+local GIFT_FOCUS_SCRIPT_NAMES_TO_HIDE = {
+	PremiumBonusClient = true,
+	FriendBonusClient = true,
 }
 
 
@@ -126,7 +134,11 @@ end
 local function toggleNamedGuiObjects(shouldHide, objectName)
 	if shouldHide then
 		for _, obj in pairs(PlayerGui:GetDescendants()) do
-			if obj:IsA("GuiObject") and obj.Name == objectName and obj.Visible then
+			if obj:IsA("GuiObject")
+				and obj.Name == objectName
+				and obj.Visible
+				and not obj:IsDescendantOf(screenGui) then
+
 				obj.Visible = false
 				table.insert(hiddenObjects, obj)
 			end
@@ -141,10 +153,52 @@ local function toggleNamedGuiObjects(shouldHide, objectName)
 	end
 end
 
+
+local function isGiftFocusBonusWidget(obj)
+	if not obj:IsA("GuiObject") or not obj.Visible or obj:IsDescendantOf(screenGui) then
+		return false
+	end
+
+	local lowerName = string.lower(obj.Name)
+	if string.find(lowerName, "premium", 1, true) then
+		return true
+	end
+
+	if string.find(lowerName, "friend", 1, true)
+		and (string.find(lowerName, "boost", 1, true) or string.find(lowerName, "bonus", 1, true)) then
+		return true
+	end
+
+	return obj:FindFirstChild("PremiumBonusClient", true) ~= nil
+		or obj:FindFirstChild("FriendBonusClient", true) ~= nil
+end
+
+local function toggleDetectedGiftFocusBonusWidgets(shouldHide)
+	if not shouldHide then return end
+
+	for _, obj in pairs(PlayerGui:GetDescendants()) do
+		if isGiftFocusBonusWidget(obj) then
+			obj.Visible = false
+			table.insert(hiddenObjects, obj)
+		end
+	end
+
+	for scriptName in pairs(GIFT_FOCUS_SCRIPT_NAMES_TO_HIDE) do
+		local scriptInstance = PlayerGui:FindFirstChild(scriptName, true)
+		local parent = scriptInstance and scriptInstance.Parent
+		if parent and parent:IsA("GuiObject") and parent.Visible and not parent:IsDescendantOf(screenGui) then
+			parent.Visible = false
+			table.insert(hiddenObjects, parent)
+		end
+	end
+end
+
 local function toggleGiftFocusGuiObjects(shouldHide)
 	for _, objectName in ipairs(GIFT_FOCUS_GUI_OBJECTS_TO_HIDE) do
 		toggleNamedGuiObjects(shouldHide, objectName)
 	end
+
+	toggleDetectedGiftFocusBonusWidgets(shouldHide)
 end
 
 local function toggleOtherGuis(shouldHide)
