@@ -6,9 +6,10 @@
 --           To change volume, edit the volume constants below.
 -- ============================================================================
 
-local SoundService = game:GetService("SoundService")
-local TweenService = game:GetService("TweenService")
-local Players      = game:GetService("Players")
+local SoundService   = game:GetService("SoundService")
+local TweenService   = game:GetService("TweenService")
+local Players        = game:GetService("Players")
+local ContentProvider = game:GetService("ContentProvider")
 
 local UIAudioConfig = {}
 
@@ -22,39 +23,71 @@ local HOVER_SFX_ID = "rbxassetid://73899820361873"
 local CLICK_SFX_ID = "rbxassetid://126294184545314"
 local ROBUX_SFX_ID = "rbxassetid://117986449113759"   -- 💎 Robux purchase initiation sound
 
--- Internal: create or reuse a persistent Sound in SoundService
-local function getOrCreateSound(name, id, volume)
-	local sound = SoundService:FindFirstChild(name)
-	if not sound then
-		sound = Instance.new("Sound")
-		sound.Name   = name
-		sound.SoundId = id
-		sound.Volume  = volume
-		sound.Parent  = SoundService
-	else
-		sound.Volume = volume  -- keep in sync if config changes
-	end
+-- Hover sounds need to overlap during fast mouse movement across many buttons.
+-- A single shared Sound restarts itself when :Play() is called repeatedly, which
+-- makes hover feedback feel delayed/choked. Keep a small pool of preloaded
+-- channels so each MouseEnter can fire immediately without waiting on the
+-- previous hover chirp to finish.
+local HOVER_POOL_SIZE = 10
+
+local function configureSound(sound, id, volume)
+	sound.SoundId = id
+	sound.Volume = volume
+	sound.Looped = false
 	return sound
 end
 
--- Create the three global sounds once at require-time
-local hoverSound = getOrCreateSound("GlobalUIHover", HOVER_SFX_ID, UIAudioConfig.HOVER_VOLUME)
+-- Internal: create or reuse a persistent Sound in SoundService
+local function getOrCreateSound(name, id, volume)
+	local sound = SoundService:FindFirstChild(name)
+	if not sound or not sound:IsA("Sound") then
+		sound = Instance.new("Sound")
+		sound.Name = name
+		sound.Parent = SoundService
+	end
+	return configureSound(sound, id, volume)
+end
+
+local function createHoverPool()
+	local pool = {}
+	for i = 1, HOVER_POOL_SIZE do
+		local name = (i == 1) and "GlobalUIHover" or ("GlobalUIHover_%02d"):format(i)
+		table.insert(pool, getOrCreateSound(name, HOVER_SFX_ID, UIAudioConfig.HOVER_VOLUME))
+	end
+	return pool
+end
+
+-- Create global sounds once at require-time
+local hoverSounds = createHoverPool()
 local clickSound = getOrCreateSound("GlobalUIClick", CLICK_SFX_ID, UIAudioConfig.CLICK_VOLUME)
 local robuxSound = getOrCreateSound("GlobalUIRobux", ROBUX_SFX_ID, UIAudioConfig.ROBUX_VOLUME)
+local hoverSoundIndex = 0
 
--- Hover cooldown: prevents the shared sound from restarting faster than it
--- can be heard during rapid mouse movement across elements (80 ms feels
--- natural — responsive per-element feedback without choppy self-interruption).
-local HOVER_COOLDOWN = 0
-local lastHoverClock = 0
+task.spawn(function()
+	local soundsToPreload = { clickSound, robuxSound }
+	for _, sound in ipairs(hoverSounds) do
+		table.insert(soundsToPreload, sound)
+	end
 
--- Play hover — fires at most once per HOVER_COOLDOWN across ALL elements.
+	local success, err = pcall(function()
+		ContentProvider:PreloadAsync(soundsToPreload)
+	end)
+	if not success then
+		warn("[UIAudioConfig] Failed to preload UI sounds: " .. tostring(err))
+	end
+end)
+
+-- Play hover immediately on its own channel so rapid button sweeps create the
+-- polished layered UI feel instead of cutting off or blocking prior hovers.
 function UIAudioConfig.PlayHover()
-	local now = os.clock()
-	if now - lastHoverClock < HOVER_COOLDOWN then return end
-	lastHoverClock = now
-	hoverSound.Volume = UIAudioConfig.HOVER_VOLUME
-	hoverSound:Play()
+	hoverSoundIndex = (hoverSoundIndex % #hoverSounds) + 1
+	local sound = hoverSounds[hoverSoundIndex]
+	sound.Volume = UIAudioConfig.HOVER_VOLUME
+	if sound.IsPlaying then
+		sound:Stop()
+	end
+	sound.TimePosition = 0
+	sound:Play()
 end
 
 -- Play click — single-trigger; no cooldown needed (click = deliberate action).
