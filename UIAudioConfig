@@ -30,6 +30,10 @@ local ROBUX_SFX_ID = "rbxassetid://117986449113759"   -- 💎 Robux purchase ini
 -- previous hover chirp to finish.
 local HOVER_POOL_SIZE = 10
 
+local function isSFXMuted()
+	return SoundService:GetAttribute("SFXMuted") == true
+end
+
 local function configureSound(sound, id, volume)
 	sound.SoundId = id
 	sound.Volume = volume
@@ -63,6 +67,20 @@ local clickSound = getOrCreateSound("GlobalUIClick", CLICK_SFX_ID, UIAudioConfig
 local robuxSound = getOrCreateSound("GlobalUIRobux", ROBUX_SFX_ID, UIAudioConfig.ROBUX_VOLUME)
 local hoverSoundIndex = 0
 
+local function stopUISounds()
+	clickSound:Stop()
+	robuxSound:Stop()
+	for _, sound in ipairs(hoverSounds) do
+		sound:Stop()
+	end
+end
+
+SoundService:GetAttributeChangedSignal("SFXMuted"):Connect(function()
+	if isSFXMuted() then
+		stopUISounds()
+	end
+end)
+
 task.spawn(function()
 	local soundsToPreload = { clickSound, robuxSound }
 	for _, sound in ipairs(hoverSounds) do
@@ -80,6 +98,8 @@ end)
 -- Play hover immediately on its own channel so rapid button sweeps create the
 -- polished layered UI feel instead of cutting off or blocking prior hovers.
 function UIAudioConfig.PlayHover()
+	if isSFXMuted() then return end
+
 	hoverSoundIndex = (hoverSoundIndex % #hoverSounds) + 1
 	local sound = hoverSounds[hoverSoundIndex]
 	sound.Volume = UIAudioConfig.HOVER_VOLUME
@@ -92,12 +112,16 @@ end
 
 -- Play click — single-trigger; no cooldown needed (click = deliberate action).
 function UIAudioConfig.PlayClick()
+	if isSFXMuted() then return end
+
 	clickSound.Volume = UIAudioConfig.CLICK_VOLUME
 	clickSound:Play()
 end
 
 -- Play Robux — distinct sound for any MarketplaceService purchase initiation.
 function UIAudioConfig.PlayRobux()
+	if isSFXMuted() then return end
+
 	robuxSound.Volume = UIAudioConfig.ROBUX_VOLUME
 	robuxSound:Play()
 end

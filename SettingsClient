@@ -15,6 +15,7 @@ local TweenService = game:GetService("TweenService")
 local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local SettingsPersistenceEvent = ReplicatedStorage:WaitForChild("SettingsPersistenceEvent", 10)
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -53,6 +54,13 @@ local btnAnimOff = option2Frame:WaitForChild("Option2Off")
 local gameTheme = SoundService:WaitForChild("GameTheme", 5)
 
 -- ⚙️ CONFIG
+local SETTINGS_ATTRIBUTES = {
+	MusicMuted = "Setting_MusicMuted",
+	SFXMuted = "Setting_SFXMuted",
+	CarLODEnabled = "Setting_CarLODEnabled",
+	CarAnimationEnabled = "Setting_CarAnimationEnabled",
+}
+
 local CONFIG = {
 	Colors = {
 		Hover = Color3.fromRGB(210, 210, 210),
@@ -66,6 +74,15 @@ local CONFIG = {
 	},
 }
 
+local function persistSetting(settingName, value)
+	if SettingsPersistenceEvent then
+		SettingsPersistenceEvent:FireServer(settingName, value)
+	end
+end
+
+local function getSavedSetting(settingName)
+	return player:GetAttribute(SETTINGS_ATTRIBUTES[settingName])
+end
 
 
 -- ✅ ENSURE UISCALE EXISTS
@@ -152,11 +169,14 @@ local function setWindowVisible(isOpen)
 end
 
 -- 🎵 MUSIC TOGGLE LOGIC
-local function setMusicMuted(shouldBeMuted)
+local function setMusicMuted(shouldBeMuted, shouldPersist)
 	btnMusicOn.Visible = not shouldBeMuted
 	btnMusicOff.Visible = shouldBeMuted
 
 	SoundService:SetAttribute("MusicMuted", shouldBeMuted)
+	if shouldPersist ~= false then
+		persistSetting("MusicMuted", shouldBeMuted)
+	end
 
 	local vol = shouldBeMuted and 0 or CONFIG.DefaultVolume
 	if gameTheme then gameTheme.Volume = vol end
@@ -170,11 +190,14 @@ local function setMusicMuted(shouldBeMuted)
 end
 
 -- ⚡ LOD TOGGLE LOGIC
-local function setLODEnabled(isEnabled)
+local function setLODEnabled(isEnabled, shouldPersist)
 	btnLODOn.Visible = not isEnabled
 	btnLODOff.Visible = isEnabled
 
 	workspace:SetAttribute("CarLODEnabled", isEnabled)
+	if shouldPersist ~= false then
+		persistSetting("CarLODEnabled", isEnabled)
+	end
 
 	if window.Visible then
 		UIAudioConfig.PlayClick()
@@ -182,11 +205,14 @@ local function setLODEnabled(isEnabled)
 end
 
 -- ⚡ ANIMATION TOGGLE LOGIC
-local function setAnimationEnabled(isEnabled)
+local function setAnimationEnabled(isEnabled, shouldPersist)
 	btnAnimOn.Visible = isEnabled
 	btnAnimOff.Visible = not isEnabled
 
 	workspace:SetAttribute("CarAnimationEnabled", isEnabled)
+	if shouldPersist ~= false then
+		persistSetting("CarAnimationEnabled", isEnabled)
+	end
 
 	if window.Visible then
 		UIAudioConfig.PlayClick()
@@ -194,11 +220,14 @@ local function setAnimationEnabled(isEnabled)
 end
 
 -- 🔊 SFX TOGGLE LOGIC
-local function setSFXMuted(shouldBeMuted)
+local function setSFXMuted(shouldBeMuted, shouldPersist)
 	btnSFXOn.Visible = not shouldBeMuted
 	btnSFXOff.Visible = shouldBeMuted
 
 	SoundService:SetAttribute("SFXMuted", shouldBeMuted)
+	if shouldPersist ~= false then
+		persistSetting("SFXMuted", shouldBeMuted)
+	end
 
 	if window.Visible and not shouldBeMuted then
 		UIAudioConfig.PlayClick()
@@ -276,24 +305,43 @@ setupButton(btnLODOff, function() setLODEnabled(false) end)
 setupButton(btnAnimOn, function() setAnimationEnabled(false) end)
 setupButton(btnAnimOff, function() setAnimationEnabled(true) end)
 
--- ✅ FIX: All four settings are now nil-guarded.
--- Defaults only apply on the very first run of the session.
--- Any subsequent LocalScript reset (e.g. respawn) will read the
--- existing attribute and leave the player's chosen setting intact.
-if workspace:GetAttribute("CarLODEnabled") == nil then
-	setLODEnabled(false)       -- Default: LOD OFF
+local function applySettingFromSavedValue(settingName)
+	local savedValue = getSavedSetting(settingName)
+	if savedValue == nil then return false end
+
+	if settingName == "CarLODEnabled" then
+		setLODEnabled(savedValue == true, false)
+	elseif settingName == "CarAnimationEnabled" then
+		setAnimationEnabled(savedValue == true, false)
+	elseif settingName == "MusicMuted" then
+		setMusicMuted(savedValue == true, false)
+	elseif settingName == "SFXMuted" then
+		setSFXMuted(savedValue == true, false)
+	end
+
+	return true
 end
 
-if workspace:GetAttribute("CarAnimationEnabled") == nil then
-	setAnimationEnabled(true) -- Default: Animation ON
+for settingName, attributeName in pairs(SETTINGS_ATTRIBUTES) do
+	player:GetAttributeChangedSignal(attributeName):Connect(function()
+		applySettingFromSavedValue(settingName)
+	end)
 end
 
-if SoundService:GetAttribute("MusicMuted") == nil then
-	setMusicMuted(false)       -- Default: Music ON
+if not applySettingFromSavedValue("CarLODEnabled") and workspace:GetAttribute("CarLODEnabled") == nil then
+	setLODEnabled(false, false)       -- Default: LOD OFF
 end
 
-if SoundService:GetAttribute("SFXMuted") == nil then
-	setSFXMuted(false)         -- Default: SFX ON
+if not applySettingFromSavedValue("CarAnimationEnabled") and workspace:GetAttribute("CarAnimationEnabled") == nil then
+	setAnimationEnabled(true, false) -- Default: Animation ON
+end
+
+if not applySettingFromSavedValue("MusicMuted") and SoundService:GetAttribute("MusicMuted") == nil then
+	setMusicMuted(false, false)       -- Default: Music ON
+end
+
+if not applySettingFromSavedValue("SFXMuted") and SoundService:GetAttribute("SFXMuted") == nil then
+	setSFXMuted(false, false)         -- Default: SFX ON
 end
 
 -- Default window state
