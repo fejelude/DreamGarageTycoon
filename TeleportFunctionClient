@@ -1,0 +1,172 @@
+-- ============================================================================
+-- TeleportFunctionClient (LocalScript)
+-- Location: StarterGui > TeleportFunction
+-- Purpose: Opens/closes the teleport place picker, applies standard UI hover/click
+--          feedback, and requests validated teleports from the server.
+-- Dependencies: ReplicatedStorage.UIButtonUtils, ReplicatedStorage.TeleportToPlaceFunction
+-- Networking: Invokes TeleportToPlaceFunction so far-away StreamingEnabled targets
+--             can be resolved reliably on the server.
+-- Notes: This UI intentionally does NOT hide other ScreenGuis. It only closes
+--        itself when another main-button app is opened.
+-- ============================================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local teleportFunction = ReplicatedStorage:WaitForChild("TeleportToPlaceFunction")
+
+local TELEPORT_BUTTON_NAMES = {
+	"CityTP",
+	"LegendaryShopTP",
+	"MythicShopTP",
+	"RankTP",
+	"EpicShopTP",
+	"UncommonShopTP",
+	"SellCarsTP",
+	"RareShopTP",
+}
+
+local TELEPORT_COOLDOWN_SECONDS = 1.25
+local STREAM_REQUEST_TIMEOUT_SECONDS = 6
+
+local teleportGui = playerGui:WaitForChild("TeleportFunction")
+local teleportToPlaces = teleportGui:WaitForChild("TeleportToPlaces")
+local mainFrame = teleportToPlaces:WaitForChild("MainFrame")
+local exitButton = mainFrame:WaitForChild("ExitButton")
+local scrollingFrame = mainFrame:WaitForChild("TeleportScrollingFrame")
+
+local mainButtonsGui = playerGui:WaitForChild("MainButtons")
+local buttonsContainer = mainButtonsGui:FindFirstChild("Buttons") or mainButtonsGui
+local openButton = buttonsContainer:WaitForChild("Teleport")
+
+local isOpen = false
+local teleportInProgress = false
+local lastTeleportClock = 0
+
+local function setTeleportButtonsEnabled(enabled)
+	for _, buttonName in ipairs(TELEPORT_BUTTON_NAMES) do
+		local button = scrollingFrame:FindFirstChild(buttonName)
+		if button and button:IsA("GuiButton") then
+			button.Active = enabled
+			button.Selectable = enabled
+			button.AutoButtonColor = enabled
+		end
+	end
+end
+
+local function setMainFrameVisible(visible)
+	isOpen = visible
+	mainFrame.Visible = visible
+	openButton.Visible = not visible
+
+	if visible then
+		setTeleportButtonsEnabled(not teleportInProgress)
+	end
+end
+
+local function closeTeleportFrame()
+	setMainFrameVisible(false)
+end
+
+local function closeForOtherMainButton(clickedButton)
+	if clickedButton ~= openButton and isOpen then
+		closeTeleportFrame()
+	end
+end
+
+local function bindOtherMainButtons(container)
+	for _, descendant in ipairs(container:GetDescendants()) do
+		if descendant:IsA("GuiButton") and descendant ~= openButton then
+			descendant.Activated:Connect(function()
+				closeForOtherMainButton(descendant)
+			end)
+		end
+	end
+
+	container.DescendantAdded:Connect(function(descendant)
+		if descendant:IsA("GuiButton") and descendant ~= openButton then
+			descendant.Activated:Connect(function()
+				closeForOtherMainButton(descendant)
+			end)
+		end
+	end)
+end
+
+local function requestStreamAround(position)
+	local ok, err = pcall(function()
+		player:RequestStreamAroundAsync(position, STREAM_REQUEST_TIMEOUT_SECONDS)
+	end)
+
+	if not ok then
+		warn("[TeleportFunctionClient] Stream request failed; teleport will still be attempted: " .. tostring(err))
+	end
+end
+
+local function requestTeleport(destinationName)
+	local now = os.clock()
+	if teleportInProgress or now - lastTeleportClock < TELEPORT_COOLDOWN_SECONDS then
+		return
+	end
+
+	teleportInProgress = true
+	lastTeleportClock = now
+	setTeleportButtonsEnabled(false)
+	closeTeleportFrame()
+
+	task.spawn(function()
+		local destinationResponse
+		local destinationOk, destinationErr = pcall(function()
+			destinationResponse = teleportFunction:InvokeServer("GetDestination", destinationName)
+		end)
+
+		if destinationOk and destinationResponse and destinationResponse.ok and destinationResponse.position then
+			requestStreamAround(destinationResponse.position)
+		elseif not destinationOk then
+			warn("[TeleportFunctionClient] Could not prefetch teleport destination: " .. tostring(destinationErr))
+		else
+			warn("[TeleportFunctionClient] Could not prefetch teleport destination: " .. tostring(destinationResponse and destinationResponse.message))
+		end
+
+		local teleportResponse
+		local teleportOk, teleportErr = pcall(function()
+			teleportResponse = teleportFunction:InvokeServer("Teleport", destinationName)
+		end)
+
+		if not teleportOk then
+			warn("[TeleportFunctionClient] Teleport request failed: " .. tostring(teleportErr))
+		elseif not (teleportResponse and teleportResponse.ok) then
+			warn("[TeleportFunctionClient] Teleport was rejected: " .. tostring(teleportResponse and teleportResponse.message))
+		end
+
+		task.delay(TELEPORT_COOLDOWN_SECONDS, function()
+			teleportInProgress = false
+			if isOpen then
+				setTeleportButtonsEnabled(true)
+			end
+		end)
+	end)
+end
+
+-- Initial state: closed, matching the other main-button apps.
+mainFrame.Visible = false
+openButton.Visible = true
+setTeleportButtonsEnabled(true)
+
+UIButtonUtils.SetupButton(openButton, function()
+	setMainFrameVisible(true)
+end)
+
+UIButtonUtils.SetupButton(exitButton, closeTeleportFrame)
+
+for _, buttonName in ipairs(TELEPORT_BUTTON_NAMES) do
+	local teleportButton = scrollingFrame:WaitForChild(buttonName)
+	UIButtonUtils.SetupButton(teleportButton, function()
+		requestTeleport(buttonName)
+	end)
+end
+
+bindOtherMainButtons(buttonsContainer)

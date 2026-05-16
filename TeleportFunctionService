@@ -1,0 +1,140 @@
+-- ============================================================================
+-- TeleportFunctionService (Script)
+-- Location: ServerScriptService
+-- Purpose: Server-authoritative destination lookup and character teleporting for
+--          the teleport places UI.
+-- Dependencies: Workspace.TeleportParts, ReplicatedStorage.TeleportToPlaceFunction
+-- Public API: Uses the pre-created RemoteFunction "TeleportToPlaceFunction" in ReplicatedStorage
+-- Security: Validates every requested destination against Workspace.TeleportParts.
+-- Performance: Lightweight; only runs when the player requests a destination or teleport.
+-- ============================================================================
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local REMOTE_FUNCTION_NAME = "TeleportToPlaceFunction"
+local TELEPORT_PARTS_FOLDER_NAME = "TeleportParts"
+
+local VALID_DESTINATIONS = {
+	CityTP = true,
+	EpicShopTP = true,
+	LegendaryShopTP = true,
+	MythicShopTP = true,
+	RankTP = true,
+	RareShopTP = true,
+	SellCarsTP = true,
+	UncommonShopTP = true,
+}
+
+local teleportFunction = ReplicatedStorage:WaitForChild(REMOTE_FUNCTION_NAME)
+
+local function getTeleportPart(destinationName)
+	if not VALID_DESTINATIONS[destinationName] then
+		return nil, "Invalid teleport destination."
+	end
+
+	local teleportFolder = Workspace:FindFirstChild(TELEPORT_PARTS_FOLDER_NAME)
+	if not teleportFolder then
+		return nil, "Workspace.TeleportParts folder is missing."
+	end
+
+	local destinationPart = teleportFolder:FindFirstChild(destinationName)
+	if not destinationPart then
+		return nil, "Teleport part is missing: " .. destinationName
+	end
+
+	if not destinationPart:IsA("BasePart") then
+		return nil, "Teleport destination is not a BasePart: " .. destinationName
+	end
+
+	return destinationPart, nil
+end
+
+local function getCharacterParts(player)
+	local character = player.Character
+	if not character then
+		return nil, nil, nil, "Character is not loaded."
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or humanoid.Health <= 0 then
+		return nil, nil, nil, "Character humanoid is not available."
+	end
+	if not rootPart then
+		return nil, nil, nil, "HumanoidRootPart is not available."
+	end
+
+	return character, humanoid, rootPart, nil
+end
+
+local function getSafeTeleportCFrame(destinationPart, humanoid, rootPart)
+	local rootHeight = rootPart and rootPart.Size.Y or 2
+	local hipHeight = humanoid and humanoid.HipHeight or 2
+	local verticalOffset = (destinationPart.Size.Y / 2) + hipHeight + (rootHeight / 2) + 0.25
+
+	return destinationPart.CFrame * CFrame.new(0, verticalOffset, 0)
+end
+
+local function getDestinationResponse(destinationName)
+	local destinationPart, destinationErr = getTeleportPart(destinationName)
+	if not destinationPart then
+		return {
+			ok = false,
+			message = destinationErr,
+		}
+	end
+
+	return {
+		ok = true,
+		position = destinationPart.Position,
+	}
+end
+
+local function teleportPlayer(player, destinationName)
+	local destinationPart, destinationErr = getTeleportPart(destinationName)
+	if not destinationPart then
+		return {
+			ok = false,
+			message = destinationErr,
+		}
+	end
+
+	local character, humanoid, rootPart, characterErr = getCharacterParts(player)
+	if not character then
+		return {
+			ok = false,
+			message = characterErr,
+		}
+	end
+
+	local targetCFrame = getSafeTeleportCFrame(destinationPart, humanoid, rootPart)
+	rootPart.AssemblyLinearVelocity = Vector3.zero
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+	character:PivotTo(targetCFrame)
+
+	return {
+		ok = true,
+		position = targetCFrame.Position,
+	}
+end
+
+teleportFunction.OnServerInvoke = function(player, action, destinationName)
+	if typeof(destinationName) ~= "string" then
+		return {
+			ok = false,
+			message = "Destination name must be a string.",
+		}
+	end
+
+	if action == "GetDestination" then
+		return getDestinationResponse(destinationName)
+	elseif action == "Teleport" then
+		return teleportPlayer(player, destinationName)
+	end
+
+	return {
+		ok = false,
+		message = "Unknown teleport action.",
+	}
+end
