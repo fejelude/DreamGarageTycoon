@@ -137,6 +137,7 @@ local buttonHoverConnections = {}
 local hiddenGuis = {}
 local hiddenObjects = {}
 local promptDebounce = false  -- 🔒 Prevents duplicate ProximityPrompt triggers
+local interactionGeneration = 0 -- Invalidates stale dialogue callbacks/timeouts
 
 local function getControls()
 	local PlayerModule = player.PlayerScripts:WaitForChild("PlayerModule", math.huge)
@@ -280,11 +281,18 @@ local function getRandomDialogue(poolKey, optionalCarId, optionalCPS)
 end
 
 local function stopInteraction()
-	if not isInteracting then return end
+	-- Always perform cleanup, even if a stale callback already flipped
+	-- isInteracting. This prevents prompt/camera/focus debounce leaks after
+	-- purchases, lag, or interrupted dialogue.
+	interactionGeneration += 1
 	isInteracting = false
-	promptDebounce = false  -- 🔒 Release prompt lock
+	promptDebounce = false
 
-	if currentDialogueJob then pcall(task.cancel, currentDialogueJob) end
+	if currentDialogueJob then
+		pcall(task.cancel, currentDialogueJob)
+		currentDialogueJob = nil
+	end
+
 	clearConnections()
 	setFocusMode(false)
 
@@ -297,8 +305,10 @@ local function stopInteraction()
 
 	-- Restore camera to default
 	local currentCamera = Workspace.CurrentCamera
-	currentCamera.CameraType = Enum.CameraType.Custom
-	currentCamera.FieldOfView = 70
+	if currentCamera then
+		currentCamera.CameraType = Enum.CameraType.Custom
+		currentCamera.FieldOfView = 70
+	end
 end
 
 local function animateButton(btn)
@@ -352,6 +362,8 @@ end
 
 local function startInteraction(npcModel)
 	if isInteracting then return end
+	interactionGeneration += 1
+	local myGeneration = interactionGeneration
 	isInteracting = true
 	clearConnections()
 
@@ -382,9 +394,17 @@ local function startInteraction(npcModel)
 	end
 
 	local myGui = playerGui:WaitForChild(GUI_ID, 5)
-	if not myGui then return end
+	if not myGui then
+		stopInteraction()
+		return
+	end
 
 	local _, container, dialogueLabel, buttonsFrame, buyBtn, leaveBtn = getUIElements()
+	if not container or not dialogueLabel then
+		stopInteraction()
+		return
+	end
+
 	myGui.Enabled = true
 	container.Visible = true
 	setButtonsState(false)
@@ -392,13 +412,16 @@ local function startInteraction(npcModel)
 	local greeting = getRandomDialogue("Greetings")
 	typewrite(dialogueLabel, greeting, function()
 		task.wait(DIALOGUE_PAUSE)
-		setButtonsState(true)
+		if isInteracting and interactionGeneration == myGeneration then
+			setButtonsState(true)
+		end
 	end)
 
 	local function setupBtn(btn, func)
 		if btn and btn:IsA("GuiButton") then
 			animateButton(btn)
 			local conn = btn.MouseButton1Click:Connect(function()
+				if not isInteracting or interactionGeneration ~= myGeneration then return end
 				UIAudioConfig.PlayClick()
 				func()
 			end)
@@ -413,7 +436,9 @@ local function startInteraction(npcModel)
 			local responseText = getRandomDialogue("RankGate")
 			typewrite(dialogueLabel, responseText, function()
 				task.wait(DIALOGUE_PAUSE + 1)
-				stopInteraction()
+				if interactionGeneration == myGeneration then
+					stopInteraction()
+				end
 			end)
 			return
 		end
@@ -421,6 +446,7 @@ local function startInteraction(npcModel)
 		local responseText = getRandomDialogue("Buy")
 		typewrite(dialogueLabel, responseText, function()
 			task.wait(DIALOGUE_PAUSE)
+			if interactionGeneration ~= myGeneration then return end
 			stopInteraction()
 			openRareRemote:FireServer()
 		end)
@@ -431,7 +457,9 @@ local function startInteraction(npcModel)
 		local responseText = getRandomDialogue("Leave")
 		typewrite(dialogueLabel, responseText, function()
 			task.wait(DIALOGUE_PAUSE)
-			stopInteraction()
+			if interactionGeneration == myGeneration then
+				stopInteraction()
+			end
 		end)
 	end)
 end
@@ -440,23 +468,45 @@ end
 -- 📣 POST-PURCHASE REACTION EVENT LOGIC
 -- ============================================================================
 purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipientName, giftSenderName)
-	-- FIX: 0.8s delay before NPC speaks after purchase
+	-- Let the shop success state render briefly, then take over with NPC reaction.
 	task.wait(0.8)
 
-	local carData = CarStats.Cars[carId]
-	if not carData then return end
+	-- Start from a clean interaction state before opening the reaction dialogue.
+	stopInteraction()
 
-	-- 🛡️ [POLISH] Close Shop UI immediately so it doesn't overlap
+	local carData = CarStats.Cars[carId]
+	if not carData then
+		return
+	end
+
+	-- Close Shop UI immediately so it does not overlap the NPC reaction.
 	local shopUi = playerGui:FindFirstChild("RareShopUi")
 	if shopUi then shopUi.Enabled = false end
 
-	-- 🛡️ [POLISH] Refresh camera reference to prevent stale object bugs
+	interactionGeneration += 1
+	local myGeneration = interactionGeneration
+	isInteracting = true
+	promptDebounce = false
+	clearConnections()
+
+	local controls = getControls()
+	if controls then controls:Disable() end
+	setFocusMode(true)
+
+	-- Failsafe: if lag, a cancelled typewriter, or a missing UI prevents the normal
+	-- callback from running, the NPC/shop state still recovers by itself.
+	task.delay(REACTION_PAUSE + 8, function()
+		if isInteracting and interactionGeneration == myGeneration then
+			stopInteraction()
+		end
+	end)
+
+	-- Refresh camera reference to prevent stale object bugs.
 	local camera = Workspace.CurrentCamera
 	local npcFolder = Workspace:FindFirstChild(NPC_FOLDER)
 	local npcModel = npcFolder and npcFolder:FindFirstChild(TARGET_NPC)
 	local camPart = npcModel and npcModel:FindFirstChild("CameraAimPart")
-	
-	if camPart then
+	if camera and camPart then
 		camera.CameraType = Enum.CameraType.Scriptable
 		TweenService:Create(camera, TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
 			CFrame = camPart.CFrame
@@ -464,9 +514,6 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipi
 	end
 
 	print("💬 [JacobLogic] Triggering Post-Purchase Reaction. Car: " .. carId .. " | Robux: " .. tostring(isRobux))
-	
-	isInteracting = true
-	setFocusMode(true) -- Focus on the NPC dialogue
 
 	local myGui, container, dialogueLabel = getUIElements()
 	if myGui and container and dialogueLabel then
@@ -484,15 +531,14 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipi
 
 		typewrite(dialogueLabel, reactionText, function()
 			task.wait(REACTION_PAUSE)
-			stopInteraction() -- Fully close everything
+			if interactionGeneration == myGeneration then
+				stopInteraction()
+			end
 		end)
 	else
-		-- Safety: couldn't find GUI, abort gracefully
-		isInteracting = false
-		setFocusMode(false)
+		stopInteraction()
 	end
 end)
-
 -- ============================================================================
 -- 🚀 DYNAMIC NPC SETUP
 -- ============================================================================

@@ -284,7 +284,16 @@ local function AttemptBuy(carName, scrollFrame)
 	UpdateDisplay(scrollFrame)
 
 	task.spawn(function()
-		local success, msg = FuncBuyCar:InvokeServer(carName)
+		local invokeOk, success, msg = pcall(function()
+			return FuncBuyCar:InvokeServer(carName)
+		end)
+
+		if not invokeOk then
+			warn("⚠️ [" .. script.Name .. "] Purchase invoke failed for " .. tostring(carName) .. ": " .. tostring(success))
+			success = false
+			msg = "Purchase Failed"
+		end
+
 		purchaseDebounce[carName] = false
 		isProcessingPurchase = false 
 
@@ -329,8 +338,10 @@ local function init()
 	gui:GetPropertyChangedSignal("Enabled"):Connect(function()
 		if not gui.Enabled then
 			isProcessingPurchase = false
+			purchaseDebounce = {}
 			setFocusMode(false)
 			Kit.Feedback:Clear(mainFrame)
+			UpdateDisplay(scrollFrame)
 		end
 	end)
 

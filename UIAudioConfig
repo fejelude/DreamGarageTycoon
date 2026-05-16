@@ -326,13 +326,17 @@ function UIAudioConfig.ShowStateLabel(container, isSuccess, baseText)
 		controller.MessageState[label] = state
 	end
 
-	if state.baseText == baseText and state.isActive then
+	local sameMessageStillActive = state.baseText == baseText
+		and (state.isActive or label.Visible or controller.Tweens[label] ~= nil)
+
+	if sameMessageStillActive then
 		state.count += 1
 	else
 		state.count = 1
 		state.baseText = baseText
 	end
 	state.isActive = true
+	state.lastShownAt = os.clock()
 
 	controller.DisplayToken[label] = (controller.DisplayToken[label] or 0) + 1
 	local displayToken = controller.DisplayToken[label]
