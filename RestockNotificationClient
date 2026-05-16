@@ -24,6 +24,7 @@ local COLORS = {
 	Epic      = "#9D4EDD",
 	Legendary = "#FFBE0B",
 	Mythic    = "#FF006E",
+	Mythical  = "#FF006E",
 	All       = "#FFD700",
 }
 
@@ -39,6 +40,7 @@ local SHOP_REQUIREMENTS = {
 	Epic      = "MVP",
 	Legendary = "MVP+",
 	Mythic    = "MVP++",
+	Mythical  = "MVP++",
 }
 
 local RESTOCK_AUDIO_ID = "rbxassetid://81822437427070"
@@ -92,11 +94,20 @@ local function bringNotificationToFront(frame, label)
 	end
 end
 
+local function normalizeRarity(rarity: string): string
+	if rarity == "Mythic" then
+		return "Mythical"
+	end
+	return rarity
+end
+
 local function getRarityColor(rarity: string): string
+	rarity = normalizeRarity(rarity)
 	return COLORS[rarity] or COLORS.Common
 end
 
 local function hasAccessToShop(shopRarity: string): (boolean, string)
+	shopRarity = normalizeRarity(shopRarity)
 	local requiredRankName = SHOP_REQUIREMENTS[shopRarity] or "Player"
 	local requiredValue    = RANK_VALUES[requiredRankName]  or 0
 	local playerRankName   = player:GetAttribute("Rank")    or "Player"
@@ -212,6 +223,7 @@ local function buildMessage(arg1: string, arg2: any, arg3: any, isAdmin: boolean
 		end
 	end
 
+	rarity = normalizeRarity(rarity)
 	local color = getRarityColor(rarity)
 	local hasAccess, requiredRank = hasAccessToShop(rarity)
 

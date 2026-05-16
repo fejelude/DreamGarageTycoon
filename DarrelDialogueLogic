@@ -91,6 +91,20 @@ local function formatMoney(n)
 	return string.format("%.2f%s$", n / v, suffix)
 end
 
+local function escapeRichText(value)
+	local text = tostring(value or "")
+	text = text:gsub("&", "&amp;")
+	text = text:gsub("<", "&lt;")
+	text = text:gsub(">", "&gt;")
+	text = text:gsub('"', "&quot;")
+	text = text:gsub("'", "&#39;")
+	return text
+end
+
+local function richTextReplacement(value)
+	return escapeRichText(value):gsub("%%", "%%%%")
+end
+
 -- 💬 DIALOGUE POOLS
 local DIALOGUE_POOLS = {
 	Greetings = {
@@ -264,7 +278,7 @@ local function getRandomDialogue(poolKey, optionalCarId, optionalCPS)
 	if not pool or #pool == 0 then return "..." end
 
 	local rawText = pool[math.random(1, #pool)]
-	local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
+	local coloredName = "<font color='" .. USER_COLOR .. "'>" .. richTextReplacement(player.DisplayName) .. "</font>"
 	rawText = string.gsub(rawText, "{player}", coloredName)
 
 	if string.find(rawText, "{money}") then
@@ -273,7 +287,7 @@ local function getRandomDialogue(poolKey, optionalCarId, optionalCPS)
 	end
 
 	if optionalCarId and optionalCPS then
-		rawText = string.gsub(rawText, "{carName}", optionalCarId)
+		rawText = string.gsub(rawText, "{carName}", richTextReplacement(optionalCarId))
 		rawText = string.gsub(rawText, "{cps}", tostring(optionalCPS))
 	end
 
@@ -523,7 +537,7 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipi
 
 		local reactionText = ""
 		if giftRecipientName then
-			reactionText = "Gift sent! <font color='"..USER_COLOR.."'><b>" .. giftRecipientName .. "</b></font> received the <font color='"..UNCOMMON_COLOR.."'><b>" .. carId .. "</b></font>."
+			reactionText = "Gift sent! <font color='"..USER_COLOR.."'><b>" .. richTextReplacement(giftRecipientName) .. "</b></font> received the <font color='"..UNCOMMON_COLOR.."'><b>" .. richTextReplacement(carId) .. "</b></font>."
 		else
 			local poolToUse = isRobux and "RobuxReactions" or "Reactions"
 			reactionText = getRandomDialogue(poolToUse, carId, carData.CPS)

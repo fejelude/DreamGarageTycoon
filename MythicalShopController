@@ -616,7 +616,8 @@ local function setFocusMode(active)
 	setBlur(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
-	if char then
+	local character = player.Character
+	if character then
 		player:SetAttribute("MovementLock", active)
 	end
 end
@@ -645,6 +646,23 @@ local function showFeedback(text, color)
 	end
 
 	Kit.Toast:Show(text, color)
+end
+
+local function tryRefreshState(context)
+	local ok, stateOrErr = pcall(function()
+		return FuncGetState:InvokeServer()
+	end)
+
+	if ok and stateOrErr then
+		currentState = stateOrErr
+		return true
+	end
+
+	warn("⚠️ [" .. script.Name .. "] Failed to refresh shop state"
+		.. (context and (" (" .. tostring(context) .. ")") or "")
+		.. ": " .. tostring(stateOrErr))
+	showFeedback("Shop Sync Failed", FEEDBACK_COLORS.FailCash)
+	return false
 end
 
 -- ============================================================================
@@ -764,7 +782,15 @@ local function UpdateActiveCraftPanel()
 			skipBtn:SetAttribute("Connected", true)
 			Kit.Tween:SetupButton(skipBtn, function()
 				if skipBtn.Visible and skipBtn.Active and isShopOpen then
-					if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[activeCar] then
+					local currentActiveCar = nil
+					if currentState and currentState.ActiveCrafts then
+						for c, _ in pairs(currentState.ActiveCrafts) do
+							currentActiveCar = c
+							break
+						end
+					end
+					if currentActiveCar then
+						-- Robux prompt fires for the currently active craft, not a stale captured car.
 						UIAudioConfig.PlayRobux()
 						UIAudioConfig.ShowPurchaseLoading()
 						MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
@@ -830,7 +856,7 @@ local function AttemptSacrifice(carName, ingredient)
 	local progress       = currentState.CraftProgress[carName] or {}
 	local currentAmount  = progress[ingredient] or 0
 	local displayName    = getDisplayCarName(carName)
-	local coloredName    = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+	local coloredName    = "<font color='" .. USER_COLOR .. "'>@" .. escapeRichText(player.Name) .. "</font>"
 
 	if currentAmount >= requiredAmount then
 		ethourahSpeak(pickRandom({
@@ -877,11 +903,18 @@ local function AttemptSacrifice(carName, ingredient)
 		Kit.Sound:Play("Click")
 
 		task.spawn(function()
-			local success, msg = FuncSacrifice:InvokeServer(carName, ingredient)
+			local invokeOk, success, msg = pcall(function()
+					return FuncSacrifice:InvokeServer(carName, ingredient)
+				end)
+				if not invokeOk then
+					warn("⚠️ [" .. script.Name .. "] Sacrifice invoke failed: " .. tostring(success))
+					success = false
+					msg = "Sacrifice Failed"
+				end
 			if requestSessionId == shopSessionId then isProcessingPurchase = false end
 			if not isActiveShopSession(requestSessionId) then mainFrame.Visible = true; return end
 
-			currentState = FuncGetState:InvokeServer()
+			tryRefreshState("refresh")
 			UpdateDisplay()
 
 			local itemsLeft = 0
@@ -952,7 +985,7 @@ local function AttemptCraft(carName, isPremium)
 
 	local recipe      = RECIPES[carName]
 	local displayName = getDisplayCarName(carName)
-	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+	local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. escapeRichText(player.Name) .. "</font>"
 	local craftGui    = gui:FindFirstChild(carName .. "Crafting")
 
 	local function restoreToCraftingFrame()
@@ -975,11 +1008,13 @@ local function AttemptCraft(carName, isPremium)
 
 		if isPremium and currentState.ActiveCrafts[carName] then
 			-- Premium skip on the specific car being crafted
+			UIAudioConfig.PlayRobux()
+			UIAudioConfig.ShowPurchaseLoading()
 			MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
 			return
 		end
 
-		local activeDisplayName = getDisplayCarName(activeCar)
+		local activeDisplayName = escapeRichText(getDisplayCarName(activeCar))
 		local delta   = math.max(0, activeEndTime - os.time())
 		local timeStr = string.format("%02d:%02d:%02d",
 			math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
@@ -1004,8 +1039,8 @@ local function AttemptCraft(carName, isPremium)
 			"Construction of the <font color='#B652FF'>" .. displayName .. "</font> is done. A flawless execution. It's already there in your inventory.",
 		}), function()
 			local FuncAcknowledge = MythicalRemotes:FindFirstChild("AcknowledgeMythicalCraft")
-			if FuncAcknowledge then FuncAcknowledge:InvokeServer(carName) end
-			currentState = FuncGetState:InvokeServer()
+			if FuncAcknowledge then pcall(function() FuncAcknowledge:InvokeServer(carName) end) end
+			tryRefreshState("refresh")
 			UpdateDisplay()
 			restoreToCraftingFrame()
 		end)
@@ -1072,16 +1107,25 @@ local function AttemptCraft(carName, isPremium)
 		Kit.Sound:Play("Click")
 
 		task.spawn(function()
-			local success, msg = FuncCraftCar:InvokeServer(carName, isPremium)
+			local invokeOk, success, msg = pcall(function()
+					return FuncCraftCar:InvokeServer(carName, isPremium)
+				end)
+				if not invokeOk then
+					warn("⚠️ [" .. script.Name .. "] Craft invoke failed: " .. tostring(success))
+					success = false
+					msg = "Craft Failed"
+				end
 			if requestSessionId == shopSessionId then isProcessingPurchase = false end
 			if not isActiveShopSession(requestSessionId) then mainFrame.Visible = true; return end
 
-			currentState = FuncGetState:InvokeServer()
+			tryRefreshState("refresh")
 			UpdateDisplay()
 
 			if success then
 				if isPremium then
 					-- Premium: fire Robux prompt immediately; return to crafting frame.
+					UIAudioConfig.PlayRobux()
+					UIAudioConfig.ShowPurchaseLoading()
 					MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
 					restoreToCraftingFrame()
 				else
@@ -1171,7 +1215,7 @@ local function OpenCraftingMenu(carName)
 		end
 
 		local displayName = getDisplayCarName(activeCar)
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. escapeRichText(player.Name) .. "</font>"
 		local delta   = math.max(0, endTime - os.time())
 		local timeStr = string.format("%02d:%02d:%02d", math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
 
@@ -1192,15 +1236,15 @@ local function OpenCraftingMenu(carName)
 	-- Acknowledges the craft so ingredients can be reset for another build.
 	if currentState and currentState.CompletedCrafts and currentState.CompletedCrafts[carName] then
 		local displayName = getDisplayCarName(carName)
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. escapeRichText(player.Name) .. "</font>"
 		ethourahSpeak(pickRandom({
 			"It is finished. The <font color='#B652FF'>" .. displayName .. "</font> is a true work of art. It should be in your inventory already.",
 			"The <font color='#B652FF'>" .. displayName .. "</font> is already there in your inventory, " .. coloredName .. ".",
 			"Construction of the <font color='#B652FF'>" .. displayName .. "</font> is done. A flawless execution. It's already there in your inventory.",
 		}), function()
 			local FuncAcknowledge = MythicalRemotes:FindFirstChild("AcknowledgeMythicalCraft")
-			if FuncAcknowledge then FuncAcknowledge:InvokeServer(carName) end
-			currentState = FuncGetState:InvokeServer()
+			if FuncAcknowledge then pcall(function() FuncAcknowledge:InvokeServer(carName) end) end
+			tryRefreshState("refresh")
 			local craftGui = gui:FindFirstChild(carName .. "Crafting")
 			if craftGui then
 				UpdateCraftingUI(carName)
@@ -1341,9 +1385,16 @@ local function init()
 		hideAllCraftingMenus()
 
 		currentState = { CraftProgress = {}, ActiveCrafts = {}, CompletedCrafts = {} }
-		local realState = FuncGetState:InvokeServer()
+		local stateOk, realState = pcall(function()
+			return FuncGetState:InvokeServer()
+		end)
 		if not isActiveShopSession(sessionId) then return end
-		currentState = realState
+		if stateOk and realState then
+			currentState = realState
+		else
+			warn("⚠️ [" .. script.Name .. "] Failed to load shop state: " .. tostring(realState))
+			showFeedback("Shop Load Failed", FEEDBACK_COLORS.FailCash)
+		end
 		UpdateDisplay()
 
 		-- Check for unacknowledged completed crafts
@@ -1376,7 +1427,7 @@ local function init()
 	end)
 
 	RemoteUpdate.OnClientEvent:Connect(function(newState)
-		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
+		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. escapeRichText(player.Name) .. "</font>"
 		local carName
 		if currentState and currentState.CompletedCrafts and newState.CompletedCrafts then
 			for n, _ in pairs(newState.CompletedCrafts) do

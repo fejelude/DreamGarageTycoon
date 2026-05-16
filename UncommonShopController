@@ -187,7 +187,8 @@ local function setFocusMode(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
 
-	if char then
+	local character = player.Character
+	if character then
 		player:SetAttribute("MovementLock", active)
 	end
 end
@@ -195,8 +196,23 @@ end
 -- ============================================================================
 -- 🧠 RENDER LOGIC
 -- ============================================================================
+local function resolveCardImage(card, carName)
+	local container = card:FindFirstChild("CarImageContainer")
+	if container then
+		return container:FindFirstChild("CarImage")
+			or container:FindFirstChild(carName .. "-Image")
+			or container:FindFirstChildWhichIsA("ImageLabel", true)
+			or container:FindFirstChildWhichIsA("ImageButton", true)
+	end
+
+	return card:FindFirstChild("CarImage")
+		or card:FindFirstChild(carName .. "-Image")
+		or card:FindFirstChildWhichIsA("ImageLabel", true)
+		or card:FindFirstChildWhichIsA("ImageButton", true)
+end
+
 local function RenderCard(card, carName, state)
-	local carImage = card:FindFirstChild("CarImage")
+	local carImage = resolveCardImage(card, carName)
 	local stockLabel = card:FindFirstChild("StockInformation") 
 	local buyBtn = card:FindFirstChild("BuyButton")
 	local robuxBtn = card:FindFirstChild("RobuxButton") 
@@ -426,6 +442,8 @@ local function init()
 
 		if not isRelevant then return end
 
+		UIAudioConfig.HidePurchaseLoading()
+
 		if isPurchased then
 			if productId == REROLL_PRODUCT_ID then
 				showFeedback("Successfully Restocked", FEEDBACK_COLORS.Success)
@@ -455,9 +473,9 @@ local function init()
 					local minsLeft  = math.floor((secondsLeft % 3600) / 60)
 					local secsLeft  = secondsLeft % 60
 					if hoursLeft > 0 then
-						timerLabel.Text = string.format("New Cars will restock at : %02d:%02d:%02d", hoursLeft, minsLeft, secsLeft)
+						timerLabel.Text = string.format("Restock in : %02d:%02d:%02d", hoursLeft, minsLeft, secsLeft)
 					else
-						timerLabel.Text = string.format("New Cars will restock at : %02d:%02d", minsLeft, secsLeft)
+						timerLabel.Text = string.format("Restock in : %02d:%02d", minsLeft, secsLeft)
 					end
 				end
 			end
@@ -476,8 +494,15 @@ local function init()
 		currentState = {Featured = {}, Stock = {}, StockLimit = {}, Purchased = {}}
 		UpdateDisplay(scrollFrame)
 
-		local realState = FuncGetState:InvokeServer()
-		currentState = realState
+		local stateOk, realState = pcall(function()
+			return FuncGetState:InvokeServer()
+		end)
+		if stateOk and realState then
+			currentState = realState
+		else
+			warn("⚠️ [" .. script.Name .. "] Failed to load shop state: " .. tostring(realState))
+			showFeedback("Shop Load Failed", FEEDBACK_COLORS.FailCash)
+		end
 		UpdateDisplay(scrollFrame)
 	end)
 

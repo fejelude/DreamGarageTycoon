@@ -438,6 +438,10 @@ function UIAudioConfig.ShowPurchaseLoading()
 	local screen, frame = resolveLoadingUI()
 	if not frame then return end
 
+	-- Cancel any delayed hide/fade from a previous prompt before showing again.
+	if not _G.__LoadingUIGeneration then _G.__LoadingUIGeneration = 0 end
+	_G.__LoadingUIGeneration += 1
+
 	-- Force the ScreenGui ON at the highest layer
 	screen.Enabled  = true
 	frame.Visible   = true
