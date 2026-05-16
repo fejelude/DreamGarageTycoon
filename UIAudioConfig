@@ -14,9 +14,9 @@ local ContentProvider = game:GetService("ContentProvider")
 local UIAudioConfig = {}
 
 -- ⚙️ EASY VOLUME CONFIGURATION — edit these values to adjust UI sounds
-UIAudioConfig.HOVER_VOLUME  = 2
-UIAudioConfig.CLICK_VOLUME  = 2.5
-UIAudioConfig.ROBUX_VOLUME  = 2
+UIAudioConfig.HOVER_VOLUME  = 1.5
+UIAudioConfig.CLICK_VOLUME  = 1.8
+UIAudioConfig.ROBUX_VOLUME  = 1.5
 
 -- Sound asset IDs
 local HOVER_SFX_ID = "rbxassetid://73899820361873"
