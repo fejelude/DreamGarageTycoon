@@ -10,6 +10,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players           = game:GetService("Players")
 local SoundService      = game:GetService("SoundService")
+local UIAudioConfig     = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- ============================================================
 -- CONSTANTS
@@ -104,6 +105,9 @@ local function hasAccessToShop(shopRarity: string): (boolean, string)
 end
 
 local function playRestockSound()
+	if UIAudioConfig.IsSFXMuted() then return end
+	if not UIAudioConfig.ShouldPlayAction("RestockSfx", 1.0) then return end
+
 	local sound              = Instance.new("Sound")
 	sound.SoundId            = RESTOCK_AUDIO_ID
 	sound.Volume             = 1

@@ -77,26 +77,26 @@ local camera = Workspace.CurrentCamera
 -- 🛑 UI REFERENCES
 local function getUI()
 	return gui, mainFrame, mainFrame:WaitForChild("ScrollingFrame"), mainFrame:WaitForChild("TimerLabel"), 
-	mainFrame:WaitForChild("RerollButton"), mainFrame:WaitForChild("CloseButton"), mainFrame:WaitForChild("Indicator-purchase", 5)
+	mainFrame:WaitForChild("RerollButton"), mainFrame:WaitForChild("CloseButton"), mainFrame:FindFirstChild("Indicator-purchase")
 end
 
 -- ============================================================================
 -- 👁️ FEEDBACK LOGIC
 -- ============================================================================
 local function showFeedback(text, color)
-	local _, _, _, _, _, _, indicator = getUI()
-
-	if not indicator then 
-		warn("⚠️ 'Indicator-purchase' not found in MainFrame!") 
-		return 
+	local isSuccess = color == FEEDBACK_COLORS.Success
+	if Kit.Feedback:Show(mainFrame, text, isSuccess) then
+		return
 	end
+
+	local _, _, _, _, _, _, indicator = getUI()
+	if not indicator then return end
 
 	if feedbackTween then feedbackTween:Cancel() end
 	indicator.Visible = true
 	indicator.TextTransparency = 0
 	indicator.Text = text
 	indicator.TextColor3 = color
-	-- FIX: Sync UIStroke on show
 	local indStroke = indicator:FindFirstChildOfClass("UIStroke")
 	if indStroke then indStroke.Transparency = 0 end
 
@@ -105,9 +105,7 @@ local function showFeedback(text, color)
 			local t = TweenService:Create(indicator, TweenInfo.new(0.5), {TextTransparency = 1})
 			t:Play()
 			feedbackTween = t
-			-- FIX: Fade UIStroke in sync
 			if indStroke then TweenService:Create(indStroke, TweenInfo.new(0.5), {Transparency = 1}):Play() end
-
 			t.Completed:Connect(function()
 				if indicator.TextTransparency >= 0.95 then
 					indicator.Visible = false
@@ -319,6 +317,7 @@ end
 local function init()
 	local gui, mainFrame, scrollFrame, timerLabel, rerollBtn, closeBtn, indicatorLabel = getUI()
 
+	Kit.Feedback:Clear(mainFrame)
 	if indicatorLabel then indicatorLabel.Visible = false end
 
 	gui.Enabled = false 

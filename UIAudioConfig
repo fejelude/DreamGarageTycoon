@@ -18,6 +18,11 @@ UIAudioConfig.HOVER_VOLUME  = 1.5
 UIAudioConfig.CLICK_VOLUME  = 1.8
 UIAudioConfig.ROBUX_VOLUME  = 1.5
 
+-- Short duplicate guards prevent two scripts from layering the same action SFX
+-- during one user action (for example Button.Activated + shop open event).
+UIAudioConfig.CLICK_DEDUPE_SECONDS = 0.35
+UIAudioConfig.ACTION_DEDUPE_SECONDS = 0.35
+
 -- Sound asset IDs
 local HOVER_SFX_ID = "rbxassetid://73899820361873"
 local CLICK_SFX_ID = "rbxassetid://126294184545314"
@@ -32,6 +37,10 @@ local HOVER_POOL_SIZE = 10
 
 local function isSFXMuted()
 	return SoundService:GetAttribute("SFXMuted") == true
+end
+
+function UIAudioConfig.IsSFXMuted()
+	return isSFXMuted()
 end
 
 local function configureSound(sound, id, volume)
@@ -66,6 +75,8 @@ local hoverSounds = createHoverPool()
 local clickSound = getOrCreateSound("GlobalUIClick", CLICK_SFX_ID, UIAudioConfig.CLICK_VOLUME)
 local robuxSound = getOrCreateSound("GlobalUIRobux", ROBUX_SFX_ID, UIAudioConfig.ROBUX_VOLUME)
 local hoverSoundIndex = 0
+local lastClickPlayedAt = 0
+local lastActionPlayedAt = {}
 
 local function stopUISounds()
 	clickSound:Stop()
@@ -110,12 +121,38 @@ function UIAudioConfig.PlayHover()
 	sound:Play()
 end
 
--- Play click — single-trigger; no cooldown needed (click = deliberate action).
+local function nowClock()
+	return os.clock()
+end
+
+local function shouldPlayDeduped(key, cooldown)
+	local now = nowClock()
+	local last = lastActionPlayedAt[key] or 0
+	if now - last < cooldown then
+		return false
+	end
+
+	lastActionPlayedAt[key] = now
+	return true
+end
+
+-- Play click through the central UI sound system. A tiny duplicate guard keeps
+-- nested UI scripts from producing double-click audio for the same action.
 function UIAudioConfig.PlayClick()
 	if isSFXMuted() then return end
 
+	local now = nowClock()
+	if now - lastClickPlayedAt < UIAudioConfig.CLICK_DEDUPE_SECONDS then
+		return
+	end
+
+	lastClickPlayedAt = now
 	clickSound.Volume = UIAudioConfig.CLICK_VOLUME
 	clickSound:Play()
+end
+
+function UIAudioConfig.ShouldPlayAction(actionKey, cooldown)
+	return shouldPlayDeduped(actionKey, cooldown or UIAudioConfig.ACTION_DEDUPE_SECONDS)
 end
 
 -- Play Robux — distinct sound for any MarketplaceService purchase initiation.
@@ -124,6 +161,189 @@ function UIAudioConfig.PlayRobux()
 
 	robuxSound.Volume = UIAudioConfig.ROBUX_VOLUME
 	robuxSound:Play()
+end
+
+-- ============================================================================
+-- ✅ STATE LABEL FEEDBACK
+-- Reusable Bank-style feedback controller for UIs that provide:
+--   MainFrame > StateLabels > Success
+--   MainFrame > StateLabels > Failed
+-- Repeated identical messages are rendered as "Message x1", "Message x2", etc.
+-- ============================================================================
+
+local STATE_LABEL_SHOW_SECONDS = 3
+local STATE_LABEL_FADE_OUT_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local stateLabelControllers = setmetatable({}, { __mode = "k" })
+
+local function getLabelUIStroke(label)
+	return label and label:FindFirstChildOfClass("UIStroke") or nil
+end
+
+local function resolveStateLabels(container)
+	if not container then return nil, nil, nil end
+
+	local stateLabels = nil
+	if container.Name == "StateLabels" then
+		stateLabels = container
+	elseif container.FindFirstChild then
+		stateLabels = container:FindFirstChild("StateLabels")
+	end
+
+	if not stateLabels then return nil, nil, nil end
+
+	local successLabel = stateLabels:FindFirstChild("Success")
+	local failedLabel = stateLabels:FindFirstChild("Failed")
+	return stateLabels, successLabel, failedLabel
+end
+
+local function getStateLabelController(stateLabels, successLabel, failedLabel)
+	local controller = stateLabelControllers[stateLabels]
+	if controller then return controller end
+
+	controller = {
+		Labels = { Success = successLabel, Failed = failedLabel },
+		MessageState = {},
+		HideToken = {},
+		Tweens = {},
+		Defaults = {},
+	}
+
+	for _, label in pairs(controller.Labels) do
+		if label then
+			local uiStroke = getLabelUIStroke(label)
+			controller.Defaults[label] = {
+				TextTransparency = label.TextTransparency,
+				TextStrokeTransparency = label.TextStrokeTransparency,
+				UIStrokeTransparency = uiStroke and uiStroke.Transparency or nil,
+			}
+		end
+	end
+
+	stateLabelControllers[stateLabels] = controller
+	return controller
+end
+
+local function cancelStateLabelTween(controller, label)
+	local tweens = controller.Tweens[label]
+	if tweens then
+		for _, tween in pairs(tweens) do
+			if tween then tween:Cancel() end
+		end
+		controller.Tweens[label] = nil
+	end
+end
+
+local function resetStateLabelTransparency(controller, label)
+	local defaults = controller.Defaults[label]
+	if defaults then
+		label.TextTransparency = defaults.TextTransparency
+		label.TextStrokeTransparency = defaults.TextStrokeTransparency
+		local uiStroke = getLabelUIStroke(label)
+		if uiStroke and defaults.UIStrokeTransparency ~= nil then
+			uiStroke.Transparency = defaults.UIStrokeTransparency
+		end
+	else
+		label.TextTransparency = 0
+		label.TextStrokeTransparency = 0
+		local uiStroke = getLabelUIStroke(label)
+		if uiStroke then uiStroke.Transparency = 0 end
+	end
+end
+
+local function resetStateMessage(controller, label)
+	local state = controller.MessageState[label]
+	if state then
+		state.count = 0
+		state.baseText = nil
+	end
+end
+
+local function hideStateLabel(controller, label)
+	if not label then return end
+	cancelStateLabelTween(controller, label)
+	controller.HideToken[label] = (controller.HideToken[label] or 0) + 1
+	label.Visible = false
+	resetStateLabelTransparency(controller, label)
+	resetStateMessage(controller, label)
+end
+
+local function fadeOutStateLabel(controller, label)
+	if not label or not label.Visible then return end
+	cancelStateLabelTween(controller, label)
+
+	local uiStroke = getLabelUIStroke(label)
+	local textTween = TweenService:Create(label, STATE_LABEL_FADE_OUT_INFO, {
+		TextTransparency = 1,
+		TextStrokeTransparency = 1,
+	})
+	local strokeTween = uiStroke and TweenService:Create(uiStroke, STATE_LABEL_FADE_OUT_INFO, { Transparency = 1 }) or nil
+	local activeTweens = { Text = textTween, UIStroke = strokeTween }
+	controller.Tweens[label] = activeTweens
+
+	local connection
+	connection = textTween.Completed:Connect(function()
+		if connection then connection:Disconnect() end
+		if controller.Tweens[label] ~= activeTweens then return end
+		controller.Tweens[label] = nil
+		label.Visible = false
+		resetStateLabelTransparency(controller, label)
+		resetStateMessage(controller, label)
+	end)
+
+	textTween:Play()
+	if strokeTween then strokeTween:Play() end
+end
+
+function UIAudioConfig.ShowStateLabel(container, isSuccess, baseText)
+	local stateLabels, successLabel, failedLabel = resolveStateLabels(container)
+	if not stateLabels then return false end
+
+	local label = isSuccess and successLabel or failedLabel
+	if not label then
+		warn("[UIAudioConfig] Missing " .. (isSuccess and "Success" or "Failed") .. " StateLabels label for: " .. tostring(baseText))
+		return false
+	end
+
+	local controller = getStateLabelController(stateLabels, successLabel, failedLabel)
+	local otherLabel = isSuccess and failedLabel or successLabel
+	hideStateLabel(controller, otherLabel)
+	cancelStateLabelTween(controller, label)
+	resetStateLabelTransparency(controller, label)
+
+	local state = controller.MessageState[label]
+	if not state then
+		state = { count = 0, baseText = baseText }
+		controller.MessageState[label] = state
+	end
+
+	if state.baseText == baseText and label.Visible then
+		state.count += 1
+	else
+		state.count = 1
+		state.baseText = baseText
+	end
+
+	label.Text = tostring(baseText) .. " x" .. state.count
+	label.Visible = true
+
+	controller.HideToken[label] = (controller.HideToken[label] or 0) + 1
+	local thisToken = controller.HideToken[label]
+	task.delay(STATE_LABEL_SHOW_SECONDS, function()
+		if controller.HideToken[label] == thisToken and label.Visible then
+			fadeOutStateLabel(controller, label)
+		end
+	end)
+
+	return true
+end
+
+function UIAudioConfig.ClearStateLabels(container)
+	local stateLabels, successLabel, failedLabel = resolveStateLabels(container)
+	if not stateLabels then return false end
+	local controller = getStateLabelController(stateLabels, successLabel, failedLabel)
+	hideStateLabel(controller, successLabel)
+	hideStateLabel(controller, failedLabel)
+	return true
 end
 
 -- ============================================================================

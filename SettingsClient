@@ -151,14 +151,12 @@ local function setWindowVisible(isOpen)
 		window.Visible = true
 		openButton.Visible = false
 		uiScale.Scale = A.StartScale
-		UIAudioConfig.PlayClick()
 		setOtherGuisEnabled(false)
 
 		local info = TweenInfo.new(A.OpenTime, A.EasingStyle, Enum.EasingDirection.Out)
 		currentTween = TweenService:Create(uiScale, info, { Scale = 1 })
 		currentTween:Play()
 	else
-		UIAudioConfig.PlayClick()
 
 		window.Visible = false
 		openButton.Visible = true
@@ -184,9 +182,6 @@ local function setMusicMuted(shouldBeMuted, shouldPersist)
 	local shopMusic = SoundService:FindFirstChild("ShopMusic_Internal")
 	if shopMusic then shopMusic.Volume = vol end
 
-	if window.Visible then
-		UIAudioConfig.PlayClick()
-	end
 end
 
 -- ⚡ LOD TOGGLE LOGIC
@@ -199,9 +194,6 @@ local function setLODEnabled(isEnabled, shouldPersist)
 		persistSetting("CarLODEnabled", isEnabled)
 	end
 
-	if window.Visible then
-		UIAudioConfig.PlayClick()
-	end
 end
 
 -- ⚡ ANIMATION TOGGLE LOGIC
@@ -214,9 +206,6 @@ local function setAnimationEnabled(isEnabled, shouldPersist)
 		persistSetting("CarAnimationEnabled", isEnabled)
 	end
 
-	if window.Visible then
-		UIAudioConfig.PlayClick()
-	end
 end
 
 -- 🔊 SFX TOGGLE LOGIC
@@ -243,8 +232,6 @@ local function setupButton(btn, onClick)
 		uiScale.Scale = 1.0
 		uiScale.Parent = btn
 	end
-
-	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
 
 	local isHovering = false
 	local isPressed  = false
@@ -280,9 +267,20 @@ local function setupButton(btn, onClick)
 		end
 	end)
 
-	btn.MouseButton1Click:Connect(function()
+	local clickFired = false
+	local function handleClick()
+		if clickFired then return end
+		clickFired = true
 		UIAudioConfig.PlayClick()
 		if onClick then onClick() end
+		task.delay(0.5, function() clickFired = false end)
+	end
+
+	btn.Activated:Connect(handleClick)
+	btn.MouseButton1Click:Connect(function()
+		if not clickFired then
+			handleClick()
+		end
 	end)
 end
 

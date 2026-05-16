@@ -639,6 +639,11 @@ local function closeShopUI(forceDialogueClose)
 end
 
 local function showFeedback(text, color)
+	local isSuccess = color == FEEDBACK_COLORS.Success
+	if Kit.Feedback:Show(mainFrame, text, isSuccess) then
+		return
+	end
+
 	Kit.Toast:Show(text, color)
 end
 
@@ -1327,6 +1332,7 @@ local function init()
 		isShopOpen           = true
 		setFocusMode(true)
 		Kit.Sound:Play("Open")
+		Kit.Feedback:Clear(mainFrame)
 		gui.Enabled          = true
 		mainFrame.Visible    = false
 		activeCarFocus       = nil
