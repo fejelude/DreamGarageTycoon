@@ -70,6 +70,7 @@ local emptyIndicator = nil
 
 local hiddenGuis = {}
 local hiddenObjects = {}
+local hiddenBonusWidgets = {}
 local btnConnections = {} 
 
 local SHOP_GUIS_WITH_DISABLE_CLEANUP = {
@@ -131,25 +132,73 @@ end
 -- ============================================================================
 -- 👁️ GUI HIDING
 -- ============================================================================
+local function rememberAndHideGiftFocusInstance(instance)
+	if not instance or not instance.Parent or instance == screenGui then
+		return
+	end
+
+	if screenGui and instance:IsDescendantOf(screenGui) then
+		return
+	end
+
+	if hiddenBonusWidgets[instance] then
+		return
+	end
+
+	if instance:IsA("ScreenGui") then
+		if not instance.Enabled then return end
+		hiddenBonusWidgets[instance] = { Enabled = instance.Enabled }
+		instance.Enabled = false
+	elseif instance:IsA("GuiObject") then
+		if not instance.Visible then return end
+		hiddenBonusWidgets[instance] = { Visible = instance.Visible }
+		instance.Visible = false
+	end
+end
+
+local function restoreGiftFocusInstances()
+	for instance, state in pairs(hiddenBonusWidgets) do
+		if instance and instance.Parent then
+			if instance:IsA("ScreenGui") and state.Enabled ~= nil then
+				instance.Enabled = state.Enabled
+			elseif instance:IsA("GuiObject") and state.Visible ~= nil then
+				instance.Visible = state.Visible
+			end
+		end
+	end
+	table.clear(hiddenBonusWidgets)
+	table.clear(hiddenObjects)
+end
+
+local function getBonusScriptContainer(scriptInstance)
+	if not scriptInstance then return nil end
+
+	local current = scriptInstance.Parent
+	local firstGuiObject = nil
+	local firstScreenGui = nil
+
+	while current and current ~= PlayerGui do
+		if current:IsA("GuiObject") then
+			firstGuiObject = current
+		elseif current:IsA("ScreenGui") then
+			firstScreenGui = current
+			break
+		end
+
+		current = current.Parent
+	end
+
+	return firstScreenGui or firstGuiObject
+end
 local function toggleNamedGuiObjects(shouldHide, objectName)
 	if shouldHide then
 		for _, obj in pairs(PlayerGui:GetDescendants()) do
-			if obj:IsA("GuiObject")
-				and obj.Name == objectName
-				and obj.Visible
-				and not obj:IsDescendantOf(screenGui) then
-
-				obj.Visible = false
-				table.insert(hiddenObjects, obj)
+			if obj:IsA("GuiObject") and obj.Name == objectName then
+				rememberAndHideGiftFocusInstance(obj)
 			end
 		end
 	else
-		for _, obj in ipairs(hiddenObjects) do
-			if obj and obj.Parent and obj:IsA("GuiObject") then
-				obj.Visible = true
-			end
-		end
-		table.clear(hiddenObjects)
+		restoreGiftFocusInstances()
 	end
 end
 
@@ -178,27 +227,26 @@ local function toggleDetectedGiftFocusBonusWidgets(shouldHide)
 
 	for _, obj in pairs(PlayerGui:GetDescendants()) do
 		if isGiftFocusBonusWidget(obj) then
-			obj.Visible = false
-			table.insert(hiddenObjects, obj)
+			rememberAndHideGiftFocusInstance(obj)
 		end
 	end
 
 	for scriptName in pairs(GIFT_FOCUS_SCRIPT_NAMES_TO_HIDE) do
 		local scriptInstance = PlayerGui:FindFirstChild(scriptName, true)
-		local parent = scriptInstance and scriptInstance.Parent
-		if parent and parent:IsA("GuiObject") and parent.Visible and not parent:IsDescendantOf(screenGui) then
-			parent.Visible = false
-			table.insert(hiddenObjects, parent)
-		end
+		rememberAndHideGiftFocusInstance(getBonusScriptContainer(scriptInstance))
 	end
 end
 
 local function toggleGiftFocusGuiObjects(shouldHide)
-	for _, objectName in ipairs(GIFT_FOCUS_GUI_OBJECTS_TO_HIDE) do
-		toggleNamedGuiObjects(shouldHide, objectName)
-	end
+	if shouldHide then
+		for _, objectName in ipairs(GIFT_FOCUS_GUI_OBJECTS_TO_HIDE) do
+			toggleNamedGuiObjects(true, objectName)
+		end
 
-	toggleDetectedGiftFocusBonusWidgets(shouldHide)
+		toggleDetectedGiftFocusBonusWidgets(true)
+	else
+		restoreGiftFocusInstances()
+	end
 end
 
 local function toggleOtherGuis(shouldHide)
