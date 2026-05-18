@@ -21,6 +21,8 @@ local pad2 = folder:WaitForChild("Pad2")
 
 local activeTeleports = {}
 
+local DEBOUNCE_TIME = 6
+
 local function createSFXTemplate(name, soundId)
 	local sound = Instance.new("Sound")
 	sound.Name = name
@@ -42,8 +44,8 @@ local function warpPlayer(character, targetPad, soundTemplate)
 	-- 2. Wait exactly 1 second for their screen to become fully black
 	task.wait(1)
 
-	-- SECURITY: Because we yielded (waited), state could have changed. 
-	-- We MUST verify the character still exists and is alive before moving them.
+	-- SECURITY: Because we yielded, state could have changed.
+	-- Verify the character still exists and is alive before moving them.
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 
@@ -85,14 +87,14 @@ local function onPadTouched(hit, sourcePad, targetPad, soundTemplate, isOneWayCh
 		if not activeTeleports[character] then
 			activeTeleports[character] = true
 
-			-- Use task.spawn so the touch event doesn't yield, allowing multiple people to step on it at once
+			-- Use task.spawn so the touch event doesn't yield,
+			-- allowing multiple people to step on it at once.
 			task.spawn(function()
 				warpPlayer(character, targetPad, soundTemplate)
 			end)
 
-			-- Keep the character locked out of triggering another teleport for 2.5 seconds 
-			-- (1s fade out + 1s fade in + 0.5s buffer)
-			task.delay(2.5, function()
+			-- 6 second debounce to prevent repeated teleporting
+			task.delay(DEBOUNCE_TIME, function()
 				activeTeleports[character] = nil
 			end)
 		end
