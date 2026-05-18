@@ -22,6 +22,7 @@ local teleportFunction = ReplicatedStorage:WaitForChild("TeleportToPlaceFunction
 local TELEPORT_BUTTON_NAMES = {
 	"CityTP",
 	"LegendaryShopTP",
+	"LeaderboardTP",
 	"MythicShopTP",
 	"RankTP",
 	"EpicShopTP",

@@ -19,6 +19,7 @@ local VALID_DESTINATIONS = {
 	CityTP = true,
 	EpicShopTP = true,
 	LegendaryShopTP = true,
+	LeaderboardTP = true,
 	MythicShopTP = true,
 	RankTP = true,
 	RareShopTP = true,
