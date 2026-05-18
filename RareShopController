@@ -71,49 +71,23 @@ local isProcessingPurchase = false
 local hiddenGuis = {} 
 local hiddenObjects = {} 
 local currentBlur = nil 
-local feedbackTween = nil 
+local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
 
 -- 🛑 UI REFERENCES
 local function getUI()
 	return gui, mainFrame, mainFrame:WaitForChild("ScrollingFrame"), mainFrame:WaitForChild("TimerLabel"), 
-	mainFrame:WaitForChild("RerollButton"), mainFrame:WaitForChild("CloseButton"), mainFrame:WaitForChild("Indicator-purchase", 5)
+	mainFrame:WaitForChild("RerollButton"), mainFrame:WaitForChild("CloseButton")
 end
 
 -- ============================================================================
 -- 👁️ FEEDBACK LOGIC
 -- ============================================================================
 local function showFeedback(text, color)
-	local _, _, _, _, _, _, indicator = getUI()
-
-	if not indicator then 
-		warn("⚠️ 'Indicator-purchase' not found in MainFrame!") 
-		return 
+	if color == FEEDBACK_COLORS.Success then
+		shopFeedback:Success(text, color)
+	else
+		shopFeedback:Failed(text, color)
 	end
-
-	if feedbackTween then feedbackTween:Cancel() end
-	indicator.Visible = true
-	indicator.TextTransparency = 0
-	indicator.Text = text
-	indicator.TextColor3 = color
-	-- FIX: Sync UIStroke on show
-	local indStroke = indicator:FindFirstChildOfClass("UIStroke")
-	if indStroke then indStroke.Transparency = 0 end
-
-	task.delay(1.5, function()
-		if indicator.Text == text and indicator.Visible then
-			local t = TweenService:Create(indicator, TweenInfo.new(0.5), {TextTransparency = 1})
-			t:Play()
-			feedbackTween = t
-			-- FIX: Fade UIStroke in sync
-			if indStroke then TweenService:Create(indStroke, TweenInfo.new(0.5), {Transparency = 1}):Play() end
-
-			t.Completed:Connect(function()
-				if indicator.TextTransparency >= 0.95 then
-					indicator.Visible = false
-				end
-			end)
-		end
-	end)
 end
 
 -- ============================================================================
@@ -186,9 +160,20 @@ local function setFocusMode(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
 
+	local char = player.Character
 	if char then
 		player:SetAttribute("MovementLock", active)
 	end
+end
+
+
+local function cleanupShopFocus()
+	isProcessingPurchase = false
+	for carName in pairs(purchaseDebounce) do
+		purchaseDebounce[carName] = false
+	end
+	shopFeedback:Clear()
+	setFocusMode(false)
 end
 
 -- ============================================================================
@@ -315,9 +300,9 @@ end
 -- 🚀 INIT & EVENTS
 -- ============================================================================
 local function init()
-	local gui, mainFrame, scrollFrame, timerLabel, rerollBtn, closeBtn, indicatorLabel = getUI()
+	local gui, mainFrame, scrollFrame, timerLabel, rerollBtn, closeBtn = getUI()
 
-	if indicatorLabel then indicatorLabel.Visible = false end
+	shopFeedback:Clear()
 
 	gui.Enabled = false 
 	Kit.Inventory:Init(SHOP_CARS)
@@ -329,8 +314,14 @@ local function init()
 	end)
 
 	Kit.Tween:SetupButton(closeBtn, function() 
-		setFocusMode(false) 
-		gui.Enabled = false 
+		cleanupShopFocus()
+		gui.Enabled = false
+	end)
+
+	gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if not gui.Enabled then
+			cleanupShopFocus()
+		end
 	end)
 
 	for _, carName in ipairs(SHOP_CARS) do

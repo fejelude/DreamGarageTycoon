@@ -9,7 +9,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players           = game:GetService("Players")
-local SoundService      = game:GetService("SoundService")
+local UIAudioConfig    = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- ============================================================
 -- CONSTANTS
@@ -40,7 +40,6 @@ local SHOP_REQUIREMENTS = {
 	Mythic    = "MVP++",
 }
 
-local RESTOCK_AUDIO_ID = "rbxassetid://81822437427070"
 local DISPLAY_TIME     = 6  -- seconds the notification stays visible
 
 -- ============================================================
@@ -104,13 +103,7 @@ local function hasAccessToShop(shopRarity: string): (boolean, string)
 end
 
 local function playRestockSound()
-	local sound              = Instance.new("Sound")
-	sound.SoundId            = RESTOCK_AUDIO_ID
-	sound.Volume             = 1
-	sound.RollOffMaxDistance = 0 -- flat, non-spatial
-	sound.Parent             = SoundService
-	sound:Play()
-	sound.Ended:Once(function() sound:Destroy() end)
+	UIAudioConfig.PlayRestock()
 end
 
 -- ============================================================

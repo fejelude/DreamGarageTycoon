@@ -69,7 +69,31 @@ local detector = nil
 local emptyIndicator = nil 
 
 local hiddenGuis = {}
+local hiddenObjects = {}
+local hiddenBonusWidgets = {}
 local btnConnections = {} 
+
+local SHOP_GUIS_WITH_DISABLE_CLEANUP = {
+	"UncommonShopUi",
+	"RareShopUi",
+	"EpicShopUi",
+}
+
+local GIFT_FOCUS_GUI_OBJECTS_TO_HIDE = {
+	"FriendBoost",
+	"FriendsBoost",
+	"FriendBonus",
+	"FriendsBonus",
+	"PremiumBoost",
+	"PremiumBonus",
+	"Premium",
+}
+
+local GIFT_FOCUS_SCRIPT_NAMES_TO_HIDE = {
+	PremiumBonusClient = true,
+	FriendBonusClient = true,
+}
+
 
 local normalFov = nil
 local openFov = nil
@@ -108,12 +132,133 @@ end
 -- ============================================================================
 -- 👁️ GUI HIDING
 -- ============================================================================
+local function rememberAndHideGiftFocusInstance(instance)
+	if not instance or not instance.Parent or instance == screenGui then
+		return
+	end
+
+	if screenGui and instance:IsDescendantOf(screenGui) then
+		return
+	end
+
+	if hiddenBonusWidgets[instance] then
+		return
+	end
+
+	if instance:IsA("ScreenGui") then
+		if not instance.Enabled then return end
+		hiddenBonusWidgets[instance] = { Enabled = instance.Enabled }
+		instance.Enabled = false
+	elseif instance:IsA("GuiObject") then
+		if not instance.Visible then return end
+		hiddenBonusWidgets[instance] = { Visible = instance.Visible }
+		instance.Visible = false
+	end
+end
+
+local function restoreGiftFocusInstances()
+	for instance, state in pairs(hiddenBonusWidgets) do
+		if instance and instance.Parent then
+			if instance:IsA("ScreenGui") and state.Enabled ~= nil then
+				instance.Enabled = state.Enabled
+			elseif instance:IsA("GuiObject") and state.Visible ~= nil then
+				instance.Visible = state.Visible
+			end
+		end
+	end
+	table.clear(hiddenBonusWidgets)
+	table.clear(hiddenObjects)
+end
+
+local function getBonusScriptContainer(scriptInstance)
+	if not scriptInstance then return nil end
+
+	local current = scriptInstance.Parent
+	local firstGuiObject = nil
+	local firstScreenGui = nil
+
+	while current and current ~= PlayerGui do
+		if current:IsA("GuiObject") then
+			firstGuiObject = current
+		elseif current:IsA("ScreenGui") then
+			firstScreenGui = current
+			break
+		end
+
+		current = current.Parent
+	end
+
+	return firstScreenGui or firstGuiObject
+end
+local function toggleNamedGuiObjects(shouldHide, objectName)
+	if shouldHide then
+		for _, obj in pairs(PlayerGui:GetDescendants()) do
+			if obj:IsA("GuiObject") and obj.Name == objectName then
+				rememberAndHideGiftFocusInstance(obj)
+			end
+		end
+	else
+		restoreGiftFocusInstances()
+	end
+end
+
+
+local function isGiftFocusBonusWidget(obj)
+	if not obj:IsA("GuiObject") or not obj.Visible or obj:IsDescendantOf(screenGui) then
+		return false
+	end
+
+	local lowerName = string.lower(obj.Name)
+	if string.find(lowerName, "premium", 1, true) then
+		return true
+	end
+
+	if string.find(lowerName, "friend", 1, true)
+		and (string.find(lowerName, "boost", 1, true) or string.find(lowerName, "bonus", 1, true)) then
+		return true
+	end
+
+	return obj:FindFirstChild("PremiumBonusClient", true) ~= nil
+		or obj:FindFirstChild("FriendBonusClient", true) ~= nil
+end
+
+local function toggleDetectedGiftFocusBonusWidgets(shouldHide)
+	if not shouldHide then return end
+
+	for _, obj in pairs(PlayerGui:GetDescendants()) do
+		if isGiftFocusBonusWidget(obj) then
+			rememberAndHideGiftFocusInstance(obj)
+		end
+	end
+
+	for scriptName in pairs(GIFT_FOCUS_SCRIPT_NAMES_TO_HIDE) do
+		local scriptInstance = PlayerGui:FindFirstChild(scriptName, true)
+		rememberAndHideGiftFocusInstance(getBonusScriptContainer(scriptInstance))
+	end
+end
+
+local function toggleGiftFocusGuiObjects(shouldHide)
+	if shouldHide then
+		for _, objectName in ipairs(GIFT_FOCUS_GUI_OBJECTS_TO_HIDE) do
+			toggleNamedGuiObjects(true, objectName)
+		end
+
+		toggleDetectedGiftFocusBonusWidgets(true)
+	else
+		restoreGiftFocusInstances()
+	end
+end
+
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
-		if #hiddenGuis > 0 then return end
+		if next(hiddenGuis) ~= nil then return end
 		table.clear(hiddenGuis)
-		for _, gui in pairs(PlayerGui:GetDescendants()) do
-			if gui:IsA("ScreenGui") and gui ~= screenGui and gui.Name ~= "Confirmation" and gui.Enabled then
+		for _, gui in pairs(PlayerGui:GetChildren()) do
+			if gui:IsA("ScreenGui")
+				and gui ~= screenGui
+				and gui.Name ~= "Confirmation"
+				and gui.Enabled then
+
 				gui.Enabled = false
 				hiddenGuis[gui] = true
 			end
@@ -270,6 +415,27 @@ local function ensureEmptyFX(label)
 	EmptyFX = { stroke = stroke, grad = grad, shine = shine }
 end
 
+
+local function closeShopGuisThatRestoreUIOnDisable()
+	local closedAnyShop = false
+
+	for _, shopGuiName in ipairs(SHOP_GUIS_WITH_DISABLE_CLEANUP) do
+		local shopGui = PlayerGui:FindFirstChild(shopGuiName)
+		if shopGui and shopGui:IsA("ScreenGui") and shopGui.Enabled then
+			shopGui.Enabled = false
+			closedAnyShop = true
+		end
+	end
+
+	-- Uncommon/Rare/Epic shop controllers restore their previously hidden UI from
+	-- their Enabled=false cleanup listener. Wait one frame so GiftUI captures and
+	-- hides that restored UI itself, instead of the shop restoring it after the
+	-- gift menu is already open.
+	if closedAnyShop then
+		task.wait()
+	end
+end
+
 -- ============================================================================
 -- 🧠 FOCUS MODE
 -- ============================================================================
@@ -284,12 +450,14 @@ local function setFocusMode(isFocused)
 		screenGui.Enabled = true
 		mainFrame.Visible = true
 		toggleOtherGuis(true)
+		toggleGiftFocusGuiObjects(true)
 		setMovementLocked(true)
 		tweenFov(openFov)
 	else
 		mainFrame.Visible = false
 		screenGui.Enabled = false
 		toggleOtherGuis(false)
+		toggleGiftFocusGuiObjects(false)
 		setMovementLocked(false)
 		tweenFov(normalFov)
 	end
@@ -424,6 +592,7 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 					-- Force cleanup of other GUIs and FOV since setFocusMode(false) 
 					-- would return early now that isMenuOpen is false.
 					toggleOtherGuis(false)
+					toggleGiftFocusGuiObjects(false)
 					setMovementLocked(false)
 					tweenFov(normalFov)
 				end)
@@ -508,6 +677,8 @@ _G.OpenGiftMenu = function(productId)
 	currentProductId = productId
 	SetIndicator("Select a player to gift", Color3.fromRGB(255, 255, 255))
 	UpdateSlots()
+
+	closeShopGuisThatRestoreUIOnDisable()
 
 	playSfx(SFX.Open, 0.5, screenGui)
 	setFocusMode(true)
