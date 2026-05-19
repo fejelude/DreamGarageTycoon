@@ -16,15 +16,22 @@ local REMOTE_FUNCTION_NAME = "TeleportToPlaceFunction"
 local TELEPORT_PARTS_FOLDER_NAME = "TeleportParts"
 
 local VALID_DESTINATIONS = {
+	ATMTP = true,
 	CityTP = true,
 	EpicShopTP = true,
+	GarageTP = true,
 	LegendaryShopTP = true,
 	LeaderboardTP = true,
 	MythicShopTP = true,
 	RankTP = true,
 	RareShopTP = true,
 	SellCarsTP = true,
+	ShopTeleportPoint = true,
 	UncommonShopTP = true,
+}
+
+local FALLBACK_DESTINATION_PART_NAMES = {
+	ATMTP = "ATM-teleport-pad",
 }
 
 local teleportFunction = ReplicatedStorage:WaitForChild(REMOTE_FUNCTION_NAME)
@@ -34,12 +41,22 @@ local function getTeleportPart(destinationName)
 		return nil, "Invalid teleport destination."
 	end
 
+	local destinationPart
+
 	local teleportFolder = Workspace:FindFirstChild(TELEPORT_PARTS_FOLDER_NAME)
-	if not teleportFolder then
-		return nil, "Workspace.TeleportParts folder is missing."
+	if teleportFolder then
+		destinationPart = teleportFolder:FindFirstChild(destinationName)
 	end
 
-	local destinationPart = teleportFolder:FindFirstChild(destinationName)
+	if not destinationPart then
+		local fallbackPartName = FALLBACK_DESTINATION_PART_NAMES[destinationName]
+		if fallbackPartName then
+			destinationPart = Workspace:FindFirstChild(fallbackPartName)
+		end
+	end
+	if not destinationPart then
+		destinationPart = Workspace:FindFirstChild(destinationName)
+	end
 	if not destinationPart then
 		return nil, "Teleport part is missing: " .. destinationName
 	end
@@ -49,6 +66,26 @@ local function getTeleportPart(destinationName)
 	end
 
 	return destinationPart, nil
+end
+
+local function getOwnedPlotSpawnPart(player)
+	local tycoonsFolder = Workspace:FindFirstChild("Tycoons")
+	if not tycoonsFolder then
+		return nil, "Workspace.Tycoons folder is missing."
+	end
+
+	for _, plot in ipairs(tycoonsFolder:GetChildren()) do
+		local ownerValue = plot:FindFirstChild("Owner")
+		if ownerValue and tostring(ownerValue.Value) == player.Name then
+			local spawnPart = plot:FindFirstChild("SpawnPoint")
+			if spawnPart and spawnPart:IsA("BasePart") then
+				return spawnPart, nil
+			end
+			return nil, "Owned plot is missing SpawnPoint."
+		end
+	end
+
+	return nil, "No owned plot found for player."
 end
 
 local function getCharacterParts(player)
@@ -77,8 +114,13 @@ local function getSafeTeleportCFrame(destinationPart, humanoid, rootPart)
 	return destinationPart.CFrame * CFrame.new(0, verticalOffset, 0)
 end
 
-local function getDestinationResponse(destinationName)
-	local destinationPart, destinationErr = getTeleportPart(destinationName)
+local function getDestinationResponse(player, destinationName)
+	local destinationPart, destinationErr
+	if destinationName == "GarageTP" then
+		destinationPart, destinationErr = getOwnedPlotSpawnPart(player)
+	else
+		destinationPart, destinationErr = getTeleportPart(destinationName)
+	end
 	if not destinationPart then
 		return {
 			ok = false,
@@ -93,7 +135,12 @@ local function getDestinationResponse(destinationName)
 end
 
 local function teleportPlayer(player, destinationName)
-	local destinationPart, destinationErr = getTeleportPart(destinationName)
+	local destinationPart, destinationErr
+	if destinationName == "GarageTP" then
+		destinationPart, destinationErr = getOwnedPlotSpawnPart(player)
+	else
+		destinationPart, destinationErr = getTeleportPart(destinationName)
+	end
 	if not destinationPart then
 		return {
 			ok = false,
@@ -129,7 +176,7 @@ teleportFunction.OnServerInvoke = function(player, action, destinationName)
 	end
 
 	if action == "GetDestination" then
-		return getDestinationResponse(destinationName)
+		return getDestinationResponse(player, destinationName)
 	elseif action == "Teleport" then
 		return teleportPlayer(player, destinationName)
 	end

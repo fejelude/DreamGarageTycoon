@@ -2,18 +2,16 @@
 -- Hover/click uses UIScale (always scales from center, no AnchorPoint adjustment needed).
 
 local Players          = game:GetService("Players")
-local Workspace        = game:GetService("Workspace")
 local TweenService     = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UIAudioConfig    = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local teleportFunction = ReplicatedStorage:WaitForChild("TeleportToPlaceFunction")
 
 local player = Players.LocalPlayer
 local button = script.Parent
 
 -- ⚙️ CONFIG
-local TYCOON_FOLDER_NAME = "Tycoons"
-local SPAWN_PART_NAME    = "SpawnPoint"
-local OWNER_VALUE_NAME   = "Owner"
+local DESTINATION_NAME = "GarageTP"
 
 -- ============================================================================
 -- 🎨 HOVER ANIMATION (UIScale — always scales from center)
@@ -71,32 +69,11 @@ end)
 button.MouseButton1Click:Connect(function()
 	UIAudioConfig.PlayClick()
 
-	local tycoonFolder = Workspace:FindFirstChild(TYCOON_FOLDER_NAME)
-	if not tycoonFolder then
-		warn("❌ CRITICAL: Could not find folder named '" .. TYCOON_FOLDER_NAME .. "' in Workspace!")
-		return
-	end
+	local ok, response = pcall(function()
+		return teleportFunction:InvokeServer("Teleport", DESTINATION_NAME)
+	end)
 
-	local foundPlot = nil
-	for _, plot in pairs(tycoonFolder:GetChildren()) do
-		local ownerObj = plot:FindFirstChild(OWNER_VALUE_NAME)
-		if ownerObj and tostring(ownerObj.Value) == player.Name then
-			foundPlot = plot
-			break
-		end
-	end
-
-	if foundPlot then
-		local spawnPart = foundPlot:FindFirstChild(SPAWN_PART_NAME)
-		if spawnPart then
-			local char = player.Character
-			if char then
-				char:PivotTo(spawnPart.CFrame + Vector3.new(0, 5, 0))
-			end
-		else
-			warn("❌ Found your plot (" .. foundPlot.Name .. ") but missing part named '" .. SPAWN_PART_NAME .. "'!")
-		end
-	else
-		warn("❌ SEARCH FAILED: No plot found with Owner = " .. player.Name)
+	if not ok or not (response and response.ok) then
+		warn("❌ Garage teleport failed: " .. tostring(ok and response.message or response))
 	end
 end)

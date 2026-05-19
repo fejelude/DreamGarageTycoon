@@ -3,26 +3,24 @@
 -- ATM Information tooltip matches the Friend Bonus / Premium Bonus buttons.
 
 local Players           = game:GetService("Players")
-local Workspace         = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UIButtonUtils     = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local teleportFunction = ReplicatedStorage:WaitForChild("TeleportToPlaceFunction")
 
 local player = Players.LocalPlayer
 local button = script.Parent
 local information = button:WaitForChild("Information")
 
 -- ⚙️ CONFIG
-local SHOP_PART_NAME = "ATM-teleport-pad"
+local DESTINATION_NAME = "ATMTP"
 
 local function teleportToATM()
-	local shopPart = Workspace:FindFirstChild(SHOP_PART_NAME)
-	if shopPart then
-		local char = player.Character
-		if char then
-			char:PivotTo(shopPart.CFrame + Vector3.new(0, 3, 0))
-		end
-	else
-		warn("❌ Teleport Target '" .. SHOP_PART_NAME .. "' not found in Workspace!")
+	local ok, response = pcall(function()
+		return teleportFunction:InvokeServer("Teleport", DESTINATION_NAME)
+	end)
+
+	if not ok or not (response and response.ok) then
+		warn("❌ ATM teleport failed: " .. tostring(ok and response.message or response))
 	end
 end
 
