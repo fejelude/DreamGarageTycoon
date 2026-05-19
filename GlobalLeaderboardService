@@ -1,0 +1,536 @@
+-- ============================================================================
+-- GlobalLeaderboardService (Script)
+-- Location: ServerScriptService
+-- Purpose: Publishes each player's total garage earnings per second to a global
+--          OrderedDataStore and renders the top 50 earners on the world
+--          leaderboard stand.
+-- Dependencies: Workspace.Tycoons, Workspace.LeaderboardFunction.LeaderboardStand.Leaderboard.LeaderboardGui.MainFrame.LeaderboardScrollingFrame.Template
+-- DataStores: DreamGarageGlobalEarningsPerSecond_V1 (OrderedDataStore),
+--             DreamGarageGlobalEarningsProfiles_V1 (DataStore)
+-- Notes: The leaderboard is based on plot.CurrentCPS, which TycoonEconomy sets
+--        from the player's entire active garage after earnings multipliers and
+--        before temporary AFK payout doubling.
+-- ============================================================================
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local DataStoreService = game:GetService("DataStoreService")
+local LocalizationService = game:GetService("LocalizationService")
+
+local TYCOON_FOLDER_NAME = "Tycoons"
+local LEADERBOARD_ROOT_NAME = "LeaderboardFunction"
+local LEADERBOARD_SIZE = 50
+local SAVE_INTERVAL_SECONDS = 30
+local GLOBAL_FETCH_INTERVAL_SECONDS = 30
+local RENDER_INTERVAL_SECONDS = 5
+local PROFILE_CACHE_SECONDS = 300
+local MAX_ORDERED_VALUE = 9000000000000000000
+
+local EARNINGS_STORE_NAME = "DreamGarageGlobalEarningsPerSecond_V1"
+local PROFILE_STORE_NAME = "DreamGarageGlobalEarningsProfiles_V1"
+
+local TOP_THREE_COLORS = {
+	[1] = Color3.fromRGB(0, 255, 255), -- aqua
+	[2] = Color3.fromRGB(255, 215, 0), -- gold
+	[3] = Color3.fromRGB(205, 127, 50), -- bronze
+}
+
+local VACANT_USERNAME = "Vacant"
+local VACANT_EARNINGS = ""
+local VACANT_FLAG = ""
+local VACANT_IMAGE = ""
+
+local TycoonFolder = Workspace:WaitForChild(TYCOON_FOLDER_NAME)
+local earningsStore = DataStoreService:GetOrderedDataStore(EARNINGS_STORE_NAME)
+local profileStore = DataStoreService:GetDataStore(PROFILE_STORE_NAME)
+
+local playerStates = {}
+local profileCache = {}
+local thumbnailCache = {}
+local defaultColors = nil
+local slots = {}
+local templateFrame = nil
+local dirtyRender = true
+local storedEntriesByUserId = {}
+
+-- Roblox country regions are ISO 3166-1 alpha-2 codes. Regional indicator emoji
+-- are built by offsetting each letter from the regional-indicator base codepoint.
+local function countryCodeToFlag(countryCode)
+	countryCode = tostring(countryCode or ""):upper()
+	if #countryCode ~= 2 then
+		return ""
+	end
+
+	local first = countryCode:byte(1)
+	local second = countryCode:byte(2)
+	if first < 65 or first > 90 or second < 65 or second > 90 then
+		return ""
+	end
+
+	local base = 0x1F1E6 - 65
+	return utf8.char(base + first) .. utf8.char(base + second)
+end
+
+local function getCountryFlag(player)
+	local ok, countryCode = pcall(function()
+		return LocalizationService:GetCountryRegionForPlayerAsync(player)
+	end)
+
+	if ok then
+		return countryCodeToFlag(countryCode)
+	end
+
+	return ""
+end
+
+local SUFFIXES = {
+	"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc",
+	"Ud", "Dd", "Td", "Qad", "Qid", "Sxd", "Spd", "Ocd", "Nod", "Vg",
+}
+
+local function trimTrailingZeros(text)
+	text = text:gsub("(%..-)0+$", "%1")
+	text = text:gsub("%.$", "")
+	return text
+end
+
+local function formatCompactNumber(value)
+	value = tonumber(value) or 0
+	if value < 0 then
+		value = 0
+	end
+
+	if value < 1000 then
+		return tostring(math.floor(value))
+	end
+
+	local suffixIndex = math.floor(math.log(value, 1000))
+	local suffix = SUFFIXES[suffixIndex]
+	if not suffix then
+		return string.format("%.2e", value)
+	end
+
+	local divisor = 1000 ^ suffixIndex
+	local compact = value / divisor
+	local decimals = compact >= 100 and 0 or (compact >= 10 and 1 or 2)
+	local formatString = "%0." .. decimals .. "f"
+
+	return trimTrailingZeros(string.format(formatString, compact)) .. suffix
+end
+
+local function formatEarningsPerSecond(value)
+	return formatCompactNumber(value) .. "/s"
+end
+
+local function getLeaderboardContainer()
+	local root = Workspace:WaitForChild(LEADERBOARD_ROOT_NAME, 30)
+	if not root then return nil end
+
+	local stand = root:WaitForChild("LeaderboardStand", 30)
+	local board = stand and stand:WaitForChild("Leaderboard", 30)
+	local gui = board and board:WaitForChild("LeaderboardGui", 30)
+	local mainFrame = gui and gui:WaitForChild("MainFrame", 30)
+	return mainFrame and mainFrame:WaitForChild("LeaderboardScrollingFrame", 30)
+end
+
+local function setLabelText(frame, childName, text)
+	local child = frame:FindFirstChild(childName)
+	if child and child:IsA("TextLabel") then
+		child.Text = text
+	end
+end
+
+local function setLabelColor(frame, childName, color)
+	local child = frame:FindFirstChild(childName)
+	if child and child:IsA("TextLabel") then
+		child.TextColor3 = color
+	end
+end
+
+local function setProfileImage(frame, image)
+	local child = frame:FindFirstChild("ProfileImage")
+	if child and child:IsA("ImageLabel") then
+		child.Image = image
+	end
+end
+
+local function captureDefaultColors(frame)
+	defaultColors = {
+		Rank = frame:FindFirstChild("Rank") and frame.Rank:IsA("TextLabel") and frame.Rank.TextColor3 or Color3.fromRGB(255, 255, 255),
+		Username = frame:FindFirstChild("Username") and frame.Username:IsA("TextLabel") and frame.Username.TextColor3 or Color3.fromRGB(255, 255, 255),
+	}
+end
+
+local function ensureSlots()
+	if templateFrame then
+		return true
+	end
+
+	local container = getLeaderboardContainer()
+	if not container then
+		warn("[GlobalLeaderboardService] Leaderboard scrolling frame was not found.")
+		return false
+	end
+
+	templateFrame = container:WaitForChild("Template", 30)
+	if not templateFrame then
+		warn("[GlobalLeaderboardService] Template frame was not found.")
+		return false
+	end
+
+	captureDefaultColors(templateFrame)
+	templateFrame.Visible = true
+	templateFrame.LayoutOrder = 1
+	slots[1] = templateFrame
+
+	for _, child in ipairs(container:GetChildren()) do
+		if child:IsA("Frame") and child.Name:match("^LeaderboardEntry_%d+$") and child ~= templateFrame then
+			child:Destroy()
+		end
+	end
+
+	for rank = 2, LEADERBOARD_SIZE do
+		local clone = templateFrame:Clone()
+		clone.Name = string.format("LeaderboardEntry_%02d", rank)
+		clone.LayoutOrder = rank
+		clone.Parent = container
+		slots[rank] = clone
+	end
+
+	return true
+end
+
+local function getHeadshot(userId)
+	userId = tonumber(userId)
+	if not userId then return "" end
+
+	if thumbnailCache[userId] then
+		return thumbnailCache[userId]
+	end
+
+	local ok, content = pcall(function()
+		local image = Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+		return image
+	end)
+
+	if ok and content then
+		thumbnailCache[userId] = content
+		return content
+	end
+
+	return ""
+end
+
+local function getUsername(userId, fallbackUsername)
+	if fallbackUsername and fallbackUsername ~= "" then
+		return fallbackUsername
+	end
+
+	local ok, username = pcall(function()
+		return Players:GetNameFromUserIdAsync(userId)
+	end)
+
+	if ok and username then
+		return username
+	end
+
+	return "User " .. tostring(userId)
+end
+
+local function getProfile(userId)
+	userId = tonumber(userId)
+	if not userId then
+		return nil
+	end
+
+	local now = os.time()
+	local cached = profileCache[userId]
+	if cached and (now - cached.cachedAt) < PROFILE_CACHE_SECONDS then
+		return cached.data
+	end
+
+	local data = nil
+	local ok, result = pcall(function()
+		return profileStore:GetAsync(tostring(userId))
+	end)
+	if ok and type(result) == "table" then
+		data = result
+	else
+		data = {}
+	end
+
+	data.UserId = userId
+	data.Username = getUsername(userId, data.Username)
+	data.Flag = tostring(data.Flag or "")
+	data.ProfileImage = data.ProfileImage or getHeadshot(userId)
+
+	profileCache[userId] = {
+		cachedAt = now,
+		data = data,
+	}
+
+	return data
+end
+
+local function saveProfile(player, flag)
+	local data = {
+		UserId = player.UserId,
+		Username = player.Name,
+		Flag = flag or "",
+		ProfileImage = getHeadshot(player.UserId),
+		UpdatedAt = os.time(),
+	}
+
+	profileCache[player.UserId] = {
+		cachedAt = os.time(),
+		data = data,
+	}
+
+	local ok, err = pcall(function()
+		profileStore:SetAsync(tostring(player.UserId), data)
+	end)
+	if not ok then
+		warn("[GlobalLeaderboardService] Failed to save profile for " .. player.Name .. ": " .. tostring(err))
+	end
+end
+
+local function clampOrderedValue(value)
+	value = math.floor(tonumber(value) or 0)
+	if value < 0 then return 0 end
+	if value > MAX_ORDERED_VALUE then return MAX_ORDERED_VALUE end
+	return value
+end
+
+local function savePlayerEarnings(player, force)
+	local state = playerStates[player]
+	if not state then return end
+
+	local now = os.clock()
+	if not force and now - state.lastSavedAt < SAVE_INTERVAL_SECONDS then
+		return
+	end
+
+	state.lastSavedAt = now
+	local score = clampOrderedValue(state.cps)
+	local ok, err = pcall(function()
+		earningsStore:SetAsync(tostring(player.UserId), score)
+	end)
+
+	if ok then
+		dirtyRender = true
+	else
+		warn("[GlobalLeaderboardService] Failed to save earnings for " .. player.Name .. ": " .. tostring(err))
+	end
+end
+
+local function getPlayerPlot(player)
+	local occupiedPlot = player:GetAttribute("OccupiedPlot")
+	if occupiedPlot then
+		local plot = TycoonFolder:FindFirstChild(tostring(occupiedPlot))
+		if plot then return plot end
+	end
+
+	for _, plot in ipairs(TycoonFolder:GetChildren()) do
+		local owner = plot:FindFirstChild("Owner")
+		if owner and owner.Value == player.Name then
+			return plot
+		end
+	end
+
+	return nil
+end
+
+local function bindPlotCPS(player, plot)
+	local state = playerStates[player]
+	if not state or state.plot == plot then return end
+
+	if state.cpsConnection then
+		state.cpsConnection:Disconnect()
+		state.cpsConnection = nil
+	end
+
+	state.plot = plot
+	local function updateCPS()
+		state.cps = tonumber(plot:GetAttribute("CurrentCPS")) or 0
+		player:SetAttribute("LeaderboardEarningsPerSecond", state.cps)
+		dirtyRender = true
+		savePlayerEarnings(player, false)
+	end
+
+	state.cpsConnection = plot:GetAttributeChangedSignal("CurrentCPS"):Connect(updateCPS)
+	updateCPS()
+end
+
+local function watchPlayerPlot(player)
+	task.spawn(function()
+		while player.Parent do
+			local plot = getPlayerPlot(player)
+			if plot then
+				bindPlotCPS(player, plot)
+			end
+			task.wait(5)
+		end
+	end)
+end
+
+local function refreshStoredEntries()
+	local refreshedEntries = {}
+	local ok, pages = pcall(function()
+		return earningsStore:GetSortedAsync(false, LEADERBOARD_SIZE)
+	end)
+
+	if ok and pages then
+		local page = pages:GetCurrentPage()
+		for _, item in ipairs(page) do
+			local userId = tonumber(item.key)
+			local score = tonumber(item.value) or 0
+			if userId and score > 0 then
+				refreshedEntries[userId] = score
+			end
+		end
+		storedEntriesByUserId = refreshedEntries
+	else
+		warn("[GlobalLeaderboardService] Failed to read global leaderboard: " .. tostring(pages))
+	end
+end
+
+local function getOrderedEntries()
+	local entriesByUserId = {}
+
+	for userId, score in pairs(storedEntriesByUserId) do
+		entriesByUserId[userId] = score
+	end
+
+	for player, state in pairs(playerStates) do
+		if player.Parent and (state.cps or 0) > 0 then
+			entriesByUserId[player.UserId] = math.max(entriesByUserId[player.UserId] or 0, state.cps)
+		end
+	end
+
+	local entries = {}
+	for userId, score in pairs(entriesByUserId) do
+		table.insert(entries, {
+			UserId = userId,
+			Score = score,
+		})
+	end
+
+	table.sort(entries, function(a, b)
+		if a.Score == b.Score then
+			return a.UserId < b.UserId
+		end
+		return a.Score > b.Score
+	end)
+
+	while #entries > LEADERBOARD_SIZE do
+		table.remove(entries)
+	end
+
+	return entries
+end
+
+local function renderSlot(rank, entry)
+	local slot = slots[rank]
+	if not slot then return end
+
+	local color = entry and TOP_THREE_COLORS[rank]
+	local rankColor = color or defaultColors.Rank
+	local usernameColor = color or defaultColors.Username
+
+	setLabelColor(slot, "Rank", rankColor)
+	setLabelColor(slot, "Username", usernameColor)
+	setLabelText(slot, "Rank", "#" .. tostring(rank))
+
+	if entry then
+		local profile = getProfile(entry.UserId) or {}
+		setProfileImage(slot, profile.ProfileImage or getHeadshot(entry.UserId))
+		setLabelText(slot, "Earnings", formatEarningsPerSecond(entry.Score))
+		setLabelText(slot, "Flag", profile.Flag or "")
+		setLabelText(slot, "Username", profile.Username or getUsername(entry.UserId))
+	else
+		setProfileImage(slot, VACANT_IMAGE)
+		setLabelText(slot, "Earnings", VACANT_EARNINGS)
+		setLabelText(slot, "Flag", VACANT_FLAG)
+		setLabelText(slot, "Username", VACANT_USERNAME)
+	end
+end
+
+local function renderLeaderboard()
+	if not ensureSlots() then
+		return
+	end
+
+	local entries = getOrderedEntries()
+	for rank = 1, LEADERBOARD_SIZE do
+		renderSlot(rank, entries[rank])
+	end
+
+	dirtyRender = false
+end
+
+local function setupPlayer(player)
+	local flag = getCountryFlag(player)
+	playerStates[player] = {
+		cps = 0,
+		lastSavedAt = -SAVE_INTERVAL_SECONDS,
+		flag = flag,
+	}
+
+	saveProfile(player, flag)
+	watchPlayerPlot(player)
+	dirtyRender = true
+end
+
+local function cleanupPlayer(player)
+	savePlayerEarnings(player, true)
+
+	local state = playerStates[player]
+	if state and state.cpsConnection then
+		state.cpsConnection:Disconnect()
+	end
+	playerStates[player] = nil
+	dirtyRender = true
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	setupPlayer(player)
+end
+Players.PlayerAdded:Connect(setupPlayer)
+Players.PlayerRemoving:Connect(cleanupPlayer)
+
+TycoonFolder.ChildAdded:Connect(function(plot)
+	plot:GetAttributeChangedSignal("CurrentCPS"):Connect(function()
+		dirtyRender = true
+	end)
+end)
+
+-- Prime UI once the stand exists, refresh local changes quickly, and pull other
+-- servers' latest OrderedDataStore writes on a conservative interval.
+task.spawn(function()
+	local lastGlobalFetch = -GLOBAL_FETCH_INTERVAL_SECONDS
+	while true do
+		local now = os.clock()
+		if now - lastGlobalFetch >= GLOBAL_FETCH_INTERVAL_SECONDS then
+			lastGlobalFetch = now
+			refreshStoredEntries()
+			dirtyRender = true
+		end
+
+		if dirtyRender then
+			renderLeaderboard()
+		end
+
+		task.wait(RENDER_INTERVAL_SECONDS)
+	end
+end)
+
+-- Save online player scores on a fixed cadence even if CurrentCPS changed during
+-- the debounce window.
+task.spawn(function()
+	while true do
+		task.wait(SAVE_INTERVAL_SECONDS)
+		for player in pairs(playerStates) do
+			savePlayerEarnings(player, true)
+		end
+	end
+end)
