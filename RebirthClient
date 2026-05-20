@@ -48,6 +48,9 @@ local OPEN_FOV = 50
 local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
 local savedFOV = camera.FieldOfView
 local rebirthScreenGui = rebirthGui:IsA("ScreenGui") and rebirthGui or rebirthGui:FindFirstAncestorWhichIsA("ScreenGui")
+local progressDefaultSize = progressFrame.Size
+local progressTween = nil
+local labelState = {}
 
 local function formatMoney(n)
 	local suffixes = {"", "K", "M", "B", "T", "Q"}
@@ -61,18 +64,46 @@ end
 local function showState(label, text)
 	failedLabel.Visible = false
 	successLabel.Visible = false
-	label.Text = text
-	label.TextTransparency = 1
+
+	local state = labelState[label]
+	if not state then
+		state = {baseText = nil, count = 0, hideToken = 0, fadeTween = nil, strokeTween = nil}
+		labelState[label] = state
+	end
+
+	if state.baseText == text then
+		state.count += 1
+	else
+		state.baseText = text
+		state.count = 1
+	end
+
+	local displayText = text .. " x" .. tostring(state.count)
+	label.Text = displayText
 	label.Visible = true
 	local stroke = label:FindFirstChildOfClass("UIStroke")
-	if stroke then stroke.Transparency = 1 end
-	TweenService:Create(label, TweenInfo.new(0.3), {TextTransparency = 0}):Play()
-	if stroke then TweenService:Create(stroke, TweenInfo.new(0.3), {Transparency = 0}):Play() end
+	if state.fadeTween then state.fadeTween:Cancel() end
+	if state.strokeTween then state.strokeTween:Cancel() end
+
+	label.TextTransparency = 0
+	if stroke then stroke.Transparency = 0 end
+
+	state.hideToken += 1
+	local token = state.hideToken
 	task.delay(1.5, function()
-		local out = TweenService:Create(label, TweenInfo.new(0.5), {TextTransparency = 1})
-		out:Play()
-		if stroke then TweenService:Create(stroke, TweenInfo.new(0.5), {Transparency = 1}):Play() end
-		out.Completed:Connect(function() label.Visible = false end)
+		if not label.Parent or token ~= state.hideToken then return end
+		state.fadeTween = TweenService:Create(label, TweenInfo.new(0.5), {TextTransparency = 1})
+		state.fadeTween:Play()
+		if stroke then
+			state.strokeTween = TweenService:Create(stroke, TweenInfo.new(0.5), {Transparency = 1})
+			state.strokeTween:Play()
+		end
+		state.fadeTween.Completed:Connect(function()
+			if token ~= state.hideToken then return end
+			label.Visible = false
+			state.baseText = nil
+			state.count = 0
+		end)
 	end)
 end
 
@@ -98,9 +129,15 @@ local function applySnapshot(snapshot)
 	local current = snapshot.CurrentCash or 0
 	local ratio = required <= 0 and 1 or math.clamp(current / required, 0, 1)
 	progressText.Text = "Cash: " .. formatMoney(current) .. " / " .. formatMoney(required)
-	TweenService:Create(progressFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		Size = UDim2.new(ratio, 0, progressFrame.Size.Y.Scale, progressFrame.Size.Y.Offset)
-	}):Play()
+	if progressTween then progressTween:Cancel() end
+	local targetSize
+	if ratio >= 1 then
+		targetSize = UDim2.new(1, 0, progressDefaultSize.Y.Scale, progressDefaultSize.Y.Offset)
+	else
+		targetSize = UDim2.new(ratio, 0, progressDefaultSize.Y.Scale, progressDefaultSize.Y.Offset)
+	end
+	progressTween = TweenService:Create(progressFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = targetSize})
+	progressTween:Play()
 
 	rebirthButton.Active = not maxed
 	skipRebirthButton.Active = not maxed
@@ -187,6 +224,13 @@ UIButtonUtils.SetupButton(exitButton, function()
 end)
 
 UIButtonUtils.SetupButton(rebirthButton, function()
+	local currentRebirth = tonumber(player:GetAttribute("Rebirth")) or 0
+	if currentRebirth >= RebirthConfig.MAX_REBIRTH then
+		showState(failedLabel, "You’ve already reached the max rebirth.")
+		refresh()
+		return
+	end
+
 	local ok, success, msg, snapshot = pcall(function()
 		return requestRebirth:InvokeServer("CashRebirth")
 	end)
@@ -194,7 +238,11 @@ UIButtonUtils.SetupButton(rebirthButton, function()
 		showState(successLabel, msg)
 		if snapshot then applySnapshot(snapshot) else refresh() end
 	else
-		showState(failedLabel, (msg or "Failed: Not enough cash to rebirth."))
+		local failText = msg or "Not enough cash to rebirth."
+		if failText == "Failed: Not enough cash to rebirth." then
+			failText = "Not enough cash to rebirth."
+		end
+		showState(failedLabel, failText)
 		refresh()
 	end
 end)

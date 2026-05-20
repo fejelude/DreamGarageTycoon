@@ -51,7 +51,7 @@ requestRebirth.OnServerInvoke = function(player, action)
 
 	local rebirth = getRebirth(player)
 	if rebirth >= RebirthConfig.MAX_REBIRTH then
-		return false, "Max rebirth reached."
+		return false, "You’ve already reached the max rebirth."
 	end
 
 	local walletValue = getWalletValue(player)
