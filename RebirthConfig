@@ -1,0 +1,60 @@
+-- Purpose: Shared config for the Rebirth system (prices + skip product mapping).
+-- Runs on: Server/Client (ModuleScript in ReplicatedStorage recommended)
+
+local RebirthConfig = {}
+
+RebirthConfig.MAX_REBIRTH = 18
+
+-- Balanced curve: early = accessible, middle = grindy, late = endgame.
+RebirthConfig.Costs = {
+	[1] = 1e6,
+	[2] = 5e6,
+	[3] = 2e7,
+	[4] = 8e7,
+	[5] = 2.5e8,
+	[6] = 7.5e8,
+	[7] = 2e9,
+	[8] = 5e9,
+	[9] = 1.2e10,
+	[10] = 3e10,
+	[11] = 8e10,
+	[12] = 2e11,
+	[13] = 5e11,
+	[14] = 1.2e12,
+	[15] = 3e12,
+	[16] = 7e12,
+	[17] = 1.6e13,
+	[18] = 3.5e13,
+}
+
+-- Current rebirth -> product id to skip to next rebirth.
+RebirthConfig.SkipProductIds = {
+	[0] = 3595567184,
+	[1] = 3595567905,
+	[2] = 3595568258,
+	[3] = 3595568576,
+	[4] = 3595569060,
+	[5] = 3595569320,
+	[6] = 3595569575,
+	[7] = 3595569852,
+	[8] = 3595570124,
+	[9] = 3595570363,
+	[10] = 3595571397,
+	[11] = 3595571632,
+	[12] = 3595571825,
+	[13] = 3595572076,
+	[14] = 3595572270,
+	[15] = 3595572459,
+	[16] = 3595572716,
+	[17] = 3595572956,
+}
+
+function RebirthConfig.GetCost(nextRebirth)
+	return RebirthConfig.Costs[nextRebirth] or math.huge
+end
+
+function RebirthConfig.GetMultiplier(rebirth)
+	return (tonumber(rebirth) or 0) + 1
+end
+
+return RebirthConfig
