@@ -43,6 +43,7 @@ local remotes = ReplicatedStorage:WaitForChild("RebirthRemotes")
 local requestRebirth = remotes:WaitForChild("RequestRebirth")
 local refreshEvent = remotes:WaitForChild("RefreshRebirthUI")
 local isOpen = false
+local skipPromptInFlight = false
 local hiddenGuis = {}
 local OPEN_FOV = 50
 local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
@@ -257,6 +258,8 @@ UIButtonUtils.SetupButton(rebirthButton, function()
 end)
 
 UIButtonUtils.SetupButton(skipRebirthButton, function()
+	if skipPromptInFlight then return end
+
 	local current = tonumber(player:GetAttribute("Rebirth")) or 0
 	if current >= RebirthConfig.MAX_REBIRTH then
 		showState(failedLabel, "You’ve already reached the max rebirth.")
@@ -265,10 +268,18 @@ UIButtonUtils.SetupButton(skipRebirthButton, function()
 	end
 	local productId = RebirthConfig.SkipProductIds[current]
 	if productId then
+		skipPromptInFlight = true
 		UIAudioConfig.ShowPurchaseLoading()
 		UIAudioConfig.PlayRobux()
 		MarketplaceService:PromptProductPurchase(player, productId)
 	end
+end)
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, _productId, _wasPurchased)
+	if userId ~= player.UserId then return end
+	if not skipPromptInFlight then return end
+	skipPromptInFlight = false
+	refresh()
 end)
 
 refreshEvent.OnClientEvent:Connect(refresh)
