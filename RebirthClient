@@ -113,7 +113,7 @@ local function applySnapshot(snapshot)
 	local maxed = snapshot.Maxed == true
 	if maxed then
 		currentRebirthLabel.Text = "Rebirth: 18 (MAX)"
-		nextRebirthLabel.Text = "Rebirth 18"
+		nextRebirthLabel.Text = "Rebirth 19 (Coming Soon)"
 		headerLabel.Text = "Rebirth 18"
 		currentMultiplierLabel.Text = "x18 (MAX)"
 		nextMultiplierLabel.Text = "x18 (More coming soon)"
@@ -128,14 +128,20 @@ local function applySnapshot(snapshot)
 	local required = snapshot.RequiredCash or 0
 	local current = snapshot.CurrentCash or 0
 	local ratio = required <= 0 and 1 or math.clamp(current / required, 0, 1)
-	progressText.Text = "Cash: " .. formatMoney(current) .. " / " .. formatMoney(required)
+	if maxed then
+		progressText.Text = "Cash: " .. formatMoney(current) .. " / --"
+	else
+		progressText.Text = "Cash: " .. formatMoney(current) .. " / " .. formatMoney(required)
+	end
 	if progressTween then progressTween:Cancel() end
 	local targetSize
-	if ratio >= 1 then
-		targetSize = UDim2.new(1, 0, progressDefaultSize.Y.Scale, progressDefaultSize.Y.Offset)
-	else
-		targetSize = UDim2.new(ratio, 0, progressDefaultSize.Y.Scale, progressDefaultSize.Y.Offset)
-	end
+	local clampedRatio = math.clamp(ratio, 0, 1)
+	targetSize = UDim2.new(
+		progressDefaultSize.X.Scale * clampedRatio,
+		math.floor(progressDefaultSize.X.Offset * clampedRatio),
+		progressDefaultSize.Y.Scale,
+		progressDefaultSize.Y.Offset
+	)
 	progressTween = TweenService:Create(progressFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = targetSize})
 	progressTween:Play()
 
