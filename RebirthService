@@ -1,0 +1,77 @@
+-- Purpose: Server authority for rebirth progression + cash-deduct rebirth flow.
+-- Location: ServerScriptService > RebirthService
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
+local remotes = ReplicatedStorage:WaitForChild("RebirthRemotes")
+local requestRebirth = remotes:WaitForChild("RequestRebirth")
+local refreshEvent = remotes:WaitForChild("RefreshRebirthUI")
+
+local function getWalletValue(player)
+	local leaderstats = player:FindFirstChild("leaderstats")
+	return leaderstats and leaderstats:FindFirstChild("Wallet")
+end
+
+local function getRebirth(player)
+	return math.clamp(math.floor(tonumber(player:GetAttribute("Rebirth")) or 0), 0, RebirthConfig.MAX_REBIRTH)
+end
+
+local function setRebirth(player, newRebirth)
+	local clamped = math.clamp(math.floor(tonumber(newRebirth) or 0), 0, RebirthConfig.MAX_REBIRTH)
+	player:SetAttribute("Rebirth", clamped)
+	player:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(clamped))
+	refreshEvent:FireClient(player)
+end
+
+local function getSnapshot(player)
+	local walletValue = getWalletValue(player)
+	local rebirth = getRebirth(player)
+	local nextRebirth = math.min(rebirth + 1, RebirthConfig.MAX_REBIRTH)
+	return {
+		CurrentRebirth = rebirth,
+		NextRebirth = nextRebirth,
+		CurrentMultiplier = RebirthConfig.GetMultiplier(rebirth),
+		NextMultiplier = RebirthConfig.GetMultiplier(nextRebirth),
+		RequiredCash = rebirth >= RebirthConfig.MAX_REBIRTH and 0 or RebirthConfig.GetCost(rebirth + 1),
+		CurrentCash = walletValue and walletValue.Value or 0,
+		Maxed = rebirth >= RebirthConfig.MAX_REBIRTH,
+	}
+end
+
+requestRebirth.OnServerInvoke = function(player, action)
+	if action == "Snapshot" then
+		return true, getSnapshot(player)
+	end
+
+	if action ~= "CashRebirth" then
+		return false, "Invalid action."
+	end
+
+	local rebirth = getRebirth(player)
+	if rebirth >= RebirthConfig.MAX_REBIRTH then
+		return false, "You’ve already reached the max rebirth."
+	end
+
+	local walletValue = getWalletValue(player)
+	if not walletValue then
+		return false, "Wallet data unavailable."
+	end
+
+	local required = RebirthConfig.GetCost(rebirth + 1)
+	if walletValue.Value < required then
+		return false, "Failed: Not enough cash to rebirth."
+	end
+
+	walletValue.Value -= required
+	setRebirth(player, rebirth + 1)
+	return true, "Success: You rebirthed to Rebirth " .. tostring(rebirth + 1) .. ".", getSnapshot(player)
+end
+
+Players.PlayerAdded:Connect(function(player)
+	if player:GetAttribute("Rebirth") == nil then
+		player:SetAttribute("Rebirth", 0)
+	end
+	player:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(getRebirth(player)))
+end)

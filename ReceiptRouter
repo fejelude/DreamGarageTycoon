@@ -23,6 +23,7 @@ local ActivePurchaseHistory = nil
 local TABLET_2X_ID = 3509697462
 local SHOP_REROLL_ID = 3520990584
 local BANK_TRANSFER_SKIP_ID = 3591736957
+local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 
 local BANK_TRANSFER_USED_ATTR = "BankTransferLimitUsed"
 local BANK_TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
@@ -358,7 +359,16 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			end
 		end
 
-		-- ─── 2X TABLET ───────────────────────────────────────────────────────────
+	-- ─── REBIRTH SKIP PRODUCTS ────────────────────────────────────────────────
+	elseif RebirthConfig.SkipProductIds[math.floor(tonumber(targetPlayer:GetAttribute("Rebirth")) or 0)] == pid then
+		local currentRebirth = math.floor(tonumber(targetPlayer:GetAttribute("Rebirth")) or 0)
+		if currentRebirth < RebirthConfig.MAX_REBIRTH then
+			targetPlayer:SetAttribute("Rebirth", currentRebirth + 1)
+			targetPlayer:SetAttribute("RebirthMultiplier", (currentRebirth + 1) + 1)
+			purchaseSuccess = true
+		end
+
+	-- ─── 2X TABLET ───────────────────────────────────────────────────────────
 	elseif pid == TABLET_2X_ID then
 		local myPlotName = targetPlayer:GetAttribute("OccupiedPlot")
 		local plot = myPlotName and TycoonFolder:FindFirstChild(myPlotName)
