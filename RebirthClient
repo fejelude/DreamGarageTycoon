@@ -79,11 +79,20 @@ end
 local function applySnapshot(snapshot)
 	local rebirth = snapshot.CurrentRebirth or 0
 	local nextRebirth = snapshot.NextRebirth or math.min(rebirth + 1, RebirthConfig.MAX_REBIRTH)
-	currentRebirthLabel.Text = "Rebirth " .. rebirth
-	nextRebirthLabel.Text = "Rebirth " .. nextRebirth
-	headerLabel.Text = "Rebirth " .. rebirth
-	currentMultiplierLabel.Text = "x" .. tostring(snapshot.CurrentMultiplier or (rebirth + 1))
-	nextMultiplierLabel.Text = "x" .. tostring(snapshot.NextMultiplier or (nextRebirth + 1))
+	local maxed = snapshot.Maxed == true
+	if maxed then
+		currentRebirthLabel.Text = "Rebirth: 18 (MAX)"
+		nextRebirthLabel.Text = "Rebirth 18"
+		headerLabel.Text = "Rebirth 18"
+		currentMultiplierLabel.Text = "x18 (MAX)"
+		nextMultiplierLabel.Text = "x18 (More coming soon)"
+	else
+		currentRebirthLabel.Text = "Rebirth " .. rebirth
+		nextRebirthLabel.Text = "Rebirth " .. nextRebirth
+		headerLabel.Text = "Rebirth " .. rebirth
+		currentMultiplierLabel.Text = "x" .. tostring(snapshot.CurrentMultiplier or (rebirth + 1))
+		nextMultiplierLabel.Text = "x" .. tostring(snapshot.NextMultiplier or (nextRebirth + 1))
+	end
 
 	local required = snapshot.RequiredCash or 0
 	local current = snapshot.CurrentCash or 0
@@ -93,7 +102,6 @@ local function applySnapshot(snapshot)
 		Size = UDim2.new(ratio, 0, progressFrame.Size.Y.Scale, progressFrame.Size.Y.Offset)
 	}):Play()
 
-	local maxed = snapshot.Maxed == true
 	rebirthButton.Active = not maxed
 	skipRebirthButton.Active = not maxed
 end
