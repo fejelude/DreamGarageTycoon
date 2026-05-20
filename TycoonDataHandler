@@ -839,6 +839,7 @@ local function save(player, isClosing)
 
 		local currentTransferUsed = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitUsed")) or 0))
 		local currentTransferResetAt = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitResetAt")) or 0))
+		local currentRebirth = math.max(0, math.floor(tonumber(player:GetAttribute("Rebirth")) or 0))
 		if currentTransferResetAt > 0 and os.time() >= currentTransferResetAt then
 			currentTransferUsed = 0
 			currentTransferResetAt = 0
@@ -1042,6 +1043,7 @@ local function save(player, isClosing)
 					oldData.HotbarSlots = currentHotbar
 					oldData.BankTransferLimitUsed = currentTransferUsed
 					oldData.BankTransferLimitResetAt = currentTransferResetAt
+					oldData.Rebirth = currentRebirth
 					oldData.Settings = currentSettings
 
 					oldData.LastUpdated  = os.time()
@@ -1165,7 +1167,7 @@ local function InitializePlayer(player)
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player", RankData = {},
-		Settings = DEFAULT_PLAYER_SETTINGS
+		Settings = DEFAULT_PLAYER_SETTINGS, Rebirth = 0
 	}
 
 	data.Inventory              = data.Inventory              or {}
@@ -1183,6 +1185,7 @@ local function InitializePlayer(player)
 	data.RankData               = data.RankData               or {}
 	data.BankTransferLimitUsed  = data.BankTransferLimitUsed  or 0
 	data.BankTransferLimitResetAt = data.BankTransferLimitResetAt or 0
+	data.Rebirth = math.max(0, math.floor(tonumber(data.Rebirth) or 0))
 	data.Settings = sanitizeSettings(data.Settings)
 
 	local function sanitizeMoney(value)
@@ -1225,6 +1228,8 @@ local function InitializePlayer(player)
 	player:SetAttribute("OwnedBaseSkins", ownedJson)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
 	player:SetAttribute("Rank", data.Rank)
+	player:SetAttribute("Rebirth", data.Rebirth)
+	player:SetAttribute("RebirthMultiplier", data.Rebirth + 1)
 
 	local transferUsed = math.max(0, math.floor(tonumber(data.BankTransferLimitUsed) or 0))
 	local transferResetAt = math.max(0, math.floor(tonumber(data.BankTransferLimitResetAt) or 0))
@@ -1256,6 +1261,7 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("Rank"):Connect(setDirty)
 	player:GetAttributeChangedSignal("BankTransferLimitUsed"):Connect(setDirty)
 	player:GetAttributeChangedSignal("BankTransferLimitResetAt"):Connect(setDirty)
+	player:GetAttributeChangedSignal("Rebirth"):Connect(setDirty)
 	for _, attributeName in pairs(PLAYER_SETTING_ATTRIBUTES) do
 		player:GetAttributeChangedSignal(attributeName):Connect(setDirty)
 	end

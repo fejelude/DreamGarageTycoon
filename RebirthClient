@@ -1,0 +1,290 @@
+-- Purpose: Client controller for Rebirth UI open/close, button actions, and text/progress updates.
+-- Location: StarterGui > Rebirth > RebirthClient
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
+local camera = Workspace.CurrentCamera
+
+local rebirthGui = playerGui:WaitForChild("Rebirth")
+local mainFrame = rebirthGui:WaitForChild("MainFrame")
+local exitButton = mainFrame:WaitForChild("ExitButton")
+local buttons = mainFrame:WaitForChild("Buttons")
+local buttonFrame = buttons:WaitForChild("ButtonFrame")
+local rebirthButton = buttonFrame:WaitForChild("RebirthButton")
+local skipRebirthButton = buttonFrame:WaitForChild("SkipRebirthButton")
+local textLabels = mainFrame:WaitForChild("TextLabels")
+local currentRebirthLabel = textLabels:WaitForChild("CurrentRebirth")
+local nextRebirthLabel = textLabels:WaitForChild("NextRebirth")
+local headerLabel = textLabels:WaitForChild("RebirthNumberHeader")
+local multiplierFolder = textLabels:WaitForChild("Multiplier")
+local currentMultiplierLabel = multiplierFolder:WaitForChild("CurrentMultiplier")
+local nextMultiplierLabel = multiplierFolder:WaitForChild("NextMultiplier")
+local progressBar = mainFrame:WaitForChild("ProgressBar")
+local progressFrame = progressBar:WaitForChild("ProgressBarFrame")
+local progressText = progressBar:WaitForChild("NextRebirth")
+local stateLabels = mainFrame:WaitForChild("StateLabels")
+local failedLabel = stateLabels:WaitForChild("Failed")
+local successLabel = stateLabels:WaitForChild("Success")
+
+local mainButtonsGui = playerGui:WaitForChild("MainButtons")
+local buttonsContainer = mainButtonsGui:FindFirstChild("Buttons") or mainButtonsGui
+local openButton = buttonsContainer:WaitForChild("Rebirth")
+
+local remotes = ReplicatedStorage:WaitForChild("RebirthRemotes")
+local requestRebirth = remotes:WaitForChild("RequestRebirth")
+local refreshEvent = remotes:WaitForChild("RefreshRebirthUI")
+local isOpen = false
+local skipPromptInFlight = false
+local hiddenGuis = {}
+local OPEN_FOV = 50
+local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+local savedFOV = camera.FieldOfView
+local rebirthScreenGui = rebirthGui:IsA("ScreenGui") and rebirthGui or rebirthGui:FindFirstAncestorWhichIsA("ScreenGui")
+local progressDefaultSize = progressFrame.Size
+local progressTween = nil
+local labelState = {}
+
+local function formatMoney(n)
+	local suffixes = {"", "K", "M", "B", "T", "Q"}
+	n = tonumber(n) or 0
+	if n < 1000 then return tostring(math.floor(n)) end
+	local i = math.min(#suffixes, math.floor(math.log(n, 1000)) + 1)
+	local div = 1000 ^ (i - 1)
+	return string.format("%.2f%s", n / div, suffixes[i]):gsub("%.?0+([A-Z])$", "%1")
+end
+
+local function showState(label, text)
+	failedLabel.Visible = false
+	successLabel.Visible = false
+
+	local state = labelState[label]
+	if not state then
+		state = {baseText = nil, count = 0, hideToken = 0, fadeTween = nil, strokeTween = nil}
+		labelState[label] = state
+	end
+
+	if state.baseText == text then
+		state.count += 1
+	else
+		state.baseText = text
+		state.count = 1
+	end
+
+	local displayText = text .. " x" .. tostring(state.count)
+	label.Text = displayText
+	label.Visible = true
+	local stroke = label:FindFirstChildOfClass("UIStroke")
+	if state.fadeTween then state.fadeTween:Cancel() end
+	if state.strokeTween then state.strokeTween:Cancel() end
+
+	label.TextTransparency = 0
+	if stroke then stroke.Transparency = 0 end
+
+	state.hideToken += 1
+	local token = state.hideToken
+	task.delay(1.5, function()
+		if not label.Parent or token ~= state.hideToken then return end
+		state.fadeTween = TweenService:Create(label, TweenInfo.new(0.5), {TextTransparency = 1})
+		state.fadeTween:Play()
+		if stroke then
+			state.strokeTween = TweenService:Create(stroke, TweenInfo.new(0.5), {Transparency = 1})
+			state.strokeTween:Play()
+		end
+		state.fadeTween.Completed:Connect(function()
+			if token ~= state.hideToken then return end
+			label.Visible = false
+			state.baseText = nil
+			state.count = 0
+		end)
+	end)
+end
+
+local function applySnapshot(snapshot)
+	local rebirth = snapshot.CurrentRebirth or 0
+	local nextRebirth = snapshot.NextRebirth or math.min(rebirth + 1, RebirthConfig.MAX_REBIRTH)
+	local maxed = snapshot.Maxed == true
+	if maxed then
+		currentRebirthLabel.Text = "Rebirth: 18 (MAX)"
+		nextRebirthLabel.Text = "Rebirth 19 (Coming Soon)"
+		headerLabel.Text = "Rebirth 18"
+		currentMultiplierLabel.Text = "x18 (MAX)"
+		nextMultiplierLabel.Text = "x19 (Coming Soon)"
+	else
+		currentRebirthLabel.Text = "Rebirth " .. rebirth
+		nextRebirthLabel.Text = "Rebirth " .. nextRebirth
+		headerLabel.Text = "Rebirth " .. rebirth
+		currentMultiplierLabel.Text = "x" .. tostring(snapshot.CurrentMultiplier or (rebirth + 1))
+		nextMultiplierLabel.Text = "x" .. tostring(snapshot.NextMultiplier or (nextRebirth + 1))
+	end
+
+	local required = snapshot.RequiredCash or 0
+	local current = snapshot.CurrentCash or 0
+	local ratio = required <= 0 and 1 or math.clamp(current / required, 0, 1)
+	if maxed then
+		progressText.Text = "Cash: " .. formatMoney(current) .. " / --"
+	else
+		progressText.Text = "Cash: " .. formatMoney(current) .. " / " .. formatMoney(required)
+	end
+	if progressTween then progressTween:Cancel() end
+	local targetSize
+	local clampedRatio = math.clamp(ratio, 0, 1)
+	targetSize = UDim2.new(
+		progressDefaultSize.X.Scale * clampedRatio,
+		math.floor(progressDefaultSize.X.Offset * clampedRatio),
+		progressDefaultSize.Y.Scale,
+		progressDefaultSize.Y.Offset
+	)
+	progressTween = TweenService:Create(progressFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = targetSize})
+	progressTween:Play()
+
+	-- Keep RebirthButton clickable at max so it can still show:
+	-- "You’ve already reached the max rebirth."
+	rebirthButton.Active = true
+	-- Keep SkipRebirthButton clickable as well so max warning can be shown there too.
+	skipRebirthButton.Active = true
+end
+
+local function refresh()
+	local ok, success, snapshot = pcall(function()
+		return requestRebirth:InvokeServer("Snapshot")
+	end)
+	if ok and success and snapshot then
+		applySnapshot(snapshot)
+	end
+end
+
+local function setMainFrameVisible(visible)
+	isOpen = visible
+	mainFrame.Visible = visible
+	openButton.Visible = not visible
+end
+
+local function toggleOtherGuis(shouldHide)
+	if shouldHide then
+		hiddenGuis = {}
+		for _, gui in ipairs(playerGui:GetDescendants()) do
+			if gui:IsA("ScreenGui") and gui ~= rebirthScreenGui and gui.Enabled == true then
+				gui.Enabled = false
+				table.insert(hiddenGuis, gui)
+			end
+		end
+	else
+		for _, gui in ipairs(hiddenGuis) do
+			if gui and gui.Parent then
+				gui.Enabled = true
+			end
+		end
+		hiddenGuis = {}
+	end
+end
+
+local function closeForOtherMainButton(clickedButton)
+	if clickedButton ~= openButton and isOpen then
+		toggleOtherGuis(false)
+		setMainFrameVisible(false)
+		TweenService:Create(camera, FOV_TWEEN, {FieldOfView = savedFOV}):Play()
+	end
+end
+
+local function bindOtherMainButtons(container)
+	for _, descendant in ipairs(container:GetDescendants()) do
+		if descendant:IsA("GuiButton") and descendant ~= openButton then
+			descendant.Activated:Connect(function()
+				closeForOtherMainButton(descendant)
+			end)
+		end
+	end
+
+	container.DescendantAdded:Connect(function(descendant)
+		if descendant:IsA("GuiButton") and descendant ~= openButton then
+			descendant.Activated:Connect(function()
+				closeForOtherMainButton(descendant)
+			end)
+		end
+	end)
+end
+
+setMainFrameVisible(false)
+failedLabel.Visible = false
+successLabel.Visible = false
+
+UIButtonUtils.SetupButton(openButton, function()
+	UIAudioConfig.PlayClick()
+	savedFOV = camera.FieldOfView
+	toggleOtherGuis(true)
+	setMainFrameVisible(true)
+	TweenService:Create(camera, FOV_TWEEN, {FieldOfView = OPEN_FOV}):Play()
+	refresh()
+end)
+
+UIButtonUtils.SetupButton(exitButton, function()
+	UIAudioConfig.PlayClick()
+	toggleOtherGuis(false)
+	setMainFrameVisible(false)
+	TweenService:Create(camera, FOV_TWEEN, {FieldOfView = savedFOV}):Play()
+end)
+
+UIButtonUtils.SetupButton(rebirthButton, function()
+	local currentRebirth = tonumber(player:GetAttribute("Rebirth")) or 0
+	if currentRebirth >= RebirthConfig.MAX_REBIRTH then
+		showState(failedLabel, "You’ve already reached the max rebirth.")
+		refresh()
+		return
+	end
+
+	local ok, success, msg, snapshot = pcall(function()
+		return requestRebirth:InvokeServer("CashRebirth")
+	end)
+	if ok and success then
+		showState(successLabel, msg)
+		if snapshot then applySnapshot(snapshot) else refresh() end
+	else
+		local failText = msg or "Not enough cash to rebirth."
+		if failText == "Failed: Not enough cash to rebirth." then
+			failText = "Not enough cash to rebirth."
+		end
+		showState(failedLabel, failText)
+		refresh()
+	end
+end)
+
+UIButtonUtils.SetupButton(skipRebirthButton, function()
+	if skipPromptInFlight then return end
+
+	local current = tonumber(player:GetAttribute("Rebirth")) or 0
+	if current >= RebirthConfig.MAX_REBIRTH then
+		showState(failedLabel, "You’ve already reached the max rebirth.")
+		refresh()
+		return
+	end
+	local productId = RebirthConfig.SkipProductIds[current]
+	if productId then
+		skipPromptInFlight = true
+		UIAudioConfig.ShowPurchaseLoading()
+		UIAudioConfig.PlayRobux()
+		MarketplaceService:PromptProductPurchase(player, productId)
+	end
+end)
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, _productId, _wasPurchased)
+	if userId ~= player.UserId then return end
+	if not skipPromptInFlight then return end
+	skipPromptInFlight = false
+	refresh()
+end)
+
+refreshEvent.OnClientEvent:Connect(refresh)
+player:GetAttributeChangedSignal("Rebirth"):Connect(refresh)
+local leaderstats = player:WaitForChild("leaderstats", 10)
+local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
+if wallet then wallet.Changed:Connect(refresh) end
+bindOtherMainButtons(buttonsContainer)
