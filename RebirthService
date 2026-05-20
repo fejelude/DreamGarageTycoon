@@ -9,9 +9,9 @@ local remotes = ReplicatedStorage:WaitForChild("RebirthRemotes")
 local requestRebirth = remotes:WaitForChild("RequestRebirth")
 local refreshEvent = remotes:WaitForChild("RefreshRebirthUI")
 
-local function getCashValue(player)
-	local hs = player:FindFirstChild("HiddenStats")
-	return hs and hs:FindFirstChild("Cash")
+local function getWalletValue(player)
+	local leaderstats = player:FindFirstChild("leaderstats")
+	return leaderstats and leaderstats:FindFirstChild("Wallet")
 end
 
 local function getRebirth(player)
@@ -26,7 +26,7 @@ local function setRebirth(player, newRebirth)
 end
 
 local function getSnapshot(player)
-	local cashValue = getCashValue(player)
+	local walletValue = getWalletValue(player)
 	local rebirth = getRebirth(player)
 	local nextRebirth = math.min(rebirth + 1, RebirthConfig.MAX_REBIRTH)
 	return {
@@ -35,7 +35,7 @@ local function getSnapshot(player)
 		CurrentMultiplier = RebirthConfig.GetMultiplier(rebirth),
 		NextMultiplier = RebirthConfig.GetMultiplier(nextRebirth),
 		RequiredCash = rebirth >= RebirthConfig.MAX_REBIRTH and 0 or RebirthConfig.GetCost(rebirth + 1),
-		CurrentCash = cashValue and cashValue.Value or 0,
+		CurrentCash = walletValue and walletValue.Value or 0,
 		Maxed = rebirth >= RebirthConfig.MAX_REBIRTH,
 	}
 end
@@ -54,17 +54,17 @@ requestRebirth.OnServerInvoke = function(player, action)
 		return false, "Max rebirth reached."
 	end
 
-	local cashValue = getCashValue(player)
-	if not cashValue then
-		return false, "Cash data unavailable."
+	local walletValue = getWalletValue(player)
+	if not walletValue then
+		return false, "Wallet data unavailable."
 	end
 
 	local required = RebirthConfig.GetCost(rebirth + 1)
-	if cashValue.Value < required then
+	if walletValue.Value < required then
 		return false, "Failed: Not enough cash to rebirth."
 	end
 
-	cashValue.Value -= required
+	walletValue.Value -= required
 	setRebirth(player, rebirth + 1)
 	return true, "Success: You rebirthed to Rebirth " .. tostring(rebirth + 1) .. ".", getSnapshot(player)
 end

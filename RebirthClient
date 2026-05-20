@@ -5,11 +5,14 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
+local camera = Workspace.CurrentCamera
 
 local rebirthGui = playerGui:WaitForChild("Rebirth")
 local mainFrame = rebirthGui:WaitForChild("MainFrame")
@@ -40,6 +43,11 @@ local remotes = ReplicatedStorage:WaitForChild("RebirthRemotes")
 local requestRebirth = remotes:WaitForChild("RequestRebirth")
 local refreshEvent = remotes:WaitForChild("RefreshRebirthUI")
 local isOpen = false
+local hiddenGuis = {}
+local OPEN_FOV = 50
+local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+local savedFOV = camera.FieldOfView
+local rebirthScreenGui = rebirthGui:IsA("ScreenGui") and rebirthGui or rebirthGui:FindFirstAncestorWhichIsA("ScreenGui")
 
 local function formatMoney(n)
 	local suffixes = {"", "K", "M", "B", "T", "Q"}
@@ -105,9 +113,30 @@ local function setMainFrameVisible(visible)
 	openButton.Visible = not visible
 end
 
+local function toggleOtherGuis(shouldHide)
+	if shouldHide then
+		hiddenGuis = {}
+		for _, gui in ipairs(playerGui:GetDescendants()) do
+			if gui:IsA("ScreenGui") and gui ~= rebirthScreenGui and gui.Enabled == true then
+				gui.Enabled = false
+				table.insert(hiddenGuis, gui)
+			end
+		end
+	else
+		for _, gui in ipairs(hiddenGuis) do
+			if gui and gui.Parent then
+				gui.Enabled = true
+			end
+		end
+		hiddenGuis = {}
+	end
+end
+
 local function closeForOtherMainButton(clickedButton)
 	if clickedButton ~= openButton and isOpen then
+		toggleOtherGuis(false)
 		setMainFrameVisible(false)
+		TweenService:Create(camera, FOV_TWEEN, {FieldOfView = savedFOV}):Play()
 	end
 end
 
@@ -134,12 +163,19 @@ failedLabel.Visible = false
 successLabel.Visible = false
 
 UIButtonUtils.SetupButton(openButton, function()
+	UIAudioConfig.PlayClick()
+	savedFOV = camera.FieldOfView
+	toggleOtherGuis(true)
 	setMainFrameVisible(true)
+	TweenService:Create(camera, FOV_TWEEN, {FieldOfView = OPEN_FOV}):Play()
 	refresh()
 end)
 
 UIButtonUtils.SetupButton(exitButton, function()
+	UIAudioConfig.PlayClick()
+	toggleOtherGuis(false)
 	setMainFrameVisible(false)
+	TweenService:Create(camera, FOV_TWEEN, {FieldOfView = savedFOV}):Play()
 end)
 
 UIButtonUtils.SetupButton(rebirthButton, function()
@@ -160,13 +196,15 @@ UIButtonUtils.SetupButton(skipRebirthButton, function()
 	if current >= RebirthConfig.MAX_REBIRTH then return end
 	local productId = RebirthConfig.SkipProductIds[current]
 	if productId then
+		UIAudioConfig.ShowPurchaseLoading()
+		UIAudioConfig.PlayRobux()
 		MarketplaceService:PromptProductPurchase(player, productId)
 	end
 end)
 
 refreshEvent.OnClientEvent:Connect(refresh)
 player:GetAttributeChangedSignal("Rebirth"):Connect(refresh)
-local hs = player:WaitForChild("HiddenStats", 10)
-local cash = hs and hs:FindFirstChild("Cash")
-if cash then cash.Changed:Connect(refresh) end
+local leaderstats = player:WaitForChild("leaderstats", 10)
+local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
+if wallet then wallet.Changed:Connect(refresh) end
 bindOtherMainButtons(buttonsContainer)
