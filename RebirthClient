@@ -116,7 +116,7 @@ local function applySnapshot(snapshot)
 		nextRebirthLabel.Text = "Rebirth 19 (Coming Soon)"
 		headerLabel.Text = "Rebirth 18"
 		currentMultiplierLabel.Text = "x18 (MAX)"
-		nextMultiplierLabel.Text = "x18 (More coming soon)"
+		nextMultiplierLabel.Text = "x19 (Coming Soon)"
 	else
 		currentRebirthLabel.Text = "Rebirth " .. rebirth
 		nextRebirthLabel.Text = "Rebirth " .. nextRebirth
