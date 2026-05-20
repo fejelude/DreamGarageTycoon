@@ -148,7 +148,8 @@ local function applySnapshot(snapshot)
 	-- Keep RebirthButton clickable at max so it can still show:
 	-- "You’ve already reached the max rebirth."
 	rebirthButton.Active = true
-	skipRebirthButton.Active = not maxed
+	-- Keep SkipRebirthButton clickable as well so max warning can be shown there too.
+	skipRebirthButton.Active = true
 end
 
 local function refresh()
@@ -257,7 +258,11 @@ end)
 
 UIButtonUtils.SetupButton(skipRebirthButton, function()
 	local current = tonumber(player:GetAttribute("Rebirth")) or 0
-	if current >= RebirthConfig.MAX_REBIRTH then return end
+	if current >= RebirthConfig.MAX_REBIRTH then
+		showState(failedLabel, "You’ve already reached the max rebirth.")
+		refresh()
+		return
+	end
 	local productId = RebirthConfig.SkipProductIds[current]
 	if productId then
 		UIAudioConfig.ShowPurchaseLoading()
