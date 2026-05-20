@@ -129,8 +129,9 @@ local function GetActualEarningsMultiplier(player)
 	local premiumMultiplier = player.MembershipType == Enum.MembershipType.Premium and 1.5 or 1
 	local skinMultiplier = GetSkinMultiplier(player)
 	local rankMultiplier = tonumber(player:GetAttribute("RankResourceMultiplier")) or 1
+	local rebirthMultiplier = tonumber(player:GetAttribute("RebirthMultiplier")) or 1
 
-	return (((friendMultiplier * premiumMultiplier) * skinMultiplier) * rankMultiplier)
+	return ((((friendMultiplier * premiumMultiplier) * skinMultiplier) * rankMultiplier) * rebirthMultiplier)
 end
 
 local function RefreshActualEarningsMultiplier(player)
@@ -148,6 +149,9 @@ local function watchEarningsMultiplierAttributes(player)
 		RefreshActualEarningsMultiplier(player)
 	end)
 	player:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(function()
+		RefreshActualEarningsMultiplier(player)
+	end)
+	player:GetAttributeChangedSignal("RebirthMultiplier"):Connect(function()
 		RefreshActualEarningsMultiplier(player)
 	end)
 end
