@@ -5,7 +5,6 @@
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 
-local LOCAL_PLAYER = Players.LocalPlayer
 local TYCOON_FOLDER_NAME = "Tycoons"
 local OWNER_VALUE_NAME = "Owner"
 local MULTIPLIER_PART_NAME = "Multiplier"
@@ -22,13 +21,14 @@ local RANK_MULTIPLIER_FALLBACKS = {
 	["MVP++"] = 6,
 }
 
-local connections = {}
+local tycoonConnections = {}
+local playerConnections = {}
 
 local function disconnectTrackedConnections()
-	for _, connection in ipairs(connections) do
+	for _, connection in ipairs(tycoonConnections) do
 		connection:Disconnect()
 	end
-	table.clear(connections)
+	table.clear(tycoonConnections)
 end
 
 local function formatMultiplier(multiplier)
@@ -41,18 +41,22 @@ local function formatMultiplier(multiplier)
 	return string.format("%.2fx", multiplier):gsub("0+x$", "x"):gsub("%.x$", "x")
 end
 
-local function getDisplayedMultiplier()
-	local actualMultiplier = tonumber(LOCAL_PLAYER:GetAttribute("ActualEarningsMultiplier"))
+local function getDisplayedMultiplierForPlayer(targetPlayer)
+	if not targetPlayer then
+		return 1
+	end
+
+	local actualMultiplier = tonumber(targetPlayer:GetAttribute("ActualEarningsMultiplier"))
 	if actualMultiplier then
 		return actualMultiplier
 	end
 
-	local rankMultiplier = tonumber(LOCAL_PLAYER:GetAttribute("RankResourceMultiplier"))
+	local rankMultiplier = tonumber(targetPlayer:GetAttribute("RankResourceMultiplier"))
 	if rankMultiplier then
 		return rankMultiplier
 	end
 
-	local rankName = LOCAL_PLAYER:GetAttribute("Rank") or "Player"
+	local rankName = targetPlayer:GetAttribute("Rank") or "Player"
 	return RANK_MULTIPLIER_FALLBACKS[rankName] or 1
 end
 
@@ -72,13 +76,23 @@ local function getMultiplierLabel(tycoon)
 	return multiplierGui:FindFirstChild(MULTIPLIER_LABEL_NAME)
 end
 
-local function isTycoonVacant(tycoon)
+local function getTycoonOwnerPlayer(tycoon)
 	local ownerValue = tycoon:FindFirstChild(OWNER_VALUE_NAME)
-	return not ownerValue or tostring(ownerValue.Value or "") == ""
+	if not ownerValue then
+		return nil
+	end
+
+	local ownerName = tostring(ownerValue.Value or "")
+	if ownerName == "" then
+		return nil
+	end
+
+	return Players:FindFirstChild(ownerName)
 end
 
-local function updateTycoonMultiplierDisplay(tycoon, occupiedMultiplierText)
-	local multiplierText = isTycoonVacant(tycoon) and "0x" or occupiedMultiplierText
+local function updateTycoonMultiplierDisplay(tycoon)
+	local ownerPlayer = getTycoonOwnerPlayer(tycoon)
+	local multiplierText = ownerPlayer and formatMultiplier(getDisplayedMultiplierForPlayer(ownerPlayer)) or "0x"
 	updateLabel(getMultiplierLabel(tycoon), multiplierText)
 end
 
@@ -86,12 +100,10 @@ local function updateAllTycoonMultiplierDisplays()
 	local tycoons = Workspace:FindFirstChild(TYCOON_FOLDER_NAME)
 	if not tycoons then return end
 
-	local multiplierText = formatMultiplier(getDisplayedMultiplier())
-
 	for tycoonNumber = 1, EXPECTED_TYCOON_COUNT do
 		local tycoon = tycoons:FindFirstChild("Tycoon" .. tycoonNumber)
 		if tycoon then
-			updateTycoonMultiplierDisplay(tycoon, multiplierText)
+			updateTycoonMultiplierDisplay(tycoon)
 		end
 	end
 end
@@ -105,7 +117,7 @@ local function watchMultiplierLabels()
 	for tycoonNumber = 1, EXPECTED_TYCOON_COUNT do
 		local tycoon = tycoons:FindFirstChild("Tycoon" .. tycoonNumber)
 		if tycoon then
-			table.insert(connections, tycoon.ChildAdded:Connect(function(child)
+			table.insert(tycoonConnections, tycoon.ChildAdded:Connect(function(child)
 				if child.Name == MULTIPLIER_PART_NAME then
 					task.defer(watchMultiplierLabels)
 					task.defer(updateAllTycoonMultiplierDisplays)
@@ -117,12 +129,12 @@ local function watchMultiplierLabels()
 
 			local ownerValue = tycoon:FindFirstChild(OWNER_VALUE_NAME)
 			if ownerValue then
-				table.insert(connections, ownerValue:GetPropertyChangedSignal("Value"):Connect(updateAllTycoonMultiplierDisplays))
+				table.insert(tycoonConnections, ownerValue:GetPropertyChangedSignal("Value"):Connect(updateAllTycoonMultiplierDisplays))
 			end
 
 			local multiplierPart = tycoon:FindFirstChild(MULTIPLIER_PART_NAME)
 			if multiplierPart then
-				table.insert(connections, multiplierPart.ChildAdded:Connect(function(child)
+				table.insert(tycoonConnections, multiplierPart.ChildAdded:Connect(function(child)
 					if child.Name == MULTIPLIER_GUI_NAME then
 						task.defer(watchMultiplierLabels)
 						task.defer(updateAllTycoonMultiplierDisplays)
@@ -131,7 +143,7 @@ local function watchMultiplierLabels()
 
 				local multiplierGui = multiplierPart:FindFirstChild(MULTIPLIER_GUI_NAME)
 				if multiplierGui then
-					table.insert(connections, multiplierGui.ChildAdded:Connect(function(child)
+					table.insert(tycoonConnections, multiplierGui.ChildAdded:Connect(function(child)
 						if child.Name == MULTIPLIER_LABEL_NAME then
 							task.defer(updateAllTycoonMultiplierDisplays)
 						end
@@ -142,9 +154,24 @@ local function watchMultiplierLabels()
 	end
 end
 
-LOCAL_PLAYER:GetAttributeChangedSignal("ActualEarningsMultiplier"):Connect(updateAllTycoonMultiplierDisplays)
-LOCAL_PLAYER:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(updateAllTycoonMultiplierDisplays)
-LOCAL_PLAYER:GetAttributeChangedSignal("Rank"):Connect(updateAllTycoonMultiplierDisplays)
+local function trackPlayerMultiplierChanges(player)
+	table.insert(playerConnections, player:GetAttributeChangedSignal("ActualEarningsMultiplier"):Connect(updateAllTycoonMultiplierDisplays))
+	table.insert(playerConnections, player:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(updateAllTycoonMultiplierDisplays))
+	table.insert(playerConnections, player:GetAttributeChangedSignal("Rank"):Connect(updateAllTycoonMultiplierDisplays))
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	trackPlayerMultiplierChanges(player)
+end
+
+Players.PlayerAdded:Connect(function(player)
+	trackPlayerMultiplierChanges(player)
+	task.defer(updateAllTycoonMultiplierDisplays)
+end)
+
+Players.PlayerRemoving:Connect(function()
+	task.defer(updateAllTycoonMultiplierDisplays)
+end)
 
 local tycoons = Workspace:FindFirstChild(TYCOON_FOLDER_NAME)
 if tycoons then
