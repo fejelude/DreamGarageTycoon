@@ -150,8 +150,8 @@ local function syncButtonStates()
 	btnSFXOff.Visible = sfxMuted == true
 
 	local realTimeShadowsEnabled = workspace:GetAttribute("RealTimeShadowsEnabled")
-	btnRealTimeShadowsOn.Visible = realTimeShadowsEnabled == true
-	btnRealTimeShadowsOff.Visible = realTimeShadowsEnabled ~= true
+	btnRealTimeShadowsOn.Visible = realTimeShadowsEnabled ~= true
+	btnRealTimeShadowsOff.Visible = realTimeShadowsEnabled == true
 
 	local potatoModeEnabled = workspace:GetAttribute("PotatoModeEnabled")
 	btnPotatoModeOn.Visible = potatoModeEnabled ~= true
@@ -266,8 +266,8 @@ local function applyRealTimeShadowsState(isEnabled)
 end
 
 local function setRealTimeShadowsEnabled(isEnabled, shouldPersist)
-	btnRealTimeShadowsOn.Visible = isEnabled
-	btnRealTimeShadowsOff.Visible = not isEnabled
+	btnRealTimeShadowsOn.Visible = not isEnabled
+	btnRealTimeShadowsOff.Visible = isEnabled
 
 	workspace:SetAttribute("RealTimeShadowsEnabled", isEnabled)
 	if shouldPersist ~= false then
