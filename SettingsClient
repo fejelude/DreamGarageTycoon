@@ -30,25 +30,30 @@ local mainButtonsGui = playerGui:WaitForChild("MainButtons")
 local buttonsFolder  = mainButtonsGui:WaitForChild("Buttons")
 local openButton     = buttonsFolder:WaitForChild("Settings")
 
+local settingsButtons = window
+	:WaitForChild("SettingScrollingFrame")
+	:WaitForChild("Buttons")
+
 -- 🎵 MUSIC BUTTONS
-local btnMusicOn = window:WaitForChild("MusicOnButton")
-local btnMusicOff = window:WaitForChild("MusicOffButton")
+local soundsFolder = settingsButtons:WaitForChild("Sounds")
+local musicFolder = soundsFolder:WaitForChild("Music")
+local btnMusicOn = musicFolder:WaitForChild("MusicOnButton")
+local btnMusicOff = musicFolder:WaitForChild("MusicOffButton")
 
 -- 🔊 SFX BUTTONS
-local btnSFXOn = window:WaitForChild("SFXOnButton")
-local btnSFXOff = window:WaitForChild("SFXOffButton")
+local sfxFolder = soundsFolder:WaitForChild("SFX")
+local btnSFXOn = sfxFolder:WaitForChild("SFXOnButton")
+local btnSFXOff = sfxFolder:WaitForChild("SFXOffButton")
 
 -- ⚡ PERFORMANCE BUTTONS (LOD & ANIMATION)
-local performanceFrame = window:WaitForChild("Performance")
-local optionsFrame = performanceFrame:WaitForChild("Options")
+local performanceFolder = settingsButtons:WaitForChild("Performance")
+local highLODFolder = performanceFolder:WaitForChild("HighLOD")
+local btnLODOn = highLODFolder:WaitForChild("HighLodOn")
+local btnLODOff = highLODFolder:WaitForChild("HighLodOff")
 
-local option1Frame = optionsFrame:WaitForChild("Option 1")
-local btnLODOn = option1Frame:WaitForChild("Option1On")
-local btnLODOff = option1Frame:WaitForChild("Option1Off")
-
-local option2Frame = optionsFrame:WaitForChild("Option 2")
-local btnAnimOn = option2Frame:WaitForChild("Option2On")
-local btnAnimOff = option2Frame:WaitForChild("Option2Off")
+local carAnimationsFolder = performanceFolder:WaitForChild("CarAnimations")
+local btnAnimOn = carAnimationsFolder:WaitForChild("CarAnimationOn")
+local btnAnimOff = carAnimationsFolder:WaitForChild("CarAnimationOff")
 
 -- 🔊 MUSIC TARGET
 local gameTheme = SoundService:WaitForChild("GameTheme", 5)
@@ -347,4 +352,3 @@ end
 -- Default window state
 window.Visible = false
 openButton.Visible = true
-
