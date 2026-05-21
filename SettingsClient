@@ -150,12 +150,12 @@ local function syncButtonStates()
 	btnSFXOff.Visible = sfxMuted == true
 
 	local realTimeShadowsEnabled = workspace:GetAttribute("RealTimeShadowsEnabled")
-	btnRealTimeShadowsOn.Visible = realTimeShadowsEnabled ~= true
-	btnRealTimeShadowsOff.Visible = realTimeShadowsEnabled == true
+	btnRealTimeShadowsOn.Visible = realTimeShadowsEnabled == true
+	btnRealTimeShadowsOff.Visible = realTimeShadowsEnabled ~= true
 
 	local potatoModeEnabled = workspace:GetAttribute("PotatoModeEnabled")
-	btnPotatoModeOn.Visible = potatoModeEnabled ~= true
-	btnPotatoModeOff.Visible = potatoModeEnabled == true
+	btnPotatoModeOn.Visible = potatoModeEnabled == true
+	btnPotatoModeOff.Visible = potatoModeEnabled ~= true
 end
 
 -- 🟢 WINDOW VISIBILITY (Centered Pop Open / Instant Close)
@@ -244,30 +244,56 @@ end
 
 -- 🔊 SFX TOGGLE LOGIC
 local SHADOWS_TRACKED_ATTRIBUTE = "OriginalCastShadow"
-local potatoModeArchive = nil
 local potatoModeTaskToken = 0
+local potatoModeStorage = workspace:FindFirstChild("PotatoModeStorage")
+if not potatoModeStorage then
+	potatoModeStorage = Instance.new("Folder")
+	potatoModeStorage.Name = "PotatoModeStorage"
+	potatoModeStorage.Parent = workspace
+end
+
+local function syncRealTimeShadowsButtons(isEnabled)
+	btnRealTimeShadowsOn.Visible = isEnabled
+	btnRealTimeShadowsOff.Visible = not isEnabled
+end
+
+local function syncPotatoModeButtons(isEnabled)
+	btnPotatoModeOn.Visible = isEnabled
+	btnPotatoModeOff.Visible = not isEnabled
+end
+
+local function enforcePartShadowState(part, shadowsEnabled)
+	if part:GetAttribute(SHADOWS_TRACKED_ATTRIBUTE) == nil then
+		part:SetAttribute(SHADOWS_TRACKED_ATTRIBUTE, part.CastShadow)
+	end
+
+	if shadowsEnabled then
+		local originalCastShadow = part:GetAttribute(SHADOWS_TRACKED_ATTRIBUTE)
+		if type(originalCastShadow) == "boolean" then
+			part.CastShadow = originalCastShadow
+		end
+	else
+		part.CastShadow = false
+	end
+end
 
 local function applyRealTimeShadowsState(isEnabled)
 	for _, descendant in ipairs(workspace:GetDescendants()) do
 		if descendant:IsA("BasePart") then
-			if descendant:GetAttribute(SHADOWS_TRACKED_ATTRIBUTE) == nil then
-				descendant:SetAttribute(SHADOWS_TRACKED_ATTRIBUTE, descendant.CastShadow)
-			end
-			if isEnabled then
-				local originalCastShadow = descendant:GetAttribute(SHADOWS_TRACKED_ATTRIBUTE)
-				if type(originalCastShadow) == "boolean" then
-					descendant.CastShadow = originalCastShadow
-				end
-			else
-				descendant.CastShadow = false
-			end
+			enforcePartShadowState(descendant, isEnabled)
 		end
 	end
 end
 
+workspace.DescendantAdded:Connect(function(descendant)
+	if not descendant:IsA("BasePart") then return end
+	if workspace:GetAttribute("RealTimeShadowsEnabled") == false then
+		enforcePartShadowState(descendant, false)
+	end
+end)
+
 local function setRealTimeShadowsEnabled(isEnabled, shouldPersist)
-	btnRealTimeShadowsOn.Visible = not isEnabled
-	btnRealTimeShadowsOff.Visible = isEnabled
+	syncRealTimeShadowsButtons(isEnabled)
 
 	workspace:SetAttribute("RealTimeShadowsEnabled", isEnabled)
 	if shouldPersist ~= false then
@@ -275,16 +301,32 @@ local function setRealTimeShadowsEnabled(isEnabled, shouldPersist)
 	end
 
 	applyRealTimeShadowsState(isEnabled)
-
 end
 
-local function progressivelyClearPotatoModeFolder(folder, taskToken)
-	local children = folder:GetChildren()
+local function ensurePotatoModeFolders()
+	local removalFolder = workspace:FindFirstChild("PotatoModeRemoval")
+	if not removalFolder then
+		warn("[SettingsClient] Workspace.PotatoModeRemoval is missing; Potato Mode cannot be applied.")
+		return nil, nil
+	end
+
+	local storageFolder = potatoModeStorage:FindFirstChild("Hidden")
+	if not storageFolder then
+		storageFolder = Instance.new("Folder")
+		storageFolder.Name = "Hidden"
+		storageFolder.Parent = potatoModeStorage
+	end
+
+	return removalFolder, storageFolder
+end
+
+local function progressivelyMoveChildren(sourceFolder, targetFolder, taskToken)
+	local children = sourceFolder:GetChildren()
 	for i = 1, #children do
 		if potatoModeTaskToken ~= taskToken then
 			return
 		end
-		children[i]:Destroy()
+		children[i].Parent = targetFolder
 		if i % 10 == 0 then
 			task.wait()
 		end
@@ -292,8 +334,7 @@ local function progressivelyClearPotatoModeFolder(folder, taskToken)
 end
 
 local function setPotatoModeEnabled(isEnabled, shouldPersist)
-	btnPotatoModeOn.Visible = not isEnabled
-	btnPotatoModeOff.Visible = isEnabled
+	syncPotatoModeButtons(isEnabled)
 
 	workspace:SetAttribute("PotatoModeEnabled", isEnabled)
 	if shouldPersist ~= false then
@@ -302,24 +343,16 @@ local function setPotatoModeEnabled(isEnabled, shouldPersist)
 
 	potatoModeTaskToken += 1
 	local currentToken = potatoModeTaskToken
-	local removalFolder = workspace:FindFirstChild("PotatoModeRemoval")
-	if removalFolder and removalFolder:IsA("Folder") then
-		if isEnabled then
-			if not potatoModeArchive then
-				potatoModeArchive = removalFolder:Clone()
-				potatoModeArchive.Name = "PotatoModeArchive"
-			end
-			task.spawn(progressivelyClearPotatoModeFolder, removalFolder, currentToken)
-		elseif potatoModeArchive then
-			for _, child in ipairs(removalFolder:GetChildren()) do
-				child:Destroy()
-			end
-			for _, child in ipairs(potatoModeArchive:GetChildren()) do
-				child:Clone().Parent = removalFolder
-			end
-		end
+	local removalFolder, storageFolder = ensurePotatoModeFolders()
+	if not removalFolder or not storageFolder then
+		return
 	end
 
+	if isEnabled then
+		task.spawn(progressivelyMoveChildren, removalFolder, storageFolder, currentToken)
+	else
+		task.spawn(progressivelyMoveChildren, storageFolder, removalFolder, currentToken)
+	end
 end
 
 local function setSFXMuted(shouldBeMuted, shouldPersist)
