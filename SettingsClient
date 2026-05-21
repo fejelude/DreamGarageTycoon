@@ -276,9 +276,6 @@ local function setRealTimeShadowsEnabled(isEnabled, shouldPersist)
 
 	applyRealTimeShadowsState(isEnabled)
 
-	if window.Visible then
-		UIAudioConfig.PlayClick()
-	end
 end
 
 local function progressivelyClearPotatoModeFolder(folder, taskToken)
@@ -323,9 +320,6 @@ local function setPotatoModeEnabled(isEnabled, shouldPersist)
 		end
 	end
 
-	if window.Visible then
-		UIAudioConfig.PlayClick()
-	end
 end
 
 local function setSFXMuted(shouldBeMuted, shouldPersist)
