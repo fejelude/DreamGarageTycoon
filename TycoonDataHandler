@@ -93,6 +93,8 @@ local DEFAULT_PLAYER_SETTINGS = {
 	SFXMuted = false,
 	CarLODEnabled = false,
 	CarAnimationEnabled = true,
+	RealTimeShadowsEnabled = true,
+	PotatoModeEnabled = false,
 }
 
 local PLAYER_SETTING_ATTRIBUTES = {
@@ -100,6 +102,8 @@ local PLAYER_SETTING_ATTRIBUTES = {
 	SFXMuted = "Setting_SFXMuted",
 	CarLODEnabled = "Setting_CarLODEnabled",
 	CarAnimationEnabled = "Setting_CarAnimationEnabled",
+	RealTimeShadowsEnabled = "Setting_RealTimeShadowsEnabled",
+	PotatoModeEnabled = "Setting_PotatoModeEnabled",
 }
 
 local CONSTANTS = {

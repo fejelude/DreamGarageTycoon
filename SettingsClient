@@ -55,6 +55,14 @@ local carAnimationsFolder = performanceFolder:WaitForChild("CarAnimations")
 local btnAnimOn = carAnimationsFolder:WaitForChild("CarAnimationOn")
 local btnAnimOff = carAnimationsFolder:WaitForChild("CarAnimationOff")
 
+local realTimeShadowsFolder = performanceFolder:WaitForChild("RealTimeShadows")
+local btnRealTimeShadowsOn = realTimeShadowsFolder:WaitForChild("RealTimeShadowsOn")
+local btnRealTimeShadowsOff = realTimeShadowsFolder:WaitForChild("RealTimeShadowsOff")
+
+local potatoModeFolder = performanceFolder:WaitForChild("PotatoMode")
+local btnPotatoModeOn = potatoModeFolder:WaitForChild("PotatoModeOn")
+local btnPotatoModeOff = potatoModeFolder:WaitForChild("PotatoModeOff")
+
 -- 🔊 MUSIC TARGET
 local gameTheme = SoundService:WaitForChild("GameTheme", 5)
 
@@ -64,6 +72,8 @@ local SETTINGS_ATTRIBUTES = {
 	SFXMuted = "Setting_SFXMuted",
 	CarLODEnabled = "Setting_CarLODEnabled",
 	CarAnimationEnabled = "Setting_CarAnimationEnabled",
+	RealTimeShadowsEnabled = "Setting_RealTimeShadowsEnabled",
+	PotatoModeEnabled = "Setting_PotatoModeEnabled",
 }
 
 local CONFIG = {
@@ -138,6 +148,14 @@ local function syncButtonStates()
 	local sfxMuted = SoundService:GetAttribute("SFXMuted")
 	btnSFXOn.Visible = not (sfxMuted == true)
 	btnSFXOff.Visible = sfxMuted == true
+
+	local realTimeShadowsEnabled = workspace:GetAttribute("RealTimeShadowsEnabled")
+	btnRealTimeShadowsOn.Visible = realTimeShadowsEnabled == true
+	btnRealTimeShadowsOff.Visible = realTimeShadowsEnabled ~= true
+
+	local potatoModeEnabled = workspace:GetAttribute("PotatoModeEnabled")
+	btnPotatoModeOn.Visible = potatoModeEnabled ~= true
+	btnPotatoModeOff.Visible = potatoModeEnabled == true
 end
 
 -- 🟢 WINDOW VISIBILITY (Centered Pop Open / Instant Close)
@@ -225,6 +243,91 @@ local function setAnimationEnabled(isEnabled, shouldPersist)
 end
 
 -- 🔊 SFX TOGGLE LOGIC
+local SHADOWS_TRACKED_ATTRIBUTE = "OriginalCastShadow"
+local potatoModeArchive = nil
+local potatoModeTaskToken = 0
+
+local function applyRealTimeShadowsState(isEnabled)
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			if descendant:GetAttribute(SHADOWS_TRACKED_ATTRIBUTE) == nil then
+				descendant:SetAttribute(SHADOWS_TRACKED_ATTRIBUTE, descendant.CastShadow)
+			end
+			if isEnabled then
+				local originalCastShadow = descendant:GetAttribute(SHADOWS_TRACKED_ATTRIBUTE)
+				if type(originalCastShadow) == "boolean" then
+					descendant.CastShadow = originalCastShadow
+				end
+			else
+				descendant.CastShadow = false
+			end
+		end
+	end
+end
+
+local function setRealTimeShadowsEnabled(isEnabled, shouldPersist)
+	btnRealTimeShadowsOn.Visible = isEnabled
+	btnRealTimeShadowsOff.Visible = not isEnabled
+
+	workspace:SetAttribute("RealTimeShadowsEnabled", isEnabled)
+	if shouldPersist ~= false then
+		persistSetting("RealTimeShadowsEnabled", isEnabled)
+	end
+
+	applyRealTimeShadowsState(isEnabled)
+
+	if window.Visible then
+		UIAudioConfig.PlayClick()
+	end
+end
+
+local function progressivelyClearPotatoModeFolder(folder, taskToken)
+	local children = folder:GetChildren()
+	for i = 1, #children do
+		if potatoModeTaskToken ~= taskToken then
+			return
+		end
+		children[i]:Destroy()
+		if i % 10 == 0 then
+			task.wait()
+		end
+	end
+end
+
+local function setPotatoModeEnabled(isEnabled, shouldPersist)
+	btnPotatoModeOn.Visible = not isEnabled
+	btnPotatoModeOff.Visible = isEnabled
+
+	workspace:SetAttribute("PotatoModeEnabled", isEnabled)
+	if shouldPersist ~= false then
+		persistSetting("PotatoModeEnabled", isEnabled)
+	end
+
+	potatoModeTaskToken += 1
+	local currentToken = potatoModeTaskToken
+	local removalFolder = workspace:FindFirstChild("PotatoModeRemoval")
+	if removalFolder and removalFolder:IsA("Folder") then
+		if isEnabled then
+			if not potatoModeArchive then
+				potatoModeArchive = removalFolder:Clone()
+				potatoModeArchive.Name = "PotatoModeArchive"
+			end
+			task.spawn(progressivelyClearPotatoModeFolder, removalFolder, currentToken)
+		elseif potatoModeArchive then
+			for _, child in ipairs(removalFolder:GetChildren()) do
+				child:Destroy()
+			end
+			for _, child in ipairs(potatoModeArchive:GetChildren()) do
+				child:Clone().Parent = removalFolder
+			end
+		end
+	end
+
+	if window.Visible then
+		UIAudioConfig.PlayClick()
+	end
+end
+
 local function setSFXMuted(shouldBeMuted, shouldPersist)
 	btnSFXOn.Visible = not shouldBeMuted
 	btnSFXOff.Visible = shouldBeMuted
@@ -309,6 +412,10 @@ setupButton(btnLODOff, function() setLODEnabled(false) end)
 
 setupButton(btnAnimOn, function() setAnimationEnabled(false) end)
 setupButton(btnAnimOff, function() setAnimationEnabled(true) end)
+setupButton(btnRealTimeShadowsOn, function() setRealTimeShadowsEnabled(true) end)
+setupButton(btnRealTimeShadowsOff, function() setRealTimeShadowsEnabled(false) end)
+setupButton(btnPotatoModeOn, function() setPotatoModeEnabled(true) end)
+setupButton(btnPotatoModeOff, function() setPotatoModeEnabled(false) end)
 
 local function applySettingFromSavedValue(settingName)
 	local savedValue = getSavedSetting(settingName)
@@ -322,6 +429,10 @@ local function applySettingFromSavedValue(settingName)
 		setMusicMuted(savedValue == true, false)
 	elseif settingName == "SFXMuted" then
 		setSFXMuted(savedValue == true, false)
+	elseif settingName == "RealTimeShadowsEnabled" then
+		setRealTimeShadowsEnabled(savedValue == true, false)
+	elseif settingName == "PotatoModeEnabled" then
+		setPotatoModeEnabled(savedValue == true, false)
 	end
 
 	return true
@@ -352,3 +463,11 @@ end
 -- Default window state
 window.Visible = false
 openButton.Visible = true
+
+if not applySettingFromSavedValue("RealTimeShadowsEnabled") and workspace:GetAttribute("RealTimeShadowsEnabled") == nil then
+	setRealTimeShadowsEnabled(true, false) -- Default: Shadows ON
+end
+
+if not applySettingFromSavedValue("PotatoModeEnabled") and workspace:GetAttribute("PotatoModeEnabled") == nil then
+	setPotatoModeEnabled(false, false) -- Default: Potato Mode OFF
+end
