@@ -191,8 +191,8 @@ local function syncButtonStates()
 	btnRealTimeShadowsOff.Visible = not shadowsEnabled
 
 	local potatoEnabled = workspace:GetAttribute("PotatoModeEnabled") == true
-	btnPotatoModeOn.Visible  = potatoEnabled
-	btnPotatoModeOff.Visible = not potatoEnabled
+	btnPotatoModeOn.Visible  = not potatoEnabled
+	btnPotatoModeOff.Visible = potatoEnabled
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -338,8 +338,8 @@ local function progressiveMoveChildren(source, target, token)
 end
 
 local function setPotatoModeEnabled(isEnabled, shouldPersist)
-	btnPotatoModeOn.Visible  = isEnabled
-	btnPotatoModeOff.Visible = not isEnabled
+	btnPotatoModeOn.Visible  = not isEnabled
+	btnPotatoModeOff.Visible = isEnabled
 
 	workspace:SetAttribute("PotatoModeEnabled", isEnabled)
 	if shouldPersist ~= false then persistSetting("PotatoModeEnabled", isEnabled) end
@@ -385,8 +385,8 @@ UIButtonUtils.SetupButton(btnAnimOff, function() setAnimationEnabled(true)  end)
 UIButtonUtils.SetupButton(btnRealTimeShadowsOn,  function() setRealTimeShadowsEnabled(false) end)
 UIButtonUtils.SetupButton(btnRealTimeShadowsOff, function() setRealTimeShadowsEnabled(true)  end)
 
-UIButtonUtils.SetupButton(btnPotatoModeOn,  function() setPotatoModeEnabled(false) end)
-UIButtonUtils.SetupButton(btnPotatoModeOff, function() setPotatoModeEnabled(true)  end)
+UIButtonUtils.SetupButton(btnPotatoModeOn,  function() setPotatoModeEnabled(true)  end)
+UIButtonUtils.SetupButton(btnPotatoModeOff, function() setPotatoModeEnabled(false) end)
 
 -- ─────────────────────────────────────────────────────────────
 -- SAVED SETTINGS LOADER
