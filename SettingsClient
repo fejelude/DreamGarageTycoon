@@ -182,7 +182,7 @@ local function syncButtonStates()
 	btnLODOn.Visible  = not lodEnabled
 	btnLODOff.Visible = lodEnabled
 
-	local animEnabled = workspace:GetAttribute("CarAnimationEnabled") == true
+	local animEnabled = workspace:GetAttribute("CarAnimationEnabled") ~= false
 	btnAnimOn.Visible  = animEnabled
 	btnAnimOff.Visible = not animEnabled
 
