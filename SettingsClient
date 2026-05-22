@@ -1,94 +1,139 @@
--- Purpose: Settings UI + Music Toggle + SFX Toggle + Center Pop Open / Instant Close
--- Runs on: Client
--- Location: StarterGui/SettingsGui
--- Dependencies: SoundService, TweenService, Debris, UserInputService
--- Public API: None (Internal Logic)
--- Networking: None (Client-side UI logic only)
--- Security: Client-side visuals only; no server validation needed.
--- Performance: Tweens used for open animation only.
--- Notes: SFX visual toggle implemented. Actual SFX volume control to be added later.
+-- Purpose:    Settings UI — Music, SFX, LOD, Animation, Real-Time Shadows, Potato Mode
+-- Runs on:    Client (LocalScript)
+-- Location:   StarterGui/SettingsGui
+-- Dependencies: ReplicatedStorage.UIButtonUtils, ReplicatedStorage.SettingsPersistenceEvent
 
-local Players = game:GetService("Players")
-local SoundService = game:GetService("SoundService")
-local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local Debris = game:GetService("Debris")
+--[[
+╔══════════════════════════════════════════════════════════════════════════╗
+║  REQUIRED MANUAL STUDIO SETUP — do not skip                             ║
+╠══════════════════════════════════════════════════════════════════════════╣
+║                                                                          ║
+║  UIScale (add one as a direct child of each listed object):             ║
+║    • SettingsGui > SettingsWindow                                        ║
+║    • MainButtons > Buttons > Settings                                    ║
+║    • SettingsWindow > CloseButton                                        ║
+║    • Sounds > Music > MusicOnButton                                      ║
+║    • Sounds > Music > MusicOffButton                                     ║
+║    • Sounds > SFX > SFXOnButton                                          ║
+║    • Sounds > SFX > SFXOffButton                                         ║
+║    • Performance > HighLOD > HighLodOn                                   ║
+║    • Performance > HighLOD > HighLodOff                                  ║
+║    • Performance > CarAnimations > CarAnimationOn                        ║
+║    • Performance > CarAnimations > CarAnimationOff                       ║
+║    • Performance > RealTimeShadows > RealTimeShadowsOn                   ║
+║    • Performance > RealTimeShadows > RealTimeShadowsOff                  ║
+║    • Performance > PotatoMode > PotatoModeOn                             ║
+║    • Performance > PotatoMode > PotatoModeOff                            ║
+║                                                                          ║
+║  Potato Mode storage (Folders — keep them EMPTY at game start):         ║
+║    • SettingsGui > PotatoModeStorage          (Folder)                   ║
+║    • SettingsGui > PotatoModeStorage > Hidden (Folder)                   ║
+║                                                                          ║
+║  Potato Mode removal source (populate with models you want hidden):     ║
+║    • Workspace > PotatoModeRemoval            (Folder)                   ║
+║                                                                          ║
+╚══════════════════════════════════════════════════════════════════════════╝
+]]
+
+-- ─────────────────────────────────────────────────────────────
+-- SERVICES
+-- ─────────────────────────────────────────────────────────────
+local Players           = game:GetService("Players")
+local SoundService      = game:GetService("SoundService")
+local TweenService      = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+
+-- ─────────────────────────────────────────────────────────────
+-- DEPENDENCIES
+-- ─────────────────────────────────────────────────────────────
+local UIButtonUtils            = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 local SettingsPersistenceEvent = ReplicatedStorage:WaitForChild("SettingsPersistenceEvent", 10)
 
-local player = Players.LocalPlayer
+-- ─────────────────────────────────────────────────────────────
+-- PLAYER / GUI REFERENCES
+-- ─────────────────────────────────────────────────────────────
+local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- 🛠️ REFERENCES
-local screenGui = script.Parent
-local window = screenGui:WaitForChild("SettingsWindow")
-local closeButton = window:WaitForChild("CloseButton")
+local screenGui     = script.Parent
+local window        = screenGui:WaitForChild("SettingsWindow")
+local closeButton   = window:WaitForChild("CloseButton")
+local windowUIScale = window:FindFirstChildOfClass("UIScale")
 
--- OpenButton (Settings) now lives under MainButtons > Buttons > Settings
-local mainButtonsGui = playerGui:WaitForChild("MainButtons")
-local buttonsFolder  = mainButtonsGui:WaitForChild("Buttons")
-local openButton     = buttonsFolder:WaitForChild("Settings")
+local openButton = playerGui
+	:WaitForChild("MainButtons")
+	:WaitForChild("Buttons")
+	:WaitForChild("Settings")
 
 local settingsButtons = window
 	:WaitForChild("SettingScrollingFrame")
 	:WaitForChild("Buttons")
 
--- 🎵 MUSIC BUTTONS
+-- ─────────────────────────────────────────────────────────────
+-- BUTTON REFERENCES
+-- ─────────────────────────────────────────────────────────────
 local soundsFolder = settingsButtons:WaitForChild("Sounds")
+
 local musicFolder = soundsFolder:WaitForChild("Music")
-local btnMusicOn = musicFolder:WaitForChild("MusicOnButton")
+local btnMusicOn  = musicFolder:WaitForChild("MusicOnButton")
 local btnMusicOff = musicFolder:WaitForChild("MusicOffButton")
 
--- 🔊 SFX BUTTONS
 local sfxFolder = soundsFolder:WaitForChild("SFX")
-local btnSFXOn = sfxFolder:WaitForChild("SFXOnButton")
+local btnSFXOn  = sfxFolder:WaitForChild("SFXOnButton")
 local btnSFXOff = sfxFolder:WaitForChild("SFXOffButton")
 
--- ⚡ PERFORMANCE BUTTONS (LOD & ANIMATION)
 local performanceFolder = settingsButtons:WaitForChild("Performance")
+
 local highLODFolder = performanceFolder:WaitForChild("HighLOD")
-local btnLODOn = highLODFolder:WaitForChild("HighLodOn")
-local btnLODOff = highLODFolder:WaitForChild("HighLodOff")
+local btnLODOn      = highLODFolder:WaitForChild("HighLodOn")
+local btnLODOff     = highLODFolder:WaitForChild("HighLodOff")
 
 local carAnimationsFolder = performanceFolder:WaitForChild("CarAnimations")
-local btnAnimOn = carAnimationsFolder:WaitForChild("CarAnimationOn")
-local btnAnimOff = carAnimationsFolder:WaitForChild("CarAnimationOff")
+local btnAnimOn           = carAnimationsFolder:WaitForChild("CarAnimationOn")
+local btnAnimOff          = carAnimationsFolder:WaitForChild("CarAnimationOff")
 
 local realTimeShadowsFolder = performanceFolder:WaitForChild("RealTimeShadows")
-local btnRealTimeShadowsOn = realTimeShadowsFolder:WaitForChild("RealTimeShadowsOn")
+local btnRealTimeShadowsOn  = realTimeShadowsFolder:WaitForChild("RealTimeShadowsOn")
 local btnRealTimeShadowsOff = realTimeShadowsFolder:WaitForChild("RealTimeShadowsOff")
 
 local potatoModeFolder = performanceFolder:WaitForChild("PotatoMode")
-local btnPotatoModeOn = potatoModeFolder:WaitForChild("PotatoModeOn")
+local btnPotatoModeOn  = potatoModeFolder:WaitForChild("PotatoModeOn")
 local btnPotatoModeOff = potatoModeFolder:WaitForChild("PotatoModeOff")
 
--- 🔊 MUSIC TARGET
-local gameTheme = SoundService:WaitForChild("GameTheme", 5)
+-- ─────────────────────────────────────────────────────────────
+-- AUDIO / POTATO MODE REFERENCES
+-- ─────────────────────────────────────────────────────────────
+local gameTheme     = SoundService:WaitForChild("GameTheme", 5)
+local potatoStorage = screenGui:WaitForChild("PotatoModeStorage")
+local potatoHidden  = potatoStorage:WaitForChild("Hidden")
 
--- ⚙️ CONFIG
+-- ─────────────────────────────────────────────────────────────
+-- CONFIG
+-- ─────────────────────────────────────────────────────────────
+local DEFAULT_VOLUME = 0.5
+
+local OPEN_TWEEN_INFO = TweenInfo.new(1.0, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+
 local SETTINGS_ATTRIBUTES = {
-	MusicMuted = "Setting_MusicMuted",
-	SFXMuted = "Setting_SFXMuted",
-	CarLODEnabled = "Setting_CarLODEnabled",
-	CarAnimationEnabled = "Setting_CarAnimationEnabled",
+	MusicMuted             = "Setting_MusicMuted",
+	SFXMuted               = "Setting_SFXMuted",
+	CarLODEnabled          = "Setting_CarLODEnabled",
+	CarAnimationEnabled    = "Setting_CarAnimationEnabled",
 	RealTimeShadowsEnabled = "Setting_RealTimeShadowsEnabled",
-	PotatoModeEnabled = "Setting_PotatoModeEnabled",
+	PotatoModeEnabled      = "Setting_PotatoModeEnabled",
 }
 
-local CONFIG = {
-	Colors = {
-		Hover = Color3.fromRGB(210, 210, 210),
-		Normal = Color3.fromRGB(255, 255, 255)
-	},
-	DefaultVolume = 0.5,
-	Anim = {
-		OpenTime = 1.0,
-		StartScale = 0.0,
-		EasingStyle = Enum.EasingStyle.Exponential,
-	},
-}
+local ORIGINAL_SHADOW_ATTR = "OriginalCastShadow"
 
+-- ─────────────────────────────────────────────────────────────
+-- FORCE WINDOW CENTERING
+-- ─────────────────────────────────────────────────────────────
+window.AnchorPoint = Vector2.new(0.5, 0.5)
+window.Position    = UDim2.new(0.5, 0, 0.5, 0)
+
+-- ─────────────────────────────────────────────────────────────
+-- PERSISTENCE HELPERS
+-- ─────────────────────────────────────────────────────────────
 local function persistSetting(settingName, value)
 	if SettingsPersistenceEvent then
 		SettingsPersistenceEvent:FireServer(settingName, value)
@@ -99,24 +144,14 @@ local function getSavedSetting(settingName)
 	return player:GetAttribute(SETTINGS_ATTRIBUTES[settingName])
 end
 
-
--- ✅ ENSURE UISCALE EXISTS
-local uiScale = window:FindFirstChildOfClass("UIScale")
-if not uiScale then
-	uiScale = Instance.new("UIScale")
-	uiScale.Parent = window
-end
-
--- ✅ FORCE CENTER ANCHORING
-window.AnchorPoint = Vector2.new(0.5, 0.5)
-window.Position = UDim2.new(0.5, 0, 0.5, 0)
-
--- 🟢 HIDE/RESTORE OTHER GUIS
+-- ─────────────────────────────────────────────────────────────
+-- HIDE / RESTORE OTHER GUIS WHILE SETTINGS IS OPEN
+-- ─────────────────────────────────────────────────────────────
 local function setOtherGuisEnabled(enabled)
 	for _, gui in ipairs(playerGui:GetDescendants()) do
 		if gui:IsA("ScreenGui") and gui ~= screenGui and gui.Name ~= "TouchGui" then
-			if enabled == false then
-				if gui.Enabled == true then
+			if not enabled then
+				if gui.Enabled then
 					gui:SetAttribute("WasEnabled", true)
 					gui.Enabled = false
 				end
@@ -131,157 +166,144 @@ local function setOtherGuisEnabled(enabled)
 	end
 end
 
--- ✅ SYNC BUTTON VISUALS FROM LIVE ATTRIBUTE VALUES
+-- ─────────────────────────────────────────────────────────────
+-- SYNC ALL BUTTON VISUALS FROM CURRENT ATTRIBUTE VALUES
+-- ─────────────────────────────────────────────────────────────
 local function syncButtonStates()
-	local lodEnabled = workspace:GetAttribute("CarLODEnabled")
-	btnLODOn.Visible = lodEnabled ~= true
-	btnLODOff.Visible = lodEnabled == true
+	local musicMuted = SoundService:GetAttribute("MusicMuted") == true
+	btnMusicOn.Visible  = not musicMuted
+	btnMusicOff.Visible = musicMuted
 
-	local animEnabled = workspace:GetAttribute("CarAnimationEnabled")
-	btnAnimOn.Visible = animEnabled == true
-	btnAnimOff.Visible = animEnabled ~= true
+	local sfxMuted = SoundService:GetAttribute("SFXMuted") == true
+	btnSFXOn.Visible  = not sfxMuted
+	btnSFXOff.Visible = sfxMuted
 
-	local musicMuted = SoundService:GetAttribute("MusicMuted")
-	btnMusicOn.Visible = not (musicMuted == true)
-	btnMusicOff.Visible = musicMuted == true
+	local lodEnabled = workspace:GetAttribute("CarLODEnabled") == true
+	btnLODOn.Visible  = not lodEnabled
+	btnLODOff.Visible = lodEnabled
 
-	local sfxMuted = SoundService:GetAttribute("SFXMuted")
-	btnSFXOn.Visible = not (sfxMuted == true)
-	btnSFXOff.Visible = sfxMuted == true
+	local animEnabled = workspace:GetAttribute("CarAnimationEnabled") == true
+	btnAnimOn.Visible  = animEnabled
+	btnAnimOff.Visible = not animEnabled
 
-	local realTimeShadowsEnabled = workspace:GetAttribute("RealTimeShadowsEnabled")
-	btnRealTimeShadowsOn.Visible = realTimeShadowsEnabled == true
-	btnRealTimeShadowsOff.Visible = realTimeShadowsEnabled ~= true
+	local shadowsEnabled = workspace:GetAttribute("RealTimeShadowsEnabled") == true
+	btnRealTimeShadowsOn.Visible  = shadowsEnabled
+	btnRealTimeShadowsOff.Visible = not shadowsEnabled
 
-	local potatoModeEnabled = workspace:GetAttribute("PotatoModeEnabled")
-	btnPotatoModeOn.Visible = potatoModeEnabled == true
-	btnPotatoModeOff.Visible = potatoModeEnabled ~= true
+	local potatoEnabled = workspace:GetAttribute("PotatoModeEnabled") == true
+	btnPotatoModeOn.Visible  = potatoEnabled
+	btnPotatoModeOff.Visible = not potatoEnabled
 end
 
--- 🟢 WINDOW VISIBILITY (Centered Pop Open / Instant Close)
-local currentTween = nil
+-- ─────────────────────────────────────────────────────────────
+-- WINDOW OPEN / CLOSE
+-- ─────────────────────────────────────────────────────────────
+local currentOpenTween = nil
 
 local function setWindowVisible(isOpen)
-	if currentTween then
-		currentTween:Cancel()
-		currentTween = nil
+	if currentOpenTween then
+		currentOpenTween:Cancel()
+		currentOpenTween = nil
 	end
-
-	local A = CONFIG.Anim
 
 	if isOpen then
 		syncButtonStates()
-		window.Visible = true
+		window.Visible     = true
 		openButton.Visible = false
-		uiScale.Scale = A.StartScale
-		UIAudioConfig.PlayClick()
 		setOtherGuisEnabled(false)
 
-		local info = TweenInfo.new(A.OpenTime, A.EasingStyle, Enum.EasingDirection.Out)
-		currentTween = TweenService:Create(uiScale, info, { Scale = 1 })
-		currentTween:Play()
+		if windowUIScale then
+			windowUIScale.Scale = 0
+			currentOpenTween = TweenService:Create(windowUIScale, OPEN_TWEEN_INFO, { Scale = 1 })
+			currentOpenTween:Play()
+		end
 	else
-		UIAudioConfig.PlayClick()
-
-		window.Visible = false
+		window.Visible     = false
 		openButton.Visible = true
-		uiScale.Scale = 1
-
+		if windowUIScale then windowUIScale.Scale = 1 end
 		setOtherGuisEnabled(true)
 	end
 end
 
--- 🎵 MUSIC TOGGLE LOGIC
+-- ─────────────────────────────────────────────────────────────
+-- MUSIC TOGGLE
+-- ─────────────────────────────────────────────────────────────
 local function setMusicMuted(shouldBeMuted, shouldPersist)
-	btnMusicOn.Visible = not shouldBeMuted
+	btnMusicOn.Visible  = not shouldBeMuted
 	btnMusicOff.Visible = shouldBeMuted
 
 	SoundService:SetAttribute("MusicMuted", shouldBeMuted)
-	if shouldPersist ~= false then
-		persistSetting("MusicMuted", shouldBeMuted)
-	end
+	if shouldPersist ~= false then persistSetting("MusicMuted", shouldBeMuted) end
 
-	local vol = shouldBeMuted and 0 or CONFIG.DefaultVolume
+	local vol = shouldBeMuted and 0 or DEFAULT_VOLUME
 	if gameTheme then gameTheme.Volume = vol end
 
 	local shopMusic = SoundService:FindFirstChild("ShopMusic_Internal")
 	if shopMusic then shopMusic.Volume = vol end
-
-	if window.Visible then
-		UIAudioConfig.PlayClick()
-	end
 end
 
--- ⚡ LOD TOGGLE LOGIC
+-- ─────────────────────────────────────────────────────────────
+-- SFX TOGGLE
+-- ─────────────────────────────────────────────────────────────
+local function setSFXMuted(shouldBeMuted, shouldPersist)
+	btnSFXOn.Visible  = not shouldBeMuted
+	btnSFXOff.Visible = shouldBeMuted
+
+	SoundService:SetAttribute("SFXMuted", shouldBeMuted)
+	if shouldPersist ~= false then persistSetting("SFXMuted", shouldBeMuted) end
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- LOD TOGGLE
+-- ─────────────────────────────────────────────────────────────
 local function setLODEnabled(isEnabled, shouldPersist)
-	btnLODOn.Visible = not isEnabled
+	btnLODOn.Visible  = not isEnabled
 	btnLODOff.Visible = isEnabled
 
 	workspace:SetAttribute("CarLODEnabled", isEnabled)
-	if shouldPersist ~= false then
-		persistSetting("CarLODEnabled", isEnabled)
-	end
-
-	if window.Visible then
-		UIAudioConfig.PlayClick()
-	end
+	if shouldPersist ~= false then persistSetting("CarLODEnabled", isEnabled) end
 end
 
--- ⚡ ANIMATION TOGGLE LOGIC
+-- ─────────────────────────────────────────────────────────────
+-- CAR ANIMATION TOGGLE
+-- ─────────────────────────────────────────────────────────────
 local function setAnimationEnabled(isEnabled, shouldPersist)
-	btnAnimOn.Visible = isEnabled
+	btnAnimOn.Visible  = isEnabled
 	btnAnimOff.Visible = not isEnabled
 
 	workspace:SetAttribute("CarAnimationEnabled", isEnabled)
-	if shouldPersist ~= false then
-		persistSetting("CarAnimationEnabled", isEnabled)
-	end
-
-	if window.Visible then
-		UIAudioConfig.PlayClick()
-	end
+	if shouldPersist ~= false then persistSetting("CarAnimationEnabled", isEnabled) end
 end
 
--- 🔊 SFX TOGGLE LOGIC
-local SHADOWS_TRACKED_ATTRIBUTE = "OriginalCastShadow"
-local potatoModeTaskToken = 0
-local potatoModeStorage = workspace:FindFirstChild("PotatoModeStorage")
-if not potatoModeStorage then
-	potatoModeStorage = Instance.new("Folder")
-	potatoModeStorage.Name = "PotatoModeStorage"
-	potatoModeStorage.Parent = workspace
-end
-
-local function syncRealTimeShadowsButtons(isEnabled)
-	btnRealTimeShadowsOn.Visible = isEnabled
-	btnRealTimeShadowsOff.Visible = not isEnabled
-end
-
-local function syncPotatoModeButtons(isEnabled)
-	btnPotatoModeOn.Visible = isEnabled
-	btnPotatoModeOff.Visible = not isEnabled
-end
+-- ─────────────────────────────────────────────────────────────
+-- REAL-TIME SHADOWS TOGGLE
+-- ─────────────────────────────────────────────────────────────
+local shadowsEverDisabled = false
 
 local function enforcePartShadowState(part, shadowsEnabled)
-	if part:GetAttribute(SHADOWS_TRACKED_ATTRIBUTE) == nil then
-		part:SetAttribute(SHADOWS_TRACKED_ATTRIBUTE, part.CastShadow)
+	if part:GetAttribute(ORIGINAL_SHADOW_ATTR) == nil then
+		part:SetAttribute(ORIGINAL_SHADOW_ATTR, part.CastShadow)
 	end
-
 	if shadowsEnabled then
-		local originalCastShadow = part:GetAttribute(SHADOWS_TRACKED_ATTRIBUTE)
-		if type(originalCastShadow) == "boolean" then
-			part.CastShadow = originalCastShadow
+		local original = part:GetAttribute(ORIGINAL_SHADOW_ATTR)
+		if type(original) == "boolean" then
+			part.CastShadow = original
 		end
 	else
 		part.CastShadow = false
 	end
 end
 
-local function applyRealTimeShadowsState(isEnabled)
-	for _, descendant in ipairs(workspace:GetDescendants()) do
+local function applyRealTimeShadowsProgressive(isEnabled)
+	if isEnabled and not shadowsEverDisabled then return end
+	shadowsEverDisabled = true
+
+	local descendants = workspace:GetDescendants()
+	for i, descendant in ipairs(descendants) do
 		if descendant:IsA("BasePart") then
 			enforcePartShadowState(descendant, isEnabled)
 		end
+		if i % 50 == 0 then task.wait() end
 	end
 end
 
@@ -293,173 +315,93 @@ workspace.DescendantAdded:Connect(function(descendant)
 end)
 
 local function setRealTimeShadowsEnabled(isEnabled, shouldPersist)
-	syncRealTimeShadowsButtons(isEnabled)
+	btnRealTimeShadowsOn.Visible  = isEnabled
+	btnRealTimeShadowsOff.Visible = not isEnabled
 
 	workspace:SetAttribute("RealTimeShadowsEnabled", isEnabled)
-	if shouldPersist ~= false then
-		persistSetting("RealTimeShadowsEnabled", isEnabled)
-	end
+	if shouldPersist ~= false then persistSetting("RealTimeShadowsEnabled", isEnabled) end
 
-	applyRealTimeShadowsState(isEnabled)
+	task.spawn(applyRealTimeShadowsProgressive, isEnabled)
 end
 
-local function ensurePotatoModeFolders()
-	local removalFolder = workspace:FindFirstChild("PotatoModeRemoval")
-	if not removalFolder then
-		warn("[SettingsClient] Workspace.PotatoModeRemoval is missing; Potato Mode cannot be applied.")
-		return nil, nil
-	end
+-- ─────────────────────────────────────────────────────────────
+-- POTATO MODE TOGGLE
+-- ─────────────────────────────────────────────────────────────
+local potatoTaskToken = 0
 
-	local storageFolder = potatoModeStorage:FindFirstChild("Hidden")
-	if not storageFolder then
-		storageFolder = Instance.new("Folder")
-		storageFolder.Name = "Hidden"
-		storageFolder.Parent = potatoModeStorage
-	end
-
-	return removalFolder, storageFolder
-end
-
-local function progressivelyMoveChildren(sourceFolder, targetFolder, taskToken)
-	local children = sourceFolder:GetChildren()
-	for i = 1, #children do
-		if potatoModeTaskToken ~= taskToken then
-			return
-		end
-		children[i].Parent = targetFolder
-		if i % 10 == 0 then
-			task.wait()
-		end
+local function progressiveMoveChildren(source, target, token)
+	for i, child in ipairs(source:GetChildren()) do
+		if potatoTaskToken ~= token then return end
+		child.Parent = target
+		if i % 10 == 0 then task.wait() end
 	end
 end
 
 local function setPotatoModeEnabled(isEnabled, shouldPersist)
-	syncPotatoModeButtons(isEnabled)
+	btnPotatoModeOn.Visible  = isEnabled
+	btnPotatoModeOff.Visible = not isEnabled
 
 	workspace:SetAttribute("PotatoModeEnabled", isEnabled)
-	if shouldPersist ~= false then
-		persistSetting("PotatoModeEnabled", isEnabled)
-	end
+	if shouldPersist ~= false then persistSetting("PotatoModeEnabled", isEnabled) end
 
-	potatoModeTaskToken += 1
-	local currentToken = potatoModeTaskToken
-	local removalFolder, storageFolder = ensurePotatoModeFolders()
-	if not removalFolder or not storageFolder then
+	local removalFolder = workspace:FindFirstChild("PotatoModeRemoval")
+	if not removalFolder then
+		warn("[Settings] Workspace.PotatoModeRemoval is missing — Potato Mode cannot function.")
 		return
 	end
 
+	potatoTaskToken += 1
+	local token = potatoTaskToken
+
 	if isEnabled then
-		task.spawn(progressivelyMoveChildren, removalFolder, storageFolder, currentToken)
+		task.spawn(progressiveMoveChildren, removalFolder, potatoHidden,  token)
 	else
-		task.spawn(progressivelyMoveChildren, storageFolder, removalFolder, currentToken)
+		task.spawn(progressiveMoveChildren, potatoHidden,  removalFolder, token)
 	end
 end
 
-local function setSFXMuted(shouldBeMuted, shouldPersist)
-	btnSFXOn.Visible = not shouldBeMuted
-	btnSFXOff.Visible = shouldBeMuted
+-- ─────────────────────────────────────────────────────────────
+-- BUTTON SETUP
+-- Uses the same shared hover/click feedback module as TeleportFunctionClient.
+-- ─────────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
+-- WIRE UP ALL BUTTONS
+-- ─────────────────────────────────────────────────────────────
+UIButtonUtils.SetupButton(openButton,  function() setWindowVisible(true)  end)
+UIButtonUtils.SetupButton(closeButton, function() setWindowVisible(false) end)
 
-	SoundService:SetAttribute("SFXMuted", shouldBeMuted)
-	if shouldPersist ~= false then
-		persistSetting("SFXMuted", shouldBeMuted)
-	end
+UIButtonUtils.SetupButton(btnMusicOn,  function() setMusicMuted(true)  end)
+UIButtonUtils.SetupButton(btnMusicOff, function() setMusicMuted(false) end)
 
-	if window.Visible and not shouldBeMuted then
-		UIAudioConfig.PlayClick()
-	end
-end
+UIButtonUtils.SetupButton(btnSFXOn,  function() setSFXMuted(true)  end)
+UIButtonUtils.SetupButton(btnSFXOff, function() setSFXMuted(false) end)
 
-local function setupButton(btn, onClick)
-	if not btn or not btn:IsA("GuiButton") then return end
+UIButtonUtils.SetupButton(btnLODOn,  function() setLODEnabled(true)  end)
+UIButtonUtils.SetupButton(btnLODOff, function() setLODEnabled(false) end)
 
-	local uiScale = btn:FindFirstChildOfClass("UIScale")
-	if not uiScale then
-		uiScale       = Instance.new("UIScale")
-		uiScale.Scale = 1.0
-		uiScale.Parent = btn
-	end
+UIButtonUtils.SetupButton(btnAnimOn,  function() setAnimationEnabled(false) end)
+UIButtonUtils.SetupButton(btnAnimOff, function() setAnimationEnabled(true)  end)
 
-	local UIAudioConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("UIAudioConfig"))
+UIButtonUtils.SetupButton(btnRealTimeShadowsOn,  function() setRealTimeShadowsEnabled(false) end)
+UIButtonUtils.SetupButton(btnRealTimeShadowsOff, function() setRealTimeShadowsEnabled(true)  end)
 
-	local isHovering = false
-	local isPressed  = false
-	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
-	local function updateScale()
-		local target = 1.0
-		if isPressed      then target = 0.95
-		elseif isHovering then target = 1.05
-		end
-		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
-	end
+UIButtonUtils.SetupButton(btnPotatoModeOn,  function() setPotatoModeEnabled(false) end)
+UIButtonUtils.SetupButton(btnPotatoModeOff, function() setPotatoModeEnabled(true)  end)
 
-	btn.MouseEnter:Connect(function()
-		isHovering = true
-		UIAudioConfig.PlayHover()
-		updateScale()
-	end)
-	btn.MouseLeave:Connect(function()
-		isHovering = false
-		isPressed = false
-		updateScale()
-	end)
-	btn.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = true
-			updateScale()
-		end
-	end)
-	btn.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = false
-			updateScale()
-		end
-	end)
-
-	btn.MouseButton1Click:Connect(function()
-		UIAudioConfig.PlayClick()
-		if onClick then onClick() end
-	end)
-end
-
--- 🚀 INITIALIZATION
-setupButton(openButton, function() setWindowVisible(true) end)
-setupButton(closeButton, function() setWindowVisible(false) end)
-
--- Connect Music Buttons
-setupButton(btnMusicOn, function() setMusicMuted(true) end)
-setupButton(btnMusicOff, function() setMusicMuted(false) end)
-
--- Connect SFX Buttons
-setupButton(btnSFXOn, function() setSFXMuted(true) end)
-setupButton(btnSFXOff, function() setSFXMuted(false) end)
-
--- Connect Performance Buttons
-setupButton(btnLODOn, function() setLODEnabled(true) end)
-setupButton(btnLODOff, function() setLODEnabled(false) end)
-
-setupButton(btnAnimOn, function() setAnimationEnabled(false) end)
-setupButton(btnAnimOff, function() setAnimationEnabled(true) end)
-setupButton(btnRealTimeShadowsOn, function() setRealTimeShadowsEnabled(false) end)
-setupButton(btnRealTimeShadowsOff, function() setRealTimeShadowsEnabled(true) end)
-setupButton(btnPotatoModeOn, function() setPotatoModeEnabled(false) end)
-setupButton(btnPotatoModeOff, function() setPotatoModeEnabled(true) end)
-
+-- ─────────────────────────────────────────────────────────────
+-- SAVED SETTINGS LOADER
+-- ─────────────────────────────────────────────────────────────
 local function applySettingFromSavedValue(settingName)
-	local savedValue = getSavedSetting(settingName)
-	if savedValue == nil then return false end
+	local value = getSavedSetting(settingName)
+	if value == nil then return false end
 
-	if settingName == "CarLODEnabled" then
-		setLODEnabled(savedValue == true, false)
-	elseif settingName == "CarAnimationEnabled" then
-		setAnimationEnabled(savedValue == true, false)
-	elseif settingName == "MusicMuted" then
-		setMusicMuted(savedValue == true, false)
-	elseif settingName == "SFXMuted" then
-		setSFXMuted(savedValue == true, false)
-	elseif settingName == "RealTimeShadowsEnabled" then
-		setRealTimeShadowsEnabled(savedValue == true, false)
-	elseif settingName == "PotatoModeEnabled" then
-		setPotatoModeEnabled(savedValue == true, false)
+	local v = value == true
+	if     settingName == "MusicMuted"             then setMusicMuted(v, false)
+	elseif settingName == "SFXMuted"               then setSFXMuted(v, false)
+	elseif settingName == "CarLODEnabled"          then setLODEnabled(v, false)
+	elseif settingName == "CarAnimationEnabled"    then setAnimationEnabled(v, false)
+	elseif settingName == "RealTimeShadowsEnabled" then setRealTimeShadowsEnabled(v, false)
+	elseif settingName == "PotatoModeEnabled"      then setPotatoModeEnabled(v, false)
 	end
 
 	return true
@@ -471,30 +413,15 @@ for settingName, attributeName in pairs(SETTINGS_ATTRIBUTES) do
 	end)
 end
 
-if not applySettingFromSavedValue("CarLODEnabled") and workspace:GetAttribute("CarLODEnabled") == nil then
-	setLODEnabled(false, false)       -- Default: LOD OFF
-end
-
-if not applySettingFromSavedValue("CarAnimationEnabled") and workspace:GetAttribute("CarAnimationEnabled") == nil then
-	setAnimationEnabled(true, false) -- Default: Animation ON
-end
-
-if not applySettingFromSavedValue("MusicMuted") and SoundService:GetAttribute("MusicMuted") == nil then
-	setMusicMuted(false, false)       -- Default: Music ON
-end
-
-if not applySettingFromSavedValue("SFXMuted") and SoundService:GetAttribute("SFXMuted") == nil then
-	setSFXMuted(false, false)         -- Default: SFX ON
-end
-
--- Default window state
-window.Visible = false
+-- ─────────────────────────────────────────────────────────────
+-- INITIALISE — all features default ON; saved value wins if present
+-- ─────────────────────────────────────────────────────────────
+window.Visible     = false
 openButton.Visible = true
 
-if not applySettingFromSavedValue("RealTimeShadowsEnabled") and workspace:GetAttribute("RealTimeShadowsEnabled") == nil then
-	setRealTimeShadowsEnabled(true, false) -- Default: Shadows ON
-end
-
-if not applySettingFromSavedValue("PotatoModeEnabled") and workspace:GetAttribute("PotatoModeEnabled") == nil then
-	setPotatoModeEnabled(false, false) -- Default: Potato Mode OFF
-end
+if not applySettingFromSavedValue("MusicMuted")             then setMusicMuted(false, false)            end -- Music ON
+if not applySettingFromSavedValue("SFXMuted")               then setSFXMuted(false, false)              end -- SFX ON
+if not applySettingFromSavedValue("CarLODEnabled")          then setLODEnabled(true, false)             end -- LOD ON
+if not applySettingFromSavedValue("CarAnimationEnabled")    then setAnimationEnabled(true, false)       end -- Animations ON
+if not applySettingFromSavedValue("RealTimeShadowsEnabled") then setRealTimeShadowsEnabled(true, false) end -- Shadows ON
+if not applySettingFromSavedValue("PotatoModeEnabled")      then setPotatoModeEnabled(false, false)     end -- Potato Mode OFF
