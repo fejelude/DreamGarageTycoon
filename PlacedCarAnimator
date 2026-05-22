@@ -105,7 +105,7 @@ RunService.RenderStepped:Connect(function(dt)
 	local t = time()
 
 	local lodEnabled = Workspace:GetAttribute("CarLODEnabled") == true
-	local animEnabled = Workspace:GetAttribute("CarAnimationEnabled") == true
+	local animEnabled = Workspace:GetAttribute("CarAnimationEnabled") ~= false
 
 	local currentCamera = Workspace.CurrentCamera
 	local camPos = currentCamera and currentCamera.CFrame.Position or Vector3.new()

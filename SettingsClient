@@ -182,7 +182,7 @@ local function syncButtonStates()
 	btnLODOn.Visible  = not lodEnabled
 	btnLODOff.Visible = lodEnabled
 
-	local animEnabled = workspace:GetAttribute("CarAnimationEnabled") == true
+	local animEnabled = workspace:GetAttribute("CarAnimationEnabled") ~= false
 	btnAnimOn.Visible  = animEnabled
 	btnAnimOff.Visible = not animEnabled
 
@@ -191,8 +191,8 @@ local function syncButtonStates()
 	btnRealTimeShadowsOff.Visible = not shadowsEnabled
 
 	local potatoEnabled = workspace:GetAttribute("PotatoModeEnabled") == true
-	btnPotatoModeOn.Visible  = potatoEnabled
-	btnPotatoModeOff.Visible = not potatoEnabled
+	btnPotatoModeOn.Visible  = not potatoEnabled
+	btnPotatoModeOff.Visible = potatoEnabled
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -229,6 +229,12 @@ end
 -- MUSIC TOGGLE
 -- ─────────────────────────────────────────────────────────────
 local function setMusicMuted(shouldBeMuted, shouldPersist)
+	if SoundService:GetAttribute("MusicMuted") == shouldBeMuted then
+		btnMusicOn.Visible  = not shouldBeMuted
+		btnMusicOff.Visible = shouldBeMuted
+		return
+	end
+
 	btnMusicOn.Visible  = not shouldBeMuted
 	btnMusicOff.Visible = shouldBeMuted
 
@@ -246,6 +252,12 @@ end
 -- SFX TOGGLE
 -- ─────────────────────────────────────────────────────────────
 local function setSFXMuted(shouldBeMuted, shouldPersist)
+	if SoundService:GetAttribute("SFXMuted") == shouldBeMuted then
+		btnSFXOn.Visible  = not shouldBeMuted
+		btnSFXOff.Visible = shouldBeMuted
+		return
+	end
+
 	btnSFXOn.Visible  = not shouldBeMuted
 	btnSFXOff.Visible = shouldBeMuted
 
@@ -257,6 +269,12 @@ end
 -- LOD TOGGLE
 -- ─────────────────────────────────────────────────────────────
 local function setLODEnabled(isEnabled, shouldPersist)
+	if workspace:GetAttribute("CarLODEnabled") == isEnabled then
+		btnLODOn.Visible  = not isEnabled
+		btnLODOff.Visible = isEnabled
+		return
+	end
+
 	btnLODOn.Visible  = not isEnabled
 	btnLODOff.Visible = isEnabled
 
@@ -268,6 +286,12 @@ end
 -- CAR ANIMATION TOGGLE
 -- ─────────────────────────────────────────────────────────────
 local function setAnimationEnabled(isEnabled, shouldPersist)
+	if workspace:GetAttribute("CarAnimationEnabled") == isEnabled then
+		btnAnimOn.Visible  = isEnabled
+		btnAnimOff.Visible = not isEnabled
+		return
+	end
+
 	btnAnimOn.Visible  = isEnabled
 	btnAnimOff.Visible = not isEnabled
 
@@ -279,6 +303,7 @@ end
 -- REAL-TIME SHADOWS TOGGLE
 -- ─────────────────────────────────────────────────────────────
 local shadowsEverDisabled = false
+local shadowsTaskToken = 0
 
 local function enforcePartShadowState(part, shadowsEnabled)
 	if part:GetAttribute(ORIGINAL_SHADOW_ATTR) == nil then
@@ -294,12 +319,13 @@ local function enforcePartShadowState(part, shadowsEnabled)
 	end
 end
 
-local function applyRealTimeShadowsProgressive(isEnabled)
+local function applyRealTimeShadowsProgressive(isEnabled, token)
 	if isEnabled and not shadowsEverDisabled then return end
 	shadowsEverDisabled = true
 
 	local descendants = workspace:GetDescendants()
 	for i, descendant in ipairs(descendants) do
+		if shadowsTaskToken ~= token then return end
 		if descendant:IsA("BasePart") then
 			enforcePartShadowState(descendant, isEnabled)
 		end
@@ -315,13 +341,21 @@ workspace.DescendantAdded:Connect(function(descendant)
 end)
 
 local function setRealTimeShadowsEnabled(isEnabled, shouldPersist)
+	if workspace:GetAttribute("RealTimeShadowsEnabled") == isEnabled then
+		btnRealTimeShadowsOn.Visible  = isEnabled
+		btnRealTimeShadowsOff.Visible = not isEnabled
+		return
+	end
+
 	btnRealTimeShadowsOn.Visible  = isEnabled
 	btnRealTimeShadowsOff.Visible = not isEnabled
 
 	workspace:SetAttribute("RealTimeShadowsEnabled", isEnabled)
 	if shouldPersist ~= false then persistSetting("RealTimeShadowsEnabled", isEnabled) end
 
-	task.spawn(applyRealTimeShadowsProgressive, isEnabled)
+	shadowsTaskToken += 1
+	local token = shadowsTaskToken
+	task.spawn(applyRealTimeShadowsProgressive, isEnabled, token)
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -338,8 +372,14 @@ local function progressiveMoveChildren(source, target, token)
 end
 
 local function setPotatoModeEnabled(isEnabled, shouldPersist)
-	btnPotatoModeOn.Visible  = isEnabled
-	btnPotatoModeOff.Visible = not isEnabled
+	if workspace:GetAttribute("PotatoModeEnabled") == isEnabled then
+		btnPotatoModeOn.Visible  = not isEnabled
+		btnPotatoModeOff.Visible = isEnabled
+		return
+	end
+
+	btnPotatoModeOn.Visible  = not isEnabled
+	btnPotatoModeOff.Visible = isEnabled
 
 	workspace:SetAttribute("PotatoModeEnabled", isEnabled)
 	if shouldPersist ~= false then persistSetting("PotatoModeEnabled", isEnabled) end
@@ -385,8 +425,8 @@ UIButtonUtils.SetupButton(btnAnimOff, function() setAnimationEnabled(true)  end)
 UIButtonUtils.SetupButton(btnRealTimeShadowsOn,  function() setRealTimeShadowsEnabled(false) end)
 UIButtonUtils.SetupButton(btnRealTimeShadowsOff, function() setRealTimeShadowsEnabled(true)  end)
 
-UIButtonUtils.SetupButton(btnPotatoModeOn,  function() setPotatoModeEnabled(false) end)
-UIButtonUtils.SetupButton(btnPotatoModeOff, function() setPotatoModeEnabled(true)  end)
+UIButtonUtils.SetupButton(btnPotatoModeOn,  function() setPotatoModeEnabled(true)  end)
+UIButtonUtils.SetupButton(btnPotatoModeOff, function() setPotatoModeEnabled(false) end)
 
 -- ─────────────────────────────────────────────────────────────
 -- SAVED SETTINGS LOADER
