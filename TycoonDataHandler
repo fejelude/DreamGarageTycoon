@@ -85,6 +85,7 @@ local MAX_RETRIES = 3
 local MAX_INVENTORY_SIZE = 500
 local DEFAULT_CAR_STORAGE_LIMIT = 5
 local MAX_LAYOUT_SIZE = 200
+local SETTINGS_SCHEMA_VERSION = 2
 local STARTER_CAR_NAME = "Delta Item"
 local SETTINGS_REMOTE_NAME = "SettingsPersistenceEvent"
 
@@ -1049,6 +1050,7 @@ local function save(player, isClosing)
 					oldData.BankTransferLimitResetAt = currentTransferResetAt
 					oldData.Rebirth = currentRebirth
 					oldData.Settings = currentSettings
+					oldData.SettingsVersion = SETTINGS_SCHEMA_VERSION
 
 					oldData.LastUpdated  = os.time()
 					oldData.DataVersion  = "V38_Fixed"
@@ -1171,7 +1173,7 @@ local function InitializePlayer(player)
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player", RankData = {},
-		Settings = DEFAULT_PLAYER_SETTINGS, Rebirth = 0
+		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0
 	}
 
 	data.Inventory              = data.Inventory              or {}
@@ -1190,7 +1192,16 @@ local function InitializePlayer(player)
 	data.BankTransferLimitUsed  = data.BankTransferLimitUsed  or 0
 	data.BankTransferLimitResetAt = data.BankTransferLimitResetAt or 0
 	data.Rebirth = math.max(0, math.floor(tonumber(data.Rebirth) or 0))
+	data.SettingsVersion = math.max(0, math.floor(tonumber(data.SettingsVersion) or 0))
 	data.Settings = sanitizeSettings(data.Settings)
+
+	-- Migration: older saves could carry CarAnimationEnabled=false as a historical default
+	-- rather than an explicit player choice. On first settings schema upgrade, normalize
+	-- the default to ON so users only have animation disabled when they explicitly choose it.
+	if data.SettingsVersion < SETTINGS_SCHEMA_VERSION then
+		data.Settings.CarAnimationEnabled = true
+		data.SettingsVersion = SETTINGS_SCHEMA_VERSION
+	end
 
 	local function sanitizeMoney(value)
 		value = tonumber(value) or 0
