@@ -16,6 +16,7 @@ local ContentProvider      = game:GetService("ContentProvider")
 local ContextActionService = game:GetService("ContextActionService")
 local Lighting             = game:GetService("Lighting")
 local ReplicatedStorage    = game:GetService("ReplicatedStorage")
+local SoundService         = game:GetService("SoundService")
 
 ReplicatedFirst:RemoveDefaultLoadingScreen()
 
@@ -27,15 +28,10 @@ local VIEW_PART_NAME      = "LoadingViewPart"
 local VIEW_PART_TIMEOUT   = 10
 local PRELOAD_FOLDER_NAME = "PreloadAssets"
 local LOADING_TEXT_START  = " Loading "
-
-local DONE_OPTIONS = {
-	{ Text = "Done",      Color = Color3.fromRGB(85,  255, 127) },
-	{ Text = "Ready!",    Color = Color3.fromRGB(0,   255, 255) },
-	{ Text = "Let's Go",  Color = Color3.fromRGB(0, 255, 128) },  -- Neon Mint / Electric Green
-	{ Text = "Finally",   Color = Color3.fromRGB(255, 105, 180) },
-	{ Text = "Loaded",    Color = Color3.fromRGB(170, 255,   0) },
-	{ Text = "Success",   Color = Color3.fromRGB(100, 149, 237) },
-}
+local LOADING_SOUND_ID     = "rbxassetid://72475519841402"
+local LOADING_SOUND_FADE_IN = 1.8
+local LOADING_SOUND_HOLD_SECONDS = 120
+local THEME_FADE_IN_SECONDS = 2.0
 
 local ANIMATION_DURATION     = 5.5
 local BLUR_SIZE               = 20
@@ -248,32 +244,6 @@ progressValue.Value = 0
 
 local MAX_X_SCALE, MAX_X_OFFSET, Y_SCALE, Y_OFFSET
 
--- ── Rainbow helpers ──────────────────────────────────────────────────────────
--- Converts a Color3 to a "#RRGGBB" hex string for RichText font tags.
-local function color3ToHex(c: Color3): string
-	return string.format("#%02X%02X%02X",
-		math.floor(c.R * 255 + 0.5),
-		math.floor(c.G * 255 + 0.5),
-		math.floor(c.B * 255 + 0.5)
-	)
-end
-
--- Maps the progress value directly to a colour across the visible spectrum:
---   1%  → red
---   ~15% → orange
---   ~30% → yellow
---   ~50% → green
---   ~65% → cyan
---   ~80% → blue
---   99% → violet
--- No time loop — every percentage number has its own fixed rainbow colour.
-local function progressToRainbowHex(clamped: number): string
-	local t   = math.clamp((clamped - 0.05) / (0.99 - 0.05), 0, 1)
-	local hue = t * 0.85  -- 0 (red) → 0.85 (violet); avoids looping back to red
-	return color3ToHex(Color3.fromHSV(hue, 1, 1))
-end
--- ─────────────────────────────────────────────────────────────────────────────
-
 local function updateProgressBar(v)
 	if not barFill then return end
 	local clamped = math.clamp(v, 0, 1)
@@ -284,32 +254,15 @@ local function updateProgressBar(v)
 
 	if progressText and progressText:IsA("TextLabel") then
 		if clamped <= 0.05 then
-			-- "Loading …" — plain text, no RichText needed
 			progressText.RichText   = false
 			progressText.Text       = LOADING_TEXT_START
 			progressText.TextColor3 = Color3.new(1, 1, 1)
 
-		elseif clamped >= 0.99 then
-			-- Done label — coloured plain text
-			if not progressText:GetAttribute("DoneMsgSet") then
-				progressText.RichText   = false
-				local choice            = DONE_OPTIONS[math.random(1, #DONE_OPTIONS)]
-				progressText.Text       = choice.Text
-				progressText.TextColor3 = choice.Color
-				progressText:SetAttribute("DoneMsgSet", true)
-			end
-
 		else
-			-- Active percentage — colour is driven by the progress value itself.
-			-- 1% → red, ~50% → green/cyan, 99% → violet. The % sign stays white.
-			progressText.RichText   = true
+			progressText.RichText   = false
 			progressText.TextColor3 = Color3.new(1, 1, 1)
-			local hexColor = progressToRainbowHex(clamped)
 			local num      = math.floor(clamped * 100 + 0.5)
-			progressText.Text = string.format(
-				'<font color="%s">%d</font><font color="#FFFFFF">%%</font>',
-				hexColor, num
-			)
+			progressText.Text = string.format("%d%%", num)
 		end
 	end
 end
@@ -488,6 +441,21 @@ local function fadeToInvisible(duration: number)
 	end
 end
 
+local function getOrCreateMainTheme()
+	local existing = SoundService:FindFirstChild("MainTheme")
+	if existing and existing:IsA("Sound") then
+		return existing
+	end
+
+	local fromWorkspace = Workspace:FindFirstChild("MainTheme")
+	if fromWorkspace and fromWorkspace:IsA("Sound") then
+		fromWorkspace.Parent = SoundService
+		return fromWorkspace
+	end
+
+	return nil
+end
+
 -- Record initial transparency values, then make everything invisible
 for _, inst in ipairs(loadingGui:GetDescendants()) do recordProps(inst) end
 for inst in pairs(studioProps) do setInvisible(inst) end
@@ -497,6 +465,8 @@ for inst in pairs(studioProps) do setInvisible(inst) end
 -- ============================================================
 
 local finished = false
+local loadingMusic: Sound? = nil
+local transitionedToMainTheme = false
 
 local function cleanup()
 	if finished then return end
@@ -528,6 +498,20 @@ local function cleanup()
 	pcall(function() progressValue:Destroy() end)
 end
 
+local function transitionToMainTheme()
+	if transitionedToMainTheme then return end
+	transitionedToMainTheme = true
+
+	local theme = getOrCreateMainTheme()
+	if theme then
+		if not theme.IsPlaying then
+			theme.Volume = 0
+			theme:Play()
+		end
+		safeTween(theme, TweenInfo.new(THEME_FADE_IN_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), { Volume = 1 })
+	end
+end
+
 -- Failsafe: force cleanup after a maximum total time
 task.spawn(function()
 	local deadline = os.clock() + FAILSAFE_TOTAL_SECONDS
@@ -548,6 +532,15 @@ task.spawn(function()
 		enableMovementLock()
 		startHidingVisuals()
 		blurTo(BLUR_SIZE, BLUR_IN_TIME)
+		
+		loadingMusic = Instance.new("Sound")
+		loadingMusic.Name = "LoadingMusic"
+		loadingMusic.SoundId = LOADING_SOUND_ID
+		loadingMusic.Looped = true
+		loadingMusic.Volume = 0
+		loadingMusic.Parent = SoundService
+		loadingMusic:Play()
+		safeTween(loadingMusic, TweenInfo.new(LOADING_SOUND_FADE_IN, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), { Volume = 1 })
 
 		-- Slide the loading frame in from below
 		bgFrame.Visible    = true
@@ -620,8 +613,66 @@ task.spawn(function()
 
 		-- ── PHASE 4: Finish ───────────────────────────────────────────
 		tweenProgress(PHASE_FINISH_TO, 1.0).Completed:Wait()
-		task.wait(0.25)
-		task.wait(EXTRA_HOLD_SECONDS)
+		
+		local afterLoading = bgFrame:FindFirstChild("AfterLoading")
+		local clickButton = afterLoading and afterLoading:FindFirstChild("ClickButton")
+		local infoLabel = afterLoading and afterLoading:FindFirstChild("Information")
+		local infoStroke = infoLabel and infoLabel:FindFirstChildOfClass("UIStroke")
+		local infoInitialPos = infoLabel and infoLabel.Position
+		local clickedToStart = false
+
+		if clickButton and clickButton:IsA("GuiButton") then
+			clickButton.Visible = true
+			clickButton.Active = true
+			clickButton.AutoButtonColor = false
+		end
+		if infoLabel and infoLabel:IsA("TextLabel") then
+			infoLabel.Visible = true
+			infoLabel.TextTransparency = 1
+			if infoStroke then infoStroke.Transparency = 1 end
+			safeTween(infoLabel, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), { TextTransparency = 0 })
+			if infoStroke then
+				safeTween(infoStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), { Transparency = 0 })
+			end
+		end
+
+		local clickedEvent = Instance.new("BindableEvent")
+		local clickConn
+		if clickButton and clickButton:IsA("GuiButton") then
+			clickConn = clickButton.Activated:Connect(function()
+				if clickedToStart then return end
+				clickedToStart = true
+				clickedEvent:Fire()
+			end)
+		end
+
+		if clickButton and clickButton:IsA("GuiButton") then
+			clickedEvent.Event:Wait()
+		else
+			task.wait(0.25)
+			task.wait(EXTRA_HOLD_SECONDS)
+		end
+
+		if clickConn then clickConn:Disconnect() end
+		clickedEvent:Destroy()
+
+		if infoLabel and infoLabel:IsA("TextLabel") then
+			if infoInitialPos then
+				local upPos = UDim2.new(infoInitialPos.X.Scale, infoInitialPos.X.Offset, infoInitialPos.Y.Scale - 0.1, infoInitialPos.Y.Offset)
+				local downPos = UDim2.new(infoInitialPos.X.Scale, infoInitialPos.X.Offset, infoInitialPos.Y.Scale + 1, infoInitialPos.Y.Offset)
+				safeTween(infoLabel, TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), { Position = upPos }).Completed:Wait()
+				safeTween(infoLabel, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), { Position = downPos, TextTransparency = 1 }).Completed:Wait()
+			else
+				safeTween(infoLabel, TweenInfo.new(0.35, Enum.EasingStyle.Sine, Enum.EasingDirection.In), { TextTransparency = 1 }).Completed:Wait()
+			end
+		end
+		if infoStroke then
+			safeTween(infoStroke, TweenInfo.new(0.35, Enum.EasingStyle.Sine, Enum.EasingDirection.In), { Transparency = 1 })
+		end
+		if clickButton and clickButton:IsA("GuiButton") then
+			clickButton.Active = false
+			clickButton.Visible = false
+		end
 
 		-- Slide loading frame out upwards
 		local exitPos = UDim2.new(
@@ -641,6 +692,18 @@ task.spawn(function()
 		-- Wait for the UI exit animation to finish, then hand off to cleanup
 		task.wait(ANIMATION_DURATION)
 		cleanup()
+		
+		task.delay(LOADING_SOUND_HOLD_SECONDS, function()
+			if loadingMusic and loadingMusic.Parent then
+				safeTween(loadingMusic, TweenInfo.new(THEME_FADE_IN_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), { Volume = 0 })
+				task.wait(THEME_FADE_IN_SECONDS)
+				if loadingMusic and loadingMusic.Parent then
+					loadingMusic:Stop()
+					loadingMusic:Destroy()
+				end
+			end
+			transitionToMainTheme()
+		end)
 
 	end, debug.traceback)
 
