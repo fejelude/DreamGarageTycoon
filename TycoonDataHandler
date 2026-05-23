@@ -189,14 +189,40 @@ local function getCurrentSettings(player)
 	return settings
 end
 
-SettingsPersistenceEvent.OnServerEvent:Connect(function(player, settingName, value)
-	local attributeName = PLAYER_SETTING_ATTRIBUTES[settingName]
-	if not attributeName or type(value) ~= "boolean" then return end
+local function getSessionSettings(player)
+	local session = SessionData[player]
+	if session and type(session.SettingsState) == "table" then
+		return sanitizeSettings(session.SettingsState)
+	end
+	return getCurrentSettings(player)
+end
 
-	if player:GetAttribute(attributeName) ~= value then
-		player:SetAttribute(attributeName, value)
+local function setPlayerSetting(player, settingName, value, shouldMarkDirty)
+	local attributeName = PLAYER_SETTING_ATTRIBUTES[settingName]
+	if not attributeName or type(value) ~= "boolean" then
+		return false
+	end
+
+	local session = SessionData[player]
+	if session then
+		session.SettingsState = session.SettingsState or sanitizeSettings(nil)
+		if session.SettingsState[settingName] == value and player:GetAttribute(attributeName) == value then
+			return false
+		end
+		session.SettingsState[settingName] = value
+	end
+
+	player:SetAttribute(attributeName, value)
+
+	if shouldMarkDirty ~= false then
 		markDirty(player)
 	end
+
+	return true
+end
+
+SettingsPersistenceEvent.OnServerEvent:Connect(function(player, settingName, value)
+	setPlayerSetting(player, settingName, value, true)
 end)
 
 -- ----------------------------------------------------------------------------
@@ -840,7 +866,7 @@ local function save(player, isClosing)
 			currentHotbar[i] = (v and v ~= "") and v or ""
 		end
 
-		local currentSettings = getCurrentSettings(player)
+		local currentSettings = getSessionSettings(player)
 
 		local currentTransferUsed = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitUsed")) or 0))
 		local currentTransferResetAt = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitResetAt")) or 0))
@@ -1124,6 +1150,7 @@ local function InitializePlayer(player)
 		-- tool the player was holding when their character was removed.
 		-- Used as a fallback in save() if player.Character is already nil.
 		HeldToolId        = nil,
+		SettingsState     = sanitizeSettings(nil),
 	}
 
 	-- ✅ FIX (Held Tool Lost on Disconnect):
@@ -1213,7 +1240,8 @@ local function InitializePlayer(player)
 	wallet.Value = sanitizeMoney(data.Wallet)
 	atm.Value    = sanitizeMoney(data.ATMBalance)
 
-	applySettingsAttributes(player, data.Settings)
+	SessionData[player].SettingsState = sanitizeSettings(data.Settings)
+	applySettingsAttributes(player, SessionData[player].SettingsState)
 
 	local shopBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
 	if shopBindable then shopBindable:Invoke("Load", player, data.ShopPurchases) end
@@ -1278,7 +1306,20 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("BankTransferLimitResetAt"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rebirth"):Connect(setDirty)
 	for _, attributeName in pairs(PLAYER_SETTING_ATTRIBUTES) do
-		player:GetAttributeChangedSignal(attributeName):Connect(setDirty)
+		player:GetAttributeChangedSignal(attributeName):Connect(function()
+			local session = SessionData[player]
+			if not session then return end
+			for settingName, mappedAttribute in pairs(PLAYER_SETTING_ATTRIBUTES) do
+				if mappedAttribute == attributeName then
+					local value = player:GetAttribute(attributeName)
+					if type(value) == "boolean" then
+						session.SettingsState[settingName] = value
+					end
+					break
+				end
+			end
+			setDirty()
+		end)
 	end
 	for i = 1, 6 do
 		player:GetAttributeChangedSignal("HotbarSlot" .. i):Connect(setDirty)

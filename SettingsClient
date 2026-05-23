@@ -71,15 +71,12 @@ local btnPotatoModeOff = potatoModeFolder:WaitForChild("PotatoModeOff")
 -- ─────────────────────────────────────────────────────────────
 -- AUDIO / POTATO MODE REFERENCES
 -- ─────────────────────────────────────────────────────────────
-local gameTheme     = SoundService:WaitForChild("GameTheme", 5)
 local potatoStorage = screenGui:WaitForChild("PotatoModeStorage")
 local potatoHidden  = potatoStorage:WaitForChild("Hidden")
 
 -- ─────────────────────────────────────────────────────────────
 -- CONFIG
 -- ─────────────────────────────────────────────────────────────
-local DEFAULT_VOLUME = 0.5
-
 local OPEN_TWEEN_INFO = TweenInfo.new(1.0, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
 
 local SETTINGS_ATTRIBUTES = {
@@ -240,17 +237,6 @@ local function setMusicEnabled(isEnabled, shouldPersist)
 
 	if shouldPersist ~= false then
 		persistSetting("MusicMuted", shouldBeMuted)
-	end
-
-	local volume = isEnabled and DEFAULT_VOLUME or 0
-
-	if gameTheme then
-		gameTheme.Volume = volume
-	end
-
-	local shopMusic = SoundService:FindFirstChild("ShopMusic_Internal")
-	if shopMusic then
-		shopMusic.Volume = volume
 	end
 end
 
