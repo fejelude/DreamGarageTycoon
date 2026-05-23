@@ -527,6 +527,11 @@ local function PromptConfirmation(sessionId, text, callback)
 	local infoLabel = cMain:FindFirstChild("Information", true)
 	local btnYes    = resolveNamedConfirmationButton(cMain, "Yes",  { "Confirm", "Accept", "Okay", "Ok" })
 	local btnNo     = resolveNamedConfirmationButton(cMain, "No",   { "Cancel", "Decline", "Back", "Close" })
+	if not btnYes or not btnNo then
+		warn("⚠️ Confirmation UI buttons missing (Yes/No). Blocking action for safety.")
+		if isActiveShopSession(sessionId) then callback(false) end
+		return
+	end
 	if infoLabel then
 		pcall(function() infoLabel.RichText = true; infoLabel.TextWrapped = true; infoLabel.Text = text end)
 	end
@@ -1438,4 +1443,3 @@ else
 	player.CharacterAdded:Wait()
 	init()
 end
-

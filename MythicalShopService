@@ -469,16 +469,6 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 
 		if session.ActiveCrafts[carName]   then return false, "Crafting already in progress!" end
 
-		-- Cross-tier lock: ensure Legendary isn't actively crafting
-		if LegendaryPersistenceBindable then
-			local ok, legSession = safeInvoke(LegendaryPersistenceBindable, 2, "Get", player)
-			if ok and legSession and legSession.ActiveCrafts then
-				for _, _ in pairs(legSession.ActiveCrafts) do
-					return false, "You are already crafting a Legendary car!"
-				end
-			end
-		end
-
 		if session.CompletedCrafts[carName] then return false, "You already crafted this!"    end
 
 		local progress = session.CraftProgress[carName] or {}
@@ -619,4 +609,3 @@ end)
 -- Session cleanup is handled exclusively by PersistenceBindable "Close",
 -- which the data handler calls after a successful save. This guarantees
 -- "Get" always sees live session data before the session is torn down.
-
