@@ -55,7 +55,7 @@ local PRELOAD_ASSET_TIMEOUT = 2.5
 local LOADING_TEXT_START = " Loading "
 local LOADING_SOUND_ID = "rbxassetid://72475519841402"
 local LOADING_SOUND_FADE_IN = 1.8
-local LOADING_SOUND_HOLD_SECONDS = 120
+local LOADING_SOUND_HOLD_SECONDS = 30
 local MUSIC_TOGGLE_FADE_SECONDS = 0.45
 
 local MAIN_THEME_NAME = "MainTheme"
@@ -117,6 +117,7 @@ local musicHandoffDone = false
 local mainThemeTargetVolume = 1
 local loadingMusicTargetVolume = 1
 local activeMusicTween = nil
+local loadingMusicMuteConn = nil
 
 local function isAlive()
 	return state.alive and not state.cleaned
@@ -963,6 +964,11 @@ local function transitionToMainTheme()
 	end
 
 	SoundService:SetAttribute("LoadingMusicActive", false)
+
+	if loadingMusicMuteConn then
+		loadingMusicMuteConn:Disconnect()
+		loadingMusicMuteConn = nil
+	end
 end
 
 local function scheduleMusicHandoff(delaySeconds)
@@ -1282,7 +1288,10 @@ task.spawn(function()
 
 		prepareMainThemeForLater()
 		startLoadingMusic()
-		trackConnection(SoundService:GetAttributeChangedSignal("MusicMuted"):Connect(applyMusicMuteToLoading))
+		if loadingMusicMuteConn then
+			loadingMusicMuteConn:Disconnect()
+		end
+		loadingMusicMuteConn = SoundService:GetAttributeChangedSignal("MusicMuted"):Connect(applyMusicMuteToLoading)
 
 		blurTo(BLUR_SIZE, BLUR_IN_TIME)
 
