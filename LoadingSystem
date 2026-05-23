@@ -56,6 +56,7 @@ local LOADING_TEXT_START = " Loading "
 local LOADING_SOUND_ID = "rbxassetid://72475519841402"
 local LOADING_SOUND_FADE_IN = 1.8
 local LOADING_SOUND_HOLD_SECONDS = 120
+local MUSIC_TOGGLE_FADE_SECONDS = 0.45
 
 local MAIN_THEME_NAME = "MainTheme"
 local THEME_FADE_SECONDS = 2.0
@@ -114,6 +115,8 @@ local loadingMusic = nil
 local musicHandoffScheduled = false
 local musicHandoffDone = false
 local mainThemeTargetVolume = 1
+local loadingMusicTargetVolume = 1
+local activeMusicTween = nil
 
 local function isAlive()
 	return state.alive and not state.cleaned
@@ -875,6 +878,8 @@ local function startLoadingMusic()
 	loadingMusic.Looped = true
 	loadingMusic.Volume = 0
 	loadingMusic.Parent = SoundService
+	loadingMusicTargetVolume = (SoundService:GetAttribute("MusicMuted") == true) and 0 or 1
+	SoundService:SetAttribute("LoadingMusicActive", true)
 
 	pcall(function()
 		loadingMusic:Play()
@@ -883,7 +888,27 @@ local function startLoadingMusic()
 	safeTween(
 		loadingMusic,
 		TweenInfo.new(LOADING_SOUND_FADE_IN, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
-		{ Volume = 1 }
+		{ Volume = loadingMusicTargetVolume }
+	)
+end
+
+local function applyMusicMuteToLoading()
+	if not loadingMusic or not loadingMusic.Parent then
+		return
+	end
+
+	if activeMusicTween then
+		activeMusicTween:Cancel()
+		activeMusicTween = nil
+	end
+
+	local muted = SoundService:GetAttribute("MusicMuted") == true
+	local target = muted and 0 or loadingMusicTargetVolume
+
+	activeMusicTween = safeTween(
+		loadingMusic,
+		TweenInfo.new(MUSIC_TOGGLE_FADE_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+		{ Volume = target }
 	)
 end
 
@@ -936,6 +961,8 @@ local function transitionToMainTheme()
 			loadingMusic = nil
 		end
 	end
+
+	SoundService:SetAttribute("LoadingMusicActive", false)
 end
 
 local function scheduleMusicHandoff(delaySeconds)
@@ -946,7 +973,9 @@ local function scheduleMusicHandoff(delaySeconds)
 	musicHandoffScheduled = true
 
 	task.delay(delaySeconds, function()
-		transitionToMainTheme()
+		if isAlive() or state.cleaned then
+			transitionToMainTheme()
+		end
 	end)
 end
 
@@ -1253,6 +1282,7 @@ task.spawn(function()
 
 		prepareMainThemeForLater()
 		startLoadingMusic()
+		trackConnection(SoundService:GetAttributeChangedSignal("MusicMuted"):Connect(applyMusicMuteToLoading))
 
 		blurTo(BLUR_SIZE, BLUR_IN_TIME)
 
