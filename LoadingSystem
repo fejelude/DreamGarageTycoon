@@ -1,21 +1,44 @@
 -- ============================================================
 -- LoadingScreen
--- Purpose  : Functional loading screen with swoop + blink exit.
--- Runs on  : Client (ReplicatedFirst)
--- Deps     : StarterGui.LoadingScreenGui, ReplicatedStorage.PreloadAssets
--- Security : Nil-safe, disconnects all events, destroys UI on finish.
+-- Purpose  : Production-ready loading screen with:
+--            - custom loading camera
+--            - progress bar
+--            - click-to-start after 100%
+--            - loading music that continues after loading
+--            - safe transition to main theme
+--            - safe cleanup / no stuck camera / no stuck music
+--
+-- Runs on  : Client, ideally inside ReplicatedFirst
+--
+-- Expected UI:
+-- StarterGui
+--   LoadingScreenGui
+--     Frame
+--       ProgressBarContainer
+--         ProgressBar
+--         ProgressText
+--       AfterLoading
+--         ClickButton
+--         Information
+--           UIStroke
+--
+-- Optional:
+-- ReplicatedStorage.PreloadAssets
+-- Workspace.LoadingViewPart
+-- SoundService.MainTheme or Workspace.MainTheme
 -- ============================================================
 
-local ReplicatedFirst      = game:GetService("ReplicatedFirst")
-local RunService           = game:GetService("RunService")
-local Workspace            = game:GetService("Workspace")
-local Players              = game:GetService("Players")
-local StarterGui           = game:GetService("StarterGui")
-local TweenService         = game:GetService("TweenService")
-local ContentProvider      = game:GetService("ContentProvider")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
+local StarterGui = game:GetService("StarterGui")
+local TweenService = game:GetService("TweenService")
+local ContentProvider = game:GetService("ContentProvider")
 local ContextActionService = game:GetService("ContextActionService")
-local Lighting             = game:GetService("Lighting")
-local ReplicatedStorage    = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
 
 ReplicatedFirst:RemoveDefaultLoadingScreen()
 
@@ -23,310 +46,354 @@ ReplicatedFirst:RemoveDefaultLoadingScreen()
 -- CONFIG
 -- ============================================================
 
-local VIEW_PART_NAME      = "LoadingViewPart"
-local VIEW_PART_TIMEOUT   = 10
+local VIEW_PART_NAME = "LoadingViewPart"
+local VIEW_PART_TIMEOUT = 10
+
 local PRELOAD_FOLDER_NAME = "PreloadAssets"
-local LOADING_TEXT_START  = " Loading "
+local PRELOAD_ASSET_TIMEOUT = 2.5
 
-local DONE_OPTIONS = {
-	{ Text = "Done",      Color = Color3.fromRGB(85,  255, 127) },
-	{ Text = "Ready!",    Color = Color3.fromRGB(0,   255, 255) },
-	{ Text = "Let's Go",  Color = Color3.fromRGB(0, 255, 128) },  -- Neon Mint / Electric Green
-	{ Text = "Finally",   Color = Color3.fromRGB(255, 105, 180) },
-	{ Text = "Loaded",    Color = Color3.fromRGB(170, 255,   0) },
-	{ Text = "Success",   Color = Color3.fromRGB(100, 149, 237) },
-}
+local LOADING_TEXT_START = " Loading "
+local LOADING_SOUND_ID = "rbxassetid://72475519841402"
+local LOADING_SOUND_FADE_IN = 1.8
+local LOADING_SOUND_HOLD_SECONDS = 120
 
-local ANIMATION_DURATION     = 5.5
-local BLUR_SIZE               = 20
-local BLUR_IN_TIME            = 0.6
-local BLUR_OUT_TIME           = 3.0
-local SWOOP_DURATION          = 1.8
-local FADE_OUT_TIME           = 0.4
-local FADE_IN_TIME            = 0.8
-local EXTRA_HOLD_SECONDS      = 2.0
-local FAILSAFE_TOTAL_SECONDS  = 35
+local MAIN_THEME_NAME = "MainTheme"
+local THEME_FADE_SECONDS = 2.0
 
-local LOCK_NAME    = "LoadingScreenCameraLock"
+local ANIMATION_DURATION = 5.5
+local BLUR_SIZE = 20
+local BLUR_IN_TIME = 0.6
+local BLUR_OUT_TIME = 3.0
+
+local SWOOP_DURATION = 1.8
+local BLACK_FADE_OUT_TIME = 0.4
+local BLACK_FADE_IN_TIME = 0.8
+
+local INFO_FADE_IN_TIME = 0.5
+local INFO_UP_TIME = 0.2
+local INFO_EXIT_TIME = 0.35
+
+local FALLBACK_AFTER_LOADING_HOLD = 1.0
+
+local MAX_LOADING_PHASE_SECONDS = 35
+
+local LOCK_NAME = "LoadingScreenCameraLock"
 local FREEZE_ACTION = "LoadingScreenFreeze"
 
-local PHASE_GAME_LOADED_TO   = 0.20
+local PHASE_GAME_LOADED_TO = 0.20
 local PHASE_VIEWPART_READY_TO = 0.40
-local PHASE_PRELOAD_TO        = 0.90
-local PHASE_FINISH_TO         = 1.00
+local PHASE_PRELOAD_TO = 0.90
+local PHASE_FINISH_TO = 1.00
+
+local HIDDEN_BY_LOADING_ATTRIBUTE = "__HiddenByLoadingScreen"
 
 -- ============================================================
--- BASICS
+-- BASIC STATE
 -- ============================================================
 
-local player    = Players.LocalPlayer
+local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local camera    = Workspace.CurrentCamera or Workspace:WaitForChild("Camera")
 
-playerGui:SetAttribute("LoadingScreenActive", true)
+local state = {
+	alive = true,
+	cleaned = false,
+	loadingPhaseStartedAt = os.clock(),
+	loadingPhaseTimedOut = false,
+}
+
+local connections = {}
+local scanThread = nil
+
+local loadingGui = nil
+local progressValue = nil
+local blur = nil
+local blurWasCreated = false
+local originalBlurSize = 0
+
+local loadingMusic = nil
+local musicHandoffScheduled = false
+local musicHandoffDone = false
+local mainThemeTargetVolume = 1
+
+local function isAlive()
+	return state.alive and not state.cleaned
+end
+
+local function trackConnection(conn)
+	if conn then
+		table.insert(connections, conn)
+	end
+	return conn
+end
+
+local function disconnectAll()
+	for _, conn in ipairs(connections) do
+		if conn and conn.Connected then
+			pcall(function()
+				conn:Disconnect()
+			end)
+		end
+	end
+	table.clear(connections)
+end
+
+local function waitSeconds(seconds)
+	local started = os.clock()
+	while isAlive() and os.clock() - started < seconds do
+		RunService.Heartbeat:Wait()
+	end
+end
+
+local function remainingLoadingTime()
+	return math.max(0, MAX_LOADING_PHASE_SECONDS - (os.clock() - state.loadingPhaseStartedAt))
+end
+
+local function loadingPhaseExpired()
+	return remainingLoadingTime() <= 0
+end
+
+local function markLoadingTimeout()
+	if not state.loadingPhaseTimedOut then
+		state.loadingPhaseTimedOut = true
+		warn("[LoadingScreen] Loading phase timed out. Continuing to start prompt safely.")
+	end
+end
+
+local function safeTween(instance, tweenInfo, goals)
+	if not instance then
+		return nil
+	end
+
+	local ok, tween = pcall(function()
+		return TweenService:Create(instance, tweenInfo, goals)
+	end)
+
+	if not ok or not tween then
+		return nil
+	end
+
+	pcall(function()
+		tween:Play()
+	end)
+
+	return tween
+end
+
+local function tweenWait(instance, tweenInfo, goals, timeout)
+	if not isAlive() then
+		return false
+	end
+
+	local tween = safeTween(instance, tweenInfo, goals)
+	if not tween then
+		return false
+	end
+
+	local done = false
+	local conn
+
+	conn = tween.Completed:Connect(function()
+		done = true
+	end)
+
+	local started = os.clock()
+
+	while isAlive() and not done do
+		if timeout and os.clock() - started >= timeout then
+			pcall(function()
+				tween:Cancel()
+			end)
+			break
+		end
+
+		RunService.Heartbeat:Wait()
+	end
+
+	if conn then
+		conn:Disconnect()
+	end
+
+	return done
+end
+
+local function waitForNamedChild(parent, childName, timeout)
+	if not parent then
+		return nil
+	end
+
+	local deadline = os.clock() + timeout
+
+	while isAlive() and os.clock() < deadline do
+		local child = parent:FindFirstChild(childName)
+		if child then
+			return child
+		end
+
+		RunService.Heartbeat:Wait()
+	end
+
+	return parent:FindFirstChild(childName)
+end
 
 -- ============================================================
 -- UI SETUP
 -- ============================================================
 
+playerGui:SetAttribute("LoadingScreenActive", true)
+
 local sourceGui = StarterGui:WaitForChild("LoadingScreenGui", 10)
+
 if not sourceGui then
-	warn("❌ LoadingScreenGui missing from StarterGui!")
+	warn("[LoadingScreen] LoadingScreenGui missing from StarterGui.")
 	playerGui:SetAttribute("LoadingScreenActive", false)
 	return
 end
 
-local loadingGui               = sourceGui:Clone()
-loadingGui.Name                = "ActiveLoadingScreen"
-loadingGui.ResetOnSpawn        = false
-loadingGui.Enabled             = true
-loadingGui.IgnoreGuiInset      = true
-loadingGui.DisplayOrder        = 999
-loadingGui.Parent              = playerGui
+loadingGui = sourceGui:Clone()
+loadingGui.Name = "ActiveLoadingScreen"
+loadingGui.ResetOnSpawn = false
+loadingGui.Enabled = true
+loadingGui.IgnoreGuiInset = true
+loadingGui.DisplayOrder = 999
+loadingGui.Parent = playerGui
 
--- Full-screen black frame used for the blink transition
-local transitionFrame                    = Instance.new("Frame")
-transitionFrame.Name                     = "TransitionFrame"
-transitionFrame.Size                     = UDim2.fromScale(1, 1)
-transitionFrame.BackgroundColor3         = Color3.new(0, 0, 0)
-transitionFrame.BackgroundTransparency   = 1   -- invisible until the blink
-transitionFrame.ZIndex                   = 2000
-transitionFrame.Parent                   = loadingGui
-
--- ============================================================
--- UTILITIES
--- ============================================================
-
-local function safeTween(instance, info, goals)
-	local t = TweenService:Create(instance, info, goals)
-	t:Play()
-	return t
-end
-
-local function waitForNamedChild(parent, childName, timeout)
-	local deadline = os.clock() + timeout
-	while os.clock() < deadline do
-		local child = parent:FindFirstChild(childName)
-		if child then return child end
-		RunService.Heartbeat:Wait()
-	end
-	return nil
-end
-
--- ============================================================
--- BLUR
--- ============================================================
-
-local blur = Lighting:FindFirstChild("LoadingScreenBlur")
-if not blur then
-	blur          = Instance.new("BlurEffect")
-	blur.Name     = "LoadingScreenBlur"
-	blur.Size     = 0
-	blur.Parent   = Lighting
-end
-
-local function blurTo(size, duration)
-	return safeTween(blur, TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), { Size = size })
-end
-
--- ============================================================
--- INPUT LOCKS
--- ============================================================
-
-local function lockControls()
-	ContextActionService:BindAction(
-		FREEZE_ACTION,
-		function() return Enum.ContextActionResult.Sink end,
-		false,
-		unpack(Enum.PlayerActions:GetEnumItems())
-	)
-end
-
-local function unlockControls()
-	pcall(function() ContextActionService:UnbindAction(FREEZE_ACTION) end)
-end
-
-local movementLock = { active = false, conn = nil, original = {} }
-
-local function enableMovementLock()
-	player:SetAttribute("MovementLock", true)
-end
-
-local function disableMovementLock()
-	player:SetAttribute("MovementLock", false)
-end
-
--- ============================================================
--- CAMERA
--- ============================================================
-
-local function lockCameraTo(part)
-	camera.CameraType = Enum.CameraType.Scriptable
-	
-	if not (part and part:IsA("BasePart")) then return end
-	
-	camera.CFrame     = part.CFrame
-	RunService:BindToRenderStep(LOCK_NAME, Enum.RenderPriority.Camera.Value + 1, function()
-		if part and part.Parent then camera.CFrame = part.CFrame end
-		if camera.CameraType ~= Enum.CameraType.Scriptable then
-			camera.CameraType = Enum.CameraType.Scriptable
-		end
-	end)
-end
-
-local function unlockCameraToPlayer()
-	pcall(function() RunService:UnbindFromRenderStep(LOCK_NAME) end)
-
-	local char = player.Character or player.CharacterAdded:Wait()
-	local hum  = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 10)
-	local root = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("HumanoidRootPart", 10)
-
-	if root and hum then
-		camera.CameraType = Enum.CameraType.Scriptable
-
-		-- Swoop: glide camera to behind the player
-		local offset      = CFrame.new(0, 5, 12)
-		local targetCF    = root.CFrame:ToWorldSpace(offset)
-		targetCF          = CFrame.lookAt(targetCF.Position, root.Position + Vector3.new(0, 2, 0))
-
-		local swoopInfo = TweenInfo.new(SWOOP_DURATION, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-		local tween     = TweenService:Create(camera, swoopInfo, { CFrame = targetCF })
-		tween:Play()
-		tween.Completed:Wait()
-
-		-- Blink out (fade to black)
-		local fadeOut = TweenService:Create(
-			transitionFrame,
-			TweenInfo.new(FADE_OUT_TIME, Enum.EasingStyle.Sine),
-			{ BackgroundTransparency = 0 }
-		)
-		fadeOut:Play()
-		fadeOut.Completed:Wait()
-
-		-- Switch camera mode safely under darkness
-		camera.CameraSubject = hum
-		camera.CameraType    = Enum.CameraType.Custom
-
-		-- Blink in (fade back to clear)
-		local fadeIn = TweenService:Create(
-			transitionFrame,
-			TweenInfo.new(FADE_IN_TIME, Enum.EasingStyle.Sine),
-			{ BackgroundTransparency = 1 }
-		)
-		fadeIn:Play()
-	else
-		-- Fallback: no character found, just release the camera
-		camera.CameraType = Enum.CameraType.Custom
-	end
-end
-
--- ============================================================
--- UI — CLICK SHIELD & PROGRESS BAR
--- ============================================================
-
-local clickShield                    = Instance.new("Frame")
-clickShield.Name                     = "ClickShield"
-clickShield.Size                     = UDim2.new(1, 0, 1, 0)
-clickShield.BackgroundTransparency   = 1
-clickShield.Active                   = true
-clickShield.ZIndex                   = -1
-clickShield.Parent                   = loadingGui
+local transitionFrame = Instance.new("Frame")
+transitionFrame.Name = "TransitionFrame"
+transitionFrame.Size = UDim2.fromScale(1, 1)
+transitionFrame.Position = UDim2.fromScale(0, 0)
+transitionFrame.BackgroundColor3 = Color3.new(0, 0, 0)
+transitionFrame.BackgroundTransparency = 1
+transitionFrame.BorderSizePixel = 0
+transitionFrame.ZIndex = 2000
+transitionFrame.Parent = loadingGui
 
 local bgFrame = loadingGui:WaitForChild("Frame", 5)
+
 if not bgFrame then
+	warn("[LoadingScreen] Frame missing inside LoadingScreenGui.")
 	loadingGui:Destroy()
 	playerGui:SetAttribute("LoadingScreenActive", false)
 	return
 end
+
 bgFrame.Visible = false
 
 local barContainer = bgFrame:FindFirstChild("ProgressBarContainer")
-local barFill      = barContainer and barContainer:FindFirstChild("ProgressBar")
+local barFill = barContainer and barContainer:FindFirstChild("ProgressBar")
 local progressText = barContainer and barContainer:FindFirstChild("ProgressText")
-local progressValue = Instance.new("NumberValue")
-progressValue.Value = 0
 
-local MAX_X_SCALE, MAX_X_OFFSET, Y_SCALE, Y_OFFSET
+local afterLoading = bgFrame:FindFirstChild("AfterLoading")
+local clickButton = afterLoading and afterLoading:FindFirstChild("ClickButton")
+local infoLabel = afterLoading and afterLoading:FindFirstChild("Information")
+local infoStroke = infoLabel and infoLabel:FindFirstChildOfClass("UIStroke")
+local infoInitialPosition = infoLabel and infoLabel.Position
 
--- ── Rainbow helpers ──────────────────────────────────────────────────────────
--- Converts a Color3 to a "#RRGGBB" hex string for RichText font tags.
-local function color3ToHex(c: Color3): string
-	return string.format("#%02X%02X%02X",
-		math.floor(c.R * 255 + 0.5),
-		math.floor(c.G * 255 + 0.5),
-		math.floor(c.B * 255 + 0.5)
-	)
+if afterLoading and afterLoading:IsA("GuiObject") then
+	afterLoading.Visible = false
 end
 
--- Maps the progress value directly to a colour across the visible spectrum:
---   1%  → red
---   ~15% → orange
---   ~30% → yellow
---   ~50% → green
---   ~65% → cyan
---   ~80% → blue
---   99% → violet
--- No time loop — every percentage number has its own fixed rainbow colour.
-local function progressToRainbowHex(clamped: number): string
-	local t   = math.clamp((clamped - 0.05) / (0.99 - 0.05), 0, 1)
-	local hue = t * 0.85  -- 0 (red) → 0.85 (violet); avoids looping back to red
-	return color3ToHex(Color3.fromHSV(hue, 1, 1))
+if clickButton and clickButton:IsA("GuiButton") then
+	clickButton.Visible = false
+	clickButton.Active = false
+	clickButton.AutoButtonColor = false
 end
--- ─────────────────────────────────────────────────────────────────────────────
 
-local function updateProgressBar(v)
-	if not barFill then return end
-	local clamped = math.clamp(v, 0, 1)
-	barFill.Size  = UDim2.new(
-		MAX_X_SCALE * clamped, MAX_X_OFFSET * clamped,
-		Y_SCALE, Y_OFFSET
-	)
+if infoLabel and infoLabel:IsA("TextLabel") then
+	infoLabel.Visible = false
+end
 
-	if progressText and progressText:IsA("TextLabel") then
-		if clamped <= 0.05 then
-			-- "Loading …" — plain text, no RichText needed
-			progressText.RichText   = false
-			progressText.Text       = LOADING_TEXT_START
-			progressText.TextColor3 = Color3.new(1, 1, 1)
+local function removeUnwantedCompletionLabels()
+	for _, inst in ipairs(loadingGui:GetDescendants()) do
+		if inst:IsA("TextLabel") or inst:IsA("TextButton") then
+			local text = string.lower(string.gsub(inst.Text or "", "%s+", ""))
 
-		elseif clamped >= 0.99 then
-			-- Done label — coloured plain text
-			if not progressText:GetAttribute("DoneMsgSet") then
-				progressText.RichText   = false
-				local choice            = DONE_OPTIONS[math.random(1, #DONE_OPTIONS)]
-				progressText.Text       = choice.Text
-				progressText.TextColor3 = choice.Color
-				progressText:SetAttribute("DoneMsgSet", true)
+			if text == "flickr" or text == "done" or text == "finished" then
+				inst.Text = ""
+				inst.Visible = false
 			end
-
-		else
-			-- Active percentage — colour is driven by the progress value itself.
-			-- 1% → red, ~50% → green/cyan, 99% → violet. The % sign stays white.
-			progressText.RichText   = true
-			progressText.TextColor3 = Color3.new(1, 1, 1)
-			local hexColor = progressToRainbowHex(clamped)
-			local num      = math.floor(clamped * 100 + 0.5)
-			progressText.Text = string.format(
-				'<font color="%s">%d</font><font color="#FFFFFF">%%</font>',
-				hexColor, num
-			)
 		end
 	end
 end
 
-if barFill then
-	MAX_X_SCALE = barFill.Size.X.Scale
-	MAX_X_OFFSET = barFill.Size.X.Offset
-	Y_SCALE      = barFill.Size.Y.Scale
-	Y_OFFSET     = barFill.Size.Y.Offset
+removeUnwantedCompletionLabels()
 
-	barFill.Size = UDim2.new(0, 0, Y_SCALE, Y_OFFSET)
-	updateProgressBar(0)
-	progressValue.Changed:Connect(updateProgressBar)
+local function disableProgressTextColorEffects()
+	if not progressText then
+		return
+	end
+
+	for _, inst in ipairs(progressText:GetDescendants()) do
+		if inst:IsA("UIGradient") then
+			pcall(function()
+				inst.Enabled = false
+			end)
+		end
+	end
+
+	if progressText:IsA("TextLabel") then
+		progressText.RichText = false
+		progressText.TextColor3 = Color3.new(1, 1, 1)
+	end
 end
 
+disableProgressTextColorEffects()
+
+-- ============================================================
+-- PROGRESS BAR
+-- ============================================================
+
+progressValue = Instance.new("NumberValue")
+progressValue.Name = "LoadingProgressValue"
+progressValue.Value = 0
+
+local maxXScale = 0
+local maxXOffset = 0
+local yScale = 0
+local yOffset = 0
+
+if barFill then
+	maxXScale = barFill.Size.X.Scale
+	maxXOffset = barFill.Size.X.Offset
+	yScale = barFill.Size.Y.Scale
+	yOffset = barFill.Size.Y.Offset
+
+	barFill.Size = UDim2.new(0, 0, yScale, yOffset)
+end
+
+local function updateProgressBar(value)
+	local clamped = math.clamp(value, 0, 1)
+
+	if barFill then
+		barFill.Size = UDim2.new(
+			maxXScale * clamped,
+			maxXOffset * clamped,
+			yScale,
+			yOffset
+		)
+	end
+
+	if progressText and progressText:IsA("TextLabel") then
+		disableProgressTextColorEffects()
+
+		if clamped <= 0.05 then
+			progressText.Text = LOADING_TEXT_START
+		else
+			local number = math.floor(clamped * 100 + 0.5)
+			progressText.Text = string.format("%d%%", number)
+		end
+	end
+end
+
+trackConnection(progressValue.Changed:Connect(updateProgressBar))
+updateProgressBar(0)
+
 local function tweenProgress(toValue, duration)
+	if not isAlive() then
+		return nil
+	end
+
 	local goal = math.clamp(toValue, 0, 1)
+
 	return safeTween(
 		progressValue,
 		TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
@@ -334,44 +401,273 @@ local function tweenProgress(toValue, duration)
 	)
 end
 
+local function tweenProgressAndWait(toValue, duration)
+	local tween = tweenProgress(toValue, duration)
+	if not tween then
+		return false
+	end
+
+	local done = false
+	local conn
+
+	conn = tween.Completed:Connect(function()
+		done = true
+	end)
+
+	local started = os.clock()
+
+	while isAlive() and not done do
+		if os.clock() - started >= duration + 1 then
+			pcall(function()
+				tween:Cancel()
+			end)
+			break
+		end
+
+		RunService.Heartbeat:Wait()
+	end
+
+	if conn then
+		conn:Disconnect()
+	end
+
+	return done
+end
+
+-- ============================================================
+-- BLUR
+-- ============================================================
+
+blur = Lighting:FindFirstChild("LoadingScreenBlur")
+
+if blur and blur:IsA("BlurEffect") then
+	originalBlurSize = blur.Size
+else
+	blur = Instance.new("BlurEffect")
+	blur.Name = "LoadingScreenBlur"
+	blur.Size = 0
+	blur.Parent = Lighting
+	blurWasCreated = true
+	originalBlurSize = 0
+end
+
+local function blurTo(size, duration)
+	if not blur or not blur.Parent then
+		return nil
+	end
+
+	return safeTween(
+		blur,
+		TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+		{ Size = size }
+	)
+end
+
+-- ============================================================
+-- INPUT LOCKS
+-- ============================================================
+
+local function lockControls()
+	pcall(function()
+		ContextActionService:BindAction(
+			FREEZE_ACTION,
+			function()
+				return Enum.ContextActionResult.Sink
+			end,
+			false,
+			unpack(Enum.PlayerActions:GetEnumItems())
+		)
+	end)
+end
+
+local function unlockControls()
+	pcall(function()
+		ContextActionService:UnbindAction(FREEZE_ACTION)
+	end)
+end
+
+local function enableMovementLock()
+	pcall(function()
+		player:SetAttribute("MovementLock", true)
+	end)
+end
+
+local function disableMovementLock()
+	pcall(function()
+		player:SetAttribute("MovementLock", false)
+	end)
+end
+
+-- ============================================================
+-- CAMERA
+-- ============================================================
+
+local camera = Workspace.CurrentCamera
+
+local function getCamera()
+	camera = Workspace.CurrentCamera or camera
+	return camera
+end
+
+local function lockCameraTo(part)
+	local cam = getCamera()
+
+	if not cam then
+		return
+	end
+
+	pcall(function()
+		RunService:UnbindFromRenderStep(LOCK_NAME)
+	end)
+
+	cam.CameraType = Enum.CameraType.Scriptable
+
+	if part and part:IsA("BasePart") then
+		cam.CFrame = part.CFrame
+	end
+
+	RunService:BindToRenderStep(LOCK_NAME, Enum.RenderPriority.Camera.Value + 1, function()
+		if not isAlive() then
+			pcall(function()
+				RunService:UnbindFromRenderStep(LOCK_NAME)
+			end)
+			return
+		end
+
+		local currentCamera = getCamera()
+		if not currentCamera then
+			return
+		end
+
+		currentCamera.CameraType = Enum.CameraType.Scriptable
+
+		if part and part.Parent and part:IsA("BasePart") then
+			currentCamera.CFrame = part.CFrame
+		end
+	end)
+end
+
+local function waitForCharacter(timeout)
+	local deadline = os.clock() + timeout
+
+	while isAlive() and os.clock() < deadline do
+		if player.Character then
+			return player.Character
+		end
+
+		RunService.Heartbeat:Wait()
+	end
+
+	return player.Character
+end
+
+local function unlockCameraToPlayer()
+	pcall(function()
+		RunService:UnbindFromRenderStep(LOCK_NAME)
+	end)
+
+	local cam = getCamera()
+	if not cam then
+		return
+	end
+
+	local character = waitForCharacter(8)
+	if not character then
+		cam.CameraType = Enum.CameraType.Custom
+		return
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
+	local root = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 5)
+
+	if not isAlive() then
+		return
+	end
+
+	if not humanoid or not root then
+		cam.CameraType = Enum.CameraType.Custom
+		return
+	end
+
+	cam.CameraType = Enum.CameraType.Scriptable
+
+	local offset = CFrame.new(0, 5, 12)
+	local targetCF = root.CFrame:ToWorldSpace(offset)
+	targetCF = CFrame.lookAt(targetCF.Position, root.Position + Vector3.new(0, 2, 0))
+
+	tweenWait(
+		cam,
+		TweenInfo.new(SWOOP_DURATION, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		{ CFrame = targetCF },
+		SWOOP_DURATION + 0.5
+	)
+
+	if not isAlive() then
+		return
+	end
+
+	tweenWait(
+		transitionFrame,
+		TweenInfo.new(BLACK_FADE_OUT_TIME, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+		{ BackgroundTransparency = 0 },
+		BLACK_FADE_OUT_TIME + 0.3
+	)
+
+	if not isAlive() then
+		return
+	end
+
+	cam.CameraSubject = humanoid
+	cam.CameraType = Enum.CameraType.Custom
+
+	tweenWait(
+		transitionFrame,
+		TweenInfo.new(BLACK_FADE_IN_TIME, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+		{ BackgroundTransparency = 1 },
+		BLACK_FADE_IN_TIME + 0.3
+	)
+end
+
 -- ============================================================
 -- VISIBILITY MANAGER
---
---   KEY FIX: Any GuiObject tagged with the attribute
---   "ExternallyManaged" = true is completely skipped.
---   This prevents the loading screen from stomping on
---   GuiObjects whose visibility is controlled by other scripts
---   (e.g. the restock notification frame).
 -- ============================================================
 
-local hiddenFrames: { [GuiObject]: true } = {}
-local scanThread: thread? = nil
+local hiddenGuiObjects = {}
 
-local function isExternallyManaged(obj: Instance): boolean
-	-- Walk up the hierarchy; if any ancestor is managed, respect it.
-	local cur: Instance? = obj
-	while cur do
-		if cur:GetAttribute("ExternallyManaged") == true then
+local function isExternallyManaged(obj)
+	local current = obj
+
+	while current do
+		if current:GetAttribute("ExternallyManaged") == true then
 			return true
 		end
-		cur = cur.Parent
+
+		current = current.Parent
 	end
+
 	return false
 end
 
-local function scanAndHide(parent: Instance)
-	if not parent then return end
+local function scanAndHide(parent)
+	if not parent or not loadingGui then
+		return
+	end
+
 	for _, child in ipairs(parent:GetChildren()) do
-		if child == loadingGui then continue end
+		if child == loadingGui or child:IsDescendantOf(loadingGui) then
+			continue
+		end
 
 		if child:IsA("GuiObject") then
-			-- Skip any frame managed by an external script
-			if isExternallyManaged(child) then continue end
+			if isExternallyManaged(child) then
+				continue
+			end
 
 			if child.Visible then
-				hiddenFrames[child] = true
-				child.Visible       = false
-				continue -- Don't recurse into a hidden frame's children
+				hiddenGuiObjects[child] = true
+				child:SetAttribute(HIDDEN_BY_LOADING_ATTRIBUTE, true)
+				child.Visible = false
+				continue
 			end
 		end
 
@@ -383,8 +679,9 @@ end
 
 local function startHidingVisuals()
 	scanAndHide(playerGui)
+
 	scanThread = task.spawn(function()
-		while playerGui:GetAttribute("LoadingScreenActive") do
+		while isAlive() and playerGui:GetAttribute("LoadingScreenActive") do
 			scanAndHide(playerGui)
 			task.wait(0.2)
 		end
@@ -393,259 +690,668 @@ end
 
 local function restoreVisuals()
 	if scanThread then
-		task.cancel(scanThread)
+		pcall(function()
+			task.cancel(scanThread)
+		end)
+
 		scanThread = nil
 	end
-	for item in pairs(hiddenFrames) do
-		-- Only restore if the item is NOT externally managed.
-		-- (Belt-and-suspenders: the item shouldn't be in hiddenFrames
-		--  at all if we scanned correctly, but guard anyway.)
-		if item and item.Parent and not isExternallyManaged(item) then
-			item.Visible = true
+
+	for item in pairs(hiddenGuiObjects) do
+		if item and item.Parent and item:GetAttribute(HIDDEN_BY_LOADING_ATTRIBUTE) == true then
+			item:SetAttribute(HIDDEN_BY_LOADING_ATTRIBUTE, nil)
+
+			if not isExternallyManaged(item) then
+				item.Visible = true
+			end
 		end
 	end
-	table.clear(hiddenFrames)
+
+	table.clear(hiddenGuiObjects)
 end
 
 -- ============================================================
 -- LOADING SCREEN TRANSPARENCY FADE
 -- ============================================================
 
-local studioProps: { [Instance]: { [string]: number } } = {}
+local recordedTransparency = {}
 
-local function recordProps(inst: Instance)
-	local props: { [string]: number } = {}
+local function recordProps(instance)
+	local props = {}
 	local changed = false
 
-	if inst:IsA("GuiObject") and inst.BackgroundTransparency < 1 then
-		props.BackgroundTransparency = inst.BackgroundTransparency
+	if instance:IsA("GuiObject") and instance.BackgroundTransparency < 1 then
+		props.BackgroundTransparency = instance.BackgroundTransparency
 		changed = true
 	end
-	if (inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox"))
-		and inst.TextTransparency < 1 then
-		props.TextTransparency = inst.TextTransparency
+
+	if (instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox"))
+		and instance.TextTransparency < 1 then
+		props.TextTransparency = instance.TextTransparency
 		changed = true
 	end
-	if (inst:IsA("ImageLabel") or inst:IsA("ImageButton"))
-		and inst.ImageTransparency < 1 then
-		props.ImageTransparency = inst.ImageTransparency
+
+	if (instance:IsA("ImageLabel") or instance:IsA("ImageButton"))
+		and instance.ImageTransparency < 1 then
+		props.ImageTransparency = instance.ImageTransparency
 		changed = true
 	end
-	if inst:IsA("UIStroke") and inst.Transparency < 1 then
-		props.Transparency = inst.Transparency
+
+	if instance:IsA("UIStroke") and instance.Transparency < 1 then
+		props.Transparency = instance.Transparency
 		changed = true
 	end
-	if changed then studioProps[inst] = props end
+
+	if changed then
+		recordedTransparency[instance] = props
+	end
 end
 
-local function setInvisible(inst: Instance)
-	local props = studioProps[inst]
-	if not props then return end
-	if inst:IsA("GuiObject") and props.BackgroundTransparency ~= nil then
-		inst.BackgroundTransparency = 1
+local function setInvisible(instance)
+	local props = recordedTransparency[instance]
+
+	if not props then
+		return
 	end
-	if (inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox"))
+
+	if instance:IsA("GuiObject") and props.BackgroundTransparency ~= nil then
+		instance.BackgroundTransparency = 1
+	end
+
+	if (instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox"))
 		and props.TextTransparency ~= nil then
-		inst.TextTransparency = 1
+		instance.TextTransparency = 1
 	end
-	if (inst:IsA("ImageLabel") or inst:IsA("ImageButton"))
+
+	if (instance:IsA("ImageLabel") or instance:IsA("ImageButton"))
 		and props.ImageTransparency ~= nil then
-		inst.ImageTransparency = 1
+		instance.ImageTransparency = 1
 	end
-	if inst:IsA("UIStroke") and props.Transparency ~= nil then
-		inst.Transparency = 1
+
+	if instance:IsA("UIStroke") and props.Transparency ~= nil then
+		instance.Transparency = 1
 	end
 end
 
-local function fadeToRecorded(duration: number)
+local function fadeToRecorded(duration)
 	local info = TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
-	for inst, goals in pairs(studioProps) do
-		if inst and inst.Parent then safeTween(inst, info, goals) end
+
+	for instance, goals in pairs(recordedTransparency) do
+		if instance and instance.Parent then
+			safeTween(instance, info, goals)
+		end
 	end
 end
 
-local function fadeToInvisible(duration: number)
+local function fadeToInvisible(duration)
 	local info = TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.In)
-	for inst, props in pairs(studioProps) do
-		if inst and inst.Parent then
-			local goals: { [string]: number } = {}
-			if inst:IsA("GuiObject") and props.BackgroundTransparency ~= nil then
+
+	for instance, props in pairs(recordedTransparency) do
+		if instance and instance.Parent then
+			local goals = {}
+
+			if instance:IsA("GuiObject") and props.BackgroundTransparency ~= nil then
 				goals.BackgroundTransparency = 1
 			end
-			if (inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox"))
+
+			if (instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox"))
 				and props.TextTransparency ~= nil then
 				goals.TextTransparency = 1
 			end
-			if (inst:IsA("ImageLabel") or inst:IsA("ImageButton"))
+
+			if (instance:IsA("ImageLabel") or instance:IsA("ImageButton"))
 				and props.ImageTransparency ~= nil then
 				goals.ImageTransparency = 1
 			end
-			if inst:IsA("UIStroke") and props.Transparency ~= nil then
+
+			if instance:IsA("UIStroke") and props.Transparency ~= nil then
 				goals.Transparency = 1
 			end
-			if next(goals) then safeTween(inst, info, goals) end
+
+			if next(goals) then
+				safeTween(instance, info, goals)
+			end
 		end
 	end
 end
 
--- Record initial transparency values, then make everything invisible
-for _, inst in ipairs(loadingGui:GetDescendants()) do recordProps(inst) end
-for inst in pairs(studioProps) do setInvisible(inst) end
+for _, instance in ipairs(loadingGui:GetDescendants()) do
+	recordProps(instance)
+end
+
+for instance in pairs(recordedTransparency) do
+	setInvisible(instance)
+end
 
 -- ============================================================
--- MAIN EXECUTION
+-- AUDIO
 -- ============================================================
 
-local finished = false
+local function getOrCreateMainTheme()
+	local existing = SoundService:FindFirstChild(MAIN_THEME_NAME)
 
-local function cleanup()
-	if finished then return end
-	finished = true
+	if existing and existing:IsA("Sound") then
+		return existing
+	end
 
-	-- 1. Swoop camera back to the player + blink transition (yields)
-	unlockCameraToPlayer()
+	local fromWorkspace = Workspace:FindFirstChild(MAIN_THEME_NAME)
 
-	-- 2. Release input locks
+	if fromWorkspace and fromWorkspace:IsA("Sound") then
+		fromWorkspace.Parent = SoundService
+		return fromWorkspace
+	end
+
+	return nil
+end
+
+local function prepareMainThemeForLater()
+	local theme = getOrCreateMainTheme()
+
+	if not theme then
+		return
+	end
+
+	if theme.Volume > 0 then
+		mainThemeTargetVolume = theme.Volume
+	end
+
+	if theme.IsPlaying then
+		pcall(function()
+			theme:Stop()
+		end)
+	end
+
+	theme.Volume = 0
+end
+
+local function startLoadingMusic()
+	if loadingMusic and loadingMusic.Parent then
+		return
+	end
+
+	loadingMusic = Instance.new("Sound")
+	loadingMusic.Name = "LoadingMusic"
+	loadingMusic.SoundId = LOADING_SOUND_ID
+	loadingMusic.Looped = true
+	loadingMusic.Volume = 0
+	loadingMusic.Parent = SoundService
+
+	pcall(function()
+		loadingMusic:Play()
+	end)
+
+	safeTween(
+		loadingMusic,
+		TweenInfo.new(LOADING_SOUND_FADE_IN, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+		{ Volume = 1 }
+	)
+end
+
+local function transitionToMainTheme()
+	if musicHandoffDone then
+		return
+	end
+
+	musicHandoffDone = true
+
+	local theme = getOrCreateMainTheme()
+
+	if theme then
+		local targetVolume = mainThemeTargetVolume
+
+		if targetVolume <= 0 then
+			targetVolume = 1
+		end
+
+		theme.Volume = 0
+
+		if not theme.IsPlaying then
+			pcall(function()
+				theme:Play()
+			end)
+		end
+
+		safeTween(
+			theme,
+			TweenInfo.new(THEME_FADE_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{ Volume = targetVolume }
+		)
+	end
+
+	if loadingMusic and loadingMusic.Parent then
+		safeTween(
+			loadingMusic,
+			TweenInfo.new(THEME_FADE_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{ Volume = 0 }
+		)
+
+		task.wait(THEME_FADE_SECONDS + 0.1)
+
+		if loadingMusic and loadingMusic.Parent then
+			pcall(function()
+				loadingMusic:Stop()
+			end)
+
+			loadingMusic:Destroy()
+			loadingMusic = nil
+		end
+	end
+end
+
+local function scheduleMusicHandoff(delaySeconds)
+	if musicHandoffScheduled then
+		return
+	end
+
+	musicHandoffScheduled = true
+
+	task.delay(delaySeconds, function()
+		transitionToMainTheme()
+	end)
+end
+
+-- ============================================================
+-- CLEANUP
+-- ============================================================
+
+local function finalCleanup(fromError)
+	if state.cleaned then
+		return
+	end
+
+	if fromError and loadingMusic and loadingMusic.Parent and not musicHandoffScheduled then
+		scheduleMusicHandoff(0)
+	end
+
+	state.cleaned = true
+	state.alive = false
+
+	disconnectAll()
+
+	pcall(function()
+		RunService:UnbindFromRenderStep(LOCK_NAME)
+	end)
+
 	unlockControls()
 	disableMovementLock()
 
-	-- 3. Signal other scripts that the loading screen is done
-	pcall(function() playerGui:SetAttribute("LoadingScreenActive", false) end)
+	pcall(function()
+		playerGui:SetAttribute("LoadingScreenActive", false)
+	end)
 
-	-- 4. Restore any hidden GUIs (safe — externally-managed frames are skipped)
 	restoreVisuals()
 
-	-- 5. Remove blur
 	pcall(function()
 		if blur and blur.Parent then
-			blur.Size = 0
-			blur:Destroy()
+			blur.Size = originalBlurSize
+
+			if blurWasCreated then
+				blur:Destroy()
+			end
 		end
 	end)
 
-	-- 6. Destroy loading screen UI and temporary values
-	pcall(function() loadingGui:Destroy() end)
-	pcall(function() progressValue:Destroy() end)
+	pcall(function()
+		if loadingGui and loadingGui.Parent then
+			loadingGui:Destroy()
+		end
+	end)
+
+	pcall(function()
+		if progressValue then
+			progressValue:Destroy()
+		end
+	end)
 end
 
--- Failsafe: force cleanup after a maximum total time
-task.spawn(function()
-	local deadline = os.clock() + FAILSAFE_TOTAL_SECONDS
-	while not finished and os.clock() < deadline do
-		task.wait(1)
-	end
-	if not finished then
-		warn("[LoadingScreen] Failsafe triggered — forcing cleanup.")
-		cleanup()
-	end
-end)
+-- ============================================================
+-- AFTER LOADING PROMPT
+-- ============================================================
 
--- Main sequence
+local function showAfterLoadingPromptAndWaitForClick()
+	removeUnwantedCompletionLabels()
+	updateProgressBar(1)
+
+	if afterLoading and afterLoading:IsA("GuiObject") then
+		afterLoading.Visible = true
+	end
+
+	local hasButton = clickButton and clickButton:IsA("GuiButton")
+
+	if hasButton then
+		clickButton.Visible = true
+		clickButton.Active = true
+		clickButton.AutoButtonColor = false
+	end
+
+	if infoLabel and infoLabel:IsA("TextLabel") then
+		infoLabel.Visible = true
+		infoLabel.TextTransparency = 1
+
+		if infoStroke then
+			infoStroke.Transparency = 1
+		end
+
+		safeTween(
+			infoLabel,
+			TweenInfo.new(INFO_FADE_IN_TIME, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+			{ TextTransparency = 0 }
+		)
+
+		if infoStroke then
+			safeTween(
+				infoStroke,
+				TweenInfo.new(INFO_FADE_IN_TIME, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+				{ Transparency = 0 }
+			)
+		end
+	end
+
+	if not hasButton then
+		waitSeconds(FALLBACK_AFTER_LOADING_HOLD)
+		return
+	end
+
+	local clicked = false
+	local clickConn
+
+	clickConn = clickButton.Activated:Connect(function()
+		if clicked then
+			return
+		end
+
+		clicked = true
+	end)
+
+	while isAlive() and not clicked do
+		if not clickButton or not clickButton.Parent then
+			break
+		end
+
+		RunService.Heartbeat:Wait()
+	end
+
+	if clickConn then
+		clickConn:Disconnect()
+	end
+
+	if clickButton and clickButton:IsA("GuiButton") then
+		clickButton.Active = false
+	end
+end
+
+local function hideAfterLoadingPrompt()
+	if infoLabel and infoLabel:IsA("TextLabel") then
+		local startPos = infoInitialPosition or infoLabel.Position
+		local upPos = UDim2.new(
+			startPos.X.Scale,
+			startPos.X.Offset,
+			startPos.Y.Scale - 0.1,
+			startPos.Y.Offset
+		)
+
+		local downPos = UDim2.new(
+			startPos.X.Scale,
+			startPos.X.Offset,
+			startPos.Y.Scale + 1,
+			startPos.Y.Offset
+		)
+
+		tweenWait(
+			infoLabel,
+			TweenInfo.new(INFO_UP_TIME, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+			{ Position = upPos },
+			INFO_UP_TIME + 0.2
+		)
+
+		local labelTween = safeTween(
+			infoLabel,
+			TweenInfo.new(INFO_EXIT_TIME, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+			{
+				Position = downPos,
+				TextTransparency = 1,
+			}
+		)
+
+		if infoStroke then
+			safeTween(
+				infoStroke,
+				TweenInfo.new(INFO_EXIT_TIME, Enum.EasingStyle.Sine, Enum.EasingDirection.In),
+				{ Transparency = 1 }
+			)
+		end
+
+		if labelTween then
+			local done = false
+			local conn
+
+			conn = labelTween.Completed:Connect(function()
+				done = true
+			end)
+
+			local started = os.clock()
+
+			while isAlive() and not done and os.clock() - started < INFO_EXIT_TIME + 0.3 do
+				RunService.Heartbeat:Wait()
+			end
+
+			if conn then
+				conn:Disconnect()
+			end
+		end
+	end
+
+	if clickButton and clickButton:IsA("GuiButton") then
+		clickButton.Active = false
+		clickButton.Visible = false
+	end
+
+	if afterLoading and afterLoading:IsA("GuiObject") then
+		afterLoading.Visible = false
+	end
+end
+
+-- ============================================================
+-- PRELOADING
+-- ============================================================
+
+local function preloadAssetWithTimeout(asset, timeout)
+	if not asset or not isAlive() then
+		return false
+	end
+
+	local done = false
+
+	task.spawn(function()
+		pcall(function()
+			ContentProvider:PreloadAsync({ asset })
+		end)
+
+		done = true
+	end)
+
+	local started = os.clock()
+
+	while isAlive() and not done do
+		if os.clock() - started >= timeout then
+			return false
+		end
+
+		if loadingPhaseExpired() then
+			markLoadingTimeout()
+			return false
+		end
+
+		RunService.Heartbeat:Wait()
+	end
+
+	return done
+end
+
+local function buildPreloadList(viewPart)
+	local preloadList = { loadingGui }
+
+	local folder = ReplicatedStorage:FindFirstChild(PRELOAD_FOLDER_NAME)
+
+	if folder then
+		for _, inst in ipairs(folder:GetDescendants()) do
+			table.insert(preloadList, inst)
+		end
+	end
+
+	if viewPart then
+		table.insert(preloadList, viewPart)
+	end
+
+	return preloadList
+end
+
+local function preloadAssets(viewPart)
+	local preloadList = buildPreloadList(viewPart)
+	local startValue = progressValue.Value
+	local distance = PHASE_PRELOAD_TO - startValue
+
+	if #preloadList <= 0 then
+		tweenProgress(PHASE_PRELOAD_TO, 0.3)
+		return
+	end
+
+	for i, asset in ipairs(preloadList) do
+		if not isAlive() then
+			return
+		end
+
+		if loadingPhaseExpired() then
+			markLoadingTimeout()
+			break
+		end
+
+		preloadAssetWithTimeout(asset, PRELOAD_ASSET_TIMEOUT)
+
+		local alpha = i / #preloadList
+		local target = startValue + (distance * alpha)
+
+		tweenProgress(target, 0.1)
+
+		if #preloadList < 20 then
+			waitSeconds(0.05)
+		else
+			RunService.Heartbeat:Wait()
+		end
+	end
+end
+
+-- ============================================================
+-- MAIN
+-- ============================================================
+
 task.spawn(function()
 	local ok, err = xpcall(function()
-
 		lockControls()
 		enableMovementLock()
 		startHidingVisuals()
+
+		prepareMainThemeForLater()
+		startLoadingMusic()
+
 		blurTo(BLUR_SIZE, BLUR_IN_TIME)
 
-		-- Slide the loading frame in from below
-		bgFrame.Visible    = true
-		local finalPos     = bgFrame.Position
-		local startPos     = UDim2.new(
-			finalPos.X.Scale, finalPos.X.Offset,
-			finalPos.Y.Scale + 1.5, finalPos.Y.Offset
+		bgFrame.Visible = true
+
+		local finalPos = bgFrame.Position
+		local startPos = UDim2.new(
+			finalPos.X.Scale,
+			finalPos.X.Offset,
+			finalPos.Y.Scale + 1.5,
+			finalPos.Y.Offset
 		)
-		bgFrame.Position   = startPos
+
+		bgFrame.Position = startPos
 
 		safeTween(
 			bgFrame,
 			TweenInfo.new(ANIMATION_DURATION, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
 			{ Position = finalPos }
 		)
+
 		fadeToRecorded(ANIMATION_DURATION)
 
-		-- ── PHASE 1: Find & lock the loading view part IMMEDIATELY ──────
-		-- This ensures the camera is stable while we wait for the rest of the game
-		local viewPart = waitForNamedChild(Workspace, VIEW_PART_NAME, 3) -- quick initial check
-		if not viewPart then
-			lockCameraTo(nil) -- at least lock the camera type to Scriptable
-			task.spawn(function()
-				viewPart = waitForNamedChild(Workspace, VIEW_PART_NAME, VIEW_PART_TIMEOUT)
-				if viewPart then lockCameraTo(viewPart) end
-			end)
-		else
-			lockCameraTo(viewPart)
-		end
-		
-		task.wait(ANIMATION_DURATION * 0.3) -- let UI settle before incrementing progress
+		lockCameraTo(nil)
 
-		-- ── PHASE 2: Wait for game to finish loading ─────────────────
-		local t1 = tweenProgress(PHASE_GAME_LOADED_TO, 1.5)
-		if not game:IsLoaded() then
-			game.Loaded:Wait()
-		else
-			t1.Completed:Wait()
-		end
-		
-		tweenProgress(PHASE_VIEWPART_READY_TO, 1.2).Completed:Wait()
-
-		-- ── PHASE 3: Preload assets ───────────────────────────────────
-		local folder      = ReplicatedStorage:FindFirstChild(PRELOAD_FOLDER_NAME)
-		local preloadList = { loadingGui } -- ensure list is never empty
-		if folder then
-			for _, inst in ipairs(folder:GetDescendants()) do
-				table.insert(preloadList, inst)
-			end
-		end
-		if viewPart then table.insert(preloadList, viewPart) end
-
-		local startVal = progressValue.Value
-		local dist     = PHASE_PRELOAD_TO - startVal
-
-		for i, asset in ipairs(preloadList) do
-			pcall(function() ContentProvider:PreloadAsync({ asset }) end)
-
-			local alpha  = i / #preloadList
-			local target = startVal + (dist * alpha)
-			tweenProgress(target, 0.1)
-
-			-- Small forced wait so the bar moves visibly on short lists
-			if #preloadList < 20 then
-				task.wait(0.05)
-			else
-				RunService.Heartbeat:Wait()
-			end
-		end
-
-		-- ── PHASE 4: Finish ───────────────────────────────────────────
-		tweenProgress(PHASE_FINISH_TO, 1.0).Completed:Wait()
-		task.wait(0.25)
-		task.wait(EXTRA_HOLD_SECONDS)
-
-		-- Slide loading frame out upwards
-		local exitPos = UDim2.new(
-			finalPos.X.Scale, finalPos.X.Offset,
-			finalPos.Y.Scale - 1.5, finalPos.Y.Offset
+		local viewPart = waitForNamedChild(
+			Workspace,
+			VIEW_PART_NAME,
+			math.min(VIEW_PART_TIMEOUT, remainingLoadingTime())
 		)
+
+		if viewPart and viewPart:IsA("BasePart") then
+			lockCameraTo(viewPart)
+		else
+			warn("[LoadingScreen] LoadingViewPart was not found. Continuing with camera locked in place.")
+		end
+
+		waitSeconds(ANIMATION_DURATION * 0.3)
+
+		tweenProgress(PHASE_GAME_LOADED_TO, 1.5)
+
+		while isAlive() and not game:IsLoaded() do
+			if loadingPhaseExpired() then
+				markLoadingTimeout()
+				break
+			end
+
+			RunService.Heartbeat:Wait()
+		end
+
+		tweenProgressAndWait(PHASE_VIEWPART_READY_TO, 1.2)
+
+		if not loadingPhaseExpired() then
+			preloadAssets(viewPart)
+		else
+			markLoadingTimeout()
+		end
+
+		tweenProgressAndWait(PHASE_FINISH_TO, 1.0)
+		updateProgressBar(1)
+
+		showAfterLoadingPromptAndWaitForClick()
+
+		if not isAlive() then
+			return
+		end
+
+		scheduleMusicHandoff(LOADING_SOUND_HOLD_SECONDS)
+
+		hideAfterLoadingPrompt()
+
+		local exitPos = UDim2.new(
+			finalPos.X.Scale,
+			finalPos.X.Offset,
+			finalPos.Y.Scale - 1.5,
+			finalPos.Y.Offset
+		)
+
 		safeTween(
 			bgFrame,
 			TweenInfo.new(ANIMATION_DURATION, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
 			{ Position = exitPos }
 		)
-		fadeToInvisible(ANIMATION_DURATION)
 
-		-- Start fading the blur before the swoop begins
+		fadeToInvisible(ANIMATION_DURATION)
 		blurTo(0, BLUR_OUT_TIME)
 
-		-- Wait for the UI exit animation to finish, then hand off to cleanup
-		task.wait(ANIMATION_DURATION)
-		cleanup()
+		waitSeconds(ANIMATION_DURATION)
 
+		if not isAlive() then
+			return
+		end
+
+		unlockCameraToPlayer()
+		finalCleanup(false)
 	end, debug.traceback)
 
 	if not ok then
 		warn("[LoadingScreen] Error in main sequence:\n", err)
-		cleanup()
+		finalCleanup(true)
 	end
 end)
