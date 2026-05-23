@@ -2007,6 +2007,18 @@ end)
 
 addOpenButtonHover(openButton)
 UIButtonUtils.SetupStandardButton(closeButton, nil, performClose)
+do
+	local closeDebounce = false
+	local function safeClose()
+		if closeDebounce then return end
+		closeDebounce = true
+		performClose()
+		task.defer(function() closeDebounce = false end)
+	end
+	closeButton.Activated:Connect(safeClose)
+	closeButton.MouseButton1Click:Connect(safeClose)
+	closeButton.TouchTap:Connect(safeClose)
+end
 
 if unequipButton then
 	addButtonEffects(unequipButton, function() return unequipButton.BackgroundColor3 end)

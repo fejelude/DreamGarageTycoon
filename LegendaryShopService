@@ -394,21 +394,7 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 	local pOk, logicOk, msg = pcall(function()
 		local session = getSession(player)
 
-		-- Cross-tier lock (Mythical Check)
-
-
 		if session.ActiveCrafts[carName]   then return false, "Crafting already in progress!" end
-
-		-- FIX: Cross-tier lock — ensure Mythical isn't actively crafting.
-		-- Mirrors the same check MythicalShopService does for Legendary crafts.
-		if MythicalPersistenceBindable then
-			local ok, mythSession = safeInvoke(MythicalPersistenceBindable, 2, "Get", player)
-			if ok and mythSession and mythSession.ActiveCrafts then
-				for _, _ in pairs(mythSession.ActiveCrafts) do
-					return false, "You are already crafting a Mythical car!"
-				end
-			end
-		end
 
 		if session.CompletedCrafts[carName] then return false, "You already crafted this!"    end
 
@@ -548,4 +534,3 @@ task.spawn(function()
 		end
 	end
 end)
-
