@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
 
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
@@ -63,6 +64,7 @@ local function wireCardHoverEffects(card)
 	local uiScale = getOrCreateCardScale(card)
 	local isHovering = false
 	local isPressed = false
+	local lastClickSoundAt = 0
 
 	local function updateScale()
 		local targetScale = 1
@@ -74,8 +76,24 @@ local function wireCardHoverEffects(card)
 		TweenService:Create(uiScale, CARD_HOVER_TWEEN, {Scale = targetScale}):Play()
 	end
 
+	local function isRealMouseHover()
+		return UserInputService:GetLastInputType() == Enum.UserInputType.MouseMovement
+	end
+
+	local function playClickOnce()
+		local now = os.clock()
+		if now - lastClickSoundAt < 0.08 then return end
+		lastClickSoundAt = now
+		UIAudioConfig.PlayClick()
+	end
+
 	card.MouseEnter:Connect(function()
 		if isHovering then return end
+
+		-- Mobile/touch can fire MouseEnter-like behavior.
+		-- Only play hover sound for real mouse movement.
+		if not isRealMouseHover() then return end
+
 		isHovering = true
 		UIAudioConfig.PlayHover()
 		updateScale()
@@ -90,7 +108,7 @@ local function wireCardHoverEffects(card)
 	card.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			isPressed = true
-			UIAudioConfig.PlayClick()
+			playClickOnce()
 			updateScale()
 		end
 	end)
@@ -110,7 +128,15 @@ local function wireCardHoverEffects(card)
 	end)
 end
 
-local RARITY_ORDER = {Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5, Mythic = 6}
+local RARITY_ORDER = {
+	Common = 1,
+	Uncommon = 2,
+	Rare = 3,
+	Epic = 4,
+	Legendary = 5,
+	Mythic = 6
+}
+
 local function rarityGradient(rarity)
 	if rarity == "Mythic" then
 		return ColorSequence.new({
@@ -130,12 +156,14 @@ local function rarityGradient(rarity)
 	elseif rarity == "Uncommon" then
 		return ColorSequence.new(Color3.fromRGB(0, 180, 0), Color3.fromRGB(100, 255, 100))
 	end
+
 	return ColorSequence.new(Color3.fromRGB(150, 150, 150), Color3.fromRGB(220, 220, 220))
 end
 
 local function getCamera(waitSeconds)
 	local cam = Workspace.CurrentCamera
 	if cam then return cam end
+
 	if waitSeconds and waitSeconds > 0 then
 		local started = os.clock()
 		repeat
@@ -143,34 +171,61 @@ local function getCamera(waitSeconds)
 			cam = Workspace.CurrentCamera
 		until cam or (os.clock() - started) >= waitSeconds
 	end
+
 	return cam
 end
 
 local sortedCars = {}
+
 for key, car in pairs(CarStats.Cars or {}) do
-	table.insert(sortedCars, {Key = key, Data = car})
+	table.insert(sortedCars, {
+		Key = key,
+		Data = car
+	})
 end
+
 if #sortedCars ~= EXPECTED_INDEX_TOTAL then
 	warn(string.format("⚠️ [INDEX] Expected %d cars but CarStats.Cars has %d entries.", EXPECTED_INDEX_TOTAL, #sortedCars))
 end
 
 table.sort(sortedCars, function(a, b)
-	local ar, br = RARITY_ORDER[a.Data.Rarity] or 99, RARITY_ORDER[b.Data.Rarity] or 99
-	if ar ~= br then return ar < br end
-	local ap, bp = tonumber(a.Data.Price) or 0, tonumber(b.Data.Price) or 0
-	if ap ~= bp then return ap < bp end
+	local ar = RARITY_ORDER[a.Data.Rarity] or 99
+	local br = RARITY_ORDER[b.Data.Rarity] or 99
+
+	if ar ~= br then
+		return ar < br
+	end
+
+	local ap = tonumber(a.Data.Price) or 0
+	local bp = tonumber(b.Data.Price) or 0
+
+	if ap ~= bp then
+		return ap < bp
+	end
+
 	return a.Key < b.Key
 end)
 
 local cardMap = {}
+
 local function decodeDiscovered()
 	local raw = player:GetAttribute("IndexDiscoveredJson") or "[]"
-	local ok, result = pcall(function() return HttpService:JSONDecode(raw) end)
-	if not ok or type(result) ~= "table" then return {} end
-	local set = {}
-	for _, name in ipairs(result) do
-		if type(name) == "string" then set[name] = true end
+	local ok, result = pcall(function()
+		return HttpService:JSONDecode(raw)
+	end)
+
+	if not ok or type(result) ~= "table" then
+		return {}
 	end
+
+	local set = {}
+
+	for _, name in ipairs(result) do
+		if type(name) == "string" then
+			set[name] = true
+		end
+	end
+
 	return set
 end
 
@@ -181,12 +236,18 @@ local function setMainFrameVisible(visible)
 end
 
 local function restoreHiddenGuis()
-	for _, gui in ipairs(hiddenGuis) do if gui and gui.Parent then gui.Enabled = true end end
+	for _, gui in ipairs(hiddenGuis) do
+		if gui and gui.Parent then
+			gui.Enabled = true
+		end
+	end
+
 	hiddenGuis = {}
 end
 
 local function hideOtherGuis()
 	hiddenGuis = {}
+
 	for _, gui in ipairs(playerGui:GetDescendants()) do
 		if gui:IsA("ScreenGui") and gui ~= indexScreenGui and gui.Enabled == true then
 			gui.Enabled = false
@@ -197,23 +258,41 @@ end
 
 local function closeIndex()
 	if not isOpen then return end
+
 	restoreHiddenGuis()
 	setMainFrameVisible(false)
+
 	local camera = getCamera(0.5)
 	if camera then
-		TweenService:Create(camera, FOV_TWEEN, {FieldOfView = savedFOV}):Play()
+		TweenService:Create(camera, FOV_TWEEN, {
+			FieldOfView = savedFOV
+		}):Play()
 	end
 end
 
 local function applyGradientAnimation(gradient, rarity)
 	gradient.Color = rarityGradient(rarity)
 	gradient.Rotation = -20
+
 	local tag = gradient:GetAttribute("__IndexGlowRarity")
+
 	if tag ~= rarity then
 		gradient:SetAttribute("__IndexGlowRarity", rarity)
-		if gradientTweens[gradient] then gradientTweens[gradient]:Cancel() end
+
+		if gradientTweens[gradient] then
+			gradientTweens[gradient]:Cancel()
+		end
+
 		gradient.Offset = Vector2.new(-0.35, 0)
-		local tween = TweenService:Create(gradient, TweenInfo.new(2.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Offset = Vector2.new(0.35, 0)})
+
+		local tween = TweenService:Create(
+			gradient,
+			TweenInfo.new(2.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+			{
+				Offset = Vector2.new(0.35, 0)
+			}
+		)
+
 		tween:Play()
 		gradientTweens[gradient] = tween
 	end
@@ -222,36 +301,58 @@ end
 local function renderIndex()
 	local discovered = decodeDiscovered()
 	local count = 0
+
 	for _, car in ipairs(sortedCars) do
 		local card = cardMap[car.Key]
+
 		if card then
 			local discoveredState = discovered[car.Key] == true
-			if discoveredState then count += 1 end
+
+			if discoveredState then
+				count += 1
+			end
+
 			local nameLabel = card:WaitForChild("TextLabels"):WaitForChild("CarName")
 			local imageLabel = card:WaitForChild("CarImage")
+
 			nameLabel.Text = discoveredState and car.Key or "???"
 			imageLabel.Image = car.Data.Image or ""
 			imageLabel.ImageColor3 = discoveredState and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(0, 0, 0)
 		end
 	end
-	indexCountLabel.Text = string.format("(%d/%d)", math.clamp(count, 0, EXPECTED_INDEX_TOTAL), EXPECTED_INDEX_TOTAL)
+
+	indexCountLabel.Text = string.format(
+		"(%d/%d)",
+		math.clamp(count, 0, EXPECTED_INDEX_TOTAL),
+		EXPECTED_INDEX_TOTAL
+	)
 end
 
 local function setupCards()
 	template.Visible = false
+
 	for _, child in ipairs(container:GetChildren()) do
-		if child:IsA("Frame") and child ~= template then child:Destroy() end
+		if child:IsA("Frame") and child ~= template then
+			child:Destroy()
+		end
 	end
+
 	for i = 1, math.min(EXPECTED_INDEX_TOTAL, #sortedCars) do
 		local car = sortedCars[i]
 		local card = template:Clone()
+
 		card.Name = "IndexCard_" .. tostring(i)
 		card.Visible = true
 		card.Parent = container
+
 		cardMap[car.Key] = card
+
 		wireCardHoverEffects(card)
+
 		local gradient = card:WaitForChild("Background"):FindFirstChildOfClass("UIGradient")
-		if gradient then applyGradientAnimation(gradient, car.Data.Rarity) end
+		if gradient then
+			applyGradientAnimation(gradient, car.Data.Rarity)
+		end
 	end
 end
 
@@ -261,15 +362,22 @@ renderIndex()
 
 UIButtonUtils.SetupButton(openButton, function()
 	UIAudioConfig.PlayClick()
+
 	local camera = getCamera(2)
+
 	if camera then
 		savedFOV = camera.FieldOfView
 	end
+
 	hideOtherGuis()
 	setMainFrameVisible(true)
+
 	if camera then
-		TweenService:Create(camera, FOV_TWEEN, {FieldOfView = OPEN_FOV}):Play()
+		TweenService:Create(camera, FOV_TWEEN, {
+			FieldOfView = OPEN_FOV
+		}):Play()
 	end
+
 	renderIndex()
 end)
 
