@@ -71,7 +71,41 @@ local DataStoreService = game:GetService("DataStoreService")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
-local IndexProgressionAPI = ReplicatedStorage:FindFirstChild("IndexProgressionAPI")
+
+local function getIndexProgressionAPI(waitSeconds)
+	local existing = ReplicatedStorage:FindFirstChild("IndexProgressionAPI")
+	if existing then
+		return existing
+	end
+
+	if waitSeconds and waitSeconds > 0 then
+		local ok, found = pcall(function()
+			return ReplicatedStorage:WaitForChild("IndexProgressionAPI", waitSeconds)
+		end)
+		if ok then
+			return found
+		end
+	end
+
+	return nil
+end
+
+local function markIndexDiscovered(player, toolName)
+	if not player or type(toolName) ~= "string" or toolName == "" then
+		return false
+	end
+
+	local api = getIndexProgressionAPI(2)
+	if not api or not api:IsA("BindableFunction") then
+		return false
+	end
+
+	local ok = pcall(function()
+		api:Invoke("MarkDiscovered", player, toolName)
+	end)
+
+	return ok
+end
 
 -- ----------------------------------------------------------------------------
 -- ⚙️ CONFIGURATION & CONSTANTS
@@ -463,11 +497,7 @@ local function giveTool(player, toolName, customAttributes)
 		end
 
 		markDirty(player)
-		if IndexProgressionAPI then
-			pcall(function()
-				IndexProgressionAPI:Invoke("MarkDiscovered", player, sourceTool.Name)
-			end)
-		end
+		markIndexDiscovered(player, sourceTool.Name)
 		return true
 	else
 		warn("⚠️ [DATA] Invalid tool requested: " .. tostring(toolName))
@@ -1354,6 +1384,7 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("BankTransferLimitUsed"):Connect(setDirty)
 	player:GetAttributeChangedSignal("BankTransferLimitResetAt"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rebirth"):Connect(setDirty)
+	player:GetAttributeChangedSignal("IndexDiscoveredJson"):Connect(setDirty)
 	for _, attributeName in pairs(PLAYER_SETTING_ATTRIBUTES) do
 		player:GetAttributeChangedSignal(attributeName):Connect(function()
 			local session = SessionData[player]

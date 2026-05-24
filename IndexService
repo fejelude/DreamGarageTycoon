@@ -3,29 +3,46 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
-local remotesFolder = ReplicatedStorage:FindFirstChild("IndexRemotes")
-if not remotesFolder then
-	remotesFolder = Instance.new("Folder")
-	remotesFolder.Name = "IndexRemotes"
-	remotesFolder.Parent = ReplicatedStorage
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
+local EXPECTED_INDEX_TOTAL = 47
+
+local remotesFolder = ReplicatedStorage:WaitForChild("IndexRemotes")
+local refreshEvent = remotesFolder:WaitForChild("RefreshIndexUI")
+
+local validCarsByKey = {}
+local keyByDisplayName = {}
+for key, stats in pairs(CarStats.Cars or {}) do
+	if type(key) == "string" and type(stats) == "table" then
+		validCarsByKey[key] = true
+		if type(stats.Name) == "string" and stats.Name ~= "" then
+			keyByDisplayName[stats.Name:lower()] = key
+		end
+	end
 end
 
-local refreshEvent = remotesFolder:FindFirstChild("RefreshIndexUI")
-if not refreshEvent then
-	refreshEvent = Instance.new("RemoteEvent")
-	refreshEvent.Name = "RefreshIndexUI"
-	refreshEvent.Parent = remotesFolder
+local totalCars = 0
+for _ in pairs(validCarsByKey) do
+	totalCars += 1
+end
+if totalCars ~= EXPECTED_INDEX_TOTAL then
+	warn(string.format("⚠️ [INDEX] Expected %d cars but CarStats.Cars has %d entries.", EXPECTED_INDEX_TOTAL, totalCars))
 end
 
 local function normalizeToolId(toolId)
 	if type(toolId) ~= "string" then return nil end
-	return toolId:gsub(" Item$", "")
+	local normalized = toolId:gsub(" Item$", "")
+	if validCarsByKey[normalized] then return normalized end
+	local byDisplayName = keyByDisplayName[normalized:lower()]
+	if byDisplayName then return byDisplayName end
+	return nil
 end
 
 local function decode(raw)
 	if type(raw) ~= "string" or raw == "" then return {} end
-	local ok, result = pcall(function() return game:GetService("HttpService"):JSONDecode(raw) end)
+	local ok, result = pcall(function() return HttpService:JSONDecode(raw) end)
 	if not ok or type(result) ~= "table" then
 		return {}
 	end
@@ -33,11 +50,12 @@ local function decode(raw)
 end
 
 local function encode(tbl)
-	local ok, result = pcall(function() return game:GetService("HttpService"):JSONEncode(tbl) end)
+	local ok, result = pcall(function() return HttpService:JSONEncode(tbl) end)
 	return ok and result or "[]"
 end
 
 local function markDiscovered(player, toolId)
+	if not player or not player:IsA("Player") then return false end
 	local normalized = normalizeToolId(toolId)
 	if not normalized then return false end
 
@@ -54,12 +72,7 @@ local function markDiscovered(player, toolId)
 	return true
 end
 
-local indexBindable = ReplicatedStorage:FindFirstChild("IndexProgressionAPI")
-if not indexBindable then
-	indexBindable = Instance.new("BindableFunction")
-	indexBindable.Name = "IndexProgressionAPI"
-	indexBindable.Parent = ReplicatedStorage
-end
+local indexBindable = ReplicatedStorage:WaitForChild("IndexProgressionAPI")
 
 indexBindable.OnInvoke = function(action, player, payload)
 	if action == "MarkDiscovered" then

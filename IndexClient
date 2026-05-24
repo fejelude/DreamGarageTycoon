@@ -13,7 +13,6 @@ local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local camera = Workspace.CurrentCamera
 
 local indexGui = playerGui:WaitForChild("Index")
 local mainFrame = indexGui:WaitForChild("MainFrame")
@@ -29,12 +28,18 @@ local openButton = buttonsContainer:WaitForChild("Index")
 local remotes = ReplicatedStorage:WaitForChild("IndexRemotes")
 local refreshEvent = remotes:WaitForChild("RefreshIndexUI")
 
+local EXPECTED_INDEX_TOTAL = 47
 local isOpen = false
 local hiddenGuis = {}
-local savedFOV = camera.FieldOfView
+local savedFOV = 70
 local OPEN_FOV = 50
 local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
 local indexScreenGui = indexGui:IsA("ScreenGui") and indexGui or indexGui:FindFirstAncestorWhichIsA("ScreenGui")
+local gradientTweens = setmetatable({}, {__mode = "k"})
+
+if indexScreenGui then
+	indexScreenGui.ResetOnSpawn = false
+end
 
 local RARITY_ORDER = {Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5, Mythic = 6}
 local function rarityGradient(rarity)
@@ -59,9 +64,25 @@ local function rarityGradient(rarity)
 	return ColorSequence.new(Color3.fromRGB(150, 150, 150), Color3.fromRGB(220, 220, 220))
 end
 
+local function getCamera(waitSeconds)
+	local cam = Workspace.CurrentCamera
+	if cam then return cam end
+	if waitSeconds and waitSeconds > 0 then
+		local started = os.clock()
+		repeat
+			task.wait()
+			cam = Workspace.CurrentCamera
+		until cam or (os.clock() - started) >= waitSeconds
+	end
+	return cam
+end
+
 local sortedCars = {}
 for key, car in pairs(CarStats.Cars or {}) do
 	table.insert(sortedCars, {Key = key, Data = car})
+end
+if #sortedCars ~= EXPECTED_INDEX_TOTAL then
+	warn(string.format("⚠️ [INDEX] Expected %d cars but CarStats.Cars has %d entries.", EXPECTED_INDEX_TOTAL, #sortedCars))
 end
 
 table.sort(sortedCars, function(a, b)
@@ -90,18 +111,28 @@ local function setMainFrameVisible(visible)
 	openButton.Visible = not visible
 end
 
-local function toggleOtherGuis(shouldHide)
-	if shouldHide then
-		hiddenGuis = {}
-		for _, gui in ipairs(playerGui:GetDescendants()) do
-			if gui:IsA("ScreenGui") and gui ~= indexScreenGui and gui.Enabled == true then
-				gui.Enabled = false
-				table.insert(hiddenGuis, gui)
-			end
+local function restoreHiddenGuis()
+	for _, gui in ipairs(hiddenGuis) do if gui and gui.Parent then gui.Enabled = true end end
+	hiddenGuis = {}
+end
+
+local function hideOtherGuis()
+	hiddenGuis = {}
+	for _, gui in ipairs(playerGui:GetDescendants()) do
+		if gui:IsA("ScreenGui") and gui ~= indexScreenGui and gui.Enabled == true then
+			gui.Enabled = false
+			table.insert(hiddenGuis, gui)
 		end
-	else
-		for _, gui in ipairs(hiddenGuis) do if gui and gui.Parent then gui.Enabled = true end end
-		hiddenGuis = {}
+	end
+end
+
+local function closeIndex()
+	if not isOpen then return end
+	restoreHiddenGuis()
+	setMainFrameVisible(false)
+	local camera = getCamera(0.5)
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, {FieldOfView = savedFOV}):Play()
 	end
 end
 
@@ -111,12 +142,11 @@ local function applyGradientAnimation(gradient, rarity)
 	local tag = gradient:GetAttribute("__IndexGlowRarity")
 	if tag ~= rarity then
 		gradient:SetAttribute("__IndexGlowRarity", rarity)
-		if not _G.__GlowTweens then _G.__GlowTweens = setmetatable({}, {__mode = "k"}) end
-		if _G.__GlowTweens[gradient] then _G.__GlowTweens[gradient]:Cancel() end
+		if gradientTweens[gradient] then gradientTweens[gradient]:Cancel() end
 		gradient.Offset = Vector2.new(-0.35, 0)
 		local tween = TweenService:Create(gradient, TweenInfo.new(2.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Offset = Vector2.new(0.35, 0)})
 		tween:Play()
-		_G.__GlowTweens[gradient] = tween
+		gradientTweens[gradient] = tween
 	end
 end
 
@@ -130,12 +160,12 @@ local function renderIndex()
 			if discoveredState then count += 1 end
 			local nameLabel = card:WaitForChild("TextLabels"):WaitForChild("CarName")
 			local imageLabel = card:WaitForChild("CarImage")
-			nameLabel.Text = discoveredState and car.Key or "???"
+			nameLabel.Text = discoveredState and (car.Data.Name or car.Key) or "???"
 			imageLabel.Image = car.Data.Image or ""
 			imageLabel.ImageColor3 = discoveredState and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(0, 0, 0)
 		end
 	end
-	indexCountLabel.Text = string.format("(%d/47)", math.clamp(count, 0, 47))
+	indexCountLabel.Text = string.format("(%d/%d)", math.clamp(count, 0, EXPECTED_INDEX_TOTAL), EXPECTED_INDEX_TOTAL)
 end
 
 local function setupCards()
@@ -143,7 +173,7 @@ local function setupCards()
 	for _, child in ipairs(container:GetChildren()) do
 		if child:IsA("Frame") and child ~= template then child:Destroy() end
 	end
-	for i = 1, math.min(47, #sortedCars) do
+	for i = 1, math.min(EXPECTED_INDEX_TOTAL, #sortedCars) do
 		local car = sortedCars[i]
 		local card = template:Clone()
 		card.Name = "IndexCard_" .. tostring(i)
@@ -161,19 +191,30 @@ renderIndex()
 
 UIButtonUtils.SetupButton(openButton, function()
 	UIAudioConfig.PlayClick()
-	savedFOV = camera.FieldOfView
-	toggleOtherGuis(true)
+	local camera = getCamera(2)
+	if camera then
+		savedFOV = camera.FieldOfView
+	end
+	hideOtherGuis()
 	setMainFrameVisible(true)
-	TweenService:Create(camera, FOV_TWEEN, {FieldOfView = OPEN_FOV}):Play()
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, {FieldOfView = OPEN_FOV}):Play()
+	end
 	renderIndex()
 end)
 
 UIButtonUtils.SetupButton(exitButton, function()
 	UIAudioConfig.PlayClick()
-	toggleOtherGuis(false)
-	setMainFrameVisible(false)
-	TweenService:Create(camera, FOV_TWEEN, {FieldOfView = savedFOV}):Play()
+	closeIndex()
 end)
+
+if indexScreenGui then
+	indexScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if isOpen and not indexScreenGui.Enabled then
+			closeIndex()
+		end
+	end)
+end
 
 refreshEvent.OnClientEvent:Connect(renderIndex)
 player:GetAttributeChangedSignal("IndexDiscoveredJson"):Connect(renderIndex)
