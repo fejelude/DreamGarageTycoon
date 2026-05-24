@@ -42,6 +42,7 @@ if indexScreenGui then
 end
 
 local CARD_HOVER_SCALE = 1.05
+local CARD_CLICK_SCALE = 0.95
 local CARD_HOVER_TWEEN = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 
 local function getOrCreateCardScale(card)
@@ -61,26 +62,50 @@ local function wireCardHoverEffects(card)
 
 	local uiScale = getOrCreateCardScale(card)
 	local isHovering = false
+	local isPressed = false
 
-	local function tweenTo(scale)
-		TweenService:Create(uiScale, CARD_HOVER_TWEEN, {Scale = scale}):Play()
+	local function updateScale()
+		local targetScale = 1
+		if isPressed then
+			targetScale = CARD_CLICK_SCALE
+		elseif isHovering then
+			targetScale = CARD_HOVER_SCALE
+		end
+		TweenService:Create(uiScale, CARD_HOVER_TWEEN, {Scale = targetScale}):Play()
 	end
 
 	card.MouseEnter:Connect(function()
 		if isHovering then return end
 		isHovering = true
 		UIAudioConfig.PlayHover()
-		tweenTo(CARD_HOVER_SCALE)
+		updateScale()
 	end)
 
 	card.MouseLeave:Connect(function()
 		isHovering = false
-		tweenTo(1)
+		isPressed = false
+		updateScale()
+	end)
+
+	card.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			UIAudioConfig.PlayClick()
+			updateScale()
+		end
+	end)
+
+	card.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+		end
 	end)
 
 	card.AncestryChanged:Connect(function(_, parent)
 		if not parent then
 			isHovering = false
+			isPressed = false
 		end
 	end)
 end
