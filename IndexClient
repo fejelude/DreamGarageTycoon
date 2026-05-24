@@ -204,7 +204,7 @@ local function renderIndex()
 			if discoveredState then count += 1 end
 			local nameLabel = card:WaitForChild("TextLabels"):WaitForChild("CarName")
 			local imageLabel = card:WaitForChild("CarImage")
-			nameLabel.Text = discoveredState and (car.Data.Name or car.Key) or "???"
+			nameLabel.Text = discoveredState and car.Key or "???"
 			imageLabel.Image = car.Data.Image or ""
 			imageLabel.ImageColor3 = discoveredState and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(0, 0, 0)
 		end
