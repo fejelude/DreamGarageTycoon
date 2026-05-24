@@ -71,6 +71,7 @@ local DataStoreService = game:GetService("DataStoreService")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local IndexProgressionAPI = ReplicatedStorage:FindFirstChild("IndexProgressionAPI")
 
 -- ----------------------------------------------------------------------------
 -- ⚙️ CONFIGURATION & CONSTANTS
@@ -462,6 +463,11 @@ local function giveTool(player, toolName, customAttributes)
 		end
 
 		markDirty(player)
+		if IndexProgressionAPI then
+			pcall(function()
+				IndexProgressionAPI:Invoke("MarkDiscovered", player, sourceTool.Name)
+			end)
+		end
 		return true
 	else
 		warn("⚠️ [DATA] Invalid tool requested: " .. tostring(toolName))
@@ -871,6 +877,26 @@ local function save(player, isClosing)
 		local currentTransferUsed = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitUsed")) or 0))
 		local currentTransferResetAt = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitResetAt")) or 0))
 		local currentRebirth = math.max(0, math.floor(tonumber(player:GetAttribute("Rebirth")) or 0))
+		local currentIndexDiscovered = {}
+		do
+			local raw = player:GetAttribute("IndexDiscoveredJson")
+			if type(raw) == "string" and raw ~= "" then
+				local ok, decoded = pcall(function() return HttpService:JSONDecode(raw) end)
+				if ok and type(decoded) == "table" then
+					local dedupe = {}
+					for _, name in ipairs(decoded) do
+						if type(name) == "string" then
+							local normalized = name:gsub(" Item$", "")
+							if CarStats and CarStats.Cars and CarStats.Cars[normalized] then
+								dedupe[normalized] = true
+							end
+						end
+					end
+					for name in pairs(dedupe) do table.insert(currentIndexDiscovered, name) end
+					table.sort(currentIndexDiscovered)
+				end
+			end
+		end
 		if currentTransferResetAt > 0 and os.time() >= currentTransferResetAt then
 			currentTransferUsed = 0
 			currentTransferResetAt = 0
@@ -1075,6 +1101,7 @@ local function save(player, isClosing)
 					oldData.BankTransferLimitUsed = currentTransferUsed
 					oldData.BankTransferLimitResetAt = currentTransferResetAt
 					oldData.Rebirth = currentRebirth
+					oldData.IndexDiscovered = currentIndexDiscovered
 					oldData.Settings = currentSettings
 					oldData.SettingsVersion = SETTINGS_SCHEMA_VERSION
 
@@ -1200,7 +1227,7 @@ local function InitializePlayer(player)
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player", RankData = {},
-		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0
+		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {}
 	}
 
 	data.Inventory              = data.Inventory              or {}
@@ -1219,6 +1246,7 @@ local function InitializePlayer(player)
 	data.BankTransferLimitUsed  = data.BankTransferLimitUsed  or 0
 	data.BankTransferLimitResetAt = data.BankTransferLimitResetAt or 0
 	data.Rebirth = math.max(0, math.floor(tonumber(data.Rebirth) or 0))
+	data.IndexDiscovered = data.IndexDiscovered or {}
 	data.SettingsVersion = math.max(0, math.floor(tonumber(data.SettingsVersion) or 0))
 	data.Settings = sanitizeSettings(data.Settings)
 
@@ -1273,6 +1301,27 @@ local function InitializePlayer(player)
 	player:SetAttribute("Rank", data.Rank)
 	player:SetAttribute("Rebirth", data.Rebirth)
 	player:SetAttribute("RebirthMultiplier", data.Rebirth + 1)
+	local discoveredSet = {}
+	for _, toolName in ipairs(data.IndexDiscovered) do
+		if type(toolName) == "string" then
+			local normalized = toolName:gsub(" Item$", "")
+			if CarStats and CarStats.Cars and CarStats.Cars[normalized] then
+				discoveredSet[normalized] = true
+			end
+		end
+	end
+	for _, toolName in pairs(data.Inventory) do
+		if type(toolName) == "string" then
+			local normalized = toolName:gsub(" Item$", "")
+			if CarStats and CarStats.Cars and CarStats.Cars[normalized] then
+				discoveredSet[normalized] = true
+			end
+		end
+	end
+	local discoveredList = {}
+	for name in pairs(discoveredSet) do table.insert(discoveredList, name) end
+	table.sort(discoveredList)
+	player:SetAttribute("IndexDiscoveredJson", HttpService:JSONEncode(discoveredList))
 
 	local transferUsed = math.max(0, math.floor(tonumber(data.BankTransferLimitUsed) or 0))
 	local transferResetAt = math.max(0, math.floor(tonumber(data.BankTransferLimitResetAt) or 0))
