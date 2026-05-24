@@ -99,8 +99,10 @@ local function parseAmount(text)
 	end
 
 	local multiplier = 1
+
 	if suffix ~= "" then
 		multiplier = MULTIPLIERS[suffix]
+
 		if not multiplier then
 			return 0
 		end
@@ -130,6 +132,7 @@ end
 
 local function resetMessageState(label)
 	local state = messageState[label]
+
 	if state then
 		state.count = 0
 		state.baseText = nil
@@ -142,6 +145,7 @@ local function cancelLabelTween(label)
 	end
 
 	local tweens = labelTweens[label]
+
 	if tweens then
 		for _, tween in pairs(tweens) do
 			if tween then
@@ -208,6 +212,7 @@ local function fadeOutStateLabel(label)
 	})
 
 	local strokeTween = nil
+
 	if uiStroke then
 		strokeTween = TweenService:Create(uiStroke, LABEL_FADE_OUT_INFO, {
 			Transparency = 1,
@@ -255,9 +260,23 @@ local function getOppositeStateLabel(label)
 	return nil
 end
 
+local function formatRepeatedMessage(baseText, count)
+	if count and count >= 2 then
+		return tostring(baseText) .. " ( x" .. tostring(count) .. " )"
+	end
+
+	return tostring(baseText)
+end
+
 local function showStateLabel(label, baseText)
 	if not label then
 		warn("⚠️ Bank transfer state label missing for message: " .. tostring(baseText))
+		return
+	end
+
+	baseText = tostring(baseText or "")
+
+	if baseText == "" then
 		return
 	end
 
@@ -270,11 +289,13 @@ local function showStateLabel(label, baseText)
 	resetLabelTransparency(label)
 
 	local state = messageState[label]
+
 	if not state then
 		state = {
 			count = 0,
-			baseText = baseText,
+			baseText = nil,
 		}
+
 		messageState[label] = state
 	end
 
@@ -285,7 +306,7 @@ local function showStateLabel(label, baseText)
 		state.baseText = baseText
 	end
 
-	label.Text = baseText .. " x" .. state.count
+	label.Text = formatRepeatedMessage(baseText, state.count)
 	label.Visible = true
 
 	labelHideToken[label] = (labelHideToken[label] or 0) + 1
