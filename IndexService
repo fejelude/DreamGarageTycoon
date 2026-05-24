@@ -1,0 +1,78 @@
+-- Purpose: Server-authoritative Index progression tracker + replication bridge for client UI.
+-- Location: ServerScriptService > IndexService
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local remotesFolder = ReplicatedStorage:FindFirstChild("IndexRemotes")
+if not remotesFolder then
+	remotesFolder = Instance.new("Folder")
+	remotesFolder.Name = "IndexRemotes"
+	remotesFolder.Parent = ReplicatedStorage
+end
+
+local refreshEvent = remotesFolder:FindFirstChild("RefreshIndexUI")
+if not refreshEvent then
+	refreshEvent = Instance.new("RemoteEvent")
+	refreshEvent.Name = "RefreshIndexUI"
+	refreshEvent.Parent = remotesFolder
+end
+
+local function normalizeToolId(toolId)
+	if type(toolId) ~= "string" then return nil end
+	return toolId:gsub(" Item$", "")
+end
+
+local function decode(raw)
+	if type(raw) ~= "string" or raw == "" then return {} end
+	local ok, result = pcall(function() return game:GetService("HttpService"):JSONDecode(raw) end)
+	if not ok or type(result) ~= "table" then
+		return {}
+	end
+	return result
+end
+
+local function encode(tbl)
+	local ok, result = pcall(function() return game:GetService("HttpService"):JSONEncode(tbl) end)
+	return ok and result or "[]"
+end
+
+local function markDiscovered(player, toolId)
+	local normalized = normalizeToolId(toolId)
+	if not normalized then return false end
+
+	local discovered = decode(player:GetAttribute("IndexDiscoveredJson") or "[]")
+	for _, existing in ipairs(discovered) do
+		if existing == normalized then
+			return false
+		end
+	end
+
+	table.insert(discovered, normalized)
+	player:SetAttribute("IndexDiscoveredJson", encode(discovered))
+	refreshEvent:FireClient(player)
+	return true
+end
+
+local indexBindable = ReplicatedStorage:FindFirstChild("IndexProgressionAPI")
+if not indexBindable then
+	indexBindable = Instance.new("BindableFunction")
+	indexBindable.Name = "IndexProgressionAPI"
+	indexBindable.Parent = ReplicatedStorage
+end
+
+indexBindable.OnInvoke = function(action, player, payload)
+	if action == "MarkDiscovered" then
+		return markDiscovered(player, payload)
+	elseif action == "RefreshClient" and player then
+		refreshEvent:FireClient(player)
+		return true
+	end
+	return false
+end
+
+Players.PlayerAdded:Connect(function(player)
+	if player:GetAttribute("IndexDiscoveredJson") == nil then
+		player:SetAttribute("IndexDiscoveredJson", "[]")
+	end
+end)
