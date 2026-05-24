@@ -41,6 +41,50 @@ if indexScreenGui then
 	indexScreenGui.ResetOnSpawn = false
 end
 
+local CARD_HOVER_SCALE = 1.05
+local CARD_HOVER_TWEEN = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+
+local function getOrCreateCardScale(card)
+	local uiScale = card:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1
+		uiScale.Parent = card
+	end
+	return uiScale
+end
+
+local function wireCardHoverEffects(card)
+	if card:GetAttribute("IndexHoverBound") then return end
+	card:SetAttribute("IndexHoverBound", true)
+	card.Active = true
+
+	local uiScale = getOrCreateCardScale(card)
+	local isHovering = false
+
+	local function tweenTo(scale)
+		TweenService:Create(uiScale, CARD_HOVER_TWEEN, {Scale = scale}):Play()
+	end
+
+	card.MouseEnter:Connect(function()
+		if isHovering then return end
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		tweenTo(CARD_HOVER_SCALE)
+	end)
+
+	card.MouseLeave:Connect(function()
+		isHovering = false
+		tweenTo(1)
+	end)
+
+	card.AncestryChanged:Connect(function(_, parent)
+		if not parent then
+			isHovering = false
+		end
+	end)
+end
+
 local RARITY_ORDER = {Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5, Mythic = 6}
 local function rarityGradient(rarity)
 	if rarity == "Mythic" then
@@ -180,6 +224,7 @@ local function setupCards()
 		card.Visible = true
 		card.Parent = container
 		cardMap[car.Key] = card
+		wireCardHoverEffects(card)
 		local gradient = card:WaitForChild("Background"):FindFirstChildOfClass("UIGradient")
 		if gradient then applyGradientAnimation(gradient, car.Data.Rarity) end
 	end
