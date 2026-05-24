@@ -5,9 +5,12 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
+
 local remotes = ReplicatedStorage:WaitForChild("RebirthRemotes")
 local requestRebirth = remotes:WaitForChild("RequestRebirth")
 local refreshEvent = remotes:WaitForChild("RefreshRebirthUI")
+
+local rebirthLocks = {}
 
 local function getWalletValue(player)
 	local leaderstats = player:FindFirstChild("leaderstats")
@@ -15,20 +18,35 @@ local function getWalletValue(player)
 end
 
 local function getRebirth(player)
-	return math.clamp(math.floor(tonumber(player:GetAttribute("Rebirth")) or 0), 0, RebirthConfig.MAX_REBIRTH)
+	return math.clamp(
+		math.floor(tonumber(player:GetAttribute("Rebirth")) or 0),
+		0,
+		RebirthConfig.MAX_REBIRTH
+	)
+end
+
+local function buildSuccessMessage(rebirth)
+	return "Success: You rebirthed to Rebirth " .. tostring(rebirth) .. "."
 end
 
 local function setRebirth(player, newRebirth)
-	local clamped = math.clamp(math.floor(tonumber(newRebirth) or 0), 0, RebirthConfig.MAX_REBIRTH)
+	local clamped = math.clamp(
+		math.floor(tonumber(newRebirth) or 0),
+		0,
+		RebirthConfig.MAX_REBIRTH
+	)
+
 	player:SetAttribute("Rebirth", clamped)
 	player:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(clamped))
-	refreshEvent:FireClient(player)
+
+	return clamped
 end
 
 local function getSnapshot(player)
 	local walletValue = getWalletValue(player)
 	local rebirth = getRebirth(player)
 	local nextRebirth = math.min(rebirth + 1, RebirthConfig.MAX_REBIRTH)
+
 	return {
 		CurrentRebirth = rebirth,
 		NextRebirth = nextRebirth,
@@ -40,6 +58,25 @@ local function getSnapshot(player)
 	}
 end
 
+local function withRebirthLock(player, callback)
+	if rebirthLocks[player] then
+		return false, "Rebirth is already processing."
+	end
+
+	rebirthLocks[player] = true
+
+	local ok, success, message, snapshot = pcall(callback)
+
+	rebirthLocks[player] = nil
+
+	if not ok then
+		warn("[RebirthService] Rebirth failed for", player, success)
+		return false, "Rebirth failed. Please try again."
+	end
+
+	return success, message, snapshot
+end
+
 requestRebirth.OnServerInvoke = function(player, action)
 	if action == "Snapshot" then
 		return true, getSnapshot(player)
@@ -49,29 +86,42 @@ requestRebirth.OnServerInvoke = function(player, action)
 		return false, "Invalid action."
 	end
 
-	local rebirth = getRebirth(player)
-	if rebirth >= RebirthConfig.MAX_REBIRTH then
-		return false, "You’ve already reached the max rebirth."
-	end
+	return withRebirthLock(player, function()
+		local rebirth = getRebirth(player)
 
-	local walletValue = getWalletValue(player)
-	if not walletValue then
-		return false, "Wallet data unavailable."
-	end
+		if rebirth >= RebirthConfig.MAX_REBIRTH then
+			return false, "Max rebirth reached."
+		end
 
-	local required = RebirthConfig.GetCost(rebirth + 1)
-	if walletValue.Value < required then
-		return false, "Failed: Not enough cash to rebirth."
-	end
+		local walletValue = getWalletValue(player)
 
-	walletValue.Value -= required
-	setRebirth(player, rebirth + 1)
-	return true, "Success: You rebirthed to Rebirth " .. tostring(rebirth + 1) .. ".", getSnapshot(player)
+		if not walletValue then
+			return false, "Wallet data unavailable."
+		end
+
+		local required = RebirthConfig.GetCost(rebirth + 1)
+
+		if walletValue.Value < required then
+			return false, "Failed: Not enough cash to rebirth."
+		end
+
+		walletValue.Value -= required
+
+		local newRebirth = setRebirth(player, rebirth + 1)
+		local snapshot = getSnapshot(player)
+
+		return true, buildSuccessMessage(newRebirth), snapshot
+	end)
 end
 
 Players.PlayerAdded:Connect(function(player)
 	if player:GetAttribute("Rebirth") == nil then
 		player:SetAttribute("Rebirth", 0)
 	end
+
 	player:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(getRebirth(player)))
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	rebirthLocks[player] = nil
 end)
