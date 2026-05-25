@@ -4,6 +4,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 
+-- ============ CONFIG ============
+local SESSION_TIMEOUT_SECONDS = 60
+local TRIGGER_COOLDOWN_SECONDS = 1
+local MAX_GIFT_DISTANCE = 16
+-- ================================
+
 -- Create Remote if it doesn't exist
 local RemotesFolder = ReplicatedStorage:FindFirstChild("PlayerCarGiftingRemotes")
 if not RemotesFolder then
@@ -19,11 +25,20 @@ if not ActionRemote then
 	ActionRemote.Parent = RemotesFolder
 end
 
+-- ============================================================================
+-- HELPERS
+-- ============================================================================
 
 local function canReceiveGift(player)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
-	if not rankApi then return true end
-	local ok, allowed = pcall(function() return rankApi:Invoke("CanAddCar", player, 1) end)
+	if not rankApi then
+		return true
+	end
+
+	local ok, allowed = pcall(function()
+		return rankApi:Invoke("CanAddCar", player, 1)
+	end)
+
 	return ok and allowed == true
 end
 
@@ -31,250 +46,501 @@ local function recordGift(giver, receiver, carId)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
 	if rankApi then
 		task.spawn(function()
-			pcall(function() rankApi:Invoke("CarGiftSent", giver, receiver, carId) end)
+			pcall(function()
+				rankApi:Invoke("CarGiftSent", giver, receiver, carId)
+			end)
 		end)
 	end
 end
 
-local function removeRespawnMirror(giver, toolId)
+local function getRoot(player)
+	local character = player and player.Character
+	if not character then return nil end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.Health <= 0 then
+		return nil
+	end
+
+	return character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso")
+end
+
+local function getToolUniqueId(tool)
+	if not tool then return nil end
+
+	return tool:GetAttribute("ToolId")
+		or tool:GetAttribute("CarToolId")
+		or tool:GetAttribute("UniqueId")
+end
+
+local function isValidCarTool(tool)
+	if typeof(tool) ~= "Instance" then return false end
+	if not tool:IsA("Tool") then return false end
+
+	-- Best validation options.
+	if tool:GetAttribute("CarToolPrepared") == true then return true end
+	if tool:GetAttribute("IsCarTool") == true then return true end
+	if getToolUniqueId(tool) ~= nil then return true end
+
+	-- Compatibility fallback from your old client logic.
+	-- If your game has non-car tools with Handles, remove this line and require one of the attributes above.
+	if tool:FindFirstChild("Handle") then return true end
+
+	return false
+end
+
+local function isToolOwnedByPlayer(tool, player)
+	if not tool or not player then return false end
+
+	return tool.Parent == player.Character or tool.Parent == player:FindFirstChild("Backpack")
+end
+
+local function removeRespawnMirror(giver, toolId, fallbackName)
 	local starterGear = giver and giver:FindFirstChild("StarterGear")
 	if not starterGear then return end
-	for _, child in ipairs(starterGear:GetChildren()) do
-		if child:IsA("Tool") and (child.Name == toolId or child:GetAttribute("ToolId") == toolId) then
-			child:Destroy()
-			return
+
+	if toolId ~= nil then
+		for _, child in ipairs(starterGear:GetChildren()) do
+			if child:IsA("Tool") and getToolUniqueId(child) == toolId then
+				child:Destroy()
+				return
+			end
+		end
+
+		return
+	end
+
+	if fallbackName then
+		for _, child in ipairs(starterGear:GetChildren()) do
+			if child:IsA("Tool") and child.Name == fallbackName then
+				child:Destroy()
+				return
+			end
 		end
 	end
 end
 
--- Track active trade sessions
-local activeGifts = {}
+local function getReceiverFromData(data)
+	if typeof(data) ~= "table" then
+		return nil
+	end
+
+	if typeof(data.ReceiverUserId) == "number" then
+		return Players:GetPlayerByUserId(data.ReceiverUserId)
+	end
+
+	if typeof(data.Receiver) == "Instance" and data.Receiver:IsA("Player") then
+		return data.Receiver
+	end
+
+	return nil
+end
+
+local function getGiverIdFromData(data)
+	if typeof(data) ~= "table" then
+		return nil
+	end
+
+	if typeof(data.GiverUserId) == "number" then
+		return data.GiverUserId
+	end
+
+	return tonumber(data.GiverUserId)
+end
+
+local function makePlayerInfo(player)
+	return {
+		UserId = player.UserId,
+		Name = player.Name,
+		DisplayName = player.DisplayName
+	}
+end
+
+local function sendGiverUpdate(giver, state, text)
+	if giver and giver.Parent == Players then
+		ActionRemote:FireClient(giver, "UpdateGiverUI", {
+			State = state,
+			Text = text
+		})
+	end
+end
+
+local function sendReceiverUpdate(receiver, state, text)
+	if receiver and receiver.Parent == Players then
+		ActionRemote:FireClient(receiver, "UpdateReceiverUI", {
+			State = state,
+			Text = text
+		})
+	end
+end
+
+local function closePlayerUI(player)
+	if player and player.Parent == Players then
+		ActionRemote:FireClient(player, "CloseUI")
+	end
+end
+
+-- ============================================================================
+-- SESSION STATE
+-- ============================================================================
+
+local activeGiftsByGiver = {}
+local activeGiftsByReceiver = {}
 local lastTriggerTime = {}
+
+local function clearSession(session)
+	if not session then return end
+
+	if session.Timer then
+		task.cancel(session.Timer)
+		session.Timer = nil
+	end
+
+	local giver = session.Giver
+	local receiver = session.Receiver
+
+	if giver and activeGiftsByGiver[giver.UserId] == session then
+		activeGiftsByGiver[giver.UserId] = nil
+	end
+
+	if receiver and activeGiftsByReceiver[receiver.UserId] == session then
+		activeGiftsByReceiver[receiver.UserId] = nil
+	end
+end
+
+local function setSessionTimer(session)
+	if session.Timer then
+		task.cancel(session.Timer)
+		session.Timer = nil
+	end
+
+	session.Timer = task.delay(SESSION_TIMEOUT_SECONDS, function()
+		if activeGiftsByGiver[session.Giver.UserId] ~= session then
+			return
+		end
+
+		sendGiverUpdate(session.Giver, "Failed", "Gift request timed out.")
+
+		if session.State == "PendingReceiver" then
+			closePlayerUI(session.Receiver)
+		end
+
+		clearSession(session)
+	end)
+end
+
+local function failSession(session, giverText, receiverText)
+	if giverText then
+		sendGiverUpdate(session.Giver, "Failed", giverText)
+	end
+
+	if receiverText then
+		sendReceiverUpdate(session.Receiver, "Failed", receiverText)
+	end
+
+	clearSession(session)
+end
+
+local function isPlayerBusy(player)
+	if not player then return false end
+
+	return activeGiftsByGiver[player.UserId] ~= nil
+		or activeGiftsByReceiver[player.UserId] ~= nil
+end
+
+local function validatePromptRequest(giver, data)
+	local receiver = getReceiverFromData(data)
+	local tool = data and data.Tool
+
+	if not receiver then
+		return false, nil, nil, "Invalid receiver."
+	end
+
+	if receiver == giver then
+		return false, nil, nil, "You cannot gift yourself."
+	end
+
+	if receiver.Parent ~= Players then
+		return false, nil, nil, "Player has left the game."
+	end
+
+	if typeof(tool) ~= "Instance" or not tool:IsA("Tool") then
+		return false, nil, nil, "Invalid car tool."
+	end
+
+	if not isValidCarTool(tool) then
+		return false, nil, nil, "Invalid car tool."
+	end
+
+	-- Require the tool to be equipped when the prompt is triggered.
+	if tool.Parent ~= giver.Character then
+		return false, nil, nil, "You must equip the car before gifting it."
+	end
+
+	local giverRoot = getRoot(giver)
+	local receiverRoot = getRoot(receiver)
+
+	if not giverRoot or not receiverRoot then
+		return false, nil, nil, "Player is not ready for gifting."
+	end
+
+	local distance = (giverRoot.Position - receiverRoot.Position).Magnitude
+	if distance > MAX_GIFT_DISTANCE then
+		return false, nil, nil, "You are too far away to gift."
+	end
+
+	if isPlayerBusy(giver) then
+		return false, nil, nil, "You already have a pending gift."
+	end
+
+	if isPlayerBusy(receiver) then
+		return false, nil, nil, receiver.Name .. " is currently busy."
+	end
+
+	return true, receiver, tool, nil
+end
+
+-- ============================================================================
+-- REMOTE HANDLER
+-- ============================================================================
 
 ActionRemote.OnServerEvent:Connect(function(player, action, data)
 	if action == "TriggerPrompt" then
-		local receiver = data and data.Receiver
-		local tool = data and data.Tool
-
-		if not receiver or not tool then return end
-		if tool.Parent ~= player.Character and tool.Parent ~= player.Backpack then return end -- Tool ownership fix
-
 		local now = os.clock()
-		if lastTriggerTime[player.UserId] and (now - lastTriggerTime[player.UserId]) < 1 then
-			return -- Ignore if triggered within 1 second
+
+		if lastTriggerTime[player.UserId] and (now - lastTriggerTime[player.UserId]) < TRIGGER_COOLDOWN_SECONDS then
+			return
 		end
+
 		lastTriggerTime[player.UserId] = now
 
-		local existing = activeGifts[player.UserId]
-		if existing then
-			if existing.Timer then task.cancel(existing.Timer) end
-			if existing.State == "PendingReceiver" and existing.Receiver then
-				ActionRemote:FireClient(existing.Receiver, "CloseUI")
-			end
+		local valid, receiver, tool, reason = validatePromptRequest(player, data)
+		if not valid then
+			sendGiverUpdate(player, "Failed", reason or "Unable to start gift.")
+			return
 		end
 
-		-- Setup trade session
 		local session = {
 			Giver = player,
 			Receiver = receiver,
 			CarId = tool.Name,
+			ToolId = getToolUniqueId(tool),
 			Tool = tool,
 			State = "PendingGiver",
 			Timer = nil
 		}
-		activeGifts[player.UserId] = session
 
-		session.Timer = task.delay(60, function()
-			if activeGifts[player.UserId] == session then
-				ActionRemote:FireClient(session.Giver, "UpdateGiverUI", {
-					State = "NotificationFalse",
-					Text = "Gift request timed out."
-				})
-				activeGifts[player.UserId] = nil
-			end
-		end)
+		activeGiftsByGiver[player.UserId] = session
+		activeGiftsByReceiver[receiver.UserId] = session
 
-		-- Open UI for the Giver first to confirm
+		setSessionTimer(session)
+
 		ActionRemote:FireClient(player, "OpenGiverUI", {
-			Receiver = receiver,
+			Receiver = makePlayerInfo(receiver),
 			CarId = tool.Name
 		})
 
 	elseif action == "GiverAccept" then
-		local session = activeGifts[player.UserId]
-		if not session or session.State ~= "PendingGiver" then return end
+		local session = activeGiftsByGiver[player.UserId]
+		if not session or session.State ~= "PendingGiver" then
+			return
+		end
 
-		if not session.Receiver or not session.Receiver.Parent then
-			ActionRemote:FireClient(player, "UpdateGiverUI", {
-				State = "NotificationFalse",
-				Text = "Player has left the game."
-			})
-			activeGifts[player.UserId] = nil
+		if not session.Receiver or session.Receiver.Parent ~= Players then
+			failSession(session, "Player has left the game.", nil)
+			return
+		end
+
+		if activeGiftsByReceiver[session.Receiver.UserId] ~= session then
+			failSession(session, session.Receiver.Name .. " is currently busy.", nil)
+			return
+		end
+
+		if not isToolOwnedByPlayer(session.Tool, session.Giver) then
+			failSession(session, "Gift failed: Car tool missing.", nil)
+			return
+		end
+
+		if not isValidCarTool(session.Tool) then
+			failSession(session, "Gift failed: Invalid car tool.", nil)
 			return
 		end
 
 		session.State = "PendingReceiver"
+		setSessionTimer(session)
 
-		-- Reset timeout
-		if session.Timer then task.cancel(session.Timer) end
-		session.Timer = task.delay(60, function()
-			if activeGifts[player.UserId] == session then
-				ActionRemote:FireClient(session.Giver, "UpdateGiverUI", {
-					State = "NotificationFalse",
-					Text = "Gift request timed out."
-				})
-				ActionRemote:FireClient(session.Receiver, "CloseUI")
-				activeGifts[player.UserId] = nil
-			end
-		end)
+		sendGiverUpdate(session.Giver, "Pending", "Waiting for " .. session.Receiver.DisplayName .. " to accept...")
 
-		-- Inform Giver they are waiting
-		ActionRemote:FireClient(player, "UpdateGiverUI", {
-			State = "NotificationTrue",
-			Text = "Waiting for " .. session.Receiver.Name .. " to accept..."
-		})
-
-		-- Open UI for the Receiver
 		ActionRemote:FireClient(session.Receiver, "OpenReceiverUI", {
-			Giver = player,
+			Giver = makePlayerInfo(session.Giver),
 			CarId = session.CarId
 		})
 
 	elseif action == "GiverDecline" then
-		local session = activeGifts[player.UserId]
-		if not session then return end
-		if session.State == "PendingReceiver" then
-			ActionRemote:FireClient(session.Receiver, "CloseUI")
+		local session = activeGiftsByGiver[player.UserId]
+		if not session then
+			return
 		end
-		if session.Timer then task.cancel(session.Timer) end
-		activeGifts[player.UserId] = nil
+
+		if session.State == "PendingReceiver" then
+			closePlayerUI(session.Receiver)
+		end
+
+		clearSession(session)
 
 	elseif action == "ReceiverAccept" then
-		local giverId = data and data.GiverUserId
-		if not giverId then return end
-		local session = activeGifts[giverId]
+		local giverId = getGiverIdFromData(data)
+		if not giverId then
+			return
+		end
 
-		if not session or session.State ~= "PendingReceiver" or session.Receiver ~= player then return end
+		local session = activeGiftsByGiver[giverId]
+		if not session or session.State ~= "PendingReceiver" or session.Receiver ~= player then
+			return
+		end
 
-		if not session.Giver or not session.Giver.Parent then
-			ActionRemote:FireClient(player, "UpdateReceiverUI", { Text = "Giver has left the game." })
-			if session.Timer then task.cancel(session.Timer) end
-			activeGifts[giverId] = nil
+		-- Prevent double-accept/race conditions before anything can yield.
+		session.State = "Processing"
+
+		if not session.Giver or session.Giver.Parent ~= Players then
+			sendReceiverUpdate(player, "Failed", "Giver has left the game.")
+			clearSession(session)
+			return
+		end
+
+		if not isToolOwnedByPlayer(session.Tool, session.Giver) then
+			failSession(session, "Gift failed: Car tool missing.", "Gift failed: Car tool missing.")
+			return
+		end
+
+		if not isValidCarTool(session.Tool) then
+			failSession(session, "Gift failed: Invalid car tool.", "Gift failed: Invalid car tool.")
 			return
 		end
 
 		if not canReceiveGift(player) then
-			ActionRemote:FireClient(session.Giver, "UpdateGiverUI", {
-				State = "NotificationFalse",
-				Text = session.Receiver.DisplayName .. " has full car storage."
-			})
-			ActionRemote:FireClient(player, "UpdateReceiverUI", {
-				Text = "Your car storage is full."
-			})
-			if session.Timer then task.cancel(session.Timer) end
-			activeGifts[giverId] = nil
+			failSession(
+				session,
+				session.Receiver.DisplayName .. " has full car storage.",
+				"Your car storage is full."
+			)
 			return
 		end
 
-		-- PROCESS THE GIFT HERE (server-authoritative transfer + respawn mirror update)
-		if session.Tool and session.Tool.Parent then
-			local starterClone = session.Tool:Clone()
-			removeRespawnMirror(session.Giver, session.CarId)
-			session.Tool.Parent = player.Backpack
-			if player:FindFirstChild("StarterGear") then
-				starterClone.Parent = player.StarterGear
+		local success, err = pcall(function()
+			local receiverBackpack = player:FindFirstChild("Backpack")
+			if not receiverBackpack then
+				error("Receiver Backpack missing.")
+			end
+
+			local tool = session.Tool
+			local starterClone = tool:Clone()
+
+			removeRespawnMirror(session.Giver, session.ToolId, session.CarId)
+
+			tool.Parent = receiverBackpack
+
+			local receiverStarterGear = player:FindFirstChild("StarterGear")
+			if receiverStarterGear then
+				starterClone.Parent = receiverStarterGear
 			else
 				starterClone:Destroy()
 			end
-			recordGift(session.Giver, player, session.CarId)
-		else
-			ActionRemote:FireClient(session.Giver, "UpdateGiverUI", {
-				State = "NotificationFalse",
-				Text = "Gift failed: Car tool missing."
-			})
-			ActionRemote:FireClient(player, "UpdateReceiverUI", {
-				Text = "Gift failed: Car tool missing."
-			})
-			if session.Timer then task.cancel(session.Timer) end
-			activeGifts[giverId] = nil
+		end)
+
+		if not success then
+			warn("Gift transfer failed:", err)
+
+			failSession(
+				session,
+				"Gift failed: Could not transfer car.",
+				"Gift failed: Could not receive car."
+			)
+
 			return
 		end
 
-		-- Notify Both
-		ActionRemote:FireClient(session.Giver, "UpdateGiverUI", {
-			State = "NotificationTrue",
-			Text = "Successfully sent a gift to " .. session.Receiver.DisplayName .. "!"
-		})
+		recordGift(session.Giver, player, session.CarId)
 
-		ActionRemote:FireClient(player, "UpdateReceiverUI", {
-			Text = "Car Added to Inventory!"
-		})
+		sendGiverUpdate(
+			session.Giver,
+			"Success",
+			"Successfully sent a gift to " .. session.Receiver.DisplayName .. "!"
+		)
 
-		if session.Timer then task.cancel(session.Timer) end
-		activeGifts[giverId] = nil
+		sendReceiverUpdate(
+			player,
+			"Success",
+			"Car Added to Inventory!"
+		)
+
+		clearSession(session)
 
 	elseif action == "ReceiverDecline" then
-		local giverId = data and data.GiverUserId
-		if not giverId then return end
-		local session = activeGifts[giverId]
+		local giverId = getGiverIdFromData(data)
+		if not giverId then
+			return
+		end
 
-		if not session or session.State ~= "PendingReceiver" or session.Receiver ~= player then return end
+		local session = activeGiftsByGiver[giverId]
+		if not session or session.State ~= "PendingReceiver" or session.Receiver ~= player then
+			return
+		end
 
-		-- Notify Giver that it was declined
-		ActionRemote:FireClient(session.Giver, "UpdateGiverUI", {
-			State = "NotificationFalse",
-			Text = session.Receiver.Name .. " declined the gift."
-		})
+		sendGiverUpdate(
+			session.Giver,
+			"Failed",
+			session.Receiver.Name .. " declined the gift."
+		)
 
-		ActionRemote:FireClient(player, "CloseUI")
-		if session.Timer then task.cancel(session.Timer) end
-		activeGifts[giverId] = nil
+		closePlayerUI(player)
+		clearSession(session)
 
 	elseif action == "ReceiverBusy" then
-		local giverId = data and data.GiverUserId
-		if not giverId then return end
-		local session = activeGifts[giverId]
+		local giverId = getGiverIdFromData(data)
+		if not giverId then
+			return
+		end
 
-		if not session or session.State ~= "PendingReceiver" or session.Receiver ~= player then return end
+		local session = activeGiftsByGiver[giverId]
+		if not session or session.State ~= "PendingReceiver" or session.Receiver ~= player then
+			return
+		end
 
-		ActionRemote:FireClient(session.Giver, "UpdateGiverUI", {
-			State = "NotificationFalse",
-			Text = session.Receiver.Name .. " is currently busy."
-		})
-		
-		if session.Timer then task.cancel(session.Timer) end
-		activeGifts[giverId] = nil
+		sendGiverUpdate(
+			session.Giver,
+			"Failed",
+			session.Receiver.Name .. " is currently busy."
+		)
+
+		clearSession(session)
 	end
 end)
 
--- Cleanup when a player leaves mid-trade
+-- ============================================================================
+-- CLEANUP
+-- ============================================================================
+
 Players.PlayerRemoving:Connect(function(leavingPlayer)
-	-- Cleanup rate limit tracking
 	lastTriggerTime[leavingPlayer.UserId] = nil
 
-	-- If they were giving a car
-	if activeGifts[leavingPlayer.UserId] then
-		local session = activeGifts[leavingPlayer.UserId]
-		if session.State == "PendingReceiver" and session.Receiver then
-			ActionRemote:FireClient(session.Receiver, "CloseUI")
+	local sessionAsGiver = activeGiftsByGiver[leavingPlayer.UserId]
+	if sessionAsGiver then
+		if sessionAsGiver.State == "PendingReceiver" then
+			closePlayerUI(sessionAsGiver.Receiver)
 		end
-		if session.Timer then task.cancel(session.Timer) end
-		activeGifts[leavingPlayer.UserId] = nil
+
+		clearSession(sessionAsGiver)
 	end
 
-	local toRemove = {}
-	-- If they were receiving a car
-	for giverId, session in pairs(activeGifts) do
-		if session.Receiver == leavingPlayer then
-			toRemove[#toRemove + 1] = giverId
-			if session.Giver then
-				ActionRemote:FireClient(session.Giver, "UpdateGiverUI", {
-					State = "NotificationFalse",
-					Text = leavingPlayer.Name .. " left the game."
-				})
-			end
-			if session.Timer then task.cancel(session.Timer) end
-		end
+	local sessionAsReceiver = activeGiftsByReceiver[leavingPlayer.UserId]
+	if sessionAsReceiver then
+		sendGiverUpdate(
+			sessionAsReceiver.Giver,
+			"Failed",
+			leavingPlayer.Name .. " left the game."
+		)
+
+		clearSession(sessionAsReceiver)
 	end
-	for _, id in ipairs(toRemove) do activeGifts[id] = nil end
 end)
