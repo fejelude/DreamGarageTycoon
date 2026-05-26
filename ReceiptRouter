@@ -23,6 +23,7 @@ local ActivePurchaseHistory = nil
 local TABLET_2X_ID = 3509697462
 local SHOP_REROLL_ID = 3520990584
 local BANK_TRANSFER_SKIP_ID = 3591736957
+local OFFLINE_10X_CLAIM_ID = 3598967453
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 
 local BANK_TRANSFER_USED_ATTR = "BankTransferLimitUsed"
@@ -356,6 +357,22 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 			if BankTimerResetFeedback then
 				BankTimerResetFeedback:FireClient(buyerPlayer, false, "Timer Reset Failed")
+			end
+		end
+
+	elseif pid == OFFLINE_10X_CLAIM_ID then
+		if _G.OfflineEarningsService and _G.OfflineEarningsService.TryGrantPremium then
+			local ok, payout = _G.OfflineEarningsService.TryGrantPremium(buyerPlayer)
+			purchaseSuccess = ok
+
+			local folder = ReplicatedStorage:FindFirstChild("OfflineEarningsRemotes")
+			local resultEvent = folder and folder:FindFirstChild("OfflinePremiumClaimResult")
+			if resultEvent then
+				if ok then
+					resultEvent:FireClient(buyerPlayer, true, "Claimed", payout)
+				else
+					resultEvent:FireClient(buyerPlayer, false, "You have already claimed your offline earnings.", 0)
+				end
 			end
 		end
 
