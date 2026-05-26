@@ -13,6 +13,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Workspace = game:GetService("Workspace")
+local ServerStorage = game:GetService("ServerStorage")
 
 local OFFLINE_RATE = 0.30
 local MAX_OFFLINE_SECONDS = 8 * 60 * 60
@@ -82,6 +83,19 @@ _G.OfflineEarningsService = _G.OfflineEarningsService or {}
 
 local sessions = {}
 
+local tycoonAdminApi = ServerStorage:FindFirstChild("TycoonAdminAPI")
+
+local function getTabletCarry(player)
+	return math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
+end
+
+local function clearTabletCarry(player)
+	player:SetAttribute("OfflineTabletCarry", 0)
+	if tycoonAdminApi and tycoonAdminApi:IsA("BindableFunction") then
+		pcall(function() tycoonAdminApi:Invoke("MarkDirty", player) end)
+	end
+end
+
 local function getPlayerPlot(player)
 	local plotName = player:GetAttribute("OccupiedPlot")
 
@@ -148,8 +162,9 @@ local function computeBaseOffline(player)
 	end
 
 	local amount = math.max(0, math.floor(normalRate * OFFLINE_RATE * elapsed))
+	local tabletCarry = getTabletCarry(player)
 
-	return true, amount
+	return true, amount + tabletCarry
 end
 
 local function ensureSession(player)
@@ -250,6 +265,7 @@ claimNormal.OnServerInvoke = function(player)
 	end
 
 	session.claimed = true
+	clearTabletCarry(player)
 
 	return true, "Claimed", session.baseAmount
 end
@@ -316,6 +332,7 @@ function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
 	end
 
 	session.claimed = true
+	clearTabletCarry(player)
 	session.premiumPending = false
 	session.premiumPurchaseId = purchaseId
 	session.lastPremiumGrantedPurchaseId = purchaseId
