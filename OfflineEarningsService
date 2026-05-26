@@ -1,3 +1,13 @@
+-- Purpose: Computes and grants Offline Earnings with one-time claim enforcement and premium 10x support.
+-- Runs on: Server
+-- Location: ServerScriptService > OfflineEarningsService
+-- Dependencies: Players, ReplicatedStorage, MarketplaceService, Workspace
+-- Public API: _G.OfflineEarningsService.TryGrantPremium(player)
+-- Networking: Creates/uses ReplicatedStorage.OfflineEarningsRemotes (RequestOfflineEarnings, ClaimOfflineEarnings,
+--             BeginPremiumOfflineClaim, OfflinePremiumClaimResult).
+-- Security: Server is authoritative for payout calculation and claim state. Client cannot set reward amounts.
+-- Notes: Offline payout = floor(CurrentCPS * ActualEarningsMultiplier * 0.30 * min(offlineSeconds, 8h)).
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")

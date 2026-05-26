@@ -1,3 +1,13 @@
+-- Purpose: Controls Offline Earnings join popup UI, claim actions, and purchase prompt flow.
+-- Runs on: Client
+-- Location: StarterGui > OfflineEarningsUI > OfflineEarningsClient
+-- Dependencies: Players, ReplicatedStorage, MarketplaceService, UIAudioConfig
+-- Public API: N/A
+-- Networking: Calls OfflineEarningsRemotes (RequestOfflineEarnings, ClaimOfflineEarnings,
+--             BeginPremiumOfflineClaim) and listens for OfflinePremiumClaimResult.
+-- Security: Display/UI only. All reward amounts and duplicate-claim validation are enforced on server.
+-- Notes: Reuses existing Robux loading/sound flow through UIAudioConfig for premium claim consistency.
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
