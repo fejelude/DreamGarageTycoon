@@ -11,8 +11,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
-local TweenService = game:GetService("TweenService")
-
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 
 local UIAudioConfig = nil
@@ -97,14 +95,11 @@ local function disableButtons(disabled)
 	premiumButton.Active = not disabled
 end
 
-local function animateOpen()
+local function showOfflineUi()
 	mainFrame.Visible = true
-	mainFrame.BackgroundTransparency = 1
 	local scale = mainFrame:FindFirstChildOfClass("UIScale") or Instance.new("UIScale")
-	scale.Scale = 0.92
+	scale.Scale = 1
 	scale.Parent = mainFrame
-	TweenService:Create(mainFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundTransparency = 0}):Play()
-	TweenService:Create(scale, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
 end
 
 local function maybeOpen()
@@ -136,7 +131,7 @@ local function maybeOpen()
 	playerGui:SetAttribute("OfflineEarningsFlowActive", true)
 	gui:SetAttribute("ExternallyManaged", true)
 	gui.Enabled = true
-	animateOpen()
+	showOfflineUi()
 end
 
 UIButtonUtils.SetupButton(obtainButton, function()
