@@ -1,12 +1,13 @@
 -- Purpose: Computes and grants Offline Earnings with one-time claim enforcement and premium 10x support.
 -- Runs on: Server
 -- Location: ServerScriptService > OfflineEarningsService
--- Dependencies: Players, ReplicatedStorage, MarketplaceService, Workspace
--- Public API: _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
--- Networking: Creates/uses ReplicatedStorage.OfflineEarningsRemotes (RequestOfflineEarnings, ClaimOfflineEarnings,
---             BeginPremiumOfflineClaim, OfflinePremiumClaimResult).
--- Security: Server is authoritative for payout calculation and claim state. Client cannot set reward amounts.
--- Notes: Offline payout = floor(CurrentCPS * ActualEarningsMultiplier * 0.30 * min(offlineSeconds, 8h)).
+-- Required hierarchy:
+-- ReplicatedStorage
+-- └── OfflineEarningsRemotes
+--     ├── RequestOfflineEarnings          RemoteFunction
+--     ├── ClaimOfflineEarnings            RemoteFunction
+--     ├── BeginPremiumOfflineClaim        RemoteFunction
+--     └── OfflinePremiumClaimResult       RemoteEvent
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -17,28 +18,65 @@ local OFFLINE_RATE = 0.30
 local MAX_OFFLINE_SECONDS = 8 * 60 * 60
 local PREMIUM_PRODUCT_ID = 3598967453
 
-local remotesFolder = ReplicatedStorage:FindFirstChild("OfflineEarningsRemotes")
-if not remotesFolder then
-	remotesFolder = Instance.new("Folder")
-	remotesFolder.Name = "OfflineEarningsRemotes"
-	remotesFolder.Parent = ReplicatedStorage
+local function requireChild(parent, childName, expectedClass)
+	local child = parent:FindFirstChild(childName)
+
+	if not child then
+		error(
+			string.format(
+				"[OfflineEarningsService] Missing required object: %s.%s | Expected type: %s",
+				parent:GetFullName(),
+				childName,
+				expectedClass
+			)
+		)
+	end
+
+	if not child:IsA(expectedClass) then
+		error(
+			string.format(
+				"[OfflineEarningsService] Wrong type for %s | Expected: %s | Found: %s",
+				child:GetFullName(),
+				expectedClass,
+				child.ClassName
+			)
+		)
+	end
+
+	return child
 end
 
-local requestData = remotesFolder:FindFirstChild("RequestOfflineEarnings") or Instance.new("RemoteFunction")
-requestData.Name = "RequestOfflineEarnings"
-requestData.Parent = remotesFolder
+local remotesFolder = requireChild(
+	ReplicatedStorage,
+	"OfflineEarningsRemotes",
+	"Folder"
+)
 
-local claimNormal = remotesFolder:FindFirstChild("ClaimOfflineEarnings") or Instance.new("RemoteFunction")
-claimNormal.Name = "ClaimOfflineEarnings"
-claimNormal.Parent = remotesFolder
+local requestData = requireChild(
+	remotesFolder,
+	"RequestOfflineEarnings",
+	"RemoteFunction"
+)
 
-local beginPremium = remotesFolder:FindFirstChild("BeginPremiumOfflineClaim") or Instance.new("RemoteFunction")
-beginPremium.Name = "BeginPremiumOfflineClaim"
-beginPremium.Parent = remotesFolder
+local claimNormal = requireChild(
+	remotesFolder,
+	"ClaimOfflineEarnings",
+	"RemoteFunction"
+)
 
-local premiumResult = remotesFolder:FindFirstChild("OfflinePremiumClaimResult") or Instance.new("RemoteEvent")
-premiumResult.Name = "OfflinePremiumClaimResult"
-premiumResult.Parent = remotesFolder
+local beginPremium = requireChild(
+	remotesFolder,
+	"BeginPremiumOfflineClaim",
+	"RemoteFunction"
+)
+
+local premiumResult = requireChild(
+	remotesFolder,
+	"OfflinePremiumClaimResult",
+	"RemoteEvent"
+)
+
+print("✅ [OfflineEarningsService] All remotes found. Service started successfully.")
 
 _G.OfflineEarningsService = _G.OfflineEarningsService or {}
 
@@ -46,52 +84,81 @@ local sessions = {}
 
 local function getPlayerPlot(player)
 	local plotName = player:GetAttribute("OccupiedPlot")
-	if not plotName then return nil end
+
+	if not plotName then
+		return nil
+	end
+
 	local tycoons = Workspace:FindFirstChild("Tycoons")
-	return tycoons and tycoons:FindFirstChild(plotName)
+
+	if not tycoons then
+		return nil
+	end
+
+	return tycoons:FindFirstChild(plotName)
 end
 
 local function hasPlacedCars(plot)
 	local placedCarsFolder = plot and plot:FindFirstChild("PlacedCars")
+
 	if placedCarsFolder and #placedCarsFolder:GetChildren() > 0 then
 		return true
 	end
+
 	return false
 end
 
 local function computeBaseOffline(player)
-	local hs = player:FindFirstChild("HiddenStats")
-	local bank = hs and hs:FindFirstChild("Cash")
+	local hiddenStats = player:FindFirstChild("HiddenStats")
+	local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
 	local plot = getPlayerPlot(player)
+
 	if not plot or not bank then
 		return false, 0
 	end
 
 	local cps = tonumber(plot:GetAttribute("CurrentCPS"))
+
 	if cps == nil then
 		return false, 0
 	end
 
-	local nowTs = os.time()
+	local nowTimestamp = os.time()
 	local lastOfflineAt = tonumber(player:GetAttribute("LastOfflineAt")) or 0
-	if lastOfflineAt <= 0 or nowTs <= lastOfflineAt then return true, 0 end
 
-	local mult = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
-	local normalRate = cps * mult
+	if lastOfflineAt <= 0 or nowTimestamp <= lastOfflineAt then
+		return true, 0
+	end
+
+	local multiplier = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
+	local normalRate = cps * multiplier
+
 	if cps <= 0 and hasPlacedCars(plot) then
 		return false, 0
 	end
-	if normalRate <= 0 then return true, 0 end
 
-	local elapsed = math.min(MAX_OFFLINE_SECONDS, nowTs - lastOfflineAt)
-	if elapsed <= 0 then return true, 0 end
+	if normalRate <= 0 then
+		return true, 0
+	end
 
-	return true, math.max(0, math.floor(normalRate * OFFLINE_RATE * elapsed))
+	local elapsed = math.min(MAX_OFFLINE_SECONDS, nowTimestamp - lastOfflineAt)
+
+	if elapsed <= 0 then
+		return true, 0
+	end
+
+	local amount = math.max(0, math.floor(normalRate * OFFLINE_RATE * elapsed))
+
+	return true, amount
 end
 
 local function ensureSession(player)
 	local session = sessions[player]
-	if session then return session end
+
+	if session then
+		return session
+	end
+
 	session = {
 		baseAmount = 0,
 		prepared = false,
@@ -100,23 +167,35 @@ local function ensureSession(player)
 		premiumPurchaseId = nil,
 		lastPremiumGrantedPurchaseId = nil,
 	}
+
 	sessions[player] = session
+
 	return session
 end
 
 local function grant(player, amount)
-	if amount <= 0 then return false, "No earnings available." end
-	local hs = player:FindFirstChild("HiddenStats")
-	local bank = hs and hs:FindFirstChild("Cash")
-	if not bank then return false, "Bank account not found." end
+	if amount <= 0 then
+		return false, "No earnings available."
+	end
+
+	local hiddenStats = player:FindFirstChild("HiddenStats")
+	local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
+
+	if not bank then
+		return false, "Bank account not found."
+	end
+
 	bank.Value += amount
-	return true
+
+	return true, "Granted"
 end
 
 requestData.OnServerInvoke = function(player)
 	local session = ensureSession(player)
+
 	if not session.prepared then
 		local ready, amount = computeBaseOffline(player)
+
 		if not ready then
 			return {
 				ready = false,
@@ -125,62 +204,91 @@ requestData.OnServerInvoke = function(player)
 				productId = PREMIUM_PRODUCT_ID,
 			}
 		end
+
 		session.baseAmount = amount
 		session.prepared = true
 	end
+
 	return {
 		ready = true,
 		amount = session.baseAmount,
-		canClaim = (session.baseAmount > 0) and (not session.claimed) and (not session.premiumPending),
+		canClaim = session.baseAmount > 0 and not session.claimed and not session.premiumPending,
 		productId = PREMIUM_PRODUCT_ID,
 	}
 end
 
 claimNormal.OnServerInvoke = function(player)
 	local session = ensureSession(player)
+
 	if not session.prepared then
 		local ready, amount = computeBaseOffline(player)
-		if not ready then return false, "Offline earnings still loading. Please try again.", 0 end
+
+		if not ready then
+			return false, "Offline earnings still loading. Please try again.", 0
+		end
+
 		session.baseAmount = amount
 		session.prepared = true
 	end
+
 	if session.claimed then
 		return false, "You have already claimed your offline earnings.", 0
 	end
+
 	if session.premiumPending then
 		return false, "Premium purchase is currently processing.", 0
 	end
+
 	if session.baseAmount <= 0 then
 		return false, "No offline earnings available.", 0
 	end
 
-	local ok, msg = grant(player, session.baseAmount)
-	if not ok then
-		return false, msg, 0
+	local success, message = grant(player, session.baseAmount)
+
+	if not success then
+		return false, message, 0
 	end
+
 	session.claimed = true
+
 	return true, "Claimed", session.baseAmount
 end
 
 beginPremium.OnServerInvoke = function(player)
 	local session = ensureSession(player)
+
 	if not session.prepared then
 		local ready, amount = computeBaseOffline(player)
-		if not ready then return false, "Offline earnings still loading. Please wait." end
+
+		if not ready then
+			return false, "Offline earnings still loading. Please wait."
+		end
+
 		session.baseAmount = amount
 		session.prepared = true
 	end
-	if session.claimed then return false, "You have already claimed your offline earnings." end
-	if session.premiumPending then return false, "Premium purchase already in progress." end
-	if session.baseAmount <= 0 then return false, "No offline earnings available." end
+
+	if session.claimed then
+		return false, "You have already claimed your offline earnings."
+	end
+
+	if session.premiumPending then
+		return false, "Premium purchase already in progress."
+	end
+
+	if session.baseAmount <= 0 then
+		return false, "No offline earnings available."
+	end
 
 	session.premiumPending = true
 	session.premiumPurchaseId = nil
+
 	return true, "Prompt"
 end
 
 function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
 	local session = sessions[player]
+
 	if not session then
 		return false, 0, "You have already claimed your offline earnings."
 	end
@@ -192,32 +300,52 @@ function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
 	if not session.premiumPending or session.claimed or session.baseAmount <= 0 then
 		return false, 0, "You have already claimed your offline earnings."
 	end
+
 	if purchaseId and session.premiumPurchaseId and session.premiumPurchaseId ~= purchaseId then
 		return false, 0, "Purchase mismatch."
 	end
+
 	local payout = session.baseAmount * 10
-	local ok, msg = grant(player, payout)
-	if not ok then
+	local success, message = grant(player, payout)
+
+	if not success then
 		session.premiumPending = false
 		session.premiumPurchaseId = nil
-		return false, 0, msg
+
+		return false, 0, message
 	end
+
 	session.claimed = true
 	session.premiumPending = false
 	session.premiumPurchaseId = purchaseId
 	session.lastPremiumGrantedPurchaseId = purchaseId
+
+	premiumResult:FireClient(player, true, "Claimed", payout)
+
 	return true, payout, "Claimed"
 end
 
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
-	if productId ~= PREMIUM_PRODUCT_ID then return end
+	if productId ~= PREMIUM_PRODUCT_ID then
+		return
+	end
+
 	local player = Players:GetPlayerByUserId(userId)
-	if not player then return end
+
+	if not player then
+		return
+	end
+
 	local session = sessions[player]
-	if not session then return end
+
+	if not session then
+		return
+	end
+
 	if not wasPurchased then
 		session.premiumPending = false
 		session.premiumPurchaseId = nil
+
 		premiumResult:FireClient(player, false, "Purchase failed or cancelled.", 0)
 	end
 end)
