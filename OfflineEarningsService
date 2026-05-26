@@ -2,7 +2,7 @@
 -- Runs on: Server
 -- Location: ServerScriptService > OfflineEarningsService
 -- Dependencies: Players, ReplicatedStorage, MarketplaceService, Workspace
--- Public API: _G.OfflineEarningsService.TryGrantPremium(player)
+-- Public API: _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
 -- Networking: Creates/uses ReplicatedStorage.OfflineEarningsRemotes (RequestOfflineEarnings, ClaimOfflineEarnings,
 --             BeginPremiumOfflineClaim, OfflinePremiumClaimResult).
 -- Security: Server is authoritative for payout calculation and claim state. Client cannot set reward amounts.
@@ -52,20 +52,30 @@ local function getPlayerPlot(player)
 end
 
 local function computeBaseOffline(player)
+	local hs = player:FindFirstChild("HiddenStats")
+	local bank = hs and hs:FindFirstChild("Cash")
+	local plot = getPlayerPlot(player)
+	if not plot or not bank then
+		return false, 0
+	end
+
+	local cps = tonumber(plot:GetAttribute("CurrentCPS"))
+	if cps == nil then
+		return false, 0
+	end
+
 	local nowTs = os.time()
 	local lastOfflineAt = tonumber(player:GetAttribute("LastOfflineAt")) or 0
-	if lastOfflineAt <= 0 or nowTs <= lastOfflineAt then return 0 end
+	if lastOfflineAt <= 0 or nowTs <= lastOfflineAt then return true, 0 end
 
-	local plot = getPlayerPlot(player)
-	local cps = plot and tonumber(plot:GetAttribute("CurrentCPS")) or 0
 	local mult = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
 	local normalRate = cps * mult
-	if normalRate <= 0 then return 0 end
+	if normalRate <= 0 then return true, 0 end
 
 	local elapsed = math.min(MAX_OFFLINE_SECONDS, nowTs - lastOfflineAt)
-	if elapsed <= 0 then return 0 end
+	if elapsed <= 0 then return true, 0 end
 
-	return math.max(0, math.floor(normalRate * OFFLINE_RATE * elapsed))
+	return true, math.max(0, math.floor(normalRate * OFFLINE_RATE * elapsed))
 end
 
 local function ensureSession(player)
@@ -76,6 +86,7 @@ local function ensureSession(player)
 		prepared = false,
 		claimed = false,
 		premiumPending = false,
+		premiumPurchaseId = nil,
 	}
 	sessions[player] = session
 	return session
@@ -93,10 +104,20 @@ end
 requestData.OnServerInvoke = function(player)
 	local session = ensureSession(player)
 	if not session.prepared then
-		session.baseAmount = computeBaseOffline(player)
+		local ready, amount = computeBaseOffline(player)
+		if not ready then
+			return {
+				ready = false,
+				amount = 0,
+				canClaim = false,
+				productId = PREMIUM_PRODUCT_ID,
+			}
+		end
+		session.baseAmount = amount
 		session.prepared = true
 	end
 	return {
+		ready = true,
 		amount = session.baseAmount,
 		canClaim = (session.baseAmount > 0) and (not session.claimed) and (not session.premiumPending),
 		productId = PREMIUM_PRODUCT_ID,
@@ -106,7 +127,9 @@ end
 claimNormal.OnServerInvoke = function(player)
 	local session = ensureSession(player)
 	if not session.prepared then
-		session.baseAmount = computeBaseOffline(player)
+		local ready, amount = computeBaseOffline(player)
+		if not ready then return false, "Offline earnings still loading. Please try again.", 0 end
+		session.baseAmount = amount
 		session.prepared = true
 	end
 	if session.claimed then
@@ -130,7 +153,9 @@ end
 beginPremium.OnServerInvoke = function(player)
 	local session = ensureSession(player)
 	if not session.prepared then
-		session.baseAmount = computeBaseOffline(player)
+		local ready, amount = computeBaseOffline(player)
+		if not ready then return false, "Offline earnings still loading. Please wait." end
+		session.baseAmount = amount
 		session.prepared = true
 	end
 	if session.claimed then return false, "You have already claimed your offline earnings." end
@@ -138,22 +163,28 @@ beginPremium.OnServerInvoke = function(player)
 	if session.baseAmount <= 0 then return false, "No offline earnings available." end
 
 	session.premiumPending = true
+	session.premiumPurchaseId = nil
 	return true, "Prompt"
 end
 
-function _G.OfflineEarningsService.TryGrantPremium(player)
+function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
 	local session = sessions[player]
-	if not session or session.claimed or session.baseAmount <= 0 then
+	if not session or not session.premiumPending or session.claimed or session.baseAmount <= 0 then
 		return false, 0, "You have already claimed your offline earnings."
+	end
+	if purchaseId and session.premiumPurchaseId and session.premiumPurchaseId ~= purchaseId then
+		return false, 0, "Purchase mismatch."
 	end
 	local payout = session.baseAmount * 10
 	local ok, msg = grant(player, payout)
 	if not ok then
 		session.premiumPending = false
+		session.premiumPurchaseId = nil
 		return false, 0, msg
 	end
 	session.claimed = true
 	session.premiumPending = false
+	session.premiumPurchaseId = purchaseId
 	return true, payout, "Claimed"
 end
 
@@ -165,6 +196,7 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 	if not session then return end
 	if not wasPurchased then
 		session.premiumPending = false
+		session.premiumPurchaseId = nil
 		premiumResult:FireClient(player, false, "Purchase failed or cancelled.", 0)
 	end
 end)

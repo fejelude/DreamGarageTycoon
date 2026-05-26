@@ -296,11 +296,11 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	local consumeStaleGiftIntentAfterGrant = false
 
 	-- Peek gift intent without consuming it.
-	-- Bank transfer skip is not a gift product, so it must always apply to the buyer.
+	-- Some products are not giftable and must always apply to the buyer.
 	if _G.GetGiftReceiver then
 		giftReceiverId = _G.GetGiftReceiver(buyerId, false)
 
-		if giftReceiverId and pid ~= BANK_TRANSFER_SKIP_ID then
+		if giftReceiverId and pid ~= BANK_TRANSFER_SKIP_ID and pid ~= OFFLINE_10X_CLAIM_ID then
 			local receiver = Players:GetPlayerByUserId(giftReceiverId)
 			if receiver then
 				targetPlayer = receiver
@@ -361,8 +361,12 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 
 	elseif pid == OFFLINE_10X_CLAIM_ID then
+		isGift = false
+		targetPlayer = buyerPlayer
+		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+
 		if _G.OfflineEarningsService and _G.OfflineEarningsService.TryGrantPremium then
-			local ok, payout = _G.OfflineEarningsService.TryGrantPremium(buyerPlayer)
+			local ok, payout = _G.OfflineEarningsService.TryGrantPremium(buyerPlayer, receiptInfo.PurchaseId)
 			purchaseSuccess = ok
 
 			local folder = ReplicatedStorage:FindFirstChild("OfflineEarningsRemotes")

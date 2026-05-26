@@ -41,6 +41,8 @@ local premiumResult = remotes:WaitForChild("OfflinePremiumClaimResult")
 
 local claimLocked = false
 local baseAmount = 0
+local REQUEST_RETRIES = 8
+local REQUEST_RETRY_DELAY = 0.5
 
 local function formatMoney(n)
 	if n < 1000 then
@@ -67,6 +69,7 @@ end
 
 local function closeUi()
 	gui.Enabled = false
+	if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
 end
 
 local function disableButtons(disabled)
@@ -90,10 +93,17 @@ local function maybeOpen()
 		playerGui:GetAttributeChangedSignal("LoadingScreenActive"):Wait()
 	end
 
-	local ok, data = pcall(function() return requestData:InvokeServer() end)
-	if not ok or type(data) ~= "table" then
-		return
+	local data = nil
+	for _ = 1, REQUEST_RETRIES do
+		local ok, result = pcall(function() return requestData:InvokeServer() end)
+		if ok and type(result) == "table" then
+			data = result
+			if result.ready ~= false then break end
+		end
+		task.wait(REQUEST_RETRY_DELAY)
 	end
+
+	if type(data) ~= "table" or data.ready == false then return end
 
 	baseAmount = math.max(0, math.floor(tonumber(data.amount) or 0))
 	if baseAmount <= 0 then
@@ -119,9 +129,11 @@ bindButton(obtainButton, function()
 		return
 	end
 	if success then
+		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
 		setState(true, "$" .. formatMoney(amount) .. " has been transferred to your bank account.")
 		task.delay(1.4, closeUi)
 	else
+		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
 		setState(false, msg or "Claim failed. Please try again.")
 		claimLocked = false
 		disableButtons(false)
