@@ -29,6 +29,8 @@ local PREMIUM_PRODUCT_ID = 3598967453
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local gui = playerGui:WaitForChild("OfflineEarningsUI")
+gui:SetAttribute("ExternallyManaged", true)
+playerGui:SetAttribute("OfflineEarningsFlowActive", false)
 local mainFrame = gui:WaitForChild("MainFrame")
 
 local textlabels = mainFrame:WaitForChild("Textlabels")
