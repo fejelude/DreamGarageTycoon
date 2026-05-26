@@ -34,6 +34,8 @@ local nameToUserIdCache        = {}
 local thumbnailCache           = {}
 local pendingUserIdRequests    = {}
 local pendingThumbnailRequests = {}
+local USER_ID_LOOKUP_MAX_RETRIES = 4
+local USER_ID_LOOKUP_BASE_DELAY = 0.35
 
 local function getUserIdCached(playerName)
 	if not playerName or playerName == "" then return nil end
@@ -46,9 +48,24 @@ local function getUserIdCached(playerName)
 	end
 
 	pendingUserIdRequests[playerName] = true
-	local success, userId = pcall(function()
-		return Players:GetUserIdFromNameAsync(playerName)
-	end)
+	local success, userId = false, nil
+	for attempt = 1, USER_ID_LOOKUP_MAX_RETRIES do
+		success, userId = pcall(function()
+			return Players:GetUserIdFromNameAsync(playerName)
+		end)
+
+		if success and userId then
+			break
+		end
+
+		local errLower = string.lower(tostring(userId or ""))
+		local isRateLimit = string.find(errLower, "429", 1, true) ~= nil
+		if attempt < USER_ID_LOOKUP_MAX_RETRIES and isRateLimit then
+			task.wait(USER_ID_LOOKUP_BASE_DELAY * attempt)
+		else
+			break
+		end
+	end
 	pendingUserIdRequests[playerName] = nil
 
 	if success and userId then
