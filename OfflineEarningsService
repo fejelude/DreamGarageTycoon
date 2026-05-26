@@ -51,6 +51,14 @@ local function getPlayerPlot(player)
 	return tycoons and tycoons:FindFirstChild(plotName)
 end
 
+local function hasPlacedCars(plot)
+	local placedCarsFolder = plot and plot:FindFirstChild("PlacedCars")
+	if placedCarsFolder and #placedCarsFolder:GetChildren() > 0 then
+		return true
+	end
+	return false
+end
+
 local function computeBaseOffline(player)
 	local hs = player:FindFirstChild("HiddenStats")
 	local bank = hs and hs:FindFirstChild("Cash")
@@ -70,6 +78,9 @@ local function computeBaseOffline(player)
 
 	local mult = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
 	local normalRate = cps * mult
+	if cps <= 0 and hasPlacedCars(plot) then
+		return false, 0
+	end
 	if normalRate <= 0 then return true, 0 end
 
 	local elapsed = math.min(MAX_OFFLINE_SECONDS, nowTs - lastOfflineAt)
