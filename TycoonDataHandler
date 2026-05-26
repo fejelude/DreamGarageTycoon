@@ -1136,6 +1136,7 @@ local function save(player, isClosing)
 					oldData.SettingsVersion = SETTINGS_SCHEMA_VERSION
 
 					oldData.LastUpdated  = os.time()
+					oldData.LastOfflineAt = os.time()
 					oldData.DataVersion  = "V38_Fixed"
 
 					return oldData
@@ -1279,6 +1280,8 @@ local function InitializePlayer(player)
 	data.IndexDiscovered = data.IndexDiscovered or {}
 	data.SettingsVersion = math.max(0, math.floor(tonumber(data.SettingsVersion) or 0))
 	data.Settings = sanitizeSettings(data.Settings)
+	data.LastOfflineAt = math.max(0, math.floor(tonumber(data.LastOfflineAt) or 0))
+	player:SetAttribute("LastOfflineAt", data.LastOfflineAt)
 
 	-- Migration: older saves could carry CarAnimationEnabled=false as a historical default
 	-- rather than an explicit player choice. On first settings schema upgrade, normalize

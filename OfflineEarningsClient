@@ -1,0 +1,188 @@
+-- Purpose: Controls Offline Earnings join popup UI, claim actions, and purchase prompt flow.
+-- Runs on: Client
+-- Location: StarterGui > OfflineEarningsUI > OfflineEarningsClient
+-- Dependencies: Players, ReplicatedStorage, MarketplaceService, UIAudioConfig
+-- Public API: N/A
+-- Networking: Calls OfflineEarningsRemotes (RequestOfflineEarnings, ClaimOfflineEarnings,
+--             BeginPremiumOfflineClaim) and listens for OfflinePremiumClaimResult.
+-- Security: Display/UI only. All reward amounts and duplicate-claim validation are enforced on server.
+-- Notes: Reuses existing Robux loading/sound flow through UIAudioConfig for premium claim consistency.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local UIAudioConfig = nil
+do
+	local ok, moduleOrErr = pcall(function()
+		return require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+	end)
+	if ok then
+		UIAudioConfig = moduleOrErr
+	else
+		warn("[OfflineEarningsClient] UIAudioConfig unavailable: " .. tostring(moduleOrErr))
+	end
+end
+
+local PREMIUM_PRODUCT_ID = 3598967453
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local gui = playerGui:WaitForChild("OfflineEarningsUI")
+gui:SetAttribute("ExternallyManaged", true)
+playerGui:SetAttribute("OfflineEarningsFlowActive", false)
+local mainFrame = gui:WaitForChild("MainFrame")
+
+local textlabels = mainFrame:WaitForChild("Textlabels")
+local cashLabel = textlabels:WaitForChild("Cash")
+
+local stateLabels = mainFrame:WaitForChild("StateLabels")
+local successLabel = stateLabels:WaitForChild("Success")
+local failedLabel = stateLabels:WaitForChild("Failed")
+
+local buttonContainer = mainFrame:WaitForChild("Buttons"):WaitForChild("ButtonContainer")
+local obtainButton = buttonContainer:WaitForChild("ObtainButton")
+local premiumButton = buttonContainer:WaitForChild("PremiumObtainButton")
+local exitButton = mainFrame:WaitForChild("ExitButton")
+
+local remotes = ReplicatedStorage:WaitForChild("OfflineEarningsRemotes")
+local requestData = remotes:WaitForChild("RequestOfflineEarnings")
+local claimOffline = remotes:WaitForChild("ClaimOfflineEarnings")
+local beginPremium = remotes:WaitForChild("BeginPremiumOfflineClaim")
+local premiumResult = remotes:WaitForChild("OfflinePremiumClaimResult")
+
+local claimLocked = false
+local baseAmount = 0
+local REQUEST_RETRIES = 90
+local REQUEST_RETRY_DELAY = 0.5
+
+local function formatMoney(n)
+	if n < 1000 then
+		return tostring(math.floor(n + 0.5))
+	end
+	local suffixes = {"", "K", "M", "B", "T", "Qa", "Qi"}
+	local i = math.min(#suffixes, math.floor(math.log(n, 1000)) + 1)
+	local div = 1000 ^ (i - 1)
+	local v = n / div
+	return string.format("%.2f%s", v, suffixes[i]):gsub("%.00", ""):gsub("(%.[1-9])0", "%1")
+end
+
+local function setState(success, msg)
+	successLabel.Visible = false
+	failedLabel.Visible = false
+	if success then
+		successLabel.Text = msg
+		successLabel.Visible = true
+	else
+		failedLabel.Text = msg
+		failedLabel.Visible = true
+	end
+end
+
+local function closeUi(force)
+	if claimLocked and not force then return end
+	gui.Enabled = false
+	if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+	playerGui:SetAttribute("OfflineEarningsFlowActive", false)
+end
+
+local function disableButtons(disabled)
+	obtainButton.Active = not disabled
+	premiumButton.Active = not disabled
+end
+
+local function playClick()
+	if UIAudioConfig and UIAudioConfig.PlayClick then UIAudioConfig.PlayClick() end
+end
+
+local function bindButton(btn, callback)
+	btn.MouseButton1Click:Connect(function()
+		playClick()
+		callback()
+	end)
+end
+
+local function maybeOpen()
+	if playerGui:GetAttribute("LoadingScreenActive") == true then
+		playerGui:GetAttributeChangedSignal("LoadingScreenActive"):Wait()
+	end
+
+	local data = nil
+	for _ = 1, REQUEST_RETRIES do
+		local ok, result = pcall(function() return requestData:InvokeServer() end)
+		if ok and type(result) == "table" then
+			data = result
+			if result.ready ~= false then break end
+		end
+		task.wait(REQUEST_RETRY_DELAY)
+	end
+
+	if type(data) ~= "table" or data.ready == false then return end
+
+	baseAmount = math.max(0, math.floor(tonumber(data.amount) or 0))
+	if baseAmount <= 0 then
+		gui.Enabled = false
+		return
+	end
+
+	cashLabel.Text = "$" .. formatMoney(baseAmount)
+	successLabel.Visible = false
+	failedLabel.Visible = false
+	playerGui:SetAttribute("OfflineEarningsFlowActive", true)
+	gui:SetAttribute("ExternallyManaged", true)
+	gui.Enabled = true
+end
+
+bindButton(obtainButton, function()
+	if claimLocked then return end
+	claimLocked = true
+	disableButtons(true)
+	local ok, success, msg, amount = pcall(function() return claimOffline:InvokeServer() end)
+	if not ok then
+		setState(false, "Claim failed. Please try again.")
+		claimLocked = false
+		disableButtons(false)
+		return
+	end
+	if success then
+		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+		setState(true, "$" .. formatMoney(amount) .. " has been transferred to your bank account.")
+		task.delay(1.4, function() closeUi(true) end)
+	else
+		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+		setState(false, msg or "Claim failed. Please try again.")
+		claimLocked = false
+		disableButtons(false)
+	end
+end)
+
+bindButton(premiumButton, function()
+	if claimLocked then return end
+	local ok, allowed = pcall(function() return beginPremium:InvokeServer() end)
+	if not ok or not allowed then
+		setState(false, "You have already claimed your offline earnings.")
+		return
+	end
+	claimLocked = true
+	disableButtons(true)
+	if UIAudioConfig and UIAudioConfig.PlayRobux then UIAudioConfig.PlayRobux() end
+	if UIAudioConfig and UIAudioConfig.ShowPurchaseLoading then UIAudioConfig.ShowPurchaseLoading() end
+	MarketplaceService:PromptProductPurchase(player, PREMIUM_PRODUCT_ID)
+end)
+
+premiumResult.OnClientEvent:Connect(function(success, msg, amount)
+	if success then
+		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+		setState(true, "$" .. formatMoney(amount) .. " has been transferred to your bank account.")
+		task.delay(1.4, function() closeUi(true) end)
+	else
+		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+		setState(false, msg or "Claim failed. Please try again.")
+		claimLocked = false
+		disableButtons(false)
+	end
+end)
+
+bindButton(exitButton, closeUi)
+
+task.defer(maybeOpen)
