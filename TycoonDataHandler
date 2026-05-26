@@ -1104,8 +1104,8 @@ local function save(player, isClosing)
 						finalLayout = layout
 					end
 
-					local stillRestored = player:GetAttribute("RestoredPending") or 0
-					local finalPending = stillRestored + currentPendingInTycoon
+					local offlineTabletCarry = math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
+					local finalPending = offlineTabletCarry + currentPendingInTycoon
 
 					oldData.Bank       = MoneyManager.GetBalance(player, "Cash")
 					oldData.Wallet     = MoneyManager.GetBalance(player, "Wallet")
@@ -1437,9 +1437,8 @@ local function InitializePlayer(player)
 
 	sanitizeInventory(player)
 
-	if data.PendingEarnings and data.PendingEarnings > 0 then
-		player:SetAttribute("RestoredPending", data.PendingEarnings)
-	end
+	local loadedTabletCarry = math.max(0, math.floor(tonumber(data.PendingEarnings) or 0))
+	player:SetAttribute("OfflineTabletCarry", loadedTabletCarry)
 
 	if data.Layout and #data.Layout > 0 then
 		task.spawn(function()
@@ -1459,27 +1458,9 @@ local function InitializePlayer(player)
 	end
 
 	local function CheckAndRestorePending()
-		local plotName = player:GetAttribute("OccupiedPlot")
-		local amount   = player:GetAttribute("RestoredPending")
-
-		if plotName and amount and amount > 0 then
-			player:SetAttribute("RestoredPending", 0)
-
-			local plot       = TycoonFolder:FindFirstChild(plotName)
-			local pendingVal = plot and plot:WaitForChild("PendingEarnings", 10)
-
-			if pendingVal then
-				pendingVal.Value = pendingVal.Value + amount
-				markDirty(player)
-				print("✅ RESTORED PENDING: $" .. amount .. " to " .. plot.Name)
-			else
-				warn("⚠️ Failed to restore pending earnings for " .. player.Name)
-				-- Fix 3: RestoredPending Double-Count Risk
-				-- Do not blindly revert amount to player attributes if it timed out.
-				-- Instead we accept the loss to prevent infinite double counting on save loops.
-			end
-		end
-	end
+	-- Offline tablet carry is now claimed via OfflineEarningsService instead of restoring to plot immediately.
+	return
+end
 
 	player:GetAttributeChangedSignal("OccupiedPlot"):Connect(CheckAndRestorePending)
 	CheckAndRestorePending()

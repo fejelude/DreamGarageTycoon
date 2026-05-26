@@ -11,6 +11,9 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
+local TweenService = game:GetService("TweenService")
+
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 
 local UIAudioConfig = nil
 do
@@ -51,6 +54,9 @@ local claimOffline = remotes:WaitForChild("ClaimOfflineEarnings")
 local beginPremium = remotes:WaitForChild("BeginPremiumOfflineClaim")
 local premiumResult = remotes:WaitForChild("OfflinePremiumClaimResult")
 
+
+mainFrame.Visible = false
+gui.Enabled = false
 local claimLocked = false
 local baseAmount = 0
 local REQUEST_RETRIES = 90
@@ -91,15 +97,14 @@ local function disableButtons(disabled)
 	premiumButton.Active = not disabled
 end
 
-local function playClick()
-	if UIAudioConfig and UIAudioConfig.PlayClick then UIAudioConfig.PlayClick() end
-end
-
-local function bindButton(btn, callback)
-	btn.MouseButton1Click:Connect(function()
-		playClick()
-		callback()
-	end)
+local function animateOpen()
+	mainFrame.Visible = true
+	mainFrame.BackgroundTransparency = 1
+	local scale = mainFrame:FindFirstChildOfClass("UIScale") or Instance.new("UIScale")
+	scale.Scale = 0.92
+	scale.Parent = mainFrame
+	TweenService:Create(mainFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(scale, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
 end
 
 local function maybeOpen()
@@ -131,9 +136,10 @@ local function maybeOpen()
 	playerGui:SetAttribute("OfflineEarningsFlowActive", true)
 	gui:SetAttribute("ExternallyManaged", true)
 	gui.Enabled = true
+	animateOpen()
 end
 
-bindButton(obtainButton, function()
+UIButtonUtils.SetupButton(obtainButton, function()
 	if claimLocked then return end
 	claimLocked = true
 	disableButtons(true)
@@ -156,7 +162,7 @@ bindButton(obtainButton, function()
 	end
 end)
 
-bindButton(premiumButton, function()
+UIButtonUtils.SetupButton(premiumButton, function()
 	if claimLocked then return end
 	local ok, allowed = pcall(function() return beginPremium:InvokeServer() end)
 	if not ok or not allowed then
@@ -183,6 +189,6 @@ premiumResult.OnClientEvent:Connect(function(success, msg, amount)
 	end
 end)
 
-bindButton(exitButton, closeUi)
+UIButtonUtils.SetupButton(exitButton, function() closeUi(false) end)
 
 task.defer(maybeOpen)
