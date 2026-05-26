@@ -14,6 +14,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Workspace = game:GetService("Workspace")
 
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
 local OFFLINE_RATE = 0.30
 local MAX_OFFLINE_SECONDS = 8 * 60 * 60
 local PREMIUM_PRODUCT_ID = 3598967453
@@ -98,14 +100,44 @@ local function getPlayerPlot(player)
 	return tycoons:FindFirstChild(plotName)
 end
 
-local function hasPlacedCars(plot)
-	local placedCarsFolder = plot and plot:FindFirstChild("PlacedCars")
-
-	if placedCarsFolder and #placedCarsFolder:GetChildren() > 0 then
-		return true
+local function resolveOfflineCPS(plot)
+	local cps = tonumber(plot:GetAttribute("CurrentCPS"))
+	if cps and cps > 0 then
+		return cps
 	end
 
-	return false
+	local placedCarsFolder = plot:FindFirstChild("PlacedCars")
+	if not placedCarsFolder then
+		return cps or 0
+	end
+
+	local placedCars = {}
+	local bestPlacedBaseCPS = 0
+
+	for _, car in ipairs(placedCarsFolder:GetChildren()) do
+		local stats = CarStats.GetCarStats and CarStats.GetCarStats(car.Name)
+		if stats then
+			table.insert(placedCars, stats)
+			if not CarStats.IsMythicalCar(stats) then
+				bestPlacedBaseCPS = math.max(bestPlacedBaseCPS, tonumber(stats.CPS) or 0)
+			end
+		end
+	end
+
+	if #placedCars == 0 then
+		return cps or 0
+	end
+
+	local rebuiltCPS = 0
+	for _, stats in ipairs(placedCars) do
+		rebuiltCPS += CarStats.CalculateEffectiveBaseCPS(stats, bestPlacedBaseCPS)
+	end
+
+	if rebuiltCPS > 0 then
+		plot:SetAttribute("CurrentCPS", rebuiltCPS)
+	end
+
+	return rebuiltCPS
 end
 
 local function computeBaseOffline(player)
@@ -117,11 +149,7 @@ local function computeBaseOffline(player)
 		return false, 0
 	end
 
-	local cps = tonumber(plot:GetAttribute("CurrentCPS"))
-
-	if cps == nil then
-		return false, 0
-	end
+	local cps = resolveOfflineCPS(plot)
 
 	local nowTimestamp = os.time()
 	local lastOfflineAt = tonumber(player:GetAttribute("LastOfflineAt")) or 0
@@ -133,8 +161,8 @@ local function computeBaseOffline(player)
 	local multiplier = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
 	local normalRate = cps * multiplier
 
-	if cps <= 0 and hasPlacedCars(plot) then
-		return false, 0
+	if cps <= 0 then
+		return true, 0
 	end
 
 	if normalRate <= 0 then
