@@ -322,6 +322,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	local purchaseSuccess = false
 	local bankResetFeedback = nil
+	local offlinePremiumClientResult = nil
 
 	local skinFound = nil
 	if BaseSkinStats then
@@ -366,18 +367,13 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 
 		if _G.OfflineEarningsService and _G.OfflineEarningsService.TryGrantPremium then
-			local ok, payout = _G.OfflineEarningsService.TryGrantPremium(buyerPlayer, receiptInfo.PurchaseId)
-			purchaseSuccess = ok
-
-			local folder = ReplicatedStorage:FindFirstChild("OfflineEarningsRemotes")
-			local resultEvent = folder and folder:FindFirstChild("OfflinePremiumClaimResult")
-			if resultEvent then
-				if ok then
-					resultEvent:FireClient(buyerPlayer, true, "Claimed", payout)
-				else
-					resultEvent:FireClient(buyerPlayer, false, "You have already claimed your offline earnings.", 0)
-				end
-			end
+			local ok, payout, msg = _G.OfflineEarningsService.TryGrantPremium(buyerPlayer, receiptInfo.PurchaseId)
+			purchaseSuccess = ok or (msg == "You have already claimed your offline earnings.")
+			offlinePremiumClientResult = {
+				success = ok,
+				message = ok and "Claimed" or (msg or "You have already claimed your offline earnings."),
+				amount = ok and payout or 0,
+			}
 		end
 
 	-- ─── REBIRTH SKIP PRODUCTS ────────────────────────────────────────────────
@@ -515,6 +511,19 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	if purchaseSuccess then
 		if not markPurchaseProcessed(purchaseKey) then
 			return Enum.ProductPurchaseDecision.NotProcessedYet
+		end
+
+		if offlinePremiumClientResult then
+			local folder = ReplicatedStorage:FindFirstChild("OfflineEarningsRemotes")
+			local resultEvent = folder and folder:FindFirstChild("OfflinePremiumClaimResult")
+			if resultEvent then
+				resultEvent:FireClient(
+					buyerPlayer,
+					offlinePremiumClientResult.success,
+					offlinePremiumClientResult.message,
+					offlinePremiumClientResult.amount
+				)
+			end
 		end
 
 		if _G.GetGiftReceiver then

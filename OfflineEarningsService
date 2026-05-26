@@ -87,6 +87,7 @@ local function ensureSession(player)
 		claimed = false,
 		premiumPending = false,
 		premiumPurchaseId = nil,
+		lastPremiumGrantedPurchaseId = nil,
 	}
 	sessions[player] = session
 	return session
@@ -169,7 +170,15 @@ end
 
 function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
 	local session = sessions[player]
-	if not session or not session.premiumPending or session.claimed or session.baseAmount <= 0 then
+	if not session then
+		return false, 0, "You have already claimed your offline earnings."
+	end
+
+	if purchaseId and session.lastPremiumGrantedPurchaseId == purchaseId then
+		return true, session.baseAmount * 10, "Claimed"
+	end
+
+	if not session.premiumPending or session.claimed or session.baseAmount <= 0 then
 		return false, 0, "You have already claimed your offline earnings."
 	end
 	if purchaseId and session.premiumPurchaseId and session.premiumPurchaseId ~= purchaseId then
@@ -185,6 +194,7 @@ function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
 	session.claimed = true
 	session.premiumPending = false
 	session.premiumPurchaseId = purchaseId
+	session.lastPremiumGrantedPurchaseId = purchaseId
 	return true, payout, "Claimed"
 end
 

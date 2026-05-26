@@ -12,7 +12,17 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 
-local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local UIAudioConfig = nil
+do
+	local ok, moduleOrErr = pcall(function()
+		return require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+	end)
+	if ok then
+		UIAudioConfig = moduleOrErr
+	else
+		warn("[OfflineEarningsClient] UIAudioConfig unavailable: " .. tostring(moduleOrErr))
+	end
+end
 
 local PREMIUM_PRODUCT_ID = 3598967453
 
@@ -41,7 +51,7 @@ local premiumResult = remotes:WaitForChild("OfflinePremiumClaimResult")
 
 local claimLocked = false
 local baseAmount = 0
-local REQUEST_RETRIES = 8
+local REQUEST_RETRIES = 20
 local REQUEST_RETRY_DELAY = 0.5
 
 local function formatMoney(n)
@@ -68,8 +78,10 @@ local function setState(success, msg)
 end
 
 local function closeUi()
+	if claimLocked then return end
 	gui.Enabled = false
 	if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+	playerGui:SetAttribute("OfflineEarningsFlowActive", false)
 end
 
 local function disableButtons(disabled)
@@ -114,6 +126,8 @@ local function maybeOpen()
 	cashLabel.Text = "$" .. formatMoney(baseAmount)
 	successLabel.Visible = false
 	failedLabel.Visible = false
+	playerGui:SetAttribute("OfflineEarningsFlowActive", true)
+	gui:SetAttribute("ExternallyManaged", true)
 	gui.Enabled = true
 end
 
@@ -156,9 +170,11 @@ end)
 
 premiumResult.OnClientEvent:Connect(function(success, msg, amount)
 	if success then
+		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
 		setState(true, "$" .. formatMoney(amount) .. " has been transferred to your bank account.")
 		task.delay(1.4, closeUi)
 	else
+		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
 		setState(false, msg or "Claim failed. Please try again.")
 		claimLocked = false
 		disableButtons(false)
