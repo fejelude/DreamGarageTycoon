@@ -30,18 +30,19 @@ local successLabel = stateLabels:WaitForChild("Success")
 --// CONFIG
 local STARTER_PACK_PRODUCT_ID = 3599481243
 
-local OWNED_MESSAGE_DURATION = 3
+local MESSAGE_VISIBLE_DURATION = 3
 local FADE_DURATION = 0.3
 
-local OWNERSHIP_CHECK_ATTEMPTS = 8
+local OWNERSHIP_CHECK_ATTEMPTS = 30
 local OWNERSHIP_CHECK_DELAY = 0.5
 
 local VERIFY_ERROR_MESSAGE = "Could not verify ownership. Please try again."
 local OWNED_BASE_MESSAGE = "You've already purchased this product."
 local PROCESSING_MESSAGE = "Purchase received. Finalizing your rewards..."
 local PROCESSING_FAILED_MESSAGE = "Purchase is still processing. Please wait a moment or rejoin."
+local SUCCESS_MESSAGE = "Successfully bought the developer product! You have been granted Senator Car and $800,000 in your wallet."
 
-successLabel.Text = "Starter Pack purchased! Senator Car and 800,000 wallet cash have been added to your account."
+successLabel.Text = SUCCESS_MESSAGE
 
 local productId = tonumber(button:GetAttribute("ProductId"))
 
@@ -53,7 +54,9 @@ end
 --// STATE
 local purchaseInProgress = false
 local ownedSpamCount = 0
-local hideToken = 0
+
+local failedHideToken = 0
+local successHideToken = 0
 
 local fadeInfo = TweenInfo.new(
 	FADE_DURATION,
@@ -61,8 +64,16 @@ local fadeInfo = TweenInfo.new(
 	Enum.EasingDirection.Out
 )
 
-local activeFailedTween = nil
-local activeFailedStrokeTween = nil
+local activeTweens = {
+	[failedLabel] = {
+		labelTween = nil,
+		strokeTween = nil,
+	},
+	[successLabel] = {
+		labelTween = nil,
+		strokeTween = nil,
+	},
+}
 
 --// HELPERS
 local function safeHidePurchaseLoading()
@@ -104,20 +115,26 @@ local function safePlayRobuxSound()
 	end
 end
 
-local function cancelFailedTweens()
-	if activeFailedTween then
-		activeFailedTween:Cancel()
-		activeFailedTween = nil
-	end
-
-	if activeFailedStrokeTween then
-		activeFailedStrokeTween:Cancel()
-		activeFailedStrokeTween = nil
-	end
-end
-
 local function getStroke(label)
 	return label:FindFirstChildOfClass("UIStroke")
+end
+
+local function cancelLabelTweens(label)
+	local tweens = activeTweens[label]
+
+	if not tweens then
+		return
+	end
+
+	if tweens.labelTween then
+		tweens.labelTween:Cancel()
+		tweens.labelTween = nil
+	end
+
+	if tweens.strokeTween then
+		tweens.strokeTween:Cancel()
+		tweens.strokeTween = nil
+	end
 end
 
 local function resetLabelVisual(label)
@@ -131,8 +148,8 @@ local function resetLabelVisual(label)
 end
 
 local function hideFailedImmediate()
-	hideToken += 1
-	cancelFailedTweens()
+	failedHideToken += 1
+	cancelLabelTweens(failedLabel)
 
 	failedLabel.Visible = false
 	failedLabel.TextTransparency = 1
@@ -146,62 +163,101 @@ local function hideFailedImmediate()
 	ownedSpamCount = 0
 end
 
-local function showFailureMessage(message)
-	hideToken += 1
-	local token = hideToken
+local function hideSuccessImmediate()
+	successHideToken += 1
+	cancelLabelTweens(successLabel)
 
-	cancelFailedTweens()
+	successLabel.Visible = false
+	successLabel.TextTransparency = 1
+	successLabel.TextStrokeTransparency = 1
+
+	local stroke = getStroke(successLabel)
+	if stroke then
+		stroke.Transparency = 1
+	end
+end
+
+local function fadeLabelOut(label, token, tokenGetter, onComplete)
+	local tweens = activeTweens[label]
+	if not tweens then
+		return
+	end
+
+	if token ~= tokenGetter() then
+		return
+	end
+
+	local stroke = getStroke(label)
+
+	tweens.labelTween = TweenService:Create(label, fadeInfo, {
+		TextTransparency = 1,
+		TextStrokeTransparency = 1,
+	})
+
+	tweens.labelTween:Play()
+
+	if stroke then
+		tweens.strokeTween = TweenService:Create(stroke, fadeInfo, {
+			Transparency = 1,
+		})
+
+		tweens.strokeTween:Play()
+	end
+
+	tweens.labelTween.Completed:Connect(function(playbackState)
+		if token ~= tokenGetter() then
+			return
+		end
+
+		if playbackState ~= Enum.PlaybackState.Completed then
+			return
+		end
+
+		label.Visible = false
+
+		tweens.labelTween = nil
+		tweens.strokeTween = nil
+
+		if onComplete then
+			onComplete()
+		end
+	end)
+end
+
+local function showFailureMessage(message, keepOwnedCounter)
+	if not keepOwnedCounter then
+		ownedSpamCount = 0
+	end
+
+	failedHideToken += 1
+	local token = failedHideToken
+
+	cancelLabelTweens(failedLabel)
 
 	failedLabel.Text = message
 	failedLabel.Visible = true
 	resetLabelVisual(failedLabel)
 
-	local stroke = getStroke(failedLabel)
-
-	task.delay(OWNED_MESSAGE_DURATION, function()
-		if token ~= hideToken then
-			return
-		end
-
-		activeFailedTween = TweenService:Create(failedLabel, fadeInfo, {
-			TextTransparency = 1,
-			TextStrokeTransparency = 1,
-		})
-
-		activeFailedTween:Play()
-
-		if stroke then
-			activeFailedStrokeTween = TweenService:Create(stroke, fadeInfo, {
-				Transparency = 1,
-			})
-
-			activeFailedStrokeTween:Play()
-		end
-
-		activeFailedTween.Completed:Connect(function()
-			if token ~= hideToken then
-				return
-			end
-
-			failedLabel.Visible = false
+	task.delay(MESSAGE_VISIBLE_DURATION, function()
+		fadeLabelOut(failedLabel, token, function()
+			return failedHideToken
+		end, function()
 			ownedSpamCount = 0
-			activeFailedTween = nil
-			activeFailedStrokeTween = nil
 		end)
 	end)
 end
 
 local function showOwnedFailureStacked()
-	if failedLabel.Visible then
+	if failedLabel.Visible and ownedSpamCount > 0 then
 		ownedSpamCount += 1
 	else
-		ownedSpamCount = 0
+		ownedSpamCount = 1
 	end
 
-	if ownedSpamCount == 0 then
-		showFailureMessage(OWNED_BASE_MESSAGE)
+	if ownedSpamCount <= 1 then
+		showFailureMessage(OWNED_BASE_MESSAGE, true)
 	else
-		showFailureMessage(string.format("%s (x%d)", OWNED_BASE_MESSAGE, ownedSpamCount))
+		showFailureMessage(string.format("%s (x%d)", OWNED_BASE_MESSAGE, ownedSpamCount), true)
 	end
 end
 
@@ -215,14 +271,27 @@ end
 local function showSuccess()
 	hideFailedImmediate()
 
+	successHideToken += 1
+	local token = successHideToken
+
+	cancelLabelTweens(successLabel)
+
+	successLabel.Text = SUCCESS_MESSAGE
 	successLabel.Visible = true
 	resetLabelVisual(successLabel)
 
 	setButtonEnabled(false)
+
+	task.delay(MESSAGE_VISIBLE_DURATION, function()
+		fadeLabelOut(successLabel, token, function()
+			return successHideToken
+		end)
+	end)
 end
 
 local function showProcessing()
 	hideFailedImmediate()
+	hideSuccessImmediate()
 
 	failedLabel.Text = PROCESSING_MESSAGE
 	failedLabel.Visible = true
