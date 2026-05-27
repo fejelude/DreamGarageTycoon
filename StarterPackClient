@@ -1,6 +1,11 @@
--- Purpose: Handles Starter Pack UI purchase flow (prompt, loading/audio, and owned-state feedback stacking).
+-- Purpose: Handles Starter Pack UI purchase flow
 -- Runs on: Client
 -- Location: StarterGui > StarterPackUi > StarterPackClient
+--
+-- Notes:
+--   - This script is UI-only.
+--   - Rewards must be granted server-side through MarketplaceService.ProcessReceipt.
+--   - CheckOwned should return true only after the server has saved/confirmed ownership.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -22,21 +27,168 @@ local stateLabels = starterPackUi:WaitForChild("StateLabels")
 local failedLabel = stateLabels:WaitForChild("Failed")
 local successLabel = stateLabels:WaitForChild("Success")
 
+--// CONFIG
+local STARTER_PACK_PRODUCT_ID = 3599481243
+
+local OWNED_MESSAGE_DURATION = 3
+local FADE_DURATION = 0.3
+
+local OWNERSHIP_CHECK_ATTEMPTS = 8
+local OWNERSHIP_CHECK_DELAY = 0.5
+
+local VERIFY_ERROR_MESSAGE = "Could not verify ownership. Please try again."
+local OWNED_BASE_MESSAGE = "You've already purchased this product."
+local PROCESSING_MESSAGE = "Purchase received. Finalizing your rewards..."
+local PROCESSING_FAILED_MESSAGE = "Purchase is still processing. Please wait a moment or rejoin."
+
 successLabel.Text = "Starter Pack purchased! Senator Car and 800,000 wallet cash have been added to your account."
 
-local STARTER_PACK_PRODUCT_ID = 3599481243
-local productId = tonumber(button:GetAttribute("ProductId")) or STARTER_PACK_PRODUCT_ID
+local productId = tonumber(button:GetAttribute("ProductId"))
 
+if not productId or productId <= 0 then
+	warn("[StarterPackClient] Missing or invalid ProductId attribute. Using fallback product ID.")
+	productId = STARTER_PACK_PRODUCT_ID
+end
+
+--// STATE
+local purchaseInProgress = false
 local ownedSpamCount = 0
 local hideToken = 0
-local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
-local function setOwnedMessage()
-	if ownedSpamCount == 0 then
-		failedLabel.Text = "You've already purchased this product"
+local fadeInfo = TweenInfo.new(
+	FADE_DURATION,
+	Enum.EasingStyle.Quad,
+	Enum.EasingDirection.Out
+)
+
+local activeFailedTween = nil
+local activeFailedStrokeTween = nil
+
+--// HELPERS
+local function safeHidePurchaseLoading()
+	if type(UIAudioConfig.HidePurchaseLoading) == "function" then
+		local ok, err = pcall(function()
+			UIAudioConfig.HidePurchaseLoading()
+		end)
+
+		if not ok then
+			warn("[StarterPackClient] HidePurchaseLoading failed:", err)
+		end
 	else
-		failedLabel.Text = string.format("You've already purchased this product (x%d)", ownedSpamCount)
+		-- If your loading UI gets stuck, add UIAudioConfig.HidePurchaseLoading().
+		warn("[StarterPackClient] UIAudioConfig.HidePurchaseLoading is missing.")
 	end
+end
+
+local function safeShowPurchaseLoading()
+	if type(UIAudioConfig.ShowPurchaseLoading) == "function" then
+		local ok, err = pcall(function()
+			UIAudioConfig.ShowPurchaseLoading()
+		end)
+
+		if not ok then
+			warn("[StarterPackClient] ShowPurchaseLoading failed:", err)
+		end
+	end
+end
+
+local function safePlayRobuxSound()
+	if type(UIAudioConfig.PlayRobux) == "function" then
+		local ok, err = pcall(function()
+			UIAudioConfig.PlayRobux()
+		end)
+
+		if not ok then
+			warn("[StarterPackClient] PlayRobux failed:", err)
+		end
+	end
+end
+
+local function cancelFailedTweens()
+	if activeFailedTween then
+		activeFailedTween:Cancel()
+		activeFailedTween = nil
+	end
+
+	if activeFailedStrokeTween then
+		activeFailedStrokeTween:Cancel()
+		activeFailedStrokeTween = nil
+	end
+end
+
+local function getStroke(label)
+	return label:FindFirstChildOfClass("UIStroke")
+end
+
+local function resetLabelVisual(label)
+	label.TextTransparency = 0
+	label.TextStrokeTransparency = 0
+
+	local stroke = getStroke(label)
+	if stroke then
+		stroke.Transparency = 0
+	end
+end
+
+local function hideFailedImmediate()
+	hideToken += 1
+	cancelFailedTweens()
+
+	failedLabel.Visible = false
+	failedLabel.TextTransparency = 1
+	failedLabel.TextStrokeTransparency = 1
+
+	local stroke = getStroke(failedLabel)
+	if stroke then
+		stroke.Transparency = 1
+	end
+
+	ownedSpamCount = 0
+end
+
+local function showFailureMessage(message)
+	hideToken += 1
+	local token = hideToken
+
+	cancelFailedTweens()
+
+	failedLabel.Text = message
+	failedLabel.Visible = true
+	resetLabelVisual(failedLabel)
+
+	local stroke = getStroke(failedLabel)
+
+	task.delay(OWNED_MESSAGE_DURATION, function()
+		if token ~= hideToken then
+			return
+		end
+
+		activeFailedTween = TweenService:Create(failedLabel, fadeInfo, {
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		})
+
+		activeFailedTween:Play()
+
+		if stroke then
+			activeFailedStrokeTween = TweenService:Create(stroke, fadeInfo, {
+				Transparency = 1,
+			})
+
+			activeFailedStrokeTween:Play()
+		end
+
+		activeFailedTween.Completed:Connect(function()
+			if token ~= hideToken then
+				return
+			end
+
+			failedLabel.Visible = false
+			ownedSpamCount = 0
+			activeFailedTween = nil
+			activeFailedStrokeTween = nil
+		end)
+	end)
 end
 
 local function showOwnedFailureStacked()
@@ -46,57 +198,138 @@ local function showOwnedFailureStacked()
 		ownedSpamCount = 0
 	end
 
-	hideToken += 1
-	local token = hideToken
-
-	local stroke = failedLabel:FindFirstChildOfClass("UIStroke")
-	setOwnedMessage()
-	failedLabel.Visible = true
-	failedLabel.TextTransparency = 0
-	failedLabel.TextStrokeTransparency = 0
-	if stroke then stroke.Transparency = 0 end
-
-	task.delay(3, function()
-		if token ~= hideToken then return end
-		local goals = {TextTransparency = 1, TextStrokeTransparency = 1}
-		local tween = TweenService:Create(failedLabel, fadeInfo, goals)
-		tween:Play()
-		if stroke then TweenService:Create(stroke, fadeInfo, {Transparency = 1}):Play() end
-		tween.Completed:Connect(function()
-			if token ~= hideToken then return end
-			failedLabel.Visible = false
-			ownedSpamCount = 0
-		end)
-	end)
+	if ownedSpamCount == 0 then
+		showFailureMessage(OWNED_BASE_MESSAGE)
+	else
+		showFailureMessage(string.format("%s (x%d)", OWNED_BASE_MESSAGE, ownedSpamCount))
+	end
 end
 
-UIButtonUtils.SetupButton(button, function()
-	if not productId then return end
+local function setButtonEnabled(enabled)
+	if button:IsA("GuiButton") then
+		button.Active = enabled
+		button.AutoButtonColor = enabled
+	end
+end
 
-	local ok, isOwned = pcall(function()
+local function showSuccess()
+	hideFailedImmediate()
+
+	successLabel.Visible = true
+	resetLabelVisual(successLabel)
+
+	setButtonEnabled(false)
+end
+
+local function showProcessing()
+	hideFailedImmediate()
+
+	failedLabel.Text = PROCESSING_MESSAGE
+	failedLabel.Visible = true
+	resetLabelVisual(failedLabel)
+end
+
+local function checkOwned()
+	local ok, result = pcall(function()
 		return checkOwnedFn:InvokeServer()
 	end)
 
-	if ok and isOwned then
-		showOwnedFailureStacked()
+	if not ok then
+		warn("[StarterPackClient] CheckOwned failed:", result)
+		return nil
+	end
+
+	return result == true
+end
+
+local function waitForOwnership()
+	for _ = 1, OWNERSHIP_CHECK_ATTEMPTS do
+		local isOwned = checkOwned()
+
+		if isOwned == true then
+			return true
+		end
+
+		task.wait(OWNERSHIP_CHECK_DELAY)
+	end
+
+	return false
+end
+
+local function beginPurchase()
+	if purchaseInProgress then
 		return
 	end
 
-	UIAudioConfig.PlayRobux()
-	UIAudioConfig.ShowPurchaseLoading()
-	MarketplaceService:PromptProductPurchase(player, productId)
-end)
-
-MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, finishedProductId, wasPurchased)
-	if userId ~= player.UserId then return end
-	if finishedProductId ~= productId then return end
-	if not wasPurchased then return end
-
-	local ok, isOwned = pcall(function()
-		return checkOwnedFn:InvokeServer()
-	end)
-	if ok and isOwned then
-		failedLabel.Visible = false
-		successLabel.Visible = true
+	if not productId or productId <= 0 then
+		showFailureMessage("Starter Pack is unavailable right now.")
+		return
 	end
+
+	purchaseInProgress = true
+
+	local isOwned = checkOwned()
+
+	if isOwned == nil then
+		showFailureMessage(VERIFY_ERROR_MESSAGE)
+		purchaseInProgress = false
+		return
+	end
+
+	if isOwned then
+		showOwnedFailureStacked()
+		purchaseInProgress = false
+		return
+	end
+
+	safePlayRobuxSound()
+	safeShowPurchaseLoading()
+
+	local promptOk, promptErr = pcall(function()
+		MarketplaceService:PromptProductPurchase(player, productId)
+	end)
+
+	if not promptOk then
+		warn("[StarterPackClient] PromptProductPurchase failed:", promptErr)
+
+		safeHidePurchaseLoading()
+		showFailureMessage("Could not open purchase prompt. Please try again.")
+		purchaseInProgress = false
+	end
+end
+
+--// BUTTON SETUP
+UIButtonUtils.SetupButton(button, beginPurchase)
+
+--// PURCHASE FINISHED
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, finishedProductId, wasPurchased)
+	if userId ~= player.UserId then
+		return
+	end
+
+	if finishedProductId ~= productId then
+		return
+	end
+
+	safeHidePurchaseLoading()
+
+	if not wasPurchased then
+		purchaseInProgress = false
+		return
+	end
+
+	showProcessing()
+
+	task.spawn(function()
+		local becameOwned = waitForOwnership()
+
+		if becameOwned then
+			showSuccess()
+		else
+			showFailureMessage(PROCESSING_FAILED_MESSAGE)
+			setButtonEnabled(true)
+		end
+
+		purchaseInProgress = false
+	end)
 end)
