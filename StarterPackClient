@@ -239,6 +239,10 @@ local function checkOwned()
 		return nil
 	end
 
+	if result == nil then
+		return nil
+	end
+
 	return result == true
 end
 

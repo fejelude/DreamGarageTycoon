@@ -119,6 +119,8 @@ local MAX_RETRIES = 3
 
 local MAX_INVENTORY_SIZE = 500
 local DEFAULT_CAR_STORAGE_LIMIT = 5
+local STARTER_PACK_CAR_NAME = "Senator"
+local STARTER_PACK_WALLET_CASH = 800000
 local MAX_LAYOUT_SIZE = 200
 local SETTINGS_SCHEMA_VERSION = 2
 local STARTER_CAR_NAME = "Delta Item"
@@ -173,6 +175,7 @@ if not success then warn("⚠️ CarStats module not found.") end
 -- ----------------------------------------------------------------------------
 local SessionData = {}
 local PadLocks = {}
+local save
 
 -- ----------------------------------------------------------------------------
 -- 🛡️ HELPER FUNCTIONS
@@ -450,7 +453,8 @@ end
 
 local function giveTool(player, toolName, customAttributes)
 	if not player or not player.Parent then return false, "Player missing" end
-	if not canAddCarToStorage(player, 1) then
+	local bypassStorageLimit = type(customAttributes) == "table" and customAttributes.BypassStorageLimit == true
+	if not bypassStorageLimit and not canAddCarToStorage(player, 1) then
 		return false, "Car storage full"
 	end
 	local sourceTool = safeFindCarTool(toolName)
@@ -467,8 +471,10 @@ local function giveTool(player, toolName, customAttributes)
 
 		if type(customAttributes) == "table" then
 			for k, v in pairs(customAttributes) do
-				backpackTool:SetAttribute(k, v)
-				gearTool:SetAttribute(k, v)
+				if k ~= "BypassStorageLimit" then
+					backpackTool:SetAttribute(k, v)
+					gearTool:SetAttribute(k, v)
+				end
 			end
 		end
 
@@ -706,6 +712,77 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		local toolName, customAttributes = ...
 		return giveTool(player, toolName, customAttributes)
 
+	elseif action == "GrantStarterPack" and player then
+		if not save then
+			return false, "Save system unavailable"
+		end
+
+		local purchaseId, carName, walletCash = ...
+		purchaseId = tostring(purchaseId or "")
+		carName = tostring(carName or STARTER_PACK_CAR_NAME)
+		walletCash = math.max(0, math.floor(tonumber(walletCash) or STARTER_PACK_WALLET_CASH))
+
+		if purchaseId == "" then
+			return false, "Missing purchase id"
+		end
+
+		local session = SessionData[player]
+		if not session or not session.DataLoaded then
+			return false, "Player data not loaded"
+		end
+
+		if session.StarterPackGrantInProgress then
+			return false, "Starter Pack grant already running"
+		end
+
+		session.StarterPackGrantInProgress = true
+
+		local function finish(ok, message)
+			session.StarterPackGrantInProgress = false
+			return ok, message
+		end
+
+		session.StarterPackReceipts = session.StarterPackReceipts or {}
+
+		if not session.StarterPackPurchased and not session.StarterPackReceipts[purchaseId] then
+			local leaderstats = player:FindFirstChild("leaderstats")
+			local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
+			if not wallet then
+				return finish(false, "Wallet not loaded")
+			end
+
+			local grantOk, grantMsg = giveTool(player, carName, {
+				BypassStorageLimit = true,
+				Source = "StarterPack",
+				PurchaseId = purchaseId,
+			})
+
+			if not grantOk then
+				return finish(false, grantMsg or "Starter Pack car grant failed")
+			end
+
+			wallet.Value += walletCash
+			session.StarterPackPurchased = true
+			session.StarterPackPurchaseId = purchaseId
+			session.StarterPackReceipts[purchaseId] = true
+			markDirty(player)
+		end
+
+		local saveOk = save(player, false, true)
+		if not saveOk then
+			return finish(false, "Starter Pack save failed")
+		end
+
+		return finish(true)
+
+	elseif action == "HasStarterPackGrant" and player then
+		local session = SessionData[player]
+		if not session or not session.DataLoaded then
+			return nil, "Player data not loaded"
+		end
+
+		return session.StarterPackPurchased == true
+
 	elseif action == "RemoveTool" and player then
 		local targetToolId, requestedAmount = ...
 		if not targetToolId then return false end
@@ -844,9 +921,9 @@ end
 -- ----------------------------------------------------------------------------
 -- 💾 SAVING
 -- ----------------------------------------------------------------------------
-local function save(player, isClosing)
+save = function(player, isClosing, force)
 	local session = SessionData[player]
-	if not session or not session.DataLoaded then return end
+	if not session or not session.DataLoaded then return false end
 
 	if session.IsSaving then
 		if isClosing then
@@ -857,15 +934,15 @@ local function save(player, isClosing)
 			if session.IsSaving then
 				warn("⚠️ [Save] Closing save aborted — autosave still running for " .. player.Name)
 				session.IsSaving = false
-				return
+				return false
 			end
 		else
-			return
+			return false
 		end
 	end
 
-	if not isClosing and (os.time() - session.LastSave < MIN_SAVE_INTERVAL) then return end
-	if not session.IsDirty and not isClosing then return end
+	if not force and not isClosing and (os.time() - session.LastSave < MIN_SAVE_INTERVAL) then return true end
+	if not force and not session.IsDirty and not isClosing then return true end
 
 	session.IsSaving = true
 
@@ -908,6 +985,8 @@ local function save(player, isClosing)
 		local currentTransferResetAt = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitResetAt")) or 0))
 		local currentRebirth = math.max(0, math.floor(tonumber(player:GetAttribute("Rebirth")) or 0))
 		local currentIndexDiscovered = {}
+		local starterPackPurchased = session.StarterPackPurchased == true
+		local starterPackPurchaseId = session.StarterPackPurchaseId
 		do
 			local raw = player:GetAttribute("IndexDiscoveredJson")
 			if type(raw) == "string" and raw ~= "" then
@@ -1132,6 +1211,10 @@ local function save(player, isClosing)
 					oldData.BankTransferLimitResetAt = currentTransferResetAt
 					oldData.Rebirth = currentRebirth
 					oldData.IndexDiscovered = currentIndexDiscovered
+					oldData.StarterPackPurchased = oldData.StarterPackPurchased == true or starterPackPurchased
+					if type(starterPackPurchaseId) == "string" and starterPackPurchaseId ~= "" then
+						oldData.StarterPackPurchaseId = starterPackPurchaseId
+					end
 					oldData.Settings = currentSettings
 					oldData.SettingsVersion = SETTINGS_SCHEMA_VERSION
 
@@ -1191,6 +1274,7 @@ local function save(player, isClosing)
 	if syncEvent then syncEvent:Fire(player.Name) end
 
 	player:SetAttribute("DataSaved", true)
+	return saveSucceeded
 end
 
 -- ----------------------------------------------------------------------------
@@ -1209,6 +1293,10 @@ local function InitializePlayer(player)
 		-- Used as a fallback in save() if player.Character is already nil.
 		HeldToolId        = nil,
 		SettingsState     = sanitizeSettings(nil),
+		StarterPackPurchased = false,
+		StarterPackPurchaseId = nil,
+		StarterPackReceipts = {},
+		StarterPackGrantInProgress = false,
 	}
 
 	-- ✅ FIX (Held Tool Lost on Disconnect):
@@ -1280,6 +1368,8 @@ local function InitializePlayer(player)
 	data.IndexDiscovered = data.IndexDiscovered or {}
 	data.SettingsVersion = math.max(0, math.floor(tonumber(data.SettingsVersion) or 0))
 	data.Settings = sanitizeSettings(data.Settings)
+	data.StarterPackPurchased = data.StarterPackPurchased == true
+	data.StarterPackPurchaseId = type(data.StarterPackPurchaseId) == "string" and data.StarterPackPurchaseId or nil
 	data.LastOfflineAt = math.max(0, math.floor(tonumber(data.LastOfflineAt) or 0))
 	player:SetAttribute("LastOfflineAt", data.LastOfflineAt)
 
@@ -1302,6 +1392,11 @@ local function InitializePlayer(player)
 	atm.Value    = sanitizeMoney(data.ATMBalance)
 
 	SessionData[player].SettingsState = sanitizeSettings(data.Settings)
+	SessionData[player].StarterPackPurchased = data.StarterPackPurchased
+	SessionData[player].StarterPackPurchaseId = data.StarterPackPurchaseId
+	if data.StarterPackPurchaseId then
+		SessionData[player].StarterPackReceipts[data.StarterPackPurchaseId] = true
+	end
 	applySettingsAttributes(player, SessionData[player].SettingsState)
 
 	local shopBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
