@@ -8,6 +8,7 @@
 -- Security: Server-authoritative tool validation, anti-wipe protection, fixed StarterGear duplication exploit.
 -- Performance: Batched saving, lock-based pad restoration to prevent race conditions.
 -- Notes: Updated to support UNCOMMON, RARE, EPIC, LEGENDARY, and MYTHICAL SHOP Persistence.
+--       Starter Pack ownership now lives in this main player data record.
 --
 -- FIX (Legendary Sacrifice Dupe):
 --   Added session.SacrificeOccurred flag. Set to true whenever
@@ -110,7 +111,7 @@ end
 -- ----------------------------------------------------------------------------
 -- ⚙️ CONFIGURATION & CONSTANTS
 -- ----------------------------------------------------------------------------
-local DATA_KEY = "Testingv67676767687"
+local DATA_KEY = "Testingv676767676871111"
 local PlayerDataStore = DataStoreService:GetDataStore(DATA_KEY)
 
 local AUTOSAVE_INTERVAL = 180
@@ -702,6 +703,11 @@ end
 AdminAPI.OnInvoke = function(action, player, ...)
 	if action == "ForceWipe" and player and SessionData[player] then
 		SessionData[player].ExplicitClear = true
+		SessionData[player].StarterPackPurchased = false
+		SessionData[player].StarterPackPurchaseId = nil
+		SessionData[player].StarterPackReceipts = {}
+		SessionData[player].StarterPackSaveConfirmed = false
+		SessionData[player].StarterPackClearRequested = true
 		if player:FindFirstChild("StarterGear") then player.StarterGear:ClearAllChildren() end
 		if player:FindFirstChild("Backpack") then player.Backpack:ClearAllChildren() end
 		markDirty(player)
@@ -744,7 +750,16 @@ AdminAPI.OnInvoke = function(action, player, ...)
 
 		session.StarterPackReceipts = session.StarterPackReceipts or {}
 
-		if not session.StarterPackPurchased and not session.StarterPackReceipts[purchaseId] then
+		-- This flag prevents CheckOwned from returning true until the main data
+		-- save succeeds. If Roblox retries the same receipt, this function will
+		-- force-save again without granting duplicate cash/tools.
+		session.StarterPackSaveConfirmed = false
+
+		if session.StarterPackPurchased == true then
+			session.StarterPackReceipts[purchaseId] = true
+			session.StarterPackPurchaseId = session.StarterPackPurchaseId or purchaseId
+			markDirty(player)
+		else
 			local leaderstats = player:FindFirstChild("leaderstats")
 			local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 			if not wallet then
@@ -773,6 +788,7 @@ AdminAPI.OnInvoke = function(action, player, ...)
 			return finish(false, "Starter Pack save failed")
 		end
 
+		session.StarterPackSaveConfirmed = true
 		return finish(true)
 
 	elseif action == "HasStarterPackGrant" and player then
@@ -781,7 +797,43 @@ AdminAPI.OnInvoke = function(action, player, ...)
 			return nil, "Player data not loaded"
 		end
 
-		return session.StarterPackPurchased == true
+		if session.StarterPackPurchased ~= true then
+			return false
+		end
+
+		-- Do not let the client show success until the purchase flag has been
+		-- confirmed by a successful main data save.
+		if session.StarterPackGrantInProgress or session.StarterPackSaveConfirmed ~= true then
+			return nil, "Starter Pack grant is still saving"
+		end
+
+		return true
+
+	elseif action == "ClearStarterPackGrant" and player then
+		-- Testing/admin reset only. This clears the one-time Starter Pack flag from
+		-- the same main player data record used by GrantStarterPack.
+		if not save then
+			return false, "Save system unavailable"
+		end
+
+		local session = SessionData[player]
+		if not session or not session.DataLoaded then
+			return false, "Player data not loaded"
+		end
+
+		session.StarterPackPurchased = false
+		session.StarterPackPurchaseId = nil
+		session.StarterPackReceipts = {}
+		session.StarterPackSaveConfirmed = false
+		session.StarterPackClearRequested = true
+		markDirty(player)
+
+		local saveOk = save(player, false, true)
+		if not saveOk then
+			return false, "Starter Pack clear save failed"
+		end
+
+		return true
 
 	elseif action == "RemoveTool" and player then
 		local targetToolId, requestedAmount = ...
@@ -987,6 +1039,15 @@ save = function(player, isClosing, force)
 		local currentIndexDiscovered = {}
 		local starterPackPurchased = session.StarterPackPurchased == true
 		local starterPackPurchaseId = session.StarterPackPurchaseId
+		local starterPackClearRequested = session.StarterPackClearRequested == true
+		local starterPackReceipts = {}
+		if type(session.StarterPackReceipts) == "table" then
+			for receiptId, purchased in pairs(session.StarterPackReceipts) do
+				if type(receiptId) == "string" and purchased == true then
+					starterPackReceipts[receiptId] = true
+				end
+			end
+		end
 		do
 			local raw = player:GetAttribute("IndexDiscoveredJson")
 			if type(raw) == "string" and raw ~= "" then
@@ -1211,16 +1272,30 @@ save = function(player, isClosing, force)
 					oldData.BankTransferLimitResetAt = currentTransferResetAt
 					oldData.Rebirth = currentRebirth
 					oldData.IndexDiscovered = currentIndexDiscovered
-					oldData.StarterPackPurchased = oldData.StarterPackPurchased == true or starterPackPurchased
-					if type(starterPackPurchaseId) == "string" and starterPackPurchaseId ~= "" then
-						oldData.StarterPackPurchaseId = starterPackPurchaseId
+					if starterPackClearRequested then
+						oldData.StarterPackPurchased = false
+						oldData.StarterPackPurchaseId = nil
+						oldData.StarterPackReceipts = {}
+					else
+						oldData.StarterPackPurchased = oldData.StarterPackPurchased == true or starterPackPurchased
+						if type(oldData.StarterPackReceipts) ~= "table" then
+							oldData.StarterPackReceipts = {}
+						end
+						for receiptId, purchased in pairs(starterPackReceipts) do
+							if purchased == true then
+								oldData.StarterPackReceipts[receiptId] = true
+							end
+						end
+						if type(starterPackPurchaseId) == "string" and starterPackPurchaseId ~= "" then
+							oldData.StarterPackPurchaseId = starterPackPurchaseId
+						end
 					end
 					oldData.Settings = currentSettings
 					oldData.SettingsVersion = SETTINGS_SCHEMA_VERSION
 
 					oldData.LastUpdated  = os.time()
 					oldData.LastOfflineAt = os.time()
-					oldData.DataVersion  = "V38_Fixed"
+					oldData.DataVersion  = "V40_StarterPackReceiptHardened"
 
 					return oldData
 				end)
@@ -1247,6 +1322,12 @@ save = function(player, isClosing, force)
 		session.LastSave = os.time()
 		session.SacrificeOccurred = false
 		session.ExplicitClear = false
+		if session.StarterPackClearRequested then
+			session.StarterPackSaveConfirmed = false
+		else
+			session.StarterPackSaveConfirmed = session.StarterPackPurchased == true
+		end
+		session.StarterPackClearRequested = false
 	end
 
 	if isClosing then
@@ -1297,6 +1378,8 @@ local function InitializePlayer(player)
 		StarterPackPurchaseId = nil,
 		StarterPackReceipts = {},
 		StarterPackGrantInProgress = false,
+		StarterPackSaveConfirmed = false,
+		StarterPackClearRequested = false,
 	}
 
 	-- ✅ FIX (Held Tool Lost on Disconnect):
@@ -1346,7 +1429,8 @@ local function InitializePlayer(player)
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player", RankData = {},
-		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {}
+		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {},
+		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {}
 	}
 
 	data.Inventory              = data.Inventory              or {}
@@ -1370,6 +1454,7 @@ local function InitializePlayer(player)
 	data.Settings = sanitizeSettings(data.Settings)
 	data.StarterPackPurchased = data.StarterPackPurchased == true
 	data.StarterPackPurchaseId = type(data.StarterPackPurchaseId) == "string" and data.StarterPackPurchaseId or nil
+	data.StarterPackReceipts = type(data.StarterPackReceipts) == "table" and data.StarterPackReceipts or {}
 	data.LastOfflineAt = math.max(0, math.floor(tonumber(data.LastOfflineAt) or 0))
 	player:SetAttribute("LastOfflineAt", data.LastOfflineAt)
 
@@ -1394,6 +1479,13 @@ local function InitializePlayer(player)
 	SessionData[player].SettingsState = sanitizeSettings(data.Settings)
 	SessionData[player].StarterPackPurchased = data.StarterPackPurchased
 	SessionData[player].StarterPackPurchaseId = data.StarterPackPurchaseId
+	SessionData[player].StarterPackSaveConfirmed = data.StarterPackPurchased == true
+	SessionData[player].StarterPackReceipts = {}
+	for receiptId, purchased in pairs(data.StarterPackReceipts) do
+		if type(receiptId) == "string" and purchased == true then
+			SessionData[player].StarterPackReceipts[receiptId] = true
+		end
+	end
 	if data.StarterPackPurchaseId then
 		SessionData[player].StarterPackReceipts[data.StarterPackPurchaseId] = true
 	end
@@ -1553,9 +1645,9 @@ local function InitializePlayer(player)
 	end
 
 	local function CheckAndRestorePending()
-	-- Offline tablet carry is now claimed via OfflineEarningsService instead of restoring to plot immediately.
-	return
-end
+		-- Offline tablet carry is now claimed via OfflineEarningsService instead of restoring to plot immediately.
+		return
+	end
 
 	player:GetAttributeChangedSignal("OccupiedPlot"):Connect(CheckAndRestorePending)
 	CheckAndRestorePending()
@@ -1589,17 +1681,5 @@ task.spawn(function()
 		for _, player in pairs(Players:GetPlayers()) do
 			sanitizeInventory(player)
 		end
-	end
-end)
-
-game:BindToClose(function()
-	local threads = 0
-	for _, p in pairs(Players:GetPlayers()) do
-		threads += 1
-		task.spawn(function() save(p, true); threads -= 1 end)
-	end
-	local s = os.clock()
-	while threads > 0 and (os.clock() - s) < 25 do
-		task.wait(0.1)
 	end
 end)
