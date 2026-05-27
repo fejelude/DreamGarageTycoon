@@ -25,6 +25,7 @@ local SHOP_REROLL_ID = 3520990584
 local BANK_TRANSFER_SKIP_ID = 3591736957
 local OFFLINE_10X_CLAIM_ID = 3598967453
 local STARTER_PACK_PRODUCT_ID = 3599481243
+local STARTER_PACK_CAR_NAME = "Senator"
 local STARTER_PACK_WALLET_CASH = 800000
 local STARTER_PACK_OWNED_KEY_PREFIX = "starter_pack_owned_"
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
@@ -248,6 +249,49 @@ local function giveCarTool(targetPlayer, carName)
 	return invokeOk and giveResult == true
 end
 
+local function grantStarterPackRewards(player, purchaseId)
+	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not TycoonAdminAPI then
+		warn("⚠️ Starter Pack grant failed: TycoonAdminAPI missing!")
+		return false
+	end
+
+	local invokeOk, grantOk, grantMsg = safeInvoke(
+		TycoonAdminAPI,
+		10,
+		"GrantStarterPack",
+		player,
+		purchaseId,
+		STARTER_PACK_CAR_NAME,
+		STARTER_PACK_WALLET_CASH
+	)
+
+	if not invokeOk or grantOk ~= true then
+		warn("⚠️ Starter Pack grant failed for " .. player.Name .. ": " .. tostring(grantMsg or grantOk))
+		return false
+	end
+
+	return true
+end
+
+local function hasStarterPackDataGrant(player)
+	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not TycoonAdminAPI then
+		return nil
+	end
+
+	local invokeOk, isGranted = safeInvoke(TycoonAdminAPI, 3, "HasStarterPackGrant", player)
+	if not invokeOk then
+		return nil
+	end
+
+	if isGranted == nil then
+		return nil
+	end
+
+	return isGranted == true
+end
+
 local function recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, rarity)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
 	if not rankApi then return end
@@ -308,7 +352,20 @@ local checkStarterPackOwned = starterPackRemotes:WaitForChild("CheckOwned")
 
 checkStarterPackOwned.OnServerInvoke = function(player)
 	local owned = hasStarterPackOwnership(player.UserId)
-	return owned == true
+	if owned == true then
+		return true
+	end
+
+	local dataGranted = hasStarterPackDataGrant(player)
+	if dataGranted == true then
+		return true
+	end
+
+	if owned == nil then
+		return nil
+	end
+
+	return false
 end
 
 -- ============================================================================
@@ -420,13 +477,11 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		elseif alreadyOwned == true then
 			purchaseSuccess = true
 		else
-			local grantCarOk = giveCarTool(buyerPlayer, "Senator")
-			local ls = buyerPlayer:FindFirstChild("leaderstats")
-			local wallet = ls and ls:FindFirstChild("Wallet")
-			if grantCarOk and wallet then
-				wallet.Value += STARTER_PACK_WALLET_CASH
-				if setStarterPackOwnership(buyerId) then
-					purchaseSuccess = true
+			local grantOk = grantStarterPackRewards(buyerPlayer, receiptInfo.PurchaseId)
+			if grantOk then
+				purchaseSuccess = setStarterPackOwnership(buyerId)
+				if not purchaseSuccess then
+					warn("⚠️ Starter Pack ownership save failed for " .. buyerPlayer.Name)
 				end
 			end
 		end
