@@ -24,6 +24,9 @@ local TABLET_2X_ID = 3509697462
 local SHOP_REROLL_ID = 3520990584
 local BANK_TRANSFER_SKIP_ID = 3591736957
 local OFFLINE_10X_CLAIM_ID = 3598967453
+local STARTER_PACK_PRODUCT_ID = 3599481243
+local STARTER_PACK_WALLET_CASH = 800000
+local STARTER_PACK_OWNED_KEY_PREFIX = "starter_pack_owned_"
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 
 local BANK_TRANSFER_USED_ATTR = "BankTransferLimitUsed"
@@ -157,6 +160,28 @@ local function getPurchaseHistoryStore()
 	return nil
 end
 
+
+local StarterPackOwnedStore = DataStoreService:GetDataStore("OneTimeProductOwnership_V1")
+
+local function getStarterPackOwnershipKey(userId)
+	return STARTER_PACK_OWNED_KEY_PREFIX .. tostring(userId)
+end
+
+local function hasStarterPackOwnership(userId)
+	local ok, value = pcall(function()
+		return StarterPackOwnedStore:GetAsync(getStarterPackOwnershipKey(userId))
+	end)
+	if not ok then return nil end
+	return value == true
+end
+
+local function setStarterPackOwnership(userId)
+	local ok = pcall(function()
+		StarterPackOwnedStore:SetAsync(getStarterPackOwnershipKey(userId), true)
+	end)
+	return ok
+end
+
 local function isDeletedStoreError(err)
 	err = string.lower(tostring(err or ""))
 	return string.find(err, "data store is deleted", 1, true) ~= nil
@@ -278,6 +303,25 @@ local function handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carNa
 	return true
 end
 
+local starterPackRemotes = ReplicatedStorage:FindFirstChild("StarterPackRemotes")
+if not starterPackRemotes then
+	starterPackRemotes = Instance.new("Folder")
+	starterPackRemotes.Name = "StarterPackRemotes"
+	starterPackRemotes.Parent = ReplicatedStorage
+end
+
+local checkStarterPackOwned = starterPackRemotes:FindFirstChild("CheckOwned")
+if not checkStarterPackOwned then
+	checkStarterPackOwned = Instance.new("RemoteFunction")
+	checkStarterPackOwned.Name = "CheckOwned"
+	checkStarterPackOwned.Parent = starterPackRemotes
+end
+
+checkStarterPackOwned.OnServerInvoke = function(player)
+	local owned = hasStarterPackOwnership(player.UserId)
+	return owned == true
+end
+
 -- ============================================================================
 -- 🧾 MAIN RECEIPT PROCESSOR
 -- ============================================================================
@@ -374,6 +418,28 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 				message = ok and "Claimed" or (msg or "You have already claimed your offline earnings."),
 				amount = ok and payout or 0,
 			}
+		end
+
+	elseif pid == STARTER_PACK_PRODUCT_ID then
+		isGift = false
+		targetPlayer = buyerPlayer
+		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+
+		local alreadyOwned = hasStarterPackOwnership(buyerId)
+		if alreadyOwned == nil then
+			return Enum.ProductPurchaseDecision.NotProcessedYet
+		elseif alreadyOwned == true then
+			purchaseSuccess = true
+		else
+			local grantCarOk = giveCarTool(buyerPlayer, "Senator")
+			local ls = buyerPlayer:FindFirstChild("leaderstats")
+			local wallet = ls and ls:FindFirstChild("Wallet")
+			if grantCarOk and wallet then
+				wallet.Value += STARTER_PACK_WALLET_CASH
+				if setStarterPackOwnership(buyerId) then
+					purchaseSuccess = true
+				end
+			end
 		end
 
 	-- ─── REBIRTH SKIP PRODUCTS ────────────────────────────────────────────────
