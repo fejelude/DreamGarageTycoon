@@ -303,19 +303,8 @@ local function handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carNa
 	return true
 end
 
-local starterPackRemotes = ReplicatedStorage:FindFirstChild("StarterPackRemotes")
-if not starterPackRemotes then
-	starterPackRemotes = Instance.new("Folder")
-	starterPackRemotes.Name = "StarterPackRemotes"
-	starterPackRemotes.Parent = ReplicatedStorage
-end
-
-local checkStarterPackOwned = starterPackRemotes:FindFirstChild("CheckOwned")
-if not checkStarterPackOwned then
-	checkStarterPackOwned = Instance.new("RemoteFunction")
-	checkStarterPackOwned.Name = "CheckOwned"
-	checkStarterPackOwned.Parent = starterPackRemotes
-end
+local starterPackRemotes = ReplicatedStorage:WaitForChild("StarterPackRemotes")
+local checkStarterPackOwned = starterPackRemotes:WaitForChild("CheckOwned")
 
 checkStarterPackOwned.OnServerInvoke = function(player)
 	local owned = hasStarterPackOwnership(player.UserId)
