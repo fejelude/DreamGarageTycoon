@@ -7,6 +7,7 @@
 -- Security: Verifies target doesn't already own the item before granting to prevent wasted Robux via exploits.
 -- Performance: Uses caching and pcalls for DataStore resilience.
 -- Notes: Updated to support UNCOMMON, RARE, and EPIC SHOP tier purchases and rerolls.
+--       Starter Pack ownership now uses TycoonDataHandler main player data only.
 
 local MarketplaceService = game:GetService("MarketplaceService")
 local DataStoreService = game:GetService("DataStoreService")
@@ -27,7 +28,6 @@ local OFFLINE_10X_CLAIM_ID = 3598967453
 local STARTER_PACK_PRODUCT_ID = 3599481243
 local STARTER_PACK_CAR_NAME = "Senator"
 local STARTER_PACK_WALLET_CASH = 800000
-local STARTER_PACK_OWNED_KEY_PREFIX = "starter_pack_owned_"
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 
 local BANK_TRANSFER_USED_ATTR = "BankTransferLimitUsed"
@@ -162,26 +162,6 @@ local function getPurchaseHistoryStore()
 end
 
 
-local StarterPackOwnedStore = DataStoreService:GetDataStore("OneTimeProductOwnership_V1")
-
-local function getStarterPackOwnershipKey(userId)
-	return STARTER_PACK_OWNED_KEY_PREFIX .. tostring(userId)
-end
-
-local function hasStarterPackOwnership(userId)
-	local ok, value = pcall(function()
-		return StarterPackOwnedStore:GetAsync(getStarterPackOwnershipKey(userId))
-	end)
-	if not ok then return nil end
-	return value == true
-end
-
-local function setStarterPackOwnership(userId)
-	local ok = pcall(function()
-		StarterPackOwnedStore:SetAsync(getStarterPackOwnershipKey(userId), true)
-	end)
-	return ok
-end
 
 local function isDeletedStoreError(err)
 	err = string.lower(tostring(err or ""))
@@ -258,7 +238,7 @@ local function grantStarterPackRewards(player, purchaseId)
 
 	local invokeOk, grantOk, grantMsg = safeInvoke(
 		TycoonAdminAPI,
-		10,
+		20,
 		"GrantStarterPack",
 		player,
 		purchaseId,
@@ -351,21 +331,14 @@ local starterPackRemotes = ReplicatedStorage:WaitForChild("StarterPackRemotes")
 local checkStarterPackOwned = starterPackRemotes:WaitForChild("CheckOwned")
 
 checkStarterPackOwned.OnServerInvoke = function(player)
-	local owned = hasStarterPackOwnership(player.UserId)
-	if owned == true then
-		return true
-	end
-
+	-- Single source of truth: the Starter Pack flag lives in TycoonDataHandler's
+	-- main player save data through TycoonAdminAPI.HasStarterPackGrant.
 	local dataGranted = hasStarterPackDataGrant(player)
-	if dataGranted == true then
-		return true
-	end
-
-	if owned == nil then
+	if dataGranted == nil then
 		return nil
 	end
 
-	return false
+	return dataGranted == true
 end
 
 -- ============================================================================
@@ -471,22 +444,12 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		targetPlayer = buyerPlayer
 		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 
-		local alreadyOwned = hasStarterPackOwnership(buyerId)
-		if alreadyOwned == nil then
-			return Enum.ProductPurchaseDecision.NotProcessedYet
-		elseif alreadyOwned == true then
-			purchaseSuccess = true
-		else
-			local grantOk = grantStarterPackRewards(buyerPlayer, receiptInfo.PurchaseId)
-			if grantOk then
-				purchaseSuccess = setStarterPackOwnership(buyerId)
-				if not purchaseSuccess then
-					warn("⚠️ Starter Pack ownership save failed for " .. buyerPlayer.Name)
-				end
-			end
-		end
+		-- Single source of truth: ownership is stored by TycoonDataHandler in the
+		-- player's main data record. Always route the receipt through GrantStarterPack
+		-- so retries force-save the receipt id without granting duplicate rewards.
+		purchaseSuccess = grantStarterPackRewards(buyerPlayer, receiptInfo.PurchaseId)
 
-	-- ─── REBIRTH SKIP PRODUCTS ────────────────────────────────────────────────
+		-- ─── REBIRTH SKIP PRODUCTS ────────────────────────────────────────────────
 	elseif RebirthConfig.SkipProductIds[math.floor(tonumber(targetPlayer:GetAttribute("Rebirth")) or 0)] == pid then
 		local currentRebirth = math.floor(tonumber(targetPlayer:GetAttribute("Rebirth")) or 0)
 		if currentRebirth < RebirthConfig.MAX_REBIRTH then
@@ -495,7 +458,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			purchaseSuccess = true
 		end
 
-	-- ─── 2X TABLET ───────────────────────────────────────────────────────────
+		-- ─── 2X TABLET ───────────────────────────────────────────────────────────
 	elseif pid == TABLET_2X_ID then
 		local myPlotName = targetPlayer:GetAttribute("OccupiedPlot")
 		local plot = myPlotName and TycoonFolder:FindFirstChild(myPlotName)
