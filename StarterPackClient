@@ -1,0 +1,102 @@
+-- Purpose: Handles Starter Pack UI purchase flow (prompt, loading/audio, and owned-state feedback stacking).
+-- Runs on: Client
+-- Location: StarterGui > StarterPackUi > StarterPackClient
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+
+local remotes = ReplicatedStorage:WaitForChild("StarterPackRemotes")
+local checkOwnedFn = remotes:WaitForChild("CheckOwned")
+
+local starterPackUi = playerGui:WaitForChild("StarterPackUi")
+local button = starterPackUi:WaitForChild("StarterPackButton")
+local stateLabels = starterPackUi:WaitForChild("StateLabels")
+local failedLabel = stateLabels:WaitForChild("Failed")
+local successLabel = stateLabels:WaitForChild("Success")
+
+successLabel.Text = "Starter Pack purchased! Senator Car and 800,000 wallet cash have been added to your account."
+
+local STARTER_PACK_PRODUCT_ID = 3599481243
+local productId = tonumber(button:GetAttribute("ProductId")) or STARTER_PACK_PRODUCT_ID
+
+local ownedSpamCount = 0
+local hideToken = 0
+local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+local function setOwnedMessage()
+	if ownedSpamCount == 0 then
+		failedLabel.Text = "You've already purchased this product"
+	else
+		failedLabel.Text = string.format("You've already purchased this product (x%d)", ownedSpamCount)
+	end
+end
+
+local function showOwnedFailureStacked()
+	if failedLabel.Visible then
+		ownedSpamCount += 1
+	else
+		ownedSpamCount = 0
+	end
+
+	hideToken += 1
+	local token = hideToken
+
+	local stroke = failedLabel:FindFirstChildOfClass("UIStroke")
+	setOwnedMessage()
+	failedLabel.Visible = true
+	failedLabel.TextTransparency = 0
+	failedLabel.TextStrokeTransparency = 0
+	if stroke then stroke.Transparency = 0 end
+
+	task.delay(3, function()
+		if token ~= hideToken then return end
+		local goals = {TextTransparency = 1, TextStrokeTransparency = 1}
+		local tween = TweenService:Create(failedLabel, fadeInfo, goals)
+		tween:Play()
+		if stroke then TweenService:Create(stroke, fadeInfo, {Transparency = 1}):Play() end
+		tween.Completed:Connect(function()
+			if token ~= hideToken then return end
+			failedLabel.Visible = false
+			ownedSpamCount = 0
+		end)
+	end)
+end
+
+UIButtonUtils.SetupButton(button, function()
+	if not productId then return end
+
+	local ok, isOwned = pcall(function()
+		return checkOwnedFn:InvokeServer()
+	end)
+
+	if ok and isOwned then
+		showOwnedFailureStacked()
+		return
+	end
+
+	UIAudioConfig.PlayRobux()
+	UIAudioConfig.ShowPurchaseLoading()
+	MarketplaceService:PromptProductPurchase(player, productId)
+end)
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, finishedProductId, wasPurchased)
+	if userId ~= player.UserId then return end
+	if finishedProductId ~= productId then return end
+	if not wasPurchased then return end
+
+	local ok, isOwned = pcall(function()
+		return checkOwnedFn:InvokeServer()
+	end)
+	if ok and isOwned then
+		failedLabel.Visible = false
+		successLabel.Visible = true
+	end
+end)
