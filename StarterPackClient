@@ -26,6 +26,9 @@ local button = starterPackUi:WaitForChild("StarterPackButton")
 local stateLabels = starterPackUi:WaitForChild("StateLabels")
 local failedLabel = stateLabels:WaitForChild("Failed")
 local successLabel = stateLabels:WaitForChild("Success")
+local teleportGui = playerGui:WaitForChild("TeleportFunction")
+local teleportToPlaces = teleportGui:WaitForChild("TeleportToPlaces")
+local teleportMainFrame = teleportToPlaces:WaitForChild("MainFrame")
 
 --// CONFIG
 local STARTER_PACK_PRODUCT_ID = 3599481243
@@ -406,3 +409,10 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, finish
 		purchaseInProgress = false
 	end)
 end)
+
+local function syncStarterPackButtonVisibility()
+	button.Visible = not teleportMainFrame.Visible
+end
+
+teleportMainFrame:GetPropertyChangedSignal("Visible"):Connect(syncStarterPackButtonVisibility)
+syncStarterPackButtonVisibility()
