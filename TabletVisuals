@@ -1,6 +1,6 @@
--- [[ LOCAL SCRIPT: TabletVisuals (Mobile Click Fix) ]]
--- -- Indicating what the script is for: Handles Interactions, Separate Visibility/Click Ranges, and Floating Feedback.
--- -- UPDATE: Switched action logic to MouseButton1Click for reliable mobile support.
+-- [[ LOCAL SCRIPT: TabletVisuals (Laptop Click Fix Only) ]]
+-- -- Handles interactions, separate visibility/click ranges, and floating feedback.
+-- -- UPDATE: Uses GuiButton.Activated for reliable laptop/desktop clicking while keeping mobile/console support.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -110,6 +110,20 @@ end
 local function setupAnimatedButton(button, clickFunction)
 	if not button:IsA("GuiButton") then return end
 
+	-- ✅ Laptop/Desktop click fix:
+	-- Make sure the actual button owns the input and use Activated instead of only MouseButton1Click.
+	-- Activated works for mouse, touch, and gamepad without adding any extra prompt system.
+	button.Active = true
+	button.Selectable = true
+
+	-- If the button has decorative children, stop them from stealing clicks.
+	for _, child in ipairs(button:GetDescendants()) do
+		if child:IsA("GuiObject") and not child:IsA("GuiButton") then
+			child.Active = false
+			child.Selectable = false
+		end
+	end
+
 	local uiScale = button:FindFirstChildOfClass("UIScale")
 	if not uiScale then
 		uiScale = Instance.new("UIScale")
@@ -119,6 +133,7 @@ local function setupAnimatedButton(button, clickFunction)
 
 	local isHovering = false
 	local isPressed  = false
+	local lastClickTime = 0
 	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 
 	local function updateScale()
@@ -127,6 +142,16 @@ local function setupAnimatedButton(button, clickFunction)
 		elseif isHovering then target = 1.05
 		end
 		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+	end
+
+	local function runClick()
+		-- Prevent double firing when multiple input events fire on the same click/tap.
+		local now = os.clock()
+		if now - lastClickTime < 0.2 then return end
+		lastClickTime = now
+
+		UIAudioConfig.PlayClick()
+		if clickFunction then clickFunction() end
 	end
 
 	button.MouseEnter:Connect(function()
@@ -159,10 +184,8 @@ local function setupAnimatedButton(button, clickFunction)
 		end
 	end)
 
-	button.MouseButton1Click:Connect(function()
-		UIAudioConfig.PlayClick()
-		if clickFunction then clickFunction() end
-	end)
+	-- ✅ The actual simple fix: use Activated for reliable laptop/desktop button activation.
+	button.Activated:Connect(runClick)
 end
 
 -- ============================================================================
