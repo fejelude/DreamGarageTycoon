@@ -970,6 +970,57 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 	return false
 end
 
+local function sanitizeDailyRewardsData(value)
+	local data = type(value) == "table" and value or {}
+
+	local currentDay = math.floor(tonumber(data.CurrentDay) or 1)
+	if currentDay < 1 or currentDay > 7 then
+		currentDay = 1
+	end
+
+	local lastClaimAt = math.max(0, math.floor(tonumber(data.LastClaimAt) or 0))
+	local lastClaimDayKey = math.max(0, math.floor(tonumber(data.LastClaimDayKey) or 0))
+	local awaitingCycleReset = data.AwaitingCycleReset == true
+	local claimedDays = {}
+
+	if type(data.ClaimedDays) == "table" then
+		for day = 1, 7 do
+			local key = tostring(day)
+			claimedDays[key] = data.ClaimedDays[key] == true or data.ClaimedDays[day] == true
+		end
+	else
+		for day = 1, 7 do
+			claimedDays[tostring(day)] = false
+		end
+	end
+
+	return {
+		CurrentDay = currentDay,
+		LastClaimAt = lastClaimAt,
+		LastClaimDayKey = lastClaimDayKey,
+		AwaitingCycleReset = awaitingCycleReset,
+		ClaimedDays = claimedDays,
+	}
+end
+
+local function decodeDailyRewardsAttribute(player)
+	local raw = player:GetAttribute("DailyRewardsStateJson")
+	if type(raw) ~= "string" or raw == "" then
+		return sanitizeDailyRewardsData(nil)
+	end
+
+	local ok, decoded = pcall(function()
+		return HttpService:JSONDecode(raw)
+	end)
+
+	if ok and type(decoded) == "table" then
+		return sanitizeDailyRewardsData(decoded)
+	end
+
+	return sanitizeDailyRewardsData(nil)
+end
+
+
 -- ----------------------------------------------------------------------------
 -- 💾 SAVING
 -- ----------------------------------------------------------------------------
@@ -1067,6 +1118,8 @@ save = function(player, isClosing, force)
 				end
 			end
 		end
+		local currentDailyRewards = decodeDailyRewardsAttribute(player)
+
 		if currentTransferResetAt > 0 and os.time() >= currentTransferResetAt then
 			currentTransferUsed = 0
 			currentTransferResetAt = 0
@@ -1272,6 +1325,7 @@ save = function(player, isClosing, force)
 					oldData.BankTransferLimitResetAt = currentTransferResetAt
 					oldData.Rebirth = currentRebirth
 					oldData.IndexDiscovered = currentIndexDiscovered
+					oldData.DailyRewards = currentDailyRewards
 					if starterPackClearRequested then
 						oldData.StarterPackPurchased = false
 						oldData.StarterPackPurchaseId = nil
@@ -1357,7 +1411,6 @@ save = function(player, isClosing, force)
 	player:SetAttribute("DataSaved", true)
 	return saveSucceeded
 end
-
 -- ----------------------------------------------------------------------------
 -- 🚪 PLAYER INITIALIZATION
 -- ----------------------------------------------------------------------------
@@ -1430,7 +1483,8 @@ local function InitializePlayer(player)
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player", RankData = {},
 		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {},
-		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {}
+		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
+		DailyRewards = sanitizeDailyRewardsData(nil)
 	}
 
 	data.Inventory              = data.Inventory              or {}
@@ -1455,6 +1509,7 @@ local function InitializePlayer(player)
 	data.StarterPackPurchased = data.StarterPackPurchased == true
 	data.StarterPackPurchaseId = type(data.StarterPackPurchaseId) == "string" and data.StarterPackPurchaseId or nil
 	data.StarterPackReceipts = type(data.StarterPackReceipts) == "table" and data.StarterPackReceipts or {}
+	data.DailyRewards = sanitizeDailyRewardsData(data.DailyRewards)
 	data.LastOfflineAt = math.max(0, math.floor(tonumber(data.LastOfflineAt) or 0))
 	player:SetAttribute("LastOfflineAt", data.LastOfflineAt)
 
@@ -1542,6 +1597,7 @@ local function InitializePlayer(player)
 	for name in pairs(discoveredSet) do table.insert(discoveredList, name) end
 	table.sort(discoveredList)
 	player:SetAttribute("IndexDiscoveredJson", HttpService:JSONEncode(discoveredList))
+	player:SetAttribute("DailyRewardsStateJson", HttpService:JSONEncode(data.DailyRewards))
 
 	local transferUsed = math.max(0, math.floor(tonumber(data.BankTransferLimitUsed) or 0))
 	local transferResetAt = math.max(0, math.floor(tonumber(data.BankTransferLimitResetAt) or 0))
@@ -1575,6 +1631,7 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("BankTransferLimitResetAt"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rebirth"):Connect(setDirty)
 	player:GetAttributeChangedSignal("IndexDiscoveredJson"):Connect(setDirty)
+	player:GetAttributeChangedSignal("DailyRewardsStateJson"):Connect(setDirty)
 	for _, attributeName in pairs(PLAYER_SETTING_ATTRIBUTES) do
 		player:GetAttributeChangedSignal(attributeName):Connect(function()
 			local session = SessionData[player]
