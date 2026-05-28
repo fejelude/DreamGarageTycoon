@@ -1,0 +1,428 @@
+-- Purpose: Client controller for Daily Rewards UI open/close, day-card interactions, status indicators, and feedback labels.
+-- Runs on: Client
+-- Location: StarterGui > DailyRewardsUi > DailyRewardsClient
+-- Dependencies: Players, ReplicatedStorage, TweenService, Workspace, UIButtonUtils, UIAudioConfig
+-- Security: Client only displays state and requests claims; DailyRewardsService is authoritative.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local dailyRewardsGui = playerGui:WaitForChild("DailyRewardsUi")
+local mainFrame = dailyRewardsGui:WaitForChild("MainFrame")
+local exitButton = mainFrame:WaitForChild("ExitButton")
+local mainElements = mainFrame:WaitForChild("MainElements")
+local stateLabels = mainFrame:WaitForChild("StateLabels")
+local failedLabel = stateLabels:WaitForChild("Failed")
+local successLabel = stateLabels:WaitForChild("Success")
+
+local bonusesGui = playerGui:WaitForChild("Bonuses")
+local openButton = bonusesGui:WaitForChild("DailyRewards"):WaitForChild("Button")
+
+local remotes = ReplicatedStorage:WaitForChild("DailyRewardsRemotes")
+local getStateFunction = remotes:WaitForChild("GetDailyRewardsState")
+local claimFunction = remotes:WaitForChild("ClaimDailyReward")
+local stateChangedEvent = remotes:WaitForChild("DailyRewardsStateChanged")
+
+local dailyRewardsScreenGui = dailyRewardsGui:IsA("ScreenGui") and dailyRewardsGui or dailyRewardsGui:FindFirstAncestorWhichIsA("ScreenGui")
+if dailyRewardsScreenGui then
+	dailyRewardsScreenGui.ResetOnSpawn = false
+end
+
+local isOpen = false
+local hiddenGuis = {}
+local savedFOV = 70
+local OPEN_FOV = 50
+local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+
+local DAY_HOVER_SCALE = 1.05
+local DAY_CLICK_SCALE = 0.95
+local DAY_HOVER_TWEEN = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+
+local LABEL_SHOW_SECONDS = 3
+local LABEL_FADE_OUT_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+local labelHideToken = {}
+local labelTweens = {}
+local messageState = {}
+local dayFrames = {}
+local isClaiming = false
+
+local function getCamera(waitSeconds)
+	local camera = Workspace.CurrentCamera
+	if camera then return camera end
+
+	if waitSeconds and waitSeconds > 0 then
+		local started = os.clock()
+		repeat
+			task.wait()
+			camera = Workspace.CurrentCamera
+		until camera or os.clock() - started >= waitSeconds
+	end
+
+	return camera
+end
+
+local function getLabelUIStroke(label)
+	return label and label:FindFirstChildOfClass("UIStroke") or nil
+end
+
+local labelDefaults = {
+	[successLabel] = {
+		TextTransparency = successLabel.TextTransparency,
+		TextStrokeTransparency = successLabel.TextStrokeTransparency,
+		UIStrokeTransparency = getLabelUIStroke(successLabel) and getLabelUIStroke(successLabel).Transparency or nil,
+	},
+	[failedLabel] = {
+		TextTransparency = failedLabel.TextTransparency,
+		TextStrokeTransparency = failedLabel.TextStrokeTransparency,
+		UIStrokeTransparency = getLabelUIStroke(failedLabel) and getLabelUIStroke(failedLabel).Transparency or nil,
+	},
+}
+
+local function resetMessageState(label)
+	local state = messageState[label]
+	if state then
+		state.count = 0
+		state.baseText = nil
+	end
+end
+
+local function cancelLabelTween(label)
+	local tweens = labelTweens[label]
+	if tweens then
+		for _, tween in pairs(tweens) do
+			if tween then
+				tween:Cancel()
+			end
+		end
+		labelTweens[label] = nil
+	end
+end
+
+local function resetLabelTransparency(label)
+	local defaults = labelDefaults[label]
+	if defaults then
+		label.TextTransparency = defaults.TextTransparency
+		label.TextStrokeTransparency = defaults.TextStrokeTransparency
+
+		local uiStroke = getLabelUIStroke(label)
+		if uiStroke and defaults.UIStrokeTransparency ~= nil then
+			uiStroke.Transparency = defaults.UIStrokeTransparency
+		end
+	end
+end
+
+local function hideStateLabel(label)
+	if not label then return end
+	cancelLabelTween(label)
+	labelHideToken[label] = (labelHideToken[label] or 0) + 1
+	label.Visible = false
+	resetLabelTransparency(label)
+	resetMessageState(label)
+end
+
+local function fadeOutStateLabel(label)
+	if not label or not label.Visible then return end
+	cancelLabelTween(label)
+
+	local uiStroke = getLabelUIStroke(label)
+	local textTween = TweenService:Create(label, LABEL_FADE_OUT_INFO, {
+		TextTransparency = 1,
+		TextStrokeTransparency = 1,
+	})
+	local strokeTween = nil
+
+	if uiStroke then
+		strokeTween = TweenService:Create(uiStroke, LABEL_FADE_OUT_INFO, { Transparency = 1 })
+	end
+
+	local activeTweens = { Text = textTween, UIStroke = strokeTween }
+	labelTweens[label] = activeTweens
+
+	local connection
+	connection = textTween.Completed:Connect(function()
+		if connection then connection:Disconnect() end
+		if labelTweens[label] ~= activeTweens then return end
+
+		labelTweens[label] = nil
+		label.Visible = false
+		resetLabelTransparency(label)
+		resetMessageState(label)
+	end)
+
+	textTween:Play()
+	if strokeTween then strokeTween:Play() end
+end
+
+local function getOppositeStateLabel(label)
+	if label == successLabel then
+		return failedLabel
+	elseif label == failedLabel then
+		return successLabel
+	end
+	return nil
+end
+
+local function formatRepeatedMessage(baseText, count)
+	if count and count >= 2 then
+		return tostring(baseText) .. " (x" .. tostring(count) .. ")"
+	end
+	return tostring(baseText)
+end
+
+local function showStateLabel(label, baseText)
+	if not label then return end
+	baseText = tostring(baseText or "")
+	if baseText == "" then return end
+
+	hideStateLabel(getOppositeStateLabel(label))
+	cancelLabelTween(label)
+	resetLabelTransparency(label)
+
+	local state = messageState[label]
+	if not state then
+		state = { count = 0, baseText = nil }
+		messageState[label] = state
+	end
+
+	if state.baseText == baseText and label.Visible then
+		state.count += 1
+	else
+		state.count = 1
+		state.baseText = baseText
+	end
+
+	label.Text = formatRepeatedMessage(baseText, state.count)
+	label.Visible = true
+
+	labelHideToken[label] = (labelHideToken[label] or 0) + 1
+	local thisToken = labelHideToken[label]
+
+	task.delay(LABEL_SHOW_SECONDS, function()
+		if labelHideToken[label] == thisToken and label.Visible then
+			fadeOutStateLabel(label)
+		end
+	end)
+end
+
+local function clearStateLabels()
+	hideStateLabel(successLabel)
+	hideStateLabel(failedLabel)
+end
+
+local function setMainFrameVisible(visible)
+	isOpen = visible
+	mainFrame.Visible = visible
+	openButton.Visible = not visible
+end
+
+local function restoreHiddenGuis()
+	for _, gui in ipairs(hiddenGuis) do
+		if gui and gui.Parent then
+			gui.Enabled = true
+		end
+	end
+	hiddenGuis = {}
+end
+
+local function hideOtherGuis()
+	hiddenGuis = {}
+
+	for _, gui in ipairs(playerGui:GetDescendants()) do
+		if gui:IsA("ScreenGui") and gui ~= dailyRewardsScreenGui and gui.Enabled == true then
+			gui.Enabled = false
+			table.insert(hiddenGuis, gui)
+		end
+	end
+end
+
+local function closeDailyRewards()
+	if not isOpen then return end
+	restoreHiddenGuis()
+	setMainFrameVisible(false)
+	clearStateLabels()
+
+	local camera = getCamera(0.5)
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, { FieldOfView = savedFOV }):Play()
+	end
+end
+
+local function applyState(clientState)
+	if type(clientState) ~= "table" or type(clientState.DayStates) ~= "table" then
+		return
+	end
+
+	for day, frame in pairs(dayFrames) do
+		local state = clientState.DayStates[day]
+		local stateDesign = frame:FindFirstChild("StateDesign")
+		local claimStatus = stateDesign and stateDesign:FindFirstChild("ClaimStatus")
+		local doneClaimingStatus = stateDesign and stateDesign:FindFirstChild("DoneClaimingStatus")
+
+		if claimStatus then
+			claimStatus.Visible = state and state.Ready == true or false
+		end
+
+		if doneClaimingStatus then
+			doneClaimingStatus.Visible = state and state.Claimed == true or false
+		end
+	end
+end
+
+local function refreshState()
+	local ok, clientState = pcall(function()
+		return getStateFunction:InvokeServer()
+	end)
+
+	if ok then
+		applyState(clientState)
+	else
+		warn("⚠️ [DailyRewards] Failed to refresh state: " .. tostring(clientState))
+	end
+end
+
+local function getOrCreateUIScale(guiObject)
+	local uiScale = guiObject:FindFirstChildOfClass("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1
+		uiScale.Parent = guiObject
+	end
+	return uiScale
+end
+
+local function wireDayFrame(day, frame)
+	if not frame or frame:GetAttribute("DailyRewardsBound") then return end
+	frame:SetAttribute("DailyRewardsBound", true)
+	frame.Active = true
+
+	local uiScale = getOrCreateUIScale(frame)
+	local isHovering = false
+	local isPressed = false
+	local lastClickSoundAt = 0
+
+	local function updateScale()
+		local targetScale = 1
+		if isPressed then
+			targetScale = DAY_CLICK_SCALE
+		elseif isHovering then
+			targetScale = DAY_HOVER_SCALE
+		end
+		TweenService:Create(uiScale, DAY_HOVER_TWEEN, { Scale = targetScale }):Play()
+	end
+
+	local function isRealMouseHover()
+		return UserInputService:GetLastInputType() == Enum.UserInputType.MouseMovement
+	end
+
+	local function playClickOnce()
+		local now = os.clock()
+		if now - lastClickSoundAt < 0.08 then return end
+		lastClickSoundAt = now
+		UIAudioConfig.PlayClick()
+	end
+
+	local function attemptClaim()
+		if isClaiming then return end
+		isClaiming = true
+
+		local ok, success, message, clientState = pcall(function()
+			return claimFunction:InvokeServer(day)
+		end)
+
+		if ok then
+			applyState(clientState)
+			if success then
+				showStateLabel(successLabel, message or "Reward has been claimed successfully!")
+			else
+				showStateLabel(failedLabel, message or "You're not ready for this yet!")
+			end
+		else
+			warn("⚠️ [DailyRewards] Claim request failed: " .. tostring(success))
+			showStateLabel(failedLabel, "You're not ready for this yet!")
+			refreshState()
+		end
+
+		task.delay(0.15, function()
+			isClaiming = false
+		end)
+	end
+
+	frame.MouseEnter:Connect(function()
+		if isHovering or not isRealMouseHover() then return end
+		isHovering = true
+		UIAudioConfig.PlayHover()
+		updateScale()
+	end)
+
+	frame.MouseLeave:Connect(function()
+		isHovering = false
+		isPressed = false
+		updateScale()
+	end)
+
+	frame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = true
+			playClickOnce()
+			updateScale()
+		end
+	end)
+
+	frame.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			isPressed = false
+			updateScale()
+			attemptClaim()
+		end
+	end)
+end
+
+for day = 1, 7 do
+	local frame = mainElements:WaitForChild("Day" .. tostring(day))
+	dayFrames[day] = frame
+	wireDayFrame(day, frame)
+end
+
+setMainFrameVisible(false)
+clearStateLabels()
+refreshState()
+
+UIButtonUtils.SetupButton(openButton, function()
+	local camera = getCamera(2)
+	if camera then
+		savedFOV = camera.FieldOfView
+	end
+
+	hideOtherGuis()
+	clearStateLabels()
+	setMainFrameVisible(true)
+
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, { FieldOfView = OPEN_FOV }):Play()
+	end
+
+	refreshState()
+end)
+
+UIButtonUtils.SetupButton(exitButton, closeDailyRewards)
+
+if dailyRewardsScreenGui then
+	dailyRewardsScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if isOpen and not dailyRewardsScreenGui.Enabled then
+			closeDailyRewards()
+		end
+	end)
+end
+
+stateChangedEvent.OnClientEvent:Connect(applyState)
+player:GetAttributeChangedSignal("DailyRewardsStateJson"):Connect(refreshState)
