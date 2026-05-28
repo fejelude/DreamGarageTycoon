@@ -40,6 +40,7 @@ end
 local isOpen = false
 local hiddenGuis = {}
 local savedFOV = 70
+
 local OPEN_FOV = 50
 local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
 
@@ -49,16 +50,25 @@ local DAY_HOVER_TWEEN = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDi
 
 local LABEL_SHOW_SECONDS = 3
 local LABEL_FADE_OUT_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local CLAIM_CLIENT_COOLDOWN_SECONDS = 0.15
+local ATTRIBUTE_REFRESH_DEBOUNCE_SECONDS = 0.1
 
 local labelHideToken = {}
 local labelTweens = {}
 local messageState = {}
+
 local dayFrames = {}
+local dayStatusRefs = {}
+
 local isClaiming = false
+local refreshToken = 0
+local attributeRefreshQueued = false
 
 local function getCamera(waitSeconds)
 	local camera = Workspace.CurrentCamera
-	if camera then return camera end
+	if camera then
+		return camera
+	end
 
 	if waitSeconds and waitSeconds > 0 then
 		local started = os.clock()
@@ -69,6 +79,18 @@ local function getCamera(waitSeconds)
 	end
 
 	return camera
+end
+
+local function safePlayHover()
+	if UIAudioConfig and type(UIAudioConfig.PlayHover) == "function" then
+		UIAudioConfig.PlayHover()
+	end
+end
+
+local function safePlayClick()
+	if UIAudioConfig and type(UIAudioConfig.PlayClick) == "function" then
+		UIAudioConfig.PlayClick()
+	end
 end
 
 local function getLabelUIStroke(label)
@@ -110,19 +132,24 @@ end
 
 local function resetLabelTransparency(label)
 	local defaults = labelDefaults[label]
-	if defaults then
-		label.TextTransparency = defaults.TextTransparency
-		label.TextStrokeTransparency = defaults.TextStrokeTransparency
+	if not defaults then
+		return
+	end
 
-		local uiStroke = getLabelUIStroke(label)
-		if uiStroke and defaults.UIStrokeTransparency ~= nil then
-			uiStroke.Transparency = defaults.UIStrokeTransparency
-		end
+	label.TextTransparency = defaults.TextTransparency
+	label.TextStrokeTransparency = defaults.TextStrokeTransparency
+
+	local uiStroke = getLabelUIStroke(label)
+	if uiStroke and defaults.UIStrokeTransparency ~= nil then
+		uiStroke.Transparency = defaults.UIStrokeTransparency
 	end
 end
 
 local function hideStateLabel(label)
-	if not label then return end
+	if not label then
+		return
+	end
+
 	cancelLabelTween(label)
 	labelHideToken[label] = (labelHideToken[label] or 0) + 1
 	label.Visible = false
@@ -131,7 +158,10 @@ local function hideStateLabel(label)
 end
 
 local function fadeOutStateLabel(label)
-	if not label or not label.Visible then return end
+	if not label or not label.Visible then
+		return
+	end
+
 	cancelLabelTween(label)
 
 	local uiStroke = getLabelUIStroke(label)
@@ -145,13 +175,21 @@ local function fadeOutStateLabel(label)
 		strokeTween = TweenService:Create(uiStroke, LABEL_FADE_OUT_INFO, { Transparency = 1 })
 	end
 
-	local activeTweens = { Text = textTween, UIStroke = strokeTween }
+	local activeTweens = {
+		Text = textTween,
+		UIStroke = strokeTween,
+	}
 	labelTweens[label] = activeTweens
 
 	local connection
 	connection = textTween.Completed:Connect(function()
-		if connection then connection:Disconnect() end
-		if labelTweens[label] ~= activeTweens then return end
+		if connection then
+			connection:Disconnect()
+		end
+
+		if labelTweens[label] ~= activeTweens then
+			return
+		end
 
 		labelTweens[label] = nil
 		label.Visible = false
@@ -160,7 +198,9 @@ local function fadeOutStateLabel(label)
 	end)
 
 	textTween:Play()
-	if strokeTween then strokeTween:Play() end
+	if strokeTween then
+		strokeTween:Play()
+	end
 end
 
 local function getOppositeStateLabel(label)
@@ -169,6 +209,7 @@ local function getOppositeStateLabel(label)
 	elseif label == failedLabel then
 		return successLabel
 	end
+
 	return nil
 end
 
@@ -176,13 +217,19 @@ local function formatRepeatedMessage(baseText, count)
 	if count and count >= 2 then
 		return tostring(baseText) .. " (x" .. tostring(count) .. ")"
 	end
+
 	return tostring(baseText)
 end
 
 local function showStateLabel(label, baseText)
-	if not label then return end
+	if not label then
+		return
+	end
+
 	baseText = tostring(baseText or "")
-	if baseText == "" then return end
+	if baseText == "" then
+		return
+	end
 
 	hideStateLabel(getOppositeStateLabel(label))
 	cancelLabelTween(label)
@@ -190,7 +237,10 @@ local function showStateLabel(label, baseText)
 
 	local state = messageState[label]
 	if not state then
-		state = { count = 0, baseText = nil }
+		state = {
+			count = 0,
+			baseText = nil,
+		}
 		messageState[label] = state
 	end
 
@@ -219,6 +269,69 @@ local function clearStateLabels()
 	hideStateLabel(failedLabel)
 end
 
+local function setGuiObjectVisible(guiObject, visible)
+	if guiObject and guiObject.Visible ~= visible then
+		guiObject.Visible = visible
+	end
+end
+
+local function getDayState(dayStates, day)
+	if type(dayStates) ~= "table" then
+		return nil
+	end
+
+	return dayStates[day] or dayStates[tostring(day)]
+end
+
+local function cacheStatusRefs(day, frame)
+	local stateDesign = frame:FindFirstChild("StateDesign")
+	local claimStatus = stateDesign and stateDesign:FindFirstChild("ClaimStatus")
+	local doneClaimingStatus = stateDesign and stateDesign:FindFirstChild("DoneClaimingStatus")
+
+	dayStatusRefs[day] = {
+		Frame = frame,
+		StateDesign = stateDesign,
+		ClaimStatus = claimStatus,
+		DoneClaimingStatus = doneClaimingStatus,
+	}
+
+	if not stateDesign then
+		warn("⚠️ [DailyRewards] Missing StateDesign under " .. frame:GetFullName())
+	end
+	if not claimStatus then
+		warn("⚠️ [DailyRewards] Missing ClaimStatus under " .. frame:GetFullName())
+	end
+	if not doneClaimingStatus then
+		warn("⚠️ [DailyRewards] Missing DoneClaimingStatus under " .. frame:GetFullName())
+	end
+end
+
+local function clearAllIndicators()
+	for _, refs in pairs(dayStatusRefs) do
+		setGuiObjectVisible(refs.ClaimStatus, false)
+		setGuiObjectVisible(refs.DoneClaimingStatus, false)
+	end
+end
+
+local function applyState(clientState)
+	if type(clientState) ~= "table" or type(clientState.DayStates) ~= "table" then
+		clearAllIndicators()
+		return false
+	end
+
+	for day, refs in pairs(dayStatusRefs) do
+		local state = getDayState(clientState.DayStates, day)
+		local claimed = type(state) == "table" and state.Claimed == true
+		local ready = type(state) == "table" and state.Ready == true and not claimed
+
+		-- DoneClaimingStatus always wins if corrupted/late state ever says both are true.
+		setGuiObjectVisible(refs.ClaimStatus, ready)
+		setGuiObjectVisible(refs.DoneClaimingStatus, claimed)
+	end
+
+	return true
+end
+
 local function setMainFrameVisible(visible)
 	isOpen = visible
 	mainFrame.Visible = visible
@@ -231,6 +344,7 @@ local function restoreHiddenGuis()
 			gui.Enabled = true
 		end
 	end
+
 	hiddenGuis = {}
 end
 
@@ -246,7 +360,10 @@ local function hideOtherGuis()
 end
 
 local function closeDailyRewards()
-	if not isOpen then return end
+	if not isOpen then
+		return
+	end
+
 	restoreHiddenGuis()
 	setMainFrameVisible(false)
 	clearStateLabels()
@@ -257,37 +374,36 @@ local function closeDailyRewards()
 	end
 end
 
-local function applyState(clientState)
-	if type(clientState) ~= "table" or type(clientState.DayStates) ~= "table" then
-		return
-	end
-
-	for day, frame in pairs(dayFrames) do
-		local state = clientState.DayStates[day]
-		local stateDesign = frame:FindFirstChild("StateDesign")
-		local claimStatus = stateDesign and stateDesign:FindFirstChild("ClaimStatus")
-		local doneClaimingStatus = stateDesign and stateDesign:FindFirstChild("DoneClaimingStatus")
-
-		if claimStatus then
-			claimStatus.Visible = state and state.Ready == true or false
-		end
-
-		if doneClaimingStatus then
-			doneClaimingStatus.Visible = state and state.Claimed == true or false
-		end
-	end
-end
-
 local function refreshState()
+	refreshToken += 1
+	local thisToken = refreshToken
+
 	local ok, clientState = pcall(function()
 		return getStateFunction:InvokeServer()
 	end)
 
+	if thisToken ~= refreshToken then
+		return
+	end
+
 	if ok then
 		applyState(clientState)
 	else
+		clearAllIndicators()
 		warn("⚠️ [DailyRewards] Failed to refresh state: " .. tostring(clientState))
 	end
+end
+
+local function queueAttributeRefresh()
+	if attributeRefreshQueued then
+		return
+	end
+
+	attributeRefreshQueued = true
+	task.delay(ATTRIBUTE_REFRESH_DEBOUNCE_SECONDS, function()
+		attributeRefreshQueued = false
+		refreshState()
+	end)
 end
 
 local function getOrCreateUIScale(guiObject)
@@ -297,11 +413,15 @@ local function getOrCreateUIScale(guiObject)
 		uiScale.Scale = 1
 		uiScale.Parent = guiObject
 	end
+
 	return uiScale
 end
 
 local function wireDayFrame(day, frame)
-	if not frame or frame:GetAttribute("DailyRewardsBound") then return end
+	if not frame or frame:GetAttribute("DailyRewardsBound") then
+		return
+	end
+
 	frame:SetAttribute("DailyRewardsBound", true)
 	frame.Active = true
 
@@ -317,22 +437,32 @@ local function wireDayFrame(day, frame)
 		elseif isHovering then
 			targetScale = DAY_HOVER_SCALE
 		end
+
 		TweenService:Create(uiScale, DAY_HOVER_TWEEN, { Scale = targetScale }):Play()
 	end
 
-	local function isRealMouseHover()
-		return UserInputService:GetLastInputType() == Enum.UserInputType.MouseMovement
+	local function isMouseInput()
+		local lastInputType = UserInputService:GetLastInputType()
+		return lastInputType == Enum.UserInputType.MouseMovement
+			or lastInputType == Enum.UserInputType.MouseButton1
+			or lastInputType == Enum.UserInputType.MouseButton2
 	end
 
 	local function playClickOnce()
 		local now = os.clock()
-		if now - lastClickSoundAt < 0.08 then return end
+		if now - lastClickSoundAt < 0.08 then
+			return
+		end
+
 		lastClickSoundAt = now
-		UIAudioConfig.PlayClick()
+		safePlayClick()
 	end
 
 	local function attemptClaim()
-		if isClaiming then return end
+		if isClaiming then
+			return
+		end
+
 		isClaiming = true
 
 		local ok, success, message, clientState = pcall(function()
@@ -340,7 +470,12 @@ local function wireDayFrame(day, frame)
 		end)
 
 		if ok then
-			applyState(clientState)
+			if type(clientState) == "table" then
+				applyState(clientState)
+			else
+				refreshState()
+			end
+
 			if success then
 				showStateLabel(successLabel, message or "Reward has been claimed successfully!")
 			else
@@ -348,19 +483,22 @@ local function wireDayFrame(day, frame)
 			end
 		else
 			warn("⚠️ [DailyRewards] Claim request failed: " .. tostring(success))
-			showStateLabel(failedLabel, "You're not ready for this yet!")
+			showStateLabel(failedLabel, "Reward system is loading. Please try again.")
 			refreshState()
 		end
 
-		task.delay(0.15, function()
+		task.delay(CLAIM_CLIENT_COOLDOWN_SECONDS, function()
 			isClaiming = false
 		end)
 	end
 
 	frame.MouseEnter:Connect(function()
-		if isHovering or not isRealMouseHover() then return end
+		if isHovering or not isMouseInput() then
+			return
+		end
+
 		isHovering = true
-		UIAudioConfig.PlayHover()
+		safePlayHover()
 		updateScale()
 	end)
 
@@ -380,6 +518,10 @@ local function wireDayFrame(day, frame)
 
 	frame.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			if not isPressed then
+				return
+			end
+
 			isPressed = false
 			updateScale()
 			attemptClaim()
@@ -390,17 +532,23 @@ end
 for day = 1, 7 do
 	local frame = mainElements:WaitForChild("Day" .. tostring(day))
 	dayFrames[day] = frame
+	cacheStatusRefs(day, frame)
 	wireDayFrame(day, frame)
 end
 
 setMainFrameVisible(false)
 clearStateLabels()
+clearAllIndicators()
 refreshState()
 
 UIButtonUtils.SetupButton(openButton, function()
 	local camera = getCamera(2)
 	if camera then
 		savedFOV = camera.FieldOfView
+	end
+
+	if dailyRewardsScreenGui then
+		dailyRewardsScreenGui.Enabled = true
 	end
 
 	hideOtherGuis()
@@ -424,5 +572,10 @@ if dailyRewardsScreenGui then
 	end)
 end
 
-stateChangedEvent.OnClientEvent:Connect(applyState)
-player:GetAttributeChangedSignal("DailyRewardsStateJson"):Connect(refreshState)
+stateChangedEvent.OnClientEvent:Connect(function(clientState)
+	-- Invalidate any older InvokeServer response that may return after this newer server push.
+	refreshToken += 1
+	applyState(clientState)
+end)
+
+player:GetAttributeChangedSignal("DailyRewardsStateJson"):Connect(queueAttributeRefresh)
