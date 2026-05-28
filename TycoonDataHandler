@@ -126,6 +126,9 @@ local MAX_LAYOUT_SIZE = 200
 local SETTINGS_SCHEMA_VERSION = 2
 local STARTER_CAR_NAME = "Delta Item"
 local SETTINGS_REMOTE_NAME = "SettingsPersistenceEvent"
+local DAILY_REWARDS_STATE_ATTRIBUTE = "DailyRewardsStateJson"
+local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
+local DAILY_REWARDS_SECONDS_PER_DAY = 24 * 60 * 60
 
 local DEFAULT_PLAYER_SETTINGS = {
 	MusicMuted = false,
@@ -970,6 +973,18 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 	return false
 end
 
+local function getDailyRewardsDayKey(timestamp)
+	return math.floor((tonumber(timestamp) or os.time()) / DAILY_REWARDS_SECONDS_PER_DAY)
+end
+
+local function defaultDailyRewardsClaimedDays()
+	local claimedDays = {}
+	for day = 1, 7 do
+		claimedDays[tostring(day)] = false
+	end
+	return claimedDays
+end
+
 local function sanitizeDailyRewardsData(value)
 	local data = type(value) == "table" and value or {}
 
@@ -981,17 +996,29 @@ local function sanitizeDailyRewardsData(value)
 	local lastClaimAt = math.max(0, math.floor(tonumber(data.LastClaimAt) or 0))
 	local lastClaimDayKey = math.max(0, math.floor(tonumber(data.LastClaimDayKey) or 0))
 	local awaitingCycleReset = data.AwaitingCycleReset == true
-	local claimedDays = {}
+	local claimedDays = defaultDailyRewardsClaimedDays()
 
 	if type(data.ClaimedDays) == "table" then
 		for day = 1, 7 do
 			local key = tostring(day)
 			claimedDays[key] = data.ClaimedDays[key] == true or data.ClaimedDays[day] == true
 		end
-	else
-		for day = 1, 7 do
-			claimedDays[tostring(day)] = false
-		end
+	end
+
+	local todayKey = getDailyRewardsDayKey(os.time())
+
+	-- Protect against corrupted/future timestamps while avoiding an extra same-day claim.
+	if lastClaimDayKey > todayKey then
+		lastClaimDayKey = todayKey
+		lastClaimAt = math.max(lastClaimAt, os.time())
+	end
+
+	-- If the player completed Day 7 previously and it is now a new UTC day,
+	-- reset the visible cycle before the DailyRewardsService/client reads it.
+	if awaitingCycleReset and lastClaimDayKey ~= todayKey then
+		currentDay = 1
+		awaitingCycleReset = false
+		claimedDays = defaultDailyRewardsClaimedDays()
 	end
 
 	return {
@@ -1004,7 +1031,7 @@ local function sanitizeDailyRewardsData(value)
 end
 
 local function decodeDailyRewardsAttribute(player)
-	local raw = player:GetAttribute("DailyRewardsStateJson")
+	local raw = player:GetAttribute(DAILY_REWARDS_STATE_ATTRIBUTE)
 	if type(raw) ~= "string" or raw == "" then
 		return sanitizeDailyRewardsData(nil)
 	end
@@ -1435,6 +1462,10 @@ local function InitializePlayer(player)
 		StarterPackClearRequested = false,
 	}
 
+	-- Public ready flag used by DailyRewardsService so rewards cannot be claimed
+	-- before this main data profile has finished loading.
+	player:SetAttribute(DATA_READY_ATTRIBUTE, false)
+
 	-- ✅ FIX (Held Tool Lost on Disconnect):
 	-- CharacterRemoving fires reliably before the character instance is
 	-- destroyed, so we can safely read children here and cache the held tool.
@@ -1597,7 +1628,7 @@ local function InitializePlayer(player)
 	for name in pairs(discoveredSet) do table.insert(discoveredList, name) end
 	table.sort(discoveredList)
 	player:SetAttribute("IndexDiscoveredJson", HttpService:JSONEncode(discoveredList))
-	player:SetAttribute("DailyRewardsStateJson", HttpService:JSONEncode(data.DailyRewards))
+	player:SetAttribute(DAILY_REWARDS_STATE_ATTRIBUTE, HttpService:JSONEncode(data.DailyRewards))
 
 	local transferUsed = math.max(0, math.floor(tonumber(data.BankTransferLimitUsed) or 0))
 	local transferResetAt = math.max(0, math.floor(tonumber(data.BankTransferLimitResetAt) or 0))
@@ -1631,7 +1662,7 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("BankTransferLimitResetAt"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rebirth"):Connect(setDirty)
 	player:GetAttributeChangedSignal("IndexDiscoveredJson"):Connect(setDirty)
-	player:GetAttributeChangedSignal("DailyRewardsStateJson"):Connect(setDirty)
+	player:GetAttributeChangedSignal(DAILY_REWARDS_STATE_ATTRIBUTE):Connect(setDirty)
 	for _, attributeName in pairs(PLAYER_SETTING_ATTRIBUTES) do
 		player:GetAttributeChangedSignal(attributeName):Connect(function()
 			local session = SessionData[player]
@@ -1709,6 +1740,7 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("OccupiedPlot"):Connect(CheckAndRestorePending)
 	CheckAndRestorePending()
 
+	player:SetAttribute(DATA_READY_ATTRIBUTE, true)
 	SessionData[player].DataLoaded = true
 end
 
