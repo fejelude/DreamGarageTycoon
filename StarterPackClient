@@ -47,12 +47,22 @@ local SUCCESS_MESSAGE = "Successfully bought the developer product! You have bee
 
 successLabel.Text = SUCCESS_MESSAGE
 
-local productId = tonumber(button:GetAttribute("ProductId"))
+local function resolveProductId()
+	local attributeProductId = tonumber(button:GetAttribute("ProductId"))
 
-if not productId or productId <= 0 then
-	warn("[StarterPackClient] Missing or invalid ProductId attribute. Using fallback product ID.")
-	productId = STARTER_PACK_PRODUCT_ID
+	if attributeProductId and attributeProductId > 0 then
+		return attributeProductId
+	end
+
+	-- The Starter Pack button may be published without a Studio ProductId
+	-- attribute. Keep the configured product id authoritative and mirror it onto
+	-- the button so later code/tools see the same valid value without emitting a
+	-- startup warning for the expected default path.
+	button:SetAttribute("ProductId", STARTER_PACK_PRODUCT_ID)
+	return STARTER_PACK_PRODUCT_ID
 end
+
+local productId = resolveProductId()
 
 --// STATE
 local purchaseInProgress = false
