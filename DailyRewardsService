@@ -1,9 +1,11 @@
 -- Purpose: Server-authoritative 7-day Daily Rewards claiming, wallet grants, and car grants.
 -- Runs on: Server
 -- Location: ServerScriptService > DailyRewardsService
--- Dependencies: Players, ReplicatedStorage, ServerStorage, HttpService
--- Public API: ReplicatedStorage.DailyRewardsRemotes.GetDailyRewardsState, ClaimDailyReward
--- Security: The server validates day order, one-claim-per-UTC-day cooldowns, and reward grants.
+-- Required existing instances:
+-- ReplicatedStorage > DailyRewardsRemotes > GetDailyRewardsState
+-- ReplicatedStorage > DailyRewardsRemotes > ClaimDailyReward
+-- ReplicatedStorage > DailyRewardsRemotes > DailyRewardsStateChanged
+-- ServerStorage > TycoonAdminAPI
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -12,7 +14,10 @@ local HttpService = game:GetService("HttpService")
 
 local REMOTES_FOLDER_NAME = "DailyRewardsRemotes"
 local STATE_ATTRIBUTE = "DailyRewardsStateJson"
+local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
+
 local SECONDS_PER_DAY = 24 * 60 * 60
+local DATA_READY_TIMEOUT_SECONDS = 12
 
 local REWARDS = {
 	[1] = { Type = "Cash", Amount = 1000 },
@@ -24,31 +29,32 @@ local REWARDS = {
 	[7] = { Type = "Car", ToolName = "Raiju", Rarity = "Uncommon" },
 }
 
-local remotesFolder = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
-if not remotesFolder then
-	remotesFolder = Instance.new("Folder")
-	remotesFolder.Name = REMOTES_FOLDER_NAME
-	remotesFolder.Parent = ReplicatedStorage
+local remotesFolder = ReplicatedStorage:WaitForChild(REMOTES_FOLDER_NAME)
+
+if not remotesFolder:IsA("Folder") then
+	error("[DailyRewards] ReplicatedStorage > DailyRewardsRemotes must be a Folder.")
 end
 
-local function getRemoteFunction(name)
-	local remote = remotesFolder:FindFirstChild(name)
-	if not remote then
-		remote = Instance.new("RemoteFunction")
-		remote.Name = name
-		remote.Parent = remotesFolder
-	end
-	return remote
+local getStateFunction = remotesFolder:WaitForChild("GetDailyRewardsState")
+local claimFunction = remotesFolder:WaitForChild("ClaimDailyReward")
+local stateChangedEvent = remotesFolder:WaitForChild("DailyRewardsStateChanged")
+
+if not getStateFunction:IsA("RemoteFunction") then
+	error("[DailyRewards] GetDailyRewardsState must be a RemoteFunction.")
 end
 
-local getStateFunction = getRemoteFunction("GetDailyRewardsState")
-local claimFunction = getRemoteFunction("ClaimDailyReward")
+if not claimFunction:IsA("RemoteFunction") then
+	error("[DailyRewards] ClaimDailyReward must be a RemoteFunction.")
+end
 
-local stateChangedEvent = remotesFolder:FindFirstChild("DailyRewardsStateChanged")
-if not stateChangedEvent then
-	stateChangedEvent = Instance.new("RemoteEvent")
-	stateChangedEvent.Name = "DailyRewardsStateChanged"
-	stateChangedEvent.Parent = remotesFolder
+if not stateChangedEvent:IsA("RemoteEvent") then
+	error("[DailyRewards] DailyRewardsStateChanged must be a RemoteEvent.")
+end
+
+local adminApi = ServerStorage:WaitForChild("TycoonAdminAPI")
+
+if not adminApi:IsA("BindableFunction") then
+	error("[DailyRewards] ServerStorage > TycoonAdminAPI must be a BindableFunction.")
 end
 
 local claimLocks = {}
@@ -59,20 +65,25 @@ end
 
 local function defaultClaimedDays()
 	local claimedDays = {}
+
 	for day = 1, 7 do
 		claimedDays[tostring(day)] = false
 	end
+
 	return claimedDays
 end
 
 local function sanitizeState(value)
 	local data = type(value) == "table" and value or {}
+
 	local currentDay = math.floor(tonumber(data.CurrentDay) or 1)
+
 	if currentDay < 1 or currentDay > 7 then
 		currentDay = 1
 	end
 
 	local claimedDays = defaultClaimedDays()
+
 	if type(data.ClaimedDays) == "table" then
 		for day = 1, 7 do
 			local key = tostring(day)
@@ -91,6 +102,7 @@ end
 
 local function decodeState(player)
 	local raw = player:GetAttribute(STATE_ATTRIBUTE)
+
 	if type(raw) ~= "string" or raw == "" then
 		return sanitizeState(nil)
 	end
@@ -109,6 +121,11 @@ end
 local function normalizeCycle(state, now)
 	local todayKey = getDayKey(now)
 
+	if state.LastClaimDayKey > todayKey then
+		state.LastClaimDayKey = todayKey
+		state.LastClaimAt = math.max(state.LastClaimAt, now)
+	end
+
 	if state.AwaitingCycleReset and state.LastClaimDayKey ~= todayKey then
 		state.CurrentDay = 1
 		state.AwaitingCycleReset = false
@@ -120,52 +137,133 @@ end
 
 local function encodeState(player, state)
 	local encoded = HttpService:JSONEncode(sanitizeState(state))
+
 	if player:GetAttribute(STATE_ATTRIBUTE) ~= encoded then
 		player:SetAttribute(STATE_ATTRIBUTE, encoded)
 	end
 end
 
-local function buildClientState(player)
-	local now = os.time()
-	local state = normalizeCycle(decodeState(player), now)
-	encodeState(player, state)
+local function isStateAttributeReady(player)
+	local raw = player:GetAttribute(STATE_ATTRIBUTE)
 
-	local todayKey = getDayKey(now)
-	local canClaimToday = state.LastClaimDayKey ~= todayKey and not state.AwaitingCycleReset
+	if type(raw) ~= "string" or raw == "" then
+		return false
+	end
+
+	local dataReady = player:GetAttribute(DATA_READY_ATTRIBUTE)
+
+	if dataReady == false then
+		return false
+	end
+
+	return dataReady == true or dataReady == nil
+end
+
+local function ensureStateReady(player, timeoutSeconds)
+	if not player or not player.Parent then
+		return false
+	end
+
+	timeoutSeconds = math.max(0, tonumber(timeoutSeconds) or 0)
+
+	local started = os.clock()
+
+	repeat
+		if isStateAttributeReady(player) then
+			return true
+		end
+
+		if player:GetAttribute(DATA_READY_ATTRIBUTE) == true then
+			encodeState(player, sanitizeState(nil))
+			return true
+		end
+
+		if os.clock() - started >= timeoutSeconds then
+			break
+		end
+
+		task.wait(0.05)
+	until not player.Parent
+
+	return false
+end
+
+local function buildUnavailableClientState()
 	local dayStates = {}
 
 	for day = 1, 7 do
 		dayStates[day] = {
 			Day = day,
-			Claimed = state.ClaimedDays[tostring(day)] == true,
-			Ready = canClaimToday and state.CurrentDay == day,
+			Claimed = false,
+			Ready = false,
 		}
 	end
 
 	return {
+		IsLoaded = false,
+		CurrentDay = 1,
+		CanClaimToday = false,
+		AwaitingCycleReset = false,
+		LastClaimAt = 0,
+		LastClaimDayKey = 0,
+		ServerTime = os.time(),
+		DayStates = dayStates,
+	}
+end
+
+local function buildClientState(player)
+	local now = os.time()
+	local state = normalizeCycle(decodeState(player), now)
+
+	encodeState(player, state)
+
+	local todayKey = getDayKey(now)
+	local canClaimToday = state.LastClaimDayKey < todayKey and not state.AwaitingCycleReset
+
+	local dayStates = {}
+
+	for day = 1, 7 do
+		local claimed = state.ClaimedDays[tostring(day)] == true
+
+		dayStates[day] = {
+			Day = day,
+			Claimed = claimed,
+			Ready = canClaimToday and state.CurrentDay == day and not claimed,
+		}
+	end
+
+	return {
+		IsLoaded = true,
 		CurrentDay = state.CurrentDay,
 		CanClaimToday = canClaimToday,
 		AwaitingCycleReset = state.AwaitingCycleReset,
 		LastClaimAt = state.LastClaimAt,
 		LastClaimDayKey = state.LastClaimDayKey,
+		ServerTime = now,
 		DayStates = dayStates,
 	}
 end
 
-local function getWallet(player)
-	local leaderstats = player:FindFirstChild("leaderstats")
-	return leaderstats and leaderstats:FindFirstChild("Wallet")
+local function markDirty(player)
+	pcall(function()
+		adminApi:Invoke("MarkDirty", player)
+	end)
 end
 
-local function grantCar(player, toolName, reward)
-	local adminApi = ServerStorage:FindFirstChild("TycoonAdminAPI")
-	if not adminApi then
-		return false, "Reward system is not ready yet."
+local function getWallet(player)
+	local leaderstats = player:FindFirstChild("leaderstats") or player:WaitForChild("leaderstats", 5)
+
+	if not leaderstats then
+		return nil
 	end
 
+	return leaderstats:FindFirstChild("Wallet") or leaderstats:WaitForChild("Wallet", 5)
+end
+
+local function grantCar(player, day, toolName, reward)
 	local attributes = {
 		Source = "DailyRewards",
-		DailyRewardDay = reward.Day,
+		DailyRewardDay = day,
 	}
 
 	if reward.Rarity then
@@ -194,22 +292,24 @@ end
 
 local function grantReward(player, day)
 	local reward = REWARDS[day]
+
 	if not reward then
 		return false, "Invalid daily reward."
 	end
 
-	reward.Day = day
-
 	if reward.Type == "Cash" then
 		local wallet = getWallet(player)
+
 		if not wallet then
 			return false, "Wallet is not ready yet."
 		end
 
 		wallet.Value += reward.Amount
 		return true
-	elseif reward.Type == "Car" then
-		return grantCar(player, reward.ToolName, reward)
+	end
+
+	if reward.Type == "Car" then
+		return grantCar(player, day, reward.ToolName, reward)
 	end
 
 	return false, "Invalid daily reward."
@@ -217,8 +317,13 @@ end
 
 local function tryClaim(player, requestedDay)
 	requestedDay = math.floor(tonumber(requestedDay) or 0)
+
 	if requestedDay < 1 or requestedDay > 7 then
-		return false, "You're not ready for this yet!", buildClientState(player)
+		return false, "You're not ready for this yet!", buildUnavailableClientState()
+	end
+
+	if not ensureStateReady(player, DATA_READY_TIMEOUT_SECONDS) then
+		return false, "Reward system is loading. Please try again.", buildUnavailableClientState()
 	end
 
 	if claimLocks[player] then
@@ -231,17 +336,19 @@ local function tryClaim(player, requestedDay)
 		local now = os.time()
 		local todayKey = getDayKey(now)
 		local state = normalizeCycle(decodeState(player), now)
+
 		encodeState(player, state)
 
 		if state.ClaimedDays[tostring(requestedDay)] == true then
 			return false, "You already claimed this reward!", buildClientState(player)
 		end
 
-		if state.LastClaimDayKey == todayKey or state.AwaitingCycleReset or requestedDay ~= state.CurrentDay then
+		if state.LastClaimDayKey >= todayKey or state.AwaitingCycleReset or requestedDay ~= state.CurrentDay then
 			return false, "You're not ready for this yet!", buildClientState(player)
 		end
 
 		local grantOk, grantMessage = grantReward(player, requestedDay)
+
 		if not grantOk then
 			return false, grantMessage or "Unable to grant reward.", buildClientState(player)
 		end
@@ -259,16 +366,11 @@ local function tryClaim(player, requestedDay)
 		end
 
 		encodeState(player, state)
-
-		local adminApi = ServerStorage:FindFirstChild("TycoonAdminAPI")
-		if adminApi then
-			pcall(function()
-				adminApi:Invoke("MarkDirty", player)
-			end)
-		end
+		markDirty(player)
 
 		local updatedState = buildClientState(player)
 		stateChangedEvent:FireClient(player, updatedState)
+
 		return true, "Reward has been claimed successfully!", updatedState
 	end)
 
@@ -283,6 +385,10 @@ local function tryClaim(player, requestedDay)
 end
 
 getStateFunction.OnServerInvoke = function(player)
+	if not ensureStateReady(player, DATA_READY_TIMEOUT_SECONDS) then
+		return buildUnavailableClientState()
+	end
+
 	return buildClientState(player)
 end
 
@@ -292,15 +398,8 @@ end
 
 local function preparePlayer(player)
 	task.defer(function()
-		if type(player:GetAttribute(STATE_ATTRIBUTE)) ~= "string" then
-			local started = os.clock()
-			repeat
-				task.wait(0.1)
-			until type(player:GetAttribute(STATE_ATTRIBUTE)) == "string" or not player.Parent or os.clock() - started > 10
-		end
-
-		if player.Parent and type(player:GetAttribute(STATE_ATTRIBUTE)) ~= "string" then
-			encodeState(player, sanitizeState(nil))
+		if ensureStateReady(player, DATA_READY_TIMEOUT_SECONDS) and player.Parent then
+			stateChangedEvent:FireClient(player, buildClientState(player))
 		end
 	end)
 end
