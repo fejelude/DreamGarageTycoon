@@ -1,375 +1,372 @@
--- [[ LOCAL SCRIPT: TabletVisuals (Laptop Click Fix Only) ]]
--- -- Handles interactions, separate visibility/click ranges, and floating feedback.
--- -- UPDATE: Uses GuiButton.Activated for reliable laptop/desktop clicking while keeping mobile/console support.
+-- Purpose: Computes and grants Offline Earnings with one-time claim enforcement and premium 10x support.
+-- Runs on: Server
+-- Location: ServerScriptService > OfflineEarningsService
+-- Required hierarchy:
+-- ReplicatedStorage
+-- └── OfflineEarningsRemotes
+--     ├── RequestOfflineEarnings          RemoteFunction
+--     ├── ClaimOfflineEarnings            RemoteFunction
+--     ├── BeginPremiumOfflineClaim        RemoteFunction
+--     └── OfflinePremiumClaimResult       RemoteEvent
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
-local TweenService = game:GetService("TweenService")
-local SoundService = game:GetService("SoundService")
 local MarketplaceService = game:GetService("MarketplaceService")
-local Debris = game:GetService("Debris")
-local UserInputService = game:GetService("UserInputService") -- Service for Mobile Detection
+local Workspace = game:GetService("Workspace")
+local ServerStorage = game:GetService("ServerStorage")
 
-local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
-local TabletEvent = ReplicatedStorage:WaitForChild("TabletEvent")
-local TycoonFolder = Workspace:WaitForChild("Tycoons")
-local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local OFFLINE_RATE = 0.30
+local MAX_OFFLINE_SECONDS = 8 * 60 * 60
+local PREMIUM_PRODUCT_ID = 3598967453
 
--- ⚙️ CONFIGURATION
-local DEV_PRODUCT_ID = 3509697462
-local HOVER_SCALE = 1.1          
-local CLICK_SCALE = 0.9          
-local ANIM_SPEED = 0.1           
+local function requireChild(parent, childName, expectedClass)
+	local child = parent:FindFirstChild(childName)
 
--- 📏 DISTANCE SETTINGS (Separated for better feel)
-local VISIBILITY_DISTANCE = 150  -- How far away you can SEE the button (Camera based)
-local CLICK_DISTANCE = 45        -- How close you must be to CLICK (Character based)
-
--- 💬 FLOATING TEXT SETTINGS
-local FLOAT_HEIGHT = 4           
-local STANDARD_DURATION = 1      
-local DOUBLE_CASH_DURATION = 3   
-local START_OFFSET = Vector3.new(0, 2, 0) 
-
--- 🔊 SOUNDS
-local HOVER_SOUND_ID = "rbxassetid://6895079853" 
-local CLICK_SOUND_ID = "rbxassetid://9083627113"        
-local FAIL_SOUND_ID = "rbxassetid://139063727738556"        
-local SUCCESS_SOUND_ID = "rbxassetid://139806997485371" -- ✅ UPDATED SOUND ID
-local HOVER_VOLUME = 0.5
-
--- 🛡️ STATE
-local isClaiming = false
-local isHoveringMap = {} 
-local lastProjectedAmount = 0 
-local claimRequestId = 0
-local pendingClaimByPlot = {}
-
--- 🛠️ HELPER: The "Z-Offset" Fix & Visibility Logic
-local function enableClicking(gui, part)
-	if not gui then return end
-	if gui.Parent ~= playerGui then
-		gui.Adornee = part 
-		gui.Parent = playerGui 
+	if not child then
+		error(
+			string.format(
+				"[OfflineEarningsService] Missing required object: %s.%s | Expected type: %s",
+				parent:GetFullName(),
+				childName,
+				expectedClass
+			)
+		)
 	end
-	gui.Active = true;
-	gui.Enabled = true; gui.ResetOnSpawn = false
-	gui.AlwaysOnTop = false; gui.ZOffset = 100;
-	gui.LightInfluence = 0.5 
 
-	-- ✅ VISIBILITY FIX: Set this high so it doesn't vanish in 3rd person
-	if gui:IsA("SurfaceGui") or gui:IsA("BillboardGui") then
-		gui.MaxDistance = VISIBILITY_DISTANCE
+	if not child:IsA(expectedClass) then
+		error(
+			string.format(
+				"[OfflineEarningsService] Wrong type for %s | Expected: %s | Found: %s",
+				child:GetFullName(),
+				expectedClass,
+				child.ClassName
+			)
+		)
+	end
+
+	return child
+end
+
+local remotesFolder = requireChild(
+	ReplicatedStorage,
+	"OfflineEarningsRemotes",
+	"Folder"
+)
+
+local requestData = requireChild(
+	remotesFolder,
+	"RequestOfflineEarnings",
+	"RemoteFunction"
+)
+
+local claimNormal = requireChild(
+	remotesFolder,
+	"ClaimOfflineEarnings",
+	"RemoteFunction"
+)
+
+local beginPremium = requireChild(
+	remotesFolder,
+	"BeginPremiumOfflineClaim",
+	"RemoteFunction"
+)
+
+local premiumResult = requireChild(
+	remotesFolder,
+	"OfflinePremiumClaimResult",
+	"RemoteEvent"
+)
+
+print("✅ [OfflineEarningsService] All remotes found. Service started successfully.")
+
+_G.OfflineEarningsService = _G.OfflineEarningsService or {}
+
+local sessions = {}
+
+local tycoonAdminApi = ServerStorage:FindFirstChild("TycoonAdminAPI")
+
+local function getTabletCarry(player)
+	return math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
+end
+
+local function clearTabletCarry(player)
+	player:SetAttribute("OfflineTabletCarry", 0)
+	if tycoonAdminApi and tycoonAdminApi:IsA("BindableFunction") then
+		pcall(function() tycoonAdminApi:Invoke("MarkDirty", player) end)
 	end
 end
 
--- ============================================================================
--- ☁️ FLOATING TEXT FUNCTION
--- ============================================================================
-local function spawnFloatingText(targetPart, text, color, duration)
-	if not targetPart then return end
-	local timeToFloat = duration or STANDARD_DURATION
+local function getPlayerPlot(player)
+	local plotName = player:GetAttribute("OccupiedPlot")
 
-	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "FloatingFeedback"
-	billboard.Adornee = targetPart
-	billboard.Size = UDim2.new(0, 300, 0, 50) 
-	billboard.StudsOffset = START_OFFSET
-	billboard.AlwaysOnTop = true
-	billboard.Parent = playerGui 
-	-- Also apply visibility limit to floating text so it doesn't clutter map
-	billboard.MaxDistance = VISIBILITY_DISTANCE 
-
-	local label = Instance.new("TextLabel")
-	label.Parent = billboard
-	label.Size = UDim2.new(1, 0, 1, 0)
-	label.BackgroundTransparency = 1
-	label.Text = text
-	label.TextColor3 = color
-	label.Font = Enum.Font.FredokaOne 
-	label.TextScaled = true
-	label.TextStrokeTransparency = 0 
-	label.TextStrokeColor3 = Color3.new(0,0,0)
-
-	local tweenInfo = TweenInfo.new(timeToFloat, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-
-	local goalOffset = START_OFFSET + Vector3.new(0, FLOAT_HEIGHT, 0)
-	TweenService:Create(billboard, tweenInfo, {StudsOffset = goalOffset}):Play()
-
-	local tweenFade = TweenService:Create(label, tweenInfo, {TextTransparency = 1, TextStrokeTransparency = 1})
-	tweenFade:Play()
-
-	Debris:AddItem(billboard, timeToFloat)
-end
-
--- ============================================================================
--- 🎨 ROBUST ANIMATION & CLICK HANDLER
--- ============================================================================
-local function setupAnimatedButton(button, clickFunction)
-	if not button:IsA("GuiButton") then return end
-
-	-- ✅ Laptop/Desktop click fix:
-	-- Make sure the actual button owns the input and use Activated instead of only MouseButton1Click.
-	-- Activated works for mouse, touch, and gamepad without adding any extra prompt system.
-	button.Active = true
-	button.Selectable = true
-
-	-- If the button has decorative children, stop them from stealing clicks.
-	for _, child in ipairs(button:GetDescendants()) do
-		if child:IsA("GuiObject") and not child:IsA("GuiButton") then
-			child.Active = false
-			child.Selectable = false
-		end
+	if not plotName then
+		return nil
 	end
 
-	local uiScale = button:FindFirstChildOfClass("UIScale")
-	if not uiScale then
-		uiScale = Instance.new("UIScale")
-		uiScale.Scale = 1.0
-		uiScale.Parent = button
+	local tycoons = Workspace:FindFirstChild("Tycoons")
+
+	if not tycoons then
+		return nil
 	end
 
-	local isHovering = false
-	local isPressed  = false
-	local lastClickTime = 0
-	local tweenInfo  = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	return tycoons:FindFirstChild(plotName)
+end
 
-	local function updateScale()
-		local target = 1.0
-		if isPressed     then target = 0.95
-		elseif isHovering then target = 1.05
-		end
-		TweenService:Create(uiScale, tweenInfo, {Scale = target}):Play()
+local function hasPlacedCars(plot)
+	local placedCarsFolder = plot and plot:FindFirstChild("PlacedCars")
+
+	if placedCarsFolder and #placedCarsFolder:GetChildren() > 0 then
+		return true
 	end
 
-	local function runClick()
-		-- Prevent double firing when multiple input events fire on the same click/tap.
-		local now = os.clock()
-		if now - lastClickTime < 0.2 then return end
-		lastClickTime = now
+	return false
+end
 
-		UIAudioConfig.PlayClick()
-		if clickFunction then clickFunction() end
+local function computeBaseOffline(player)
+	local hiddenStats = player:FindFirstChild("HiddenStats")
+	local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
+	local plot = getPlayerPlot(player)
+
+	if not plot or not bank then
+		return false, 0
 	end
 
-	button.MouseEnter:Connect(function()
-		isHoveringMap[button] = true
-		isHovering = true
-		UIAudioConfig.PlayHover()
-		updateScale()
-	end)
+	local cps = tonumber(plot:GetAttribute("CurrentCPS"))
 
-	button.MouseLeave:Connect(function()
-		isHoveringMap[button] = false
-		isHovering = false
-		isPressed  = false
-		updateScale()
-	end)
+	if cps == nil then
+		return false, 0
+	end
 
-	button.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = true
-			updateScale()
-		end
-	end)
+	local nowTimestamp = os.time()
+	local lastOfflineAt = tonumber(player:GetAttribute("LastOfflineAt")) or 0
 
-	button.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = false
-			updateScale()
-		end
-	end)
+	if lastOfflineAt <= 0 or nowTimestamp <= lastOfflineAt then
+		return true, 0
+	end
 
-	-- ✅ The actual simple fix: use Activated for reliable laptop/desktop button activation.
-	button.Activated:Connect(runClick)
+	local multiplier = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
+	local normalRate = cps * multiplier
+
+	if cps <= 0 and hasPlacedCars(plot) then
+		return false, 0
+	end
+
+	if normalRate <= 0 then
+		return true, 0
+	end
+
+	local elapsed = math.min(MAX_OFFLINE_SECONDS, nowTimestamp - lastOfflineAt)
+
+	if elapsed <= 0 then
+		return true, 0
+	end
+
+	local amount = math.max(0, math.floor(normalRate * OFFLINE_RATE * elapsed))
+	local tabletCarry = getTabletCarry(player)
+
+	return true, amount + tabletCarry
 end
 
--- ============================================================================
--- 📏 DISTANCE CHECK HELPER (Character Based)
--- ============================================================================
-local function isCloseEnough(targetPart)
-	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return false end
-	local dist = (player.Character.HumanoidRootPart.Position - targetPart.Position).Magnitude
-	return dist <= CLICK_DISTANCE
-end
+local function ensureSession(player)
+	local session = sessions[player]
 
-local function getClaimPartFromPlotName(plotName)
-	local plot = TycoonFolder:FindFirstChild(plotName)
-	local model = plot and plot:FindFirstChild("ClaimEarnings")
-	return model and (model:FindFirstChild("ClaimPart") or model:FindFirstChild("Earnings"))
-end
+	if session then
+		return session
+	end
 
-local function showClaimFailure(part, reason)
-	local labels = {
-		TooFar = "Too Far!",
-		Cooldown = "Slow Down!",
-		NoEarnings = "No Earnings!",
-		NotOwner = "Access Denied!",
-		InvalidPlot = "Plot Missing!",
-		NoCharacter = "Character Missing!",
-		MissingState = "Tablet Not Ready!",
-		Unknown = "Claim Failed!",
+	session = {
+		baseAmount = 0,
+		prepared = false,
+		claimed = false,
+		premiumPending = false,
+		premiumPurchaseId = nil,
+		lastPremiumGrantedPurchaseId = nil,
 	}
-	local msg = labels[reason] or labels.Unknown
-	local sfx = Instance.new("Sound")
-	sfx.SoundId = FAIL_SOUND_ID
-	sfx.Parent = SoundService
-	sfx:Play()
-	game.Debris:AddItem(sfx, 1)
-	if part then
-		spawnFloatingText(part, msg, Color3.fromRGB(255, 80, 80))
-	end
+
+	sessions[player] = session
+
+	return session
 end
 
--- ============================================================================
--- 🕵️ LOGIC CONNECTIONS
--- ============================================================================
-local function setupClientTablet(plot)
-	local model = plot:WaitForChild("ClaimEarnings", 30)
-	if not model then return end
-
-	local claimPart = model:WaitForChild("ClaimPart", 10)
-	if not claimPart then claimPart = model:WaitForChild("Earnings", 1) end
-	if not claimPart then return end
-
-	local claimGui = claimPart:WaitForChild("ClaimGUI", 10)
-	if not claimGui then return end
-
-	local pendingVal = plot:WaitForChild("PendingEarnings", 10)
-	local ownerVal = plot:WaitForChild("Owner", 10) 
-
-	enableClicking(claimGui, claimPart)
-
-	local btnNormal = claimGui:WaitForChild("ClaimButton", 10)
-	local btn2X = claimGui:WaitForChild("ClaimButton2X", 10)
-
-	-- 🟢 1. NORMAL CLAIM BUTTON
-	if btnNormal then
-		setupAnimatedButton(btnNormal, function()
-			-- 📏 STRICT CHECK: Must be close to CLICK
-			if not isCloseEnough(claimPart) then return end 
-
-			if isClaiming then 
-				spawnFloatingText(claimPart, "Slow Down!", Color3.fromRGB(255, 170, 0))
-				return 
-			end
-
-			-- 🛡️ SECURITY FIX: Check if we own this plot
-			if ownerVal.Value ~= player.Name then
-				local s = Instance.new("Sound"); s.SoundId = FAIL_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
-				spawnFloatingText(claimPart, "Access Denied!", Color3.fromRGB(255, 80, 80))
-				return
-			end
-
-			if pendingVal.Value <= 0 then
-				local s = Instance.new("Sound");
-				s.SoundId = FAIL_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
-				spawnFloatingText(claimPart, "No Earnings!", Color3.fromRGB(255, 80, 80))
-				return
-			end
-
-			isClaiming = true
-			local s = Instance.new("Sound");
-			s.SoundId = CLICK_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
-
-			claimRequestId += 1
-			local requestId = claimRequestId
-			pendingClaimByPlot[plot.Name] = requestId
-			TabletEvent:FireServer("Claim", plot.Name, requestId)
-
-			task.delay(2.5, function()
-				if pendingClaimByPlot[plot.Name] == requestId then
-					pendingClaimByPlot[plot.Name] = nil
-					isClaiming = false
-					showClaimFailure(claimPart, "Unknown")
-				end
-			end)
-		end)
+local function grant(player, amount)
+	if amount <= 0 then
+		return false, "No earnings available."
 	end
 
-	-- 💎 2. DEV PRODUCT BUTTON (2X)
-	if btn2X then
-		setupAnimatedButton(btn2X, function()
-			-- 📏 STRICT CHECK: Must be close to CLICK
-			if not isCloseEnough(claimPart) then return end 
+	local hiddenStats = player:FindFirstChild("HiddenStats")
+	local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
 
-			-- 🛡️ SECURITY FIX: Check if we own this plot
-			if ownerVal.Value ~= player.Name then
-				local s = Instance.new("Sound"); s.SoundId = FAIL_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
-				spawnFloatingText(claimPart, "Access Denied!", Color3.fromRGB(255, 80, 80))
-				return
-			end
-
-			if pendingVal and pendingVal.Value <= 0 then
-				local s = Instance.new("Sound"); s.SoundId = FAIL_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
-				spawnFloatingText(claimPart, "No Earnings!", Color3.fromRGB(255, 80, 80))
-				return
-			end
-
-			lastProjectedAmount = pendingVal.Value * 2
-			TabletEvent:FireServer("Prompt2X", plot.Name)
-		end)
+	if not bank then
+		return false, "Bank account not found."
 	end
+
+	bank.Value += amount
+
+	return true, "Granted"
 end
 
-TabletEvent.OnClientEvent:Connect(function(action, plotName, wasSuccessful, payload, requestId)
-	if action ~= "ClaimResult" then return end
+requestData.OnServerInvoke = function(player)
+	local session = ensureSession(player)
 
-	if pendingClaimByPlot[plotName] ~= requestId then
+	if not session.prepared then
+		local ready, amount = computeBaseOffline(player)
+
+		if not ready then
+			return {
+				ready = false,
+				amount = 0,
+				canClaim = false,
+				productId = PREMIUM_PRODUCT_ID,
+			}
+		end
+
+		session.baseAmount = amount
+		session.prepared = true
+	end
+
+	return {
+		ready = true,
+		amount = session.baseAmount,
+		canClaim = session.baseAmount > 0 and not session.claimed and not session.premiumPending,
+		productId = PREMIUM_PRODUCT_ID,
+	}
+end
+
+claimNormal.OnServerInvoke = function(player)
+	local session = ensureSession(player)
+
+	if not session.prepared then
+		local ready, amount = computeBaseOffline(player)
+
+		if not ready then
+			return false, "Offline earnings still loading. Please try again.", 0
+		end
+
+		session.baseAmount = amount
+		session.prepared = true
+	end
+
+	if session.claimed then
+		return false, "You have already claimed your offline earnings.", 0
+	end
+
+	if session.premiumPending then
+		return false, "Premium purchase is currently processing.", 0
+	end
+
+	if session.baseAmount <= 0 then
+		return false, "No offline earnings available.", 0
+	end
+
+	local success, message = grant(player, session.baseAmount)
+
+	if not success then
+		return false, message, 0
+	end
+
+	session.claimed = true
+	clearTabletCarry(player)
+
+	return true, "Claimed", session.baseAmount
+end
+
+beginPremium.OnServerInvoke = function(player)
+	local session = ensureSession(player)
+
+	if not session.prepared then
+		local ready, amount = computeBaseOffline(player)
+
+		if not ready then
+			return false, "Offline earnings still loading. Please wait."
+		end
+
+		session.baseAmount = amount
+		session.prepared = true
+	end
+
+	if session.claimed then
+		return false, "You have already claimed your offline earnings."
+	end
+
+	if session.premiumPending then
+		return false, "Premium purchase already in progress."
+	end
+
+	if session.baseAmount <= 0 then
+		return false, "No offline earnings available."
+	end
+
+	session.premiumPending = true
+	session.premiumPurchaseId = nil
+
+	return true, "Prompt"
+end
+
+function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
+	local session = sessions[player]
+
+	if not session then
+		return false, 0, "You have already claimed your offline earnings."
+	end
+
+	if purchaseId and session.lastPremiumGrantedPurchaseId == purchaseId then
+		return true, session.baseAmount * 10, "Claimed"
+	end
+
+	if not session.premiumPending or session.claimed or session.baseAmount <= 0 then
+		return false, 0, "You have already claimed your offline earnings."
+	end
+
+	if purchaseId and session.premiumPurchaseId and session.premiumPurchaseId ~= purchaseId then
+		return false, 0, "Purchase mismatch."
+	end
+
+	local payout = session.baseAmount * 10
+	local success, message = grant(player, payout)
+
+	if not success then
+		session.premiumPending = false
+		session.premiumPurchaseId = nil
+
+		return false, 0, message
+	end
+
+	session.claimed = true
+	clearTabletCarry(player)
+	session.premiumPending = false
+	session.premiumPurchaseId = purchaseId
+	session.lastPremiumGrantedPurchaseId = purchaseId
+
+	premiumResult:FireClient(player, true, "Claimed", payout)
+
+	return true, payout, "Claimed"
+end
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
+	if productId ~= PREMIUM_PRODUCT_ID then
 		return
 	end
 
-	pendingClaimByPlot[plotName] = nil
-	isClaiming = false
+	local player = Players:GetPlayerByUserId(userId)
 
-	local part = getClaimPartFromPlotName(plotName)
-	if wasSuccessful then
-		local amount = tonumber(payload) or 0
-		local sfx = Instance.new("Sound")
-		sfx.SoundId = SUCCESS_SOUND_ID
-		sfx.Parent = SoundService
-		sfx:Play()
-		game.Debris:AddItem(sfx, 1)
-		if part then
-			spawnFloatingText(part, "+$" .. amount, Color3.fromRGB(85, 255, 127))
-		end
-	else
-		showClaimFailure(part, payload)
+	if not player then
+		return
+	end
+
+	local session = sessions[player]
+
+	if not session then
+		return
+	end
+
+	if not wasPurchased then
+		session.premiumPending = false
+		session.premiumPurchaseId = nil
+
+		premiumResult:FireClient(player, false, "Purchase failed or cancelled.", 0)
 	end
 end)
 
--- ============================================================================
--- 💰 PURCHASE SUCCESS LISTENER
--- ============================================================================
-MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, isPurchased)
-	if userId == player.UserId and productId == DEV_PRODUCT_ID and isPurchased then
-		local s = Instance.new("Sound");
-		s.SoundId = SUCCESS_SOUND_ID; s.Volume = 1; s.Parent = SoundService; s:Play();
-		game.Debris:AddItem(s, 2)
-
-		local myPlotName = player:GetAttribute("OccupiedPlot")
-		if myPlotName then
-			local plot = TycoonFolder:FindFirstChild(myPlotName)
-			local model = plot and plot:FindFirstChild("ClaimEarnings")
-			local part = model and (model:FindFirstChild("ClaimPart") or model:FindFirstChild("Earnings"))
-
-			if part then
-				local msg = "DOUBLE CASH! ( +$" .. lastProjectedAmount .. " )"
-				spawnFloatingText(part, msg, Color3.fromRGB(255, 255, 0), DOUBLE_CASH_DURATION)
-			end
-		end
-	end
-end)
-
--- Initialize
-task.wait(2) 
-for _, plot in pairs(TycoonFolder:GetChildren()) do
-	task.spawn(function() setupClientTablet(plot) end)
-end
-TycoonFolder.ChildAdded:Connect(function(plot)
-	task.spawn(function() setupClientTablet(plot) end)
+Players.PlayerRemoving:Connect(function(player)
+	sessions[player] = nil
 end)
