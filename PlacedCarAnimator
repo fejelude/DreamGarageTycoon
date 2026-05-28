@@ -10,8 +10,16 @@
 
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
 
-local TycoonFolder = Workspace:WaitForChild("Tycoons")
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local TycoonFolder = Workspace:WaitForChild("Tycoons", 30)
+if not TycoonFolder then
+	warn("[PlacedCarAnimator] Workspace.Tycoons did not load in time; car animation disabled for this session.")
+	return
+end
 
 -- ⚙️ CONFIGURATION (Breathing Effect)
 local DISPLACEMENT_SPREAD = 0.5   -- How high/low it goes (Studs)
@@ -102,6 +110,10 @@ TycoonFolder.ChildAdded:Connect(monitorPlot)
 
 -- 🔄 ANIMATION LOOP (RenderStepped runs every frame on Client)
 RunService.RenderStepped:Connect(function(dt)
+	if playerGui:GetAttribute("LoadingScreenActive") == true then
+		return
+	end
+
 	local t = time()
 
 	local lodEnabled = Workspace:GetAttribute("CarLODEnabled") == true

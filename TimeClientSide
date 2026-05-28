@@ -15,11 +15,31 @@ local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- Safely resolve UI elements
-local dayNightCycleUI = playerGui:WaitForChild("DayNightCycle")
-local timeLabel = dayNightCycleUI:WaitForChild("Time")
-local morningIcon = dayNightCycleUI:WaitForChild("Morning")
-local nightIcon = dayNightCycleUI:WaitForChild("Night")
+local UI_WAIT_TIMEOUT = 30
+
+local function waitForChildOrAbort(parent, childName)
+	local child = parent:WaitForChild(childName, UI_WAIT_TIMEOUT)
+
+	if not child then
+		warn(string.format("[TimeClientSide] Missing %s after %d seconds; disabling day/night UI updater.", childName, UI_WAIT_TIMEOUT))
+	end
+
+	return child
+end
+
+-- Safely resolve UI elements with a bounded wait so slow PlayerGui replication does not create infinite-yield spam.
+local dayNightCycleUI = waitForChildOrAbort(playerGui, "DayNightCycle")
+if not dayNightCycleUI then
+	return
+end
+
+local timeLabel = waitForChildOrAbort(dayNightCycleUI, "Time")
+local morningIcon = waitForChildOrAbort(dayNightCycleUI, "Morning")
+local nightIcon = waitForChildOrAbort(dayNightCycleUI, "Night")
+
+if not timeLabel or not morningIcon or not nightIcon then
+	return
+end
 
 -- Converts 0-24 decimal time to 12-hour AM/PM string
 local function formatClockTime(clockTime)

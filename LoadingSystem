@@ -46,11 +46,15 @@ ReplicatedFirst:RemoveDefaultLoadingScreen()
 -- CONFIG
 -- ============================================================
 
+local SOURCE_GUI_NAME = "LoadingScreenGui"
+local ACTIVE_GUI_NAME = "ActiveLoadingScreen"
+local SOURCE_GUI_TIMEOUT = 20
+
 local VIEW_PART_NAME = "LoadingViewPart"
-local VIEW_PART_TIMEOUT = 10
+local VIEW_PART_TIMEOUT = 8
 
 local PRELOAD_FOLDER_NAME = "PreloadAssets"
-local PRELOAD_ASSET_TIMEOUT = 2.5
+local PRELOAD_ASSET_TIMEOUT = 1.25
 
 local LOADING_TEXT_START = " Loading "
 local LOADING_SOUND_ID = "rbxassetid://72475519841402"
@@ -75,6 +79,7 @@ local INFO_UP_TIME = 0.2
 local INFO_EXIT_TIME = 0.35
 
 local FALLBACK_AFTER_LOADING_HOLD = 1.0
+local AUTO_CONTINUE_AFTER_LOADING_SECONDS = 20
 
 local MAX_LOADING_PHASE_SECONDS = 35
 
@@ -159,7 +164,7 @@ end
 local function markLoadingTimeout()
 	if not state.loadingPhaseTimedOut then
 		state.loadingPhaseTimedOut = true
-		warn("[LoadingScreen] Loading phase timed out. Continuing to start prompt safely.")
+		warn("[LoadingScreen] Loading phase timed out once. Continuing to start prompt safely.")
 	end
 end
 
@@ -245,21 +250,134 @@ end
 
 playerGui:SetAttribute("LoadingScreenActive", true)
 
-local sourceGui = StarterGui:WaitForChild("LoadingScreenGui", 10)
-
-if not sourceGui then
-	warn("[LoadingScreen] LoadingScreenGui missing from StarterGui.")
-	playerGui:SetAttribute("LoadingScreenActive", false)
-	return
+local function findLoadingGuiSource()
+	return playerGui:FindFirstChild(SOURCE_GUI_NAME)
+		or ReplicatedFirst:FindFirstChild(SOURCE_GUI_NAME)
+		or StarterGui:FindFirstChild(SOURCE_GUI_NAME)
 end
 
-loadingGui = sourceGui:Clone()
-loadingGui.Name = "ActiveLoadingScreen"
+local function createFallbackLoadingGui()
+	local gui = Instance.new("ScreenGui")
+	gui.Name = SOURCE_GUI_NAME
+
+	local frame = Instance.new("Frame")
+	frame.Name = "Frame"
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+
+	local barContainer = Instance.new("Frame")
+	barContainer.Name = "ProgressBarContainer"
+	barContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+	barContainer.Position = UDim2.fromScale(0.5, 0.75)
+	barContainer.Size = UDim2.fromScale(0.45, 0.045)
+	barContainer.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+	barContainer.BorderSizePixel = 0
+	barContainer.Parent = frame
+
+	local barFill = Instance.new("Frame")
+	barFill.Name = "ProgressBar"
+	barFill.Size = UDim2.fromScale(1, 1)
+	barFill.BackgroundColor3 = Color3.fromRGB(255, 208, 64)
+	barFill.BorderSizePixel = 0
+	barFill.Parent = barContainer
+
+	local progressTextLabel = Instance.new("TextLabel")
+	progressTextLabel.Name = "ProgressText"
+	progressTextLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+	progressTextLabel.Position = UDim2.fromScale(0.5, 0.5)
+	progressTextLabel.Size = UDim2.fromScale(1, 1)
+	progressTextLabel.BackgroundTransparency = 1
+	progressTextLabel.Font = Enum.Font.GothamBold
+	progressTextLabel.Text = LOADING_TEXT_START
+	progressTextLabel.TextColor3 = Color3.new(1, 1, 1)
+	progressTextLabel.TextScaled = true
+	progressTextLabel.Parent = barContainer
+
+	local promptFrame = Instance.new("Frame")
+	promptFrame.Name = "AfterLoading"
+	promptFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+	promptFrame.Position = UDim2.fromScale(0.5, 0.86)
+	promptFrame.Size = UDim2.fromScale(0.5, 0.12)
+	promptFrame.BackgroundTransparency = 1
+	promptFrame.Parent = frame
+
+	local button = Instance.new("TextButton")
+	button.Name = "ClickButton"
+	button.Size = UDim2.fromScale(1, 1)
+	button.BackgroundTransparency = 1
+	button.Text = ""
+	button.Parent = promptFrame
+
+	local information = Instance.new("TextLabel")
+	information.Name = "Information"
+	information.AnchorPoint = Vector2.new(0.5, 0.5)
+	information.Position = UDim2.fromScale(0.5, 0.5)
+	information.Size = UDim2.fromScale(1, 1)
+	information.BackgroundTransparency = 1
+	information.Font = Enum.Font.GothamBold
+	information.Text = "Click to start"
+	information.TextColor3 = Color3.new(1, 1, 1)
+	information.TextScaled = true
+	information.Parent = promptFrame
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 2
+	stroke.Parent = information
+
+	return gui
+end
+
+local function resolveLoadingGui()
+	local deadline = os.clock() + SOURCE_GUI_TIMEOUT
+
+	repeat
+		local source = findLoadingGuiSource()
+		if source and source:IsA("ScreenGui") then
+			if source.Parent == playerGui then
+				return source
+			end
+
+			return source:Clone()
+		end
+
+		RunService.Heartbeat:Wait()
+	until not isAlive() or os.clock() >= deadline
+
+	warn("[LoadingScreen] LoadingScreenGui did not replicate in time; using a lightweight fallback UI.")
+	return createFallbackLoadingGui()
+end
+
+loadingGui = resolveLoadingGui()
+loadingGui.Name = ACTIVE_GUI_NAME
 loadingGui.ResetOnSpawn = false
 loadingGui.Enabled = true
 loadingGui.IgnoreGuiInset = true
-loadingGui.DisplayOrder = 999
+loadingGui.DisplayOrder = 10000
 loadingGui.Parent = playerGui
+
+local bgFrame = loadingGui:WaitForChild("Frame", 5)
+
+if not bgFrame then
+	warn("[LoadingScreen] Frame missing inside loading UI. Using fallback frame so startup can continue.")
+	local fallbackGui = createFallbackLoadingGui()
+	loadingGui:Destroy()
+	loadingGui = fallbackGui
+	loadingGui.Name = ACTIVE_GUI_NAME
+	loadingGui.ResetOnSpawn = false
+	loadingGui.Enabled = true
+	loadingGui.IgnoreGuiInset = true
+	loadingGui.DisplayOrder = 10000
+	loadingGui.Parent = playerGui
+	bgFrame = loadingGui:WaitForChild("Frame", 5)
+	if not bgFrame then
+		playerGui:SetAttribute("LoadingScreenActive", false)
+		return
+	end
+end
 
 local transitionFrame = Instance.new("Frame")
 transitionFrame.Name = "TransitionFrame"
@@ -270,15 +388,6 @@ transitionFrame.BackgroundTransparency = 1
 transitionFrame.BorderSizePixel = 0
 transitionFrame.ZIndex = 2000
 transitionFrame.Parent = loadingGui
-
-local bgFrame = loadingGui:WaitForChild("Frame", 5)
-
-if not bgFrame then
-	warn("[LoadingScreen] Frame missing inside LoadingScreenGui.")
-	loadingGui:Destroy()
-	playerGui:SetAttribute("LoadingScreenActive", false)
-	return
-end
 
 bgFrame.Visible = false
 
@@ -1098,12 +1207,37 @@ local function showAfterLoadingPromptAndWaitForClick()
 		clicked = true
 	end)
 
+	local promptStarted = os.clock()
+	local inputConn
+
+	inputConn = game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed or clicked then
+			return
+		end
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch
+			or input.UserInputType == Enum.UserInputType.Keyboard
+			or input.UserInputType == Enum.UserInputType.Gamepad1 then
+			clicked = true
+		end
+	end)
+
 	while isAlive() and not clicked do
 		if not clickButton or not clickButton.Parent then
 			break
 		end
 
+		if os.clock() - promptStarted >= AUTO_CONTINUE_AFTER_LOADING_SECONDS then
+			warn("[LoadingScreen] Start prompt was not clicked in time. Auto-continuing to avoid a stuck loading screen.")
+			break
+		end
+
 		RunService.Heartbeat:Wait()
+	end
+
+	if inputConn then
+		inputConn:Disconnect()
 	end
 
 	if clickConn then
