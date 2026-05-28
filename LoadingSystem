@@ -10,21 +10,27 @@
 --
 -- Runs on  : Client, ideally inside ReplicatedFirst
 --
--- Expected UI:
--- StarterGui
---   LoadingScreenGui
---     Frame
---       ProgressBarContainer
---         ProgressBar
---         ProgressText
---       AfterLoading
---         ClickButton
---         Information
---           UIStroke
+-- Expected setup:
+-- ReplicatedFirst
+--   LoadingSystem
+--     LoadingScreenGui
+--       Frame
+--         ProgressBarContainer
+--           ProgressBar
+--           ProgressText
+--         AfterLoading
+--           ClickButton
+--           Information
+--             UIStroke
+--     LoadingCameraCFrame
+--
+-- LoadingCameraCFrame must be a CFrameValue.
+-- This lets the loading camera start without waiting for a Workspace part.
 --
 -- Optional:
+-- StarterGui.LoadingScreenGui fallback
 -- ReplicatedStorage.PreloadAssets
--- Workspace.LoadingViewPart
+-- Workspace.LoadingViewPart legacy instant fallback only
 -- SoundService.MainTheme or Workspace.MainTheme
 -- ============================================================
 
@@ -46,12 +52,13 @@ ReplicatedFirst:RemoveDefaultLoadingScreen()
 -- CONFIG
 -- ============================================================
 
+local LOADING_SYSTEM_NAME = "LoadingSystem"
 local SOURCE_GUI_NAME = "LoadingScreenGui"
 local ACTIVE_GUI_NAME = "ActiveLoadingScreen"
 local SOURCE_GUI_TIMEOUT = 20
 
-local VIEW_PART_NAME = "LoadingViewPart"
-local VIEW_PART_TIMEOUT = 8
+local LOADING_CAMERA_CFRAME_NAME = "LoadingCameraCFrame"
+local LEGACY_VIEW_PART_NAME = "LoadingViewPart"
 
 local PRELOAD_FOLDER_NAME = "PreloadAssets"
 local PRELOAD_ASSET_TIMEOUT = 1.25
@@ -87,7 +94,7 @@ local LOCK_NAME = "LoadingScreenCameraLock"
 local FREEZE_ACTION = "LoadingScreenFreeze"
 
 local PHASE_GAME_LOADED_TO = 0.20
-local PHASE_VIEWPART_READY_TO = 0.40
+local PHASE_CAMERA_READY_TO = 0.40
 local PHASE_PRELOAD_TO = 0.90
 local PHASE_FINISH_TO = 1.00
 
@@ -225,33 +232,21 @@ local function tweenWait(instance, tweenInfo, goals, timeout)
 	return done
 end
 
-local function waitForNamedChild(parent, childName, timeout)
-	if not parent then
-		return nil
-	end
-
-	local deadline = os.clock() + timeout
-
-	while isAlive() and os.clock() < deadline do
-		local child = parent:FindFirstChild(childName)
-		if child then
-			return child
-		end
-
-		RunService.Heartbeat:Wait()
-	end
-
-	return parent:FindFirstChild(childName)
-end
-
 -- ============================================================
 -- UI SETUP
 -- ============================================================
 
 playerGui:SetAttribute("LoadingScreenActive", true)
 
+local function getLoadingSystem()
+	return ReplicatedFirst:FindFirstChild(LOADING_SYSTEM_NAME)
+end
+
 local function findLoadingGuiSource()
+	local loadingSystem = getLoadingSystem()
+
 	return playerGui:FindFirstChild(SOURCE_GUI_NAME)
+		or (loadingSystem and loadingSystem:FindFirstChild(SOURCE_GUI_NAME))
 		or ReplicatedFirst:FindFirstChild(SOURCE_GUI_NAME)
 		or StarterGui:FindFirstChild(SOURCE_GUI_NAME)
 end
@@ -622,7 +617,52 @@ local function getCamera()
 	return camera
 end
 
-local function lockCameraTo(part)
+local function findLoadingCameraCFrameValue()
+	local loadingSystem = getLoadingSystem()
+
+	if loadingSystem then
+		local value = loadingSystem:FindFirstChild(LOADING_CAMERA_CFRAME_NAME)
+		if value and value:IsA("CFrameValue") then
+			return value
+		end
+	end
+
+	local directValue = ReplicatedFirst:FindFirstChild(LOADING_CAMERA_CFRAME_NAME)
+	if directValue and directValue:IsA("CFrameValue") then
+		return directValue
+	end
+
+	return nil
+end
+
+local function resolveLoadingCameraSource()
+	local cframeValue = findLoadingCameraCFrameValue()
+	if cframeValue then
+		return cframeValue, "ReplicatedFirst." .. LOADING_SYSTEM_NAME .. "." .. LOADING_CAMERA_CFRAME_NAME
+	end
+
+	-- Legacy, no-wait fallback only. Do not depend on this for the polished setup.
+	local legacyPart = Workspace:FindFirstChild(LEGACY_VIEW_PART_NAME)
+	if legacyPart and legacyPart:IsA("BasePart") then
+		return legacyPart.CFrame, "Workspace." .. LEGACY_VIEW_PART_NAME .. " legacy fallback"
+	end
+
+	return nil, nil
+end
+
+local function readCameraCFrame(source)
+	if typeof(source) == "CFrame" then
+		return source
+	end
+
+	if source and source:IsA("CFrameValue") then
+		return source.Value
+	end
+
+	return nil
+end
+
+local function lockCameraToCFrameSource(source)
 	local cam = getCamera()
 
 	if not cam then
@@ -635,8 +675,9 @@ local function lockCameraTo(part)
 
 	cam.CameraType = Enum.CameraType.Scriptable
 
-	if part and part:IsA("BasePart") then
-		cam.CFrame = part.CFrame
+	local initialCFrame = readCameraCFrame(source)
+	if initialCFrame then
+		cam.CFrame = initialCFrame
 	end
 
 	RunService:BindToRenderStep(LOCK_NAME, Enum.RenderPriority.Camera.Value + 1, function()
@@ -654,8 +695,9 @@ local function lockCameraTo(part)
 
 		currentCamera.CameraType = Enum.CameraType.Scriptable
 
-		if part and part.Parent and part:IsA("BasePart") then
-			currentCamera.CFrame = part.CFrame
+		local currentCFrame = readCameraCFrame(source)
+		if currentCFrame then
+			currentCamera.CFrame = currentCFrame
 		end
 	end)
 end
@@ -1357,7 +1399,7 @@ local function preloadAssetWithTimeout(asset, timeout)
 	return done
 end
 
-local function buildPreloadList(viewPart)
+local function buildPreloadList()
 	local preloadList = { loadingGui }
 
 	local folder = ReplicatedStorage:FindFirstChild(PRELOAD_FOLDER_NAME)
@@ -1368,15 +1410,11 @@ local function buildPreloadList(viewPart)
 		end
 	end
 
-	if viewPart then
-		table.insert(preloadList, viewPart)
-	end
-
 	return preloadList
 end
 
-local function preloadAssets(viewPart)
-	local preloadList = buildPreloadList(viewPart)
+local function preloadAssets()
+	local preloadList = buildPreloadList()
 	local startValue = progressValue.Value
 	local distance = PHASE_PRELOAD_TO - startValue
 
@@ -1449,18 +1487,13 @@ task.spawn(function()
 
 		fadeToRecorded(ANIMATION_DURATION)
 
-		lockCameraTo(nil)
+		local loadingCameraSource, loadingCameraSourceLabel = resolveLoadingCameraSource()
+		lockCameraToCFrameSource(loadingCameraSource)
 
-		local viewPart = waitForNamedChild(
-			Workspace,
-			VIEW_PART_NAME,
-			math.min(VIEW_PART_TIMEOUT, remainingLoadingTime())
-		)
-
-		if viewPart and viewPart:IsA("BasePart") then
-			lockCameraTo(viewPart)
-		else
-			warn("[LoadingScreen] LoadingViewPart was not found. Continuing with camera locked in place.")
+		if not loadingCameraSource then
+			warn("[LoadingScreen] LoadingCameraCFrame was not found. Continuing with camera locked in its current position.")
+		elseif loadingCameraSourceLabel then
+			print("[LoadingScreen] Loading camera source:", loadingCameraSourceLabel)
 		end
 
 		waitSeconds(ANIMATION_DURATION * 0.3)
@@ -1476,10 +1509,10 @@ task.spawn(function()
 			RunService.Heartbeat:Wait()
 		end
 
-		tweenProgressAndWait(PHASE_VIEWPART_READY_TO, 1.2)
+		tweenProgressAndWait(PHASE_CAMERA_READY_TO, 1.2)
 
 		if not loadingPhaseExpired() then
-			preloadAssets(viewPart)
+			preloadAssets()
 		else
 			markLoadingTimeout()
 		end
