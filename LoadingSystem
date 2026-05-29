@@ -31,7 +31,7 @@
 -- StarterGui.LoadingScreenGui fallback
 -- ReplicatedStorage.PreloadAssets
 -- Workspace.LoadingViewPart legacy instant fallback only
--- SoundService.MainTheme or Workspace.MainTheme
+-- SoundService.GameTheme, or legacy SoundService.MainTheme / Workspace.MainTheme
 -- ============================================================
 
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -66,10 +66,11 @@ local PRELOAD_ASSET_TIMEOUT = 1.25
 local LOADING_TEXT_START = " Loading "
 local LOADING_SOUND_ID = "rbxassetid://72475519841402"
 local LOADING_SOUND_FADE_IN = 1.8
-local LOADING_SOUND_HOLD_SECONDS = 30
+local LOADING_SOUND_HOLD_SECONDS = 0
 local MUSIC_TOGGLE_FADE_SECONDS = 0.45
 
-local MAIN_THEME_NAME = "MainTheme"
+local GAME_THEME_NAME = "GameTheme"
+local LEGACY_MAIN_THEME_NAME = "MainTheme"
 local THEME_FADE_SECONDS = 2.0
 
 local ANIMATION_DURATION = 5.5
@@ -982,25 +983,45 @@ end
 -- AUDIO
 -- ============================================================
 
-local function getOrCreateMainTheme()
-	local existing = SoundService:FindFirstChild(MAIN_THEME_NAME)
+local function getMainThemeSound()
+	local gameTheme = SoundService:FindFirstChild(GAME_THEME_NAME)
 
-	if existing and existing:IsA("Sound") then
-		return existing
+	if gameTheme and gameTheme:IsA("Sound") then
+		return gameTheme, true
 	end
 
-	local fromWorkspace = Workspace:FindFirstChild(MAIN_THEME_NAME)
+	local legacyTheme = SoundService:FindFirstChild(LEGACY_MAIN_THEME_NAME)
+
+	if legacyTheme and legacyTheme:IsA("Sound") then
+		return legacyTheme, false
+	end
+
+	local fromWorkspace = Workspace:FindFirstChild(LEGACY_MAIN_THEME_NAME)
 
 	if fromWorkspace and fromWorkspace:IsA("Sound") then
 		fromWorkspace.Parent = SoundService
-		return fromWorkspace
+		return fromWorkspace, false
 	end
 
-	return nil
+	return nil, false
+end
+
+local function stopLegacyMainThemeWhenPlaylistExists()
+	local gameTheme = SoundService:FindFirstChild(GAME_THEME_NAME)
+	local legacyTheme = SoundService:FindFirstChild(LEGACY_MAIN_THEME_NAME)
+
+	if gameTheme and gameTheme:IsA("Sound") and legacyTheme and legacyTheme:IsA("Sound") then
+		pcall(function()
+			legacyTheme:Stop()
+		end)
+		legacyTheme.Volume = 0
+	end
 end
 
 local function prepareMainThemeForLater()
-	local theme = getOrCreateMainTheme()
+	stopLegacyMainThemeWhenPlaylistExists()
+
+	local theme = getMainThemeSound()
 
 	if not theme then
 		return
@@ -1030,17 +1051,19 @@ local function startLoadingMusic()
 	loadingMusic.Looped = true
 	loadingMusic.Volume = 0
 	loadingMusic.Parent = SoundService
-	loadingMusicTargetVolume = (SoundService:GetAttribute("MusicMuted") == true) and 0 or 1
+	loadingMusicTargetVolume = 1
 	SoundService:SetAttribute("LoadingMusicActive", true)
 
 	pcall(function()
 		loadingMusic:Play()
 	end)
 
+	local initialVolume = (SoundService:GetAttribute("MusicMuted") == true) and 0 or loadingMusicTargetVolume
+
 	safeTween(
 		loadingMusic,
 		TweenInfo.new(LOADING_SOUND_FADE_IN, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
-		{ Volume = loadingMusicTargetVolume }
+		{ Volume = initialVolume }
 	)
 end
 
@@ -1070,39 +1093,25 @@ local function transitionToMainTheme()
 	end
 
 	musicHandoffDone = true
+	stopLegacyMainThemeWhenPlaylistExists()
 
-	local theme = getOrCreateMainTheme()
+	if activeMusicTween then
+		activeMusicTween:Cancel()
+		activeMusicTween = nil
+	end
 
-	if theme then
-		local targetVolume = mainThemeTargetVolume
-
-		if targetVolume <= 0 then
-			targetVolume = 1
-		end
-
-		theme.Volume = 0
-
-		if not theme.IsPlaying then
-			pcall(function()
-				theme:Play()
-			end)
-		end
-
-		safeTween(
-			theme,
-			TweenInfo.new(THEME_FADE_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-			{ Volume = targetVolume }
-		)
+	if loadingMusicMuteConn then
+		loadingMusicMuteConn:Disconnect()
+		loadingMusicMuteConn = nil
 	end
 
 	if loadingMusic and loadingMusic.Parent then
-		safeTween(
+		tweenWait(
 			loadingMusic,
 			TweenInfo.new(THEME_FADE_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-			{ Volume = 0 }
+			{ Volume = 0 },
+			THEME_FADE_SECONDS + 0.25
 		)
-
-		task.wait(THEME_FADE_SECONDS + 0.1)
 
 		if loadingMusic and loadingMusic.Parent then
 			pcall(function()
@@ -1114,12 +1123,34 @@ local function transitionToMainTheme()
 		end
 	end
 
+	local theme, isPlaylistTheme = getMainThemeSound()
+	local muted = SoundService:GetAttribute("MusicMuted") == true
+
 	SoundService:SetAttribute("LoadingMusicActive", false)
 
-	if loadingMusicMuteConn then
-		loadingMusicMuteConn:Disconnect()
-		loadingMusicMuteConn = nil
+	if not theme or isPlaylistTheme then
+		return
 	end
+
+	local targetVolume = muted and 0 or mainThemeTargetVolume
+
+	if targetVolume <= 0 and not muted then
+		targetVolume = 1
+	end
+
+	theme.Volume = 0
+
+	if not theme.IsPlaying then
+		pcall(function()
+			theme:Play()
+		end)
+	end
+
+	safeTween(
+		theme,
+		TweenInfo.new(THEME_FADE_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+		{ Volume = targetVolume }
+	)
 end
 
 local function scheduleMusicHandoff(delaySeconds)
