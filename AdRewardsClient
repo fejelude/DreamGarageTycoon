@@ -1,0 +1,318 @@
+-- Purpose: Client controller for rewarded-ad UI states, interactions, and feedback.
+-- Runs on: Client
+-- Location: StarterGui > AdRewardsUi > AdRewardsClient
+-- Dependencies: AdService, Players, ReplicatedStorage, TweenService, UIButtonUtils
+-- Security: Client only checks availability and requests ads; ReceiptRouter grants rewards.
+
+local AdService = game:GetService("AdService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local adRewardsGui = playerGui:WaitForChild("AdRewardsUi")
+local mainFrame = adRewardsGui:WaitForChild("MainFrame")
+local exitButton = mainFrame:WaitForChild("ExitButton")
+local rewardsFrame = mainFrame:WaitForChild("Rewards")
+local loadingLabel = mainFrame:WaitForChild("LoadingTextLabel")
+local noAdsLabel = mainFrame:WaitForChild("NoAdsTextLabel")
+local adButton = mainFrame:WaitForChild("AdButton")
+local failedLabel = mainFrame:WaitForChild("Failed")
+local successLabel = mainFrame:WaitForChild("Success")
+
+local bonusesGui = playerGui:WaitForChild("Bonuses")
+local openButton = bonusesGui:WaitForChild("Ads"):WaitForChild("Button")
+local availabilityLabel = openButton:WaitForChild("Availability")
+
+local remotes = ReplicatedStorage:WaitForChild("AdRewardsRemotes")
+local requestAdEvent = remotes:WaitForChild("RequestRewardedAd")
+local adRewardResultEvent = remotes:WaitForChild("AdRewardResult")
+
+local adRewardsScreenGui = adRewardsGui:IsA("ScreenGui") and adRewardsGui or adRewardsGui:FindFirstAncestorWhichIsA("ScreenGui")
+if adRewardsScreenGui then
+	adRewardsScreenGui.ResetOnSpawn = false
+end
+
+local HOVER_SCALE = 1.05
+local TWEEN_INFO = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+local OPEN_FOV = 50
+local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+
+local availabilityCheckSerial = 0
+local isRequestPending = false
+local isOpportunityRegistered = false
+local defaultLoadingText = loadingLabel.Text
+local hiddenGuis = {}
+local isOpen = false
+local savedFOV = 70
+
+local function getCamera()
+	return Workspace.CurrentCamera
+end
+
+local function restoreHiddenGuis()
+	for _, gui in ipairs(hiddenGuis) do
+		if gui and gui.Parent then
+			gui.Enabled = true
+		end
+	end
+
+	hiddenGuis = {}
+end
+
+local function hideOtherGuis()
+	hiddenGuis = {}
+
+	for _, gui in ipairs(playerGui:GetDescendants()) do
+		if gui:IsA("ScreenGui") and gui ~= adRewardsScreenGui and gui.Enabled == true then
+			gui.Enabled = false
+			table.insert(hiddenGuis, gui)
+		end
+	end
+end
+
+local function setMainFrameVisible(isVisible)
+	isOpen = isVisible
+	mainFrame.Visible = isVisible
+	openButton.Visible = not isVisible
+end
+
+local function setVisible(guiObject, isVisible)
+	if not guiObject then
+		return
+	end
+
+	if guiObject:IsA("GuiObject") then
+		guiObject.Visible = isVisible
+	end
+
+	local stroke = guiObject:FindFirstChildOfClass("UIStroke")
+	if stroke then
+		stroke.Enabled = isVisible
+	end
+end
+
+local function resetFeedback()
+	setVisible(failedLabel, false)
+	setVisible(successLabel, false)
+end
+
+local function setLoadingState()
+	loadingLabel.Text = defaultLoadingText
+	setVisible(loadingLabel, true)
+	setVisible(noAdsLabel, false)
+	setVisible(adButton, false)
+end
+
+local function updateAdOpportunityRegistration(shouldRegister)
+	if shouldRegister == isOpportunityRegistered then
+		return
+	end
+
+	local ok, err = pcall(function()
+		if shouldRegister then
+			AdService:RegisterAdOpportunityAsync(adButton, AdRewardsConfig.PLACEMENT_ID)
+		else
+			AdService:UnregisterAdOpportunity(adButton)
+		end
+	end)
+
+	if ok then
+		isOpportunityRegistered = shouldRegister
+	else
+		warn("⚠️ [AdRewards] Unable to update ad opportunity tracking: " .. tostring(err))
+	end
+end
+
+local function setAvailabilityState(isAvailable)
+	setVisible(loadingLabel, false)
+	setVisible(noAdsLabel, not isAvailable)
+	setVisible(adButton, isAvailable)
+	availabilityLabel.Visible = isAvailable
+	updateAdOpportunityRegistration(isAvailable and mainFrame.Visible)
+end
+
+local function checkForAds(showLoading)
+	availabilityCheckSerial += 1
+	local serial = availabilityCheckSerial
+
+	if showLoading then
+		setLoadingState()
+	end
+
+	local ok, availability = pcall(function()
+		return AdService:GetAdAvailabilityNowAsync(Enum.AdFormat.RewardedVideo)
+	end)
+
+	if serial ~= availabilityCheckSerial then
+		return false
+	end
+
+	local isAvailable = AdRewardsConfig.IsConfigured()
+		and ok
+		and type(availability) == "table"
+		and availability.AdAvailabilityResult == Enum.AdAvailabilityResult.IsAvailable
+
+	setAvailabilityState(isAvailable)
+	return isAvailable
+end
+
+local function showFailed(message)
+	isRequestPending = false
+	setVisible(loadingLabel, false)
+	setVisible(adButton, false)
+	setVisible(noAdsLabel, false)
+	setVisible(successLabel, false)
+	failedLabel.Text = message or "Something went wrong. Please try again."
+	setVisible(failedLabel, true)
+	task.defer(checkForAds, false)
+end
+
+local function escapeRichText(text)
+	return tostring(text):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+end
+
+local function showSuccess(rewardName, rewardColor)
+	isRequestPending = false
+	setVisible(loadingLabel, false)
+	setVisible(noAdsLabel, false)
+	setVisible(adButton, false)
+	setVisible(failedLabel, false)
+	successLabel.RichText = true
+	successLabel.Text = string.format(
+		"Success! You received: <font color=\"%s\"><b>%s</b></font>",
+		escapeRichText(rewardColor or "#9BE564"),
+		escapeRichText(rewardName or "Reward")
+	)
+	setVisible(successLabel, true)
+	task.defer(checkForAds, false)
+end
+
+local function openAdRewards()
+	local camera = getCamera()
+	if camera then
+		savedFOV = camera.FieldOfView
+	end
+
+	if adRewardsScreenGui then
+		adRewardsScreenGui.Enabled = true
+	end
+
+	hideOtherGuis()
+	setMainFrameVisible(true)
+	resetFeedback()
+
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, { FieldOfView = OPEN_FOV }):Play()
+	end
+
+	checkForAds(true)
+end
+
+local function closeAdRewards()
+	if not isOpen then
+		return
+	end
+
+	availabilityCheckSerial += 1
+	updateAdOpportunityRegistration(false)
+	restoreHiddenGuis()
+	setMainFrameVisible(false)
+	resetFeedback()
+	setVisible(loadingLabel, false)
+	setVisible(noAdsLabel, false)
+	setVisible(adButton, false)
+
+	local camera = getCamera()
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, { FieldOfView = savedFOV }):Play()
+	end
+end
+
+local function setupRewardHover(frame)
+	local scale = frame:FindFirstChildOfClass("UIScale")
+	if not scale then
+		scale = Instance.new("UIScale")
+		scale.Scale = 1
+		scale.Parent = frame
+	end
+
+	local function tweenTo(target)
+		TweenService:Create(scale, TWEEN_INFO, { Scale = target }):Play()
+	end
+
+	frame.MouseEnter:Connect(function()
+		tweenTo(HOVER_SCALE)
+	end)
+	frame.MouseLeave:Connect(function()
+		tweenTo(1)
+	end)
+	frame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			tweenTo(HOVER_SCALE)
+		end
+	end)
+	frame.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			tweenTo(1)
+		end
+	end)
+end
+
+for rewardIndex = 1, 6 do
+	setupRewardHover(rewardsFrame:WaitForChild("Rewards" .. rewardIndex))
+end
+
+UIButtonUtils.SetupButton(openButton, openAdRewards)
+UIButtonUtils.SetupButton(exitButton, closeAdRewards)
+UIButtonUtils.SetupButton(adButton, function()
+	if isRequestPending then
+		return
+	end
+
+	isRequestPending = true
+	resetFeedback()
+	setVisible(adButton, false)
+	setVisible(noAdsLabel, false)
+	loadingLabel.Text = "Loading ad..."
+	setVisible(loadingLabel, true)
+	requestAdEvent:FireServer()
+end)
+
+adRewardResultEvent.OnClientEvent:Connect(function(status, firstValue, secondValue)
+	if status == "RewardGranted" then
+		showSuccess(firstValue, secondValue)
+	elseif status == "CompletedPendingReward" and isRequestPending then
+		loadingLabel.Text = "Delivering reward..."
+		setVisible(loadingLabel, true)
+		setVisible(noAdsLabel, false)
+		setVisible(adButton, false)
+	elseif status == "Failed" then
+		showFailed(firstValue)
+	end
+end)
+
+if adRewardsScreenGui then
+	adRewardsScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if isOpen and not adRewardsScreenGui.Enabled then
+			closeAdRewards()
+		end
+	end)
+end
+
+-- Do not trust Studio defaults: establish a deterministic hidden state first.
+setMainFrameVisible(false)
+availabilityLabel.Visible = false
+resetFeedback()
+setVisible(loadingLabel, false)
+setVisible(noAdsLabel, false)
+setVisible(adButton, false)
+
+-- Keep the Bonuses availability indicator useful before the panel is opened.
+task.defer(checkForAds, false)

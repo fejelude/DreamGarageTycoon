@@ -29,6 +29,7 @@ local STARTER_PACK_PRODUCT_ID = 3599481243
 local STARTER_PACK_CAR_NAME = "Senator"
 local STARTER_PACK_WALLET_CASH = 800000
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
+local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))
 
 local BANK_TRANSFER_USED_ATTR = "BankTransferLimitUsed"
 local BANK_TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
@@ -386,6 +387,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	local purchaseSuccess = false
 	local bankResetFeedback = nil
 	local offlinePremiumClientResult = nil
+	local adRewardClientResult = nil
 
 	local skinFound = nil
 	if BaseSkinStats then
@@ -397,8 +399,27 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 	end
 
+	-- ─── REWARDED VIDEO AD ────────────────────────────────────────────────────
+	if AdRewardsConfig.IsConfigured() and pid == AdRewardsConfig.DEV_PRODUCT_ID then
+		-- Rewarded ads are never giftable. Roblox requires the disclosed ad reward
+		-- to be a non-random developer product, so this grants fixed Wallet Cash.
+		isGift = false
+		targetPlayer = buyerPlayer
+		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+
+		local leaderstats = buyerPlayer:FindFirstChild("leaderstats")
+		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
+		if wallet then
+			wallet.Value += AdRewardsConfig.WALLET_CASH_AMOUNT
+			purchaseSuccess = true
+			adRewardClientResult = {
+				rewardName = AdRewardsConfig.SUCCESS_REWARD_NAME,
+				rewardColor = AdRewardsConfig.SUCCESS_REWARD_COLOR,
+			}
+		end
+
 	-- ─── BANK TRANSFER LIMIT SKIP ─────────────────────────────────────────────
-	if pid == BANK_TRANSFER_SKIP_ID then
+	elseif pid == BANK_TRANSFER_SKIP_ID then
 		-- This product should never be gifted. If a gift target was pending,
 		-- consume it only after the receipt is successfully granted/persisted.
 		isGift = false
@@ -584,6 +605,15 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	if purchaseSuccess then
 		if not markPurchaseProcessed(purchaseKey) then
 			return Enum.ProductPurchaseDecision.NotProcessedYet
+		end
+
+		local adRewardReceiptGranted = ServerStorage:FindFirstChild("AdRewardReceiptGranted")
+		if adRewardClientResult and adRewardReceiptGranted then
+			adRewardReceiptGranted:Fire(
+				buyerPlayer,
+				adRewardClientResult.rewardName,
+				adRewardClientResult.rewardColor
+			)
 		end
 
 		if offlinePremiumClientResult then

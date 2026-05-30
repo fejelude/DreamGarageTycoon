@@ -1,0 +1,51 @@
+-- ============================================================================
+-- AdRewardsConfig (ModuleScript)
+-- Location: ReplicatedStorage > AdRewardsConfig
+-- Purpose: Shared configuration for the Roblox-compliant rewarded-video grant.
+--
+-- Roblox rewarded-video ads must grant a disclosed, non-random developer
+-- product reward. Set DEV_PRODUCT_ID to the ID of a $25,000 Wallet Cash
+-- developer product that is also normally available to purchase in-game.
+-- ============================================================================
+
+local AdRewardsConfig = {}
+
+-- REQUIRED BEFORE PUBLISHING: replace 0 with the universe's developer product.
+AdRewardsConfig.DEV_PRODUCT_ID = 0
+AdRewardsConfig.WALLET_CASH_AMOUNT = 25000
+
+-- Optional Creator Dashboard rewarded-video placement ID. Leave nil to use the
+-- default placement.
+AdRewardsConfig.PLACEMENT_ID = nil
+
+AdRewardsConfig.SUCCESS_REWARD_NAME = "$25,000 Wallet Cash"
+AdRewardsConfig.SUCCESS_REWARD_COLOR = "#9BE564"
+
+-- The originally requested randomized design is retained here as product-design
+-- documentation only. Do not use it as a rewarded-video payout: Roblox's
+-- rewarded-video requirements prohibit randomized ad rewards.
+AdRewardsConfig.REQUESTED_RANDOMIZED_DESIGN = {
+	UnallocatedChanceHandling = "WalletCash",
+	Rewards = {
+		{ Name = "Wallet Cash", ChancePercent = 94.69 }, -- includes unallocated 0.19%
+		{ Name = "Riva", ChancePercent = 4, Rarity = "Common" },
+		{ Name = "Yora", ChancePercent = 1, Rarity = "Uncommon" },
+		{ Name = "Stuttgart", ChancePercent = 0.2, Rarity = "Rare" },
+		{ Name = "Razor", ChancePercent = 0.1, Rarity = "Epic" },
+		{ Name = "Neo Performante", ChancePercent = 0.01, Rarity = "Legendary" },
+	},
+	WalletCashBands = {
+		{ Minimum = 25000, Maximum = 100000, ChancePercent = 89 },
+		{ Minimum = 100001, Maximum = 1000000, ChancePercent = 10 },
+		{ Minimum = 1000001, Maximum = 100000000, ChancePercent = 0.9 },
+		{ Minimum = 100000001, Maximum = 10000000000, ChancePercent = 0.09 },
+		{ Minimum = 10000000001, Maximum = 1000000000000, ChancePercent = 0.009 },
+		{ Minimum = 1000000000001, Maximum = 10000000000000, ChancePercent = 0.001 },
+	},
+}
+
+function AdRewardsConfig.IsConfigured()
+	return type(AdRewardsConfig.DEV_PRODUCT_ID) == "number" and AdRewardsConfig.DEV_PRODUCT_ID > 0
+end
+
+return AdRewardsConfig
