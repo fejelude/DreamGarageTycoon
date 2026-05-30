@@ -238,6 +238,9 @@ end
 -- ============================================================
 
 playerGui:SetAttribute("LoadingScreenActive", true)
+-- Reserve the music channel while the loading UI resolves so the playlist cannot
+-- bootstrap briefly before the loading-screen track is ready.
+SoundService:SetAttribute("LoadingMusicActive", true)
 
 local function getLoadingSystem()
 	return ReplicatedFirst:FindFirstChild(LOADING_SYSTEM_NAME)
@@ -371,6 +374,7 @@ if not bgFrame then
 	bgFrame = loadingGui:WaitForChild("Frame", 5)
 	if not bgFrame then
 		playerGui:SetAttribute("LoadingScreenActive", false)
+		SoundService:SetAttribute("LoadingMusicActive", false)
 		return
 	end
 end
@@ -1176,7 +1180,7 @@ local function finalCleanup(fromError)
 		return
 	end
 
-	if fromError and loadingMusic and loadingMusic.Parent and not musicHandoffScheduled then
+	if fromError and not musicHandoffScheduled then
 		scheduleMusicHandoff(0)
 	end
 

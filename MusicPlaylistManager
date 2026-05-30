@@ -66,6 +66,15 @@ local function getTrackForTime()
 	return isDaytime() and DAY_TRACK_ID or NIGHT_TRACK_ID
 end
 
+local function stopForLoading()
+	cancelTween()
+	musicObject.Volume = 0
+
+	if musicObject.IsPlaying then
+		musicObject:Stop()
+	end
+end
+
 local function switchTrack(newTrackId)
 	if currentTrackId == newTrackId then
 		return
@@ -83,13 +92,27 @@ local function switchTrack(newTrackId)
 
 		musicObject.SoundId = newTrackId
 		musicObject.TimePosition = 0
-		musicObject:Play()
 
+		if shouldHoldForLoading() then
+			stopForLoading()
+			return
+		end
+
+		musicObject:Play()
 		fadeTo(targetVolume(), FADE_DURATION * 0.5)
 	end)
 end
 
 local function applyGlobalMusicState()
+	if shouldHoldForLoading() then
+		stopForLoading()
+		return
+	end
+
+	if not musicObject.IsPlaying then
+		musicObject:Play()
+	end
+
 	fadeTo(targetVolume(), MUTE_FADE_DURATION)
 end
 
@@ -100,7 +123,6 @@ local function bootstrap()
 	musicObject.SoundId = currentTrackId
 	musicObject.TimePosition = 0
 	musicObject.Volume = 0
-	musicObject:Play()
 	applyGlobalMusicState()
 end
 
