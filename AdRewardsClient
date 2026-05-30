@@ -18,13 +18,17 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 local adRewardsGui = playerGui:WaitForChild("AdRewardsUi")
 local mainFrame = adRewardsGui:WaitForChild("MainFrame")
+
 local exitButton = mainFrame:WaitForChild("ExitButton")
 local rewardsFrame = mainFrame:WaitForChild("Rewards")
+local stateLabels = mainFrame:WaitForChild("StateLabels")
+
 local loadingLabel = mainFrame:WaitForChild("LoadingTextLabel")
 local noAdsLabel = mainFrame:WaitForChild("NoAdsTextLabel")
 local adButton = mainFrame:WaitForChild("AdButton")
-local failedLabel = mainFrame:WaitForChild("Failed")
-local successLabel = mainFrame:WaitForChild("Success")
+
+local failedLabel = stateLabels:WaitForChild("Failed")
+local successLabel = stateLabels:WaitForChild("Success")
 
 local bonusesGui = playerGui:WaitForChild("Bonuses")
 local openButton = bonusesGui:WaitForChild("Ads"):WaitForChild("Button")
@@ -35,12 +39,14 @@ local requestAdEvent = remotes:WaitForChild("RequestRewardedAd")
 local adRewardResultEvent = remotes:WaitForChild("AdRewardResult")
 
 local adRewardsScreenGui = adRewardsGui:IsA("ScreenGui") and adRewardsGui or adRewardsGui:FindFirstAncestorWhichIsA("ScreenGui")
+
 if adRewardsScreenGui then
 	adRewardsScreenGui.ResetOnSpawn = false
 end
 
 local HOVER_SCALE = 1.05
 local TWEEN_INFO = TweenInfo.new(0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+
 local OPEN_FOV = 50
 local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
 
@@ -105,6 +111,7 @@ end
 
 local function setLoadingState()
 	loadingLabel.Text = defaultLoadingText
+
 	setVisible(loadingLabel, true)
 	setVisible(noAdsLabel, false)
 	setVisible(adButton, false)
@@ -134,7 +141,9 @@ local function setAvailabilityState(isAvailable)
 	setVisible(loadingLabel, false)
 	setVisible(noAdsLabel, not isAvailable)
 	setVisible(adButton, isAvailable)
+
 	availabilityLabel.Visible = isAvailable
+
 	updateAdOpportunityRegistration(isAvailable and mainFrame.Visible)
 end
 
@@ -160,42 +169,55 @@ local function checkForAds(showLoading)
 		and availability.AdAvailabilityResult == Enum.AdAvailabilityResult.IsAvailable
 
 	setAvailabilityState(isAvailable)
+
 	return isAvailable
 end
 
 local function showFailed(message)
 	isRequestPending = false
+
 	setVisible(loadingLabel, false)
 	setVisible(adButton, false)
 	setVisible(noAdsLabel, false)
 	setVisible(successLabel, false)
+
 	failedLabel.Text = message or "Something went wrong. Please try again."
+
 	setVisible(failedLabel, true)
+
 	task.defer(checkForAds, false)
 end
 
 local function escapeRichText(text)
-	return tostring(text):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+	return tostring(text)
+		:gsub("&", "&amp;")
+		:gsub("<", "&lt;")
+		:gsub(">", "&gt;")
 end
 
 local function showSuccess(rewardName, rewardColor)
 	isRequestPending = false
+
 	setVisible(loadingLabel, false)
 	setVisible(noAdsLabel, false)
 	setVisible(adButton, false)
 	setVisible(failedLabel, false)
+
 	successLabel.RichText = true
 	successLabel.Text = string.format(
 		"Success! You received: <font color=\"%s\"><b>%s</b></font>",
 		escapeRichText(rewardColor or "#9BE564"),
 		escapeRichText(rewardName or "Reward")
 	)
+
 	setVisible(successLabel, true)
+
 	task.defer(checkForAds, false)
 end
 
 local function openAdRewards()
 	local camera = getCamera()
+
 	if camera then
 		savedFOV = camera.FieldOfView
 	end
@@ -209,7 +231,9 @@ local function openAdRewards()
 	resetFeedback()
 
 	if camera then
-		TweenService:Create(camera, FOV_TWEEN, { FieldOfView = OPEN_FOV }):Play()
+		TweenService:Create(camera, FOV_TWEEN, {
+			FieldOfView = OPEN_FOV
+		}):Play()
 	end
 
 	checkForAds(true)
@@ -221,22 +245,28 @@ local function closeAdRewards()
 	end
 
 	availabilityCheckSerial += 1
+
 	updateAdOpportunityRegistration(false)
 	restoreHiddenGuis()
 	setMainFrameVisible(false)
 	resetFeedback()
+
 	setVisible(loadingLabel, false)
 	setVisible(noAdsLabel, false)
 	setVisible(adButton, false)
 
 	local camera = getCamera()
+
 	if camera then
-		TweenService:Create(camera, FOV_TWEEN, { FieldOfView = savedFOV }):Play()
+		TweenService:Create(camera, FOV_TWEEN, {
+			FieldOfView = savedFOV
+		}):Play()
 	end
 end
 
 local function setupRewardHover(frame)
 	local scale = frame:FindFirstChildOfClass("UIScale")
+
 	if not scale then
 		scale = Instance.new("UIScale")
 		scale.Scale = 1
@@ -244,20 +274,25 @@ local function setupRewardHover(frame)
 	end
 
 	local function tweenTo(target)
-		TweenService:Create(scale, TWEEN_INFO, { Scale = target }):Play()
+		TweenService:Create(scale, TWEEN_INFO, {
+			Scale = target
+		}):Play()
 	end
 
 	frame.MouseEnter:Connect(function()
 		tweenTo(HOVER_SCALE)
 	end)
+
 	frame.MouseLeave:Connect(function()
 		tweenTo(1)
 	end)
+
 	frame.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch then
 			tweenTo(HOVER_SCALE)
 		end
 	end)
+
 	frame.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch then
 			tweenTo(1)
@@ -266,33 +301,42 @@ local function setupRewardHover(frame)
 end
 
 for rewardIndex = 1, 6 do
-	setupRewardHover(rewardsFrame:WaitForChild("Rewards" .. rewardIndex))
+	setupRewardHover(rewardsFrame:WaitForChild("Reward" .. rewardIndex))
 end
 
 UIButtonUtils.SetupButton(openButton, openAdRewards)
 UIButtonUtils.SetupButton(exitButton, closeAdRewards)
+
 UIButtonUtils.SetupButton(adButton, function()
 	if isRequestPending then
 		return
 	end
 
 	isRequestPending = true
+
 	resetFeedback()
+
 	setVisible(adButton, false)
 	setVisible(noAdsLabel, false)
+
 	loadingLabel.Text = "Loading ad..."
+
 	setVisible(loadingLabel, true)
+
 	requestAdEvent:FireServer()
 end)
 
 adRewardResultEvent.OnClientEvent:Connect(function(status, firstValue, secondValue)
 	if status == "RewardGranted" then
 		showSuccess(firstValue, secondValue)
+
 	elseif status == "CompletedPendingReward" and isRequestPending then
 		loadingLabel.Text = "Delivering reward..."
+
 		setVisible(loadingLabel, true)
 		setVisible(noAdsLabel, false)
 		setVisible(adButton, false)
+
 	elseif status == "Failed" then
 		showFailed(firstValue)
 	end
@@ -309,7 +353,9 @@ end
 -- Do not trust Studio defaults: establish a deterministic hidden state first.
 setMainFrameVisible(false)
 availabilityLabel.Visible = false
+
 resetFeedback()
+
 setVisible(loadingLabel, false)
 setVisible(noAdsLabel, false)
 setVisible(adButton, false)
