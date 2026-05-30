@@ -8,9 +8,11 @@ local AdService = game:GetService("AdService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))
 
 local player = Players.LocalPlayer
@@ -266,12 +268,15 @@ end
 
 local function setupRewardHover(frame)
 	local scale = frame:FindFirstChildOfClass("UIScale")
+	local isHovering = false
 
 	if not scale then
 		scale = Instance.new("UIScale")
 		scale.Scale = 1
 		scale.Parent = frame
 	end
+
+	frame.Active = true
 
 	local function tweenTo(target)
 		TweenService:Create(scale, TWEEN_INFO, {
@@ -280,15 +285,23 @@ local function setupRewardHover(frame)
 	end
 
 	frame.MouseEnter:Connect(function()
+		if isHovering or UserInputService:GetLastInputType() ~= Enum.UserInputType.MouseMovement then
+			return
+		end
+
+		isHovering = true
+		UIAudioConfig.PlayHover()
 		tweenTo(HOVER_SCALE)
 	end)
 
 	frame.MouseLeave:Connect(function()
+		isHovering = false
 		tweenTo(1)
 	end)
 
 	frame.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch then
+			UIAudioConfig.PlayHover()
 			tweenTo(HOVER_SCALE)
 		end
 	end)
