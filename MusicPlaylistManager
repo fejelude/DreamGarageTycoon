@@ -1,24 +1,44 @@
+-- ============================================================
+-- GameThemeController.client.lua
+-- Purpose:
+--   - Plays day/night game music after the loading screen releases control.
+--   - Does NOT play during the loading menu.
+--   - Responds to SoundService attributes:
+--       MusicMuted = true/false
+--       LoadingMusicActive = true/false
+--
+-- IMPORTANT:
+--   This must be a LocalScript, ideally inside StarterPlayerScripts.
+-- ============================================================
+
 local SoundService = game:GetService("SoundService")
 local Lighting = game:GetService("Lighting")
 local TweenService = game:GetService("TweenService")
 
 local GAME_THEME_NAME = "GameTheme"
+
 local MASTER_VOLUME = 0.5
 local FADE_DURATION = 2.0
 local MUTE_FADE_DURATION = 0.45
 
 local DAY_TRACK_ID = "rbxassetid://1846088038"
 local NIGHT_TRACK_ID = "rbxassetid://9045766377"
+
 local DAY_START_HOUR = 6
 local NIGHT_START_HOUR = 18
 
+local CHECK_INTERVAL = 2
+
 local musicObject = SoundService:FindFirstChild(GAME_THEME_NAME)
+
 if not musicObject then
 	musicObject = Instance.new("Sound")
 	musicObject.Name = GAME_THEME_NAME
 	musicObject.Parent = SoundService
 end
+
 musicObject.Looped = true
+musicObject.Volume = 0
 
 local currentTrackId = nil
 local lastWasDaytime = nil
@@ -30,13 +50,16 @@ local function isMuted()
 end
 
 local function shouldHoldForLoading()
-	return SoundService:GetAttribute("LoadingMusicActive") == true
+	-- Hold unless loading has explicitly released the main music.
+	-- This prevents the game theme from starting before the loading script is ready.
+	return SoundService:GetAttribute("LoadingMusicActive") ~= false
 end
 
 local function targetVolume()
 	if isMuted() or shouldHoldForLoading() then
 		return 0
 	end
+
 	return MASTER_VOLUME
 end
 
@@ -49,11 +72,13 @@ end
 
 local function fadeTo(volume, duration)
 	cancelTween()
+
 	activeTween = TweenService:Create(
 		musicObject,
 		TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
 		{ Volume = volume }
 	)
+
 	activeTween:Play()
 end
 
@@ -66,16 +91,37 @@ local function getTrackForTime()
 	return isDaytime() and DAY_TRACK_ID or NIGHT_TRACK_ID
 end
 
+local function stopForLoading()
+	cancelTween()
+	musicObject.Volume = 0
+
+	if musicObject.IsPlaying then
+		musicObject:Stop()
+	end
+end
+
+local function ensureTrackForCurrentTime()
+	local newTrackId = getTrackForTime()
+
+	if currentTrackId ~= newTrackId then
+		currentTrackId = newTrackId
+		musicObject.SoundId = newTrackId
+		musicObject.TimePosition = 0
+	end
+end
+
 local function switchTrack(newTrackId)
 	if currentTrackId == newTrackId then
 		return
 	end
 
 	transitionToken += 1
+
 	local myToken = transitionToken
 	currentTrackId = newTrackId
 
 	fadeTo(0, FADE_DURATION * 0.5)
+
 	task.delay(FADE_DURATION * 0.5, function()
 		if myToken ~= transitionToken then
 			return
@@ -83,13 +129,32 @@ local function switchTrack(newTrackId)
 
 		musicObject.SoundId = newTrackId
 		musicObject.TimePosition = 0
-		musicObject:Play()
+
+		if shouldHoldForLoading() then
+			stopForLoading()
+			return
+		end
+
+		if not musicObject.IsPlaying then
+			musicObject:Play()
+		end
 
 		fadeTo(targetVolume(), FADE_DURATION * 0.5)
 	end)
 end
 
 local function applyGlobalMusicState()
+	ensureTrackForCurrentTime()
+
+	if shouldHoldForLoading() then
+		stopForLoading()
+		return
+	end
+
+	if not musicObject.IsPlaying then
+		musicObject:Play()
+	end
+
 	fadeTo(targetVolume(), MUTE_FADE_DURATION)
 end
 
@@ -100,7 +165,7 @@ local function bootstrap()
 	musicObject.SoundId = currentTrackId
 	musicObject.TimePosition = 0
 	musicObject.Volume = 0
-	musicObject:Play()
+
 	applyGlobalMusicState()
 end
 
@@ -112,9 +177,10 @@ SoundService:GetAttributeChangedSignal("LoadingMusicActive"):Connect(applyGlobal
 
 task.spawn(function()
 	while true do
-		task.wait(2)
+		task.wait(CHECK_INTERVAL)
 
 		local nowDay = isDaytime()
+
 		if lastWasDaytime ~= nowDay then
 			lastWasDaytime = nowDay
 			switchTrack(getTrackForTime())
