@@ -4,8 +4,8 @@
 --            - custom loading camera
 --            - progress bar
 --            - click-to-start after 100%
---            - loading music that continues after loading
---            - safe transition to main theme
+--            - one loading music track only during loading
+--            - main GameTheme released only after Play is clicked
 --            - safe cleanup / no stuck camera / no stuck music
 --
 -- Runs on  : Client, ideally inside ReplicatedFirst
@@ -25,13 +25,12 @@
 --     LoadingCameraCFrame
 --
 -- LoadingCameraCFrame must be a CFrameValue.
--- This lets the loading camera start without waiting for a Workspace part.
 --
 -- Optional:
 -- StarterGui.LoadingScreenGui fallback
 -- ReplicatedStorage.PreloadAssets
 -- Workspace.LoadingViewPart legacy instant fallback only
--- SoundService.GameTheme, or legacy SoundService.MainTheme / Workspace.MainTheme
+-- SoundService.GameTheme
 -- ============================================================
 
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -45,6 +44,7 @@ local ContextActionService = game:GetService("ContextActionService")
 local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
+local UserInputService = game:GetService("UserInputService")
 
 ReplicatedFirst:RemoveDefaultLoadingScreen()
 
@@ -87,7 +87,10 @@ local INFO_UP_TIME = 0.2
 local INFO_EXIT_TIME = 0.35
 
 local FALLBACK_AFTER_LOADING_HOLD = 1.0
-local AUTO_CONTINUE_AFTER_LOADING_SECONDS = 20
+
+-- nil means the player must actually click/tap/press to continue.
+-- Set this to a number if you ever want auto-continue back.
+local AUTO_CONTINUE_AFTER_LOADING_SECONDS = nil
 
 local MAX_LOADING_PHASE_SECONDS = 35
 
@@ -127,7 +130,6 @@ local originalBlurSize = 0
 local loadingMusic = nil
 local musicHandoffScheduled = false
 local musicHandoffDone = false
-local mainThemeTargetVolume = 1
 local loadingMusicTargetVolume = 1
 local activeMusicTween = nil
 local loadingMusicMuteConn = nil
@@ -140,6 +142,7 @@ local function trackConnection(conn)
 	if conn then
 		table.insert(connections, conn)
 	end
+
 	return conn
 end
 
@@ -151,11 +154,13 @@ local function disconnectAll()
 			end)
 		end
 	end
+
 	table.clear(connections)
 end
 
 local function waitSeconds(seconds)
 	local started = os.clock()
+
 	while isAlive() and os.clock() - started < seconds do
 		RunService.Heartbeat:Wait()
 	end
@@ -197,11 +202,8 @@ local function safeTween(instance, tweenInfo, goals)
 end
 
 local function tweenWait(instance, tweenInfo, goals, timeout)
-	if not isAlive() then
-		return false
-	end
-
 	local tween = safeTween(instance, tweenInfo, goals)
+
 	if not tween then
 		return false
 	end
@@ -215,11 +217,16 @@ local function tweenWait(instance, tweenInfo, goals, timeout)
 
 	local started = os.clock()
 
-	while isAlive() and not done do
+	while not done do
 		if timeout and os.clock() - started >= timeout then
 			pcall(function()
 				tween:Cancel()
 			end)
+
+			break
+		end
+
+		if not isAlive() then
 			break
 		end
 
@@ -238,6 +245,10 @@ end
 -- ============================================================
 
 playerGui:SetAttribute("LoadingScreenActive", true)
+
+-- Main music is locked from the very beginning.
+-- GameThemeController.client.lua will not play until this becomes false.
+SoundService:SetAttribute("LoadingMusicActive", true)
 
 local function getLoadingSystem()
 	return ReplicatedFirst:FindFirstChild(LOADING_SYSTEM_NAME)
@@ -332,6 +343,7 @@ local function resolveLoadingGui()
 
 	repeat
 		local source = findLoadingGuiSource()
+
 		if source and source:IsA("ScreenGui") then
 			if source.Parent == playerGui then
 				return source
@@ -359,7 +371,9 @@ local bgFrame = loadingGui:WaitForChild("Frame", 5)
 
 if not bgFrame then
 	warn("[LoadingScreen] Frame missing inside loading UI. Using fallback frame so startup can continue.")
+
 	local fallbackGui = createFallbackLoadingGui()
+
 	loadingGui:Destroy()
 	loadingGui = fallbackGui
 	loadingGui.Name = ACTIVE_GUI_NAME
@@ -368,9 +382,12 @@ if not bgFrame then
 	loadingGui.IgnoreGuiInset = true
 	loadingGui.DisplayOrder = 10000
 	loadingGui.Parent = playerGui
+
 	bgFrame = loadingGui:WaitForChild("Frame", 5)
+
 	if not bgFrame then
 		playerGui:SetAttribute("LoadingScreenActive", false)
+		SoundService:SetAttribute("LoadingMusicActive", false)
 		return
 	end
 end
@@ -512,6 +529,7 @@ end
 
 local function tweenProgressAndWait(toValue, duration)
 	local tween = tweenProgress(toValue, duration)
+
 	if not tween then
 		return false
 	end
@@ -530,6 +548,7 @@ local function tweenProgressAndWait(toValue, duration)
 			pcall(function()
 				tween:Cancel()
 			end)
+
 			break
 		end
 
@@ -623,12 +642,14 @@ local function findLoadingCameraCFrameValue()
 
 	if loadingSystem then
 		local value = loadingSystem:FindFirstChild(LOADING_CAMERA_CFRAME_NAME)
+
 		if value and value:IsA("CFrameValue") then
 			return value
 		end
 	end
 
 	local directValue = ReplicatedFirst:FindFirstChild(LOADING_CAMERA_CFRAME_NAME)
+
 	if directValue and directValue:IsA("CFrameValue") then
 		return directValue
 	end
@@ -638,12 +659,13 @@ end
 
 local function resolveLoadingCameraSource()
 	local cframeValue = findLoadingCameraCFrameValue()
+
 	if cframeValue then
 		return cframeValue, "ReplicatedFirst." .. LOADING_SYSTEM_NAME .. "." .. LOADING_CAMERA_CFRAME_NAME
 	end
 
-	-- Legacy, no-wait fallback only. Do not depend on this for the polished setup.
 	local legacyPart = Workspace:FindFirstChild(LEGACY_VIEW_PART_NAME)
+
 	if legacyPart and legacyPart:IsA("BasePart") then
 		return legacyPart.CFrame, "Workspace." .. LEGACY_VIEW_PART_NAME .. " legacy fallback"
 	end
@@ -677,6 +699,7 @@ local function lockCameraToCFrameSource(source)
 	cam.CameraType = Enum.CameraType.Scriptable
 
 	local initialCFrame = readCameraCFrame(source)
+
 	if initialCFrame then
 		cam.CFrame = initialCFrame
 	end
@@ -686,10 +709,12 @@ local function lockCameraToCFrameSource(source)
 			pcall(function()
 				RunService:UnbindFromRenderStep(LOCK_NAME)
 			end)
+
 			return
 		end
 
 		local currentCamera = getCamera()
+
 		if not currentCamera then
 			return
 		end
@@ -697,6 +722,7 @@ local function lockCameraToCFrameSource(source)
 		currentCamera.CameraType = Enum.CameraType.Scriptable
 
 		local currentCFrame = readCameraCFrame(source)
+
 		if currentCFrame then
 			currentCamera.CFrame = currentCFrame
 		end
@@ -723,11 +749,13 @@ local function unlockCameraToPlayer()
 	end)
 
 	local cam = getCamera()
+
 	if not cam then
 		return
 	end
 
 	local character = waitForCharacter(8)
+
 	if not character then
 		cam.CameraType = Enum.CameraType.Custom
 		return
@@ -983,61 +1011,31 @@ end
 -- AUDIO
 -- ============================================================
 
-local function getMainThemeSound()
-	local gameTheme = SoundService:FindFirstChild(GAME_THEME_NAME)
+local function stopSoundIfExists(sound)
+	if sound and sound:IsA("Sound") then
+		pcall(function()
+			sound:Stop()
+		end)
 
-	if gameTheme and gameTheme:IsA("Sound") then
-		return gameTheme, true
+		sound.Volume = 0
 	end
-
-	local legacyTheme = SoundService:FindFirstChild(LEGACY_MAIN_THEME_NAME)
-
-	if legacyTheme and legacyTheme:IsA("Sound") then
-		return legacyTheme, false
-	end
-
-	local fromWorkspace = Workspace:FindFirstChild(LEGACY_MAIN_THEME_NAME)
-
-	if fromWorkspace and fromWorkspace:IsA("Sound") then
-		fromWorkspace.Parent = SoundService
-		return fromWorkspace, false
-	end
-
-	return nil, false
 end
 
-local function stopLegacyMainThemeWhenPlaylistExists()
+local function stopAllNonLoadingMusic()
 	local gameTheme = SoundService:FindFirstChild(GAME_THEME_NAME)
 	local legacyTheme = SoundService:FindFirstChild(LEGACY_MAIN_THEME_NAME)
+	local workspaceLegacy = Workspace:FindFirstChild(LEGACY_MAIN_THEME_NAME)
 
-	if gameTheme and gameTheme:IsA("Sound") and legacyTheme and legacyTheme:IsA("Sound") then
-		pcall(function()
-			legacyTheme:Stop()
-		end)
-		legacyTheme.Volume = 0
-	end
+	stopSoundIfExists(gameTheme)
+	stopSoundIfExists(legacyTheme)
+	stopSoundIfExists(workspaceLegacy)
 end
 
 local function prepareMainThemeForLater()
-	stopLegacyMainThemeWhenPlaylistExists()
-
-	local theme = getMainThemeSound()
-
-	if not theme then
-		return
-	end
-
-	if theme.Volume > 0 then
-		mainThemeTargetVolume = theme.Volume
-	end
-
-	if theme.IsPlaying then
-		pcall(function()
-			theme:Stop()
-		end)
-	end
-
-	theme.Volume = 0
+	-- Do not play main music here.
+	-- The GameThemeController owns GameTheme and will start only after LoadingMusicActive = false.
+	stopAllNonLoadingMusic()
+	SoundService:SetAttribute("LoadingMusicActive", true)
 end
 
 local function startLoadingMusic()
@@ -1045,13 +1043,17 @@ local function startLoadingMusic()
 		return
 	end
 
+	stopAllNonLoadingMusic()
+
 	loadingMusic = Instance.new("Sound")
 	loadingMusic.Name = "LoadingMusic"
 	loadingMusic.SoundId = LOADING_SOUND_ID
 	loadingMusic.Looped = true
 	loadingMusic.Volume = 0
 	loadingMusic.Parent = SoundService
+
 	loadingMusicTargetVolume = 1
+
 	SoundService:SetAttribute("LoadingMusicActive", true)
 
 	pcall(function()
@@ -1093,7 +1095,6 @@ local function transitionToMainTheme()
 	end
 
 	musicHandoffDone = true
-	stopLegacyMainThemeWhenPlaylistExists()
 
 	if activeMusicTween then
 		activeMusicTween:Cancel()
@@ -1123,34 +1124,9 @@ local function transitionToMainTheme()
 		end
 	end
 
-	local theme, isPlaylistTheme = getMainThemeSound()
-	local muted = SoundService:GetAttribute("MusicMuted") == true
-
+	-- This is the ONLY point where the main GameTheme is released.
+	-- GameThemeController.client.lua will receive this attribute change and start the proper day/night track.
 	SoundService:SetAttribute("LoadingMusicActive", false)
-
-	if not theme or isPlaylistTheme then
-		return
-	end
-
-	local targetVolume = muted and 0 or mainThemeTargetVolume
-
-	if targetVolume <= 0 and not muted then
-		targetVolume = 1
-	end
-
-	theme.Volume = 0
-
-	if not theme.IsPlaying then
-		pcall(function()
-			theme:Play()
-		end)
-	end
-
-	safeTween(
-		theme,
-		TweenInfo.new(THEME_FADE_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-		{ Volume = targetVolume }
-	)
 end
 
 local function scheduleMusicHandoff(delaySeconds)
@@ -1161,9 +1137,7 @@ local function scheduleMusicHandoff(delaySeconds)
 	musicHandoffScheduled = true
 
 	task.delay(delaySeconds, function()
-		if isAlive() or state.cleaned then
-			transitionToMainTheme()
-		end
+		transitionToMainTheme()
 	end)
 end
 
@@ -1176,7 +1150,7 @@ local function finalCleanup(fromError)
 		return
 	end
 
-	if fromError and loadingMusic and loadingMusic.Parent and not musicHandoffScheduled then
+	if fromError and not musicHandoffScheduled then
 		scheduleMusicHandoff(0)
 	end
 
@@ -1271,6 +1245,7 @@ local function showAfterLoadingPromptAndWaitForClick()
 
 	local clicked = false
 	local clickConn
+	local inputConn
 
 	clickConn = clickButton.Activated:Connect(function()
 		if clicked then
@@ -1280,10 +1255,7 @@ local function showAfterLoadingPromptAndWaitForClick()
 		clicked = true
 	end)
 
-	local promptStarted = os.clock()
-	local inputConn
-
-	inputConn = game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
+	inputConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed or clicked then
 			return
 		end
@@ -1296,12 +1268,15 @@ local function showAfterLoadingPromptAndWaitForClick()
 		end
 	end)
 
+	local promptStarted = os.clock()
+
 	while isAlive() and not clicked do
 		if not clickButton or not clickButton.Parent then
 			break
 		end
 
-		if os.clock() - promptStarted >= AUTO_CONTINUE_AFTER_LOADING_SECONDS then
+		if AUTO_CONTINUE_AFTER_LOADING_SECONDS
+			and os.clock() - promptStarted >= AUTO_CONTINUE_AFTER_LOADING_SECONDS then
 			warn("[LoadingScreen] Start prompt was not clicked in time. Auto-continuing to avoid a stuck loading screen.")
 			break
 		end
@@ -1325,6 +1300,7 @@ end
 local function hideAfterLoadingPrompt()
 	if infoLabel and infoLabel:IsA("TextLabel") then
 		local startPos = infoInitialPosition or infoLabel.Position
+
 		local upPos = UDim2.new(
 			startPos.X.Scale,
 			startPos.X.Offset,
@@ -1491,9 +1467,11 @@ task.spawn(function()
 
 		prepareMainThemeForLater()
 		startLoadingMusic()
+
 		if loadingMusicMuteConn then
 			loadingMusicMuteConn:Disconnect()
 		end
+
 		loadingMusicMuteConn = SoundService:GetAttributeChangedSignal("MusicMuted"):Connect(applyMusicMuteToLoading)
 
 		blurTo(BLUR_SIZE, BLUR_IN_TIME)
@@ -1501,6 +1479,7 @@ task.spawn(function()
 		bgFrame.Visible = true
 
 		local finalPos = bgFrame.Position
+
 		local startPos = UDim2.new(
 			finalPos.X.Scale,
 			finalPos.X.Offset,
@@ -1551,12 +1530,14 @@ task.spawn(function()
 		tweenProgressAndWait(PHASE_FINISH_TO, 1.0)
 		updateProgressBar(1)
 
+		-- This waits until the player actually clicks/taps/presses.
 		showAfterLoadingPromptAndWaitForClick()
 
 		if not isAlive() then
 			return
 		end
 
+		-- Only after the click do we fade loading music out and release GameTheme.
 		scheduleMusicHandoff(LOADING_SOUND_HOLD_SECONDS)
 
 		hideAfterLoadingPrompt()
