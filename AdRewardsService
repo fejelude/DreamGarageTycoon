@@ -1,0 +1,101 @@
+-- Purpose: Server-authoritative Roblox rewarded-video presentation and result forwarding.
+-- Runs on: Server
+-- Location: ServerScriptService > AdRewardsService
+-- Dependencies: AdService, ReplicatedStorage > AdRewardsConfig
+-- Security: Rewards are granted only by ReceiptRouter after Roblox issues a developer-product receipt.
+
+local AdService = game:GetService("AdService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))
+
+local REMOTES_FOLDER_NAME = "AdRewardsRemotes"
+local REQUEST_EVENT_NAME = "RequestRewardedAd"
+local RESULT_EVENT_NAME = "AdRewardResult"
+local RECEIPT_GRANTED_EVENT_NAME = "AdRewardReceiptGranted"
+
+local remotes = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
+if not remotes then
+	remotes = Instance.new("Folder")
+	remotes.Name = REMOTES_FOLDER_NAME
+	remotes.Parent = ReplicatedStorage
+end
+
+local requestEvent = remotes:FindFirstChild(REQUEST_EVENT_NAME)
+if not requestEvent then
+	requestEvent = Instance.new("RemoteEvent")
+	requestEvent.Name = REQUEST_EVENT_NAME
+	requestEvent.Parent = remotes
+end
+
+local resultEvent = remotes:FindFirstChild(RESULT_EVENT_NAME)
+if not resultEvent then
+	resultEvent = Instance.new("RemoteEvent")
+	resultEvent.Name = RESULT_EVENT_NAME
+	resultEvent.Parent = remotes
+end
+
+local receiptGrantedEvent = ServerStorage:FindFirstChild(RECEIPT_GRANTED_EVENT_NAME)
+if not receiptGrantedEvent then
+	receiptGrantedEvent = Instance.new("BindableEvent")
+	receiptGrantedEvent.Name = RECEIPT_GRANTED_EVENT_NAME
+	receiptGrantedEvent.Parent = ServerStorage
+end
+
+local activeRequests = {}
+
+local function fireFailure(player, message)
+	if player and player.Parent then
+		resultEvent:FireClient(player, "Failed", message or "Something went wrong. Please try again.")
+	end
+end
+
+requestEvent.OnServerEvent:Connect(function(player)
+	if activeRequests[player] then
+		return
+	end
+
+	if not AdRewardsConfig.IsConfigured() then
+		warn("⚠️ [AdRewards] Configure AdRewardsConfig.DEV_PRODUCT_ID before enabling rewarded ads.")
+		fireFailure(player, "Ad rewards are not configured yet. Please try again later.")
+		return
+	end
+
+	activeRequests[player] = true
+
+	local ok, showResult = pcall(function()
+		local reward = AdService:CreateAdRewardFromDevProductId(AdRewardsConfig.DEV_PRODUCT_ID)
+		return AdService:ShowRewardedVideoAdAsync(player, reward, AdRewardsConfig.PLACEMENT_ID)
+	end)
+
+	activeRequests[player] = nil
+
+	if not player.Parent then
+		return
+	end
+
+	if not ok then
+		warn("⚠️ [AdRewards] Unable to show rewarded ad for " .. player.Name .. ": " .. tostring(showResult))
+		fireFailure(player)
+		return
+	end
+
+	if showResult == Enum.ShowAdResult.ShowCompleted then
+		-- ReceiptRouter sends RewardGranted only after it applies Roblox's receipt.
+		resultEvent:FireClient(player, "CompletedPendingReward")
+	else
+		fireFailure(player)
+	end
+end)
+
+receiptGrantedEvent.Event:Connect(function(player, rewardName, rewardColor)
+	if player and player.Parent then
+		resultEvent:FireClient(player, "RewardGranted", rewardName, rewardColor)
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	activeRequests[player] = nil
+end)
