@@ -16,33 +16,12 @@ local REQUEST_EVENT_NAME = "RequestRewardedAd"
 local RESULT_EVENT_NAME = "AdRewardResult"
 local RECEIPT_GRANTED_EVENT_NAME = "AdRewardReceiptGranted"
 
-local remotes = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
-if not remotes then
-	remotes = Instance.new("Folder")
-	remotes.Name = REMOTES_FOLDER_NAME
-	remotes.Parent = ReplicatedStorage
-end
+local remotes = ReplicatedStorage:WaitForChild(REMOTES_FOLDER_NAME)
 
-local requestEvent = remotes:FindFirstChild(REQUEST_EVENT_NAME)
-if not requestEvent then
-	requestEvent = Instance.new("RemoteEvent")
-	requestEvent.Name = REQUEST_EVENT_NAME
-	requestEvent.Parent = remotes
-end
+local requestEvent = remotes:WaitForChild(REQUEST_EVENT_NAME)
+local resultEvent = remotes:WaitForChild(RESULT_EVENT_NAME)
 
-local resultEvent = remotes:FindFirstChild(RESULT_EVENT_NAME)
-if not resultEvent then
-	resultEvent = Instance.new("RemoteEvent")
-	resultEvent.Name = RESULT_EVENT_NAME
-	resultEvent.Parent = remotes
-end
-
-local receiptGrantedEvent = ServerStorage:FindFirstChild(RECEIPT_GRANTED_EVENT_NAME)
-if not receiptGrantedEvent then
-	receiptGrantedEvent = Instance.new("BindableEvent")
-	receiptGrantedEvent.Name = RECEIPT_GRANTED_EVENT_NAME
-	receiptGrantedEvent.Parent = ServerStorage
-end
+local receiptGrantedEvent = ServerStorage:WaitForChild(RECEIPT_GRANTED_EVENT_NAME)
 
 local activeRequests = {}
 
@@ -83,7 +62,6 @@ requestEvent.OnServerEvent:Connect(function(player)
 	end
 
 	if showResult == Enum.ShowAdResult.ShowCompleted then
-		-- ReceiptRouter sends RewardGranted only after it applies Roblox's receipt.
 		resultEvent:FireClient(player, "CompletedPendingReward")
 	else
 		fireFailure(player)
