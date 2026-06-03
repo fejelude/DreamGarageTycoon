@@ -1,14 +1,21 @@
--- Purpose: Client controller for Daily Rewards UI open/close, day-card interactions, status indicators, and feedback labels.
+-- Purpose: Client controller for Daily Rewards UI open/close, day-card interactions,
+-- invisible console hit labels, status indicators, and feedback labels.
 -- Runs on: Client
 -- Location: StarterGui > DailyRewardsUi > DailyRewardsClient
--- Dependencies: Players, ReplicatedStorage, TweenService, Workspace, UIButtonUtils, UIAudioConfig
--- Security: Client only displays state and requests claims; DailyRewardsService is authoritative.
+--
+-- Important:
+-- MainFrame > HitButtons > Day1-Day7 are invisible input targets only.
+-- They do NOT display claim status.
+-- Claim status is still controlled by:
+-- MainFrame > MainElements > DayX > StateDesign > ClaimStatus
+-- MainFrame > MainElements > DayX > StateDesign > DoneClaimingStatus
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
 
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
@@ -17,10 +24,14 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 local dailyRewardsGui = playerGui:WaitForChild("DailyRewardsUi")
+local dailyRewardsScreenGui = dailyRewardsGui:IsA("ScreenGui") and dailyRewardsGui or dailyRewardsGui:FindFirstChildWhichIsA("ScreenGui")
+
 local mainFrame = dailyRewardsGui:WaitForChild("MainFrame")
 local exitButton = mainFrame:WaitForChild("ExitButton")
 local mainElements = mainFrame:WaitForChild("MainElements")
+local hitButtons = mainFrame:WaitForChild("HitButtons")
 local stateLabels = mainFrame:WaitForChild("StateLabels")
+
 local failedLabel = stateLabels:WaitForChild("Failed")
 local successLabel = stateLabels:WaitForChild("Success")
 
@@ -32,7 +43,6 @@ local getStateFunction = remotes:WaitForChild("GetDailyRewardsState")
 local claimFunction = remotes:WaitForChild("ClaimDailyReward")
 local stateChangedEvent = remotes:WaitForChild("DailyRewardsStateChanged")
 
-local dailyRewardsScreenGui = dailyRewardsGui:IsA("ScreenGui") and dailyRewardsGui or dailyRewardsGui:FindFirstAncestorWhichIsA("ScreenGui")
 if dailyRewardsScreenGui then
 	dailyRewardsScreenGui.ResetOnSpawn = false
 end
@@ -50,6 +60,7 @@ local DAY_HOVER_TWEEN = TweenInfo.new(0.15, Enum.EasingStyle.Sine, Enum.EasingDi
 
 local LABEL_SHOW_SECONDS = 3
 local LABEL_FADE_OUT_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
 local CLAIM_CLIENT_COOLDOWN_SECONDS = 0.15
 local ATTRIBUTE_REFRESH_DEBOUNCE_SECONDS = 0.1
 
@@ -58,7 +69,12 @@ local labelTweens = {}
 local messageState = {}
 
 local dayFrames = {}
+local dayHitButtons = {}
+local dayHitButtonIsGuiButton = {}
 local dayStatusRefs = {}
+local dayVisualControllers = {}
+
+local latestClientState = nil
 
 local isClaiming = false
 local refreshToken = 0
@@ -72,6 +88,7 @@ local function getCamera(waitSeconds)
 
 	if waitSeconds and waitSeconds > 0 then
 		local started = os.clock()
+
 		repeat
 			task.wait()
 			camera = Workspace.CurrentCamera
@@ -94,7 +111,11 @@ local function safePlayClick()
 end
 
 local function getLabelUIStroke(label)
-	return label and label:FindFirstChildOfClass("UIStroke") or nil
+	if not label then
+		return nil
+	end
+
+	return label:FindFirstChildOfClass("UIStroke") or label:FindFirstChild("UIStroke")
 end
 
 local labelDefaults = {
@@ -103,6 +124,7 @@ local labelDefaults = {
 		TextStrokeTransparency = successLabel.TextStrokeTransparency,
 		UIStrokeTransparency = getLabelUIStroke(successLabel) and getLabelUIStroke(successLabel).Transparency or nil,
 	},
+
 	[failedLabel] = {
 		TextTransparency = failedLabel.TextTransparency,
 		TextStrokeTransparency = failedLabel.TextStrokeTransparency,
@@ -120,14 +142,17 @@ end
 
 local function cancelLabelTween(label)
 	local tweens = labelTweens[label]
-	if tweens then
-		for _, tween in pairs(tweens) do
-			if tween then
-				tween:Cancel()
-			end
-		end
-		labelTweens[label] = nil
+	if not tweens then
+		return
 	end
+
+	for _, tween in pairs(tweens) do
+		if tween then
+			tween:Cancel()
+		end
+	end
+
+	labelTweens[label] = nil
 end
 
 local function resetLabelTransparency(label)
@@ -151,8 +176,10 @@ local function hideStateLabel(label)
 	end
 
 	cancelLabelTween(label)
+
 	labelHideToken[label] = (labelHideToken[label] or 0) + 1
 	label.Visible = false
+
 	resetLabelTransparency(label)
 	resetMessageState(label)
 end
@@ -165,20 +192,25 @@ local function fadeOutStateLabel(label)
 	cancelLabelTween(label)
 
 	local uiStroke = getLabelUIStroke(label)
+
 	local textTween = TweenService:Create(label, LABEL_FADE_OUT_INFO, {
 		TextTransparency = 1,
 		TextStrokeTransparency = 1,
 	})
+
 	local strokeTween = nil
 
 	if uiStroke then
-		strokeTween = TweenService:Create(uiStroke, LABEL_FADE_OUT_INFO, { Transparency = 1 })
+		strokeTween = TweenService:Create(uiStroke, LABEL_FADE_OUT_INFO, {
+			Transparency = 1,
+		})
 	end
 
 	local activeTweens = {
 		Text = textTween,
 		UIStroke = strokeTween,
 	}
+
 	labelTweens[label] = activeTweens
 
 	local connection
@@ -193,11 +225,13 @@ local function fadeOutStateLabel(label)
 
 		labelTweens[label] = nil
 		label.Visible = false
+
 		resetLabelTransparency(label)
 		resetMessageState(label)
 	end)
 
 	textTween:Play()
+
 	if strokeTween then
 		strokeTween:Play()
 	end
@@ -227,6 +261,7 @@ local function showStateLabel(label, baseText)
 	end
 
 	baseText = tostring(baseText or "")
+
 	if baseText == "" then
 		return
 	end
@@ -236,11 +271,13 @@ local function showStateLabel(label, baseText)
 	resetLabelTransparency(label)
 
 	local state = messageState[label]
+
 	if not state then
 		state = {
 			count = 0,
 			baseText = nil,
 		}
+
 		messageState[label] = state
 	end
 
@@ -283,7 +320,69 @@ local function getDayState(dayStates, day)
 	return dayStates[day] or dayStates[tostring(day)]
 end
 
+local function isGamepadInputType(inputType)
+	return inputType == Enum.UserInputType.Gamepad1
+		or inputType == Enum.UserInputType.Gamepad2
+		or inputType == Enum.UserInputType.Gamepad3
+		or inputType == Enum.UserInputType.Gamepad4
+		or inputType == Enum.UserInputType.Gamepad5
+		or inputType == Enum.UserInputType.Gamepad6
+		or inputType == Enum.UserInputType.Gamepad7
+		or inputType == Enum.UserInputType.Gamepad8
+end
+
+local function shouldUseGamepadSelection()
+	local lastInputType = UserInputService:GetLastInputType()
+
+	return UserInputService.GamepadEnabled
+		and (
+			isGamepadInputType(lastInputType)
+			or not UserInputService.MouseEnabled
+		)
+end
+
+local function makeInvisibleHitTarget(guiObject)
+	if not guiObject or not guiObject:IsA("GuiObject") then
+		return
+	end
+
+	-- Important:
+	-- Roblox cannot select/click a GuiObject when Visible is false.
+	-- So the object is kept Visible=true at runtime, but made visually invisible.
+	guiObject.Visible = true
+	guiObject.Active = true
+	guiObject.BackgroundTransparency = 1
+
+	pcall(function()
+		guiObject.Selectable = true
+	end)
+
+	if guiObject:IsA("GuiButton") then
+		guiObject.AutoButtonColor = false
+	end
+
+	if guiObject:IsA("TextLabel") or guiObject:IsA("TextButton") or guiObject:IsA("TextBox") then
+		guiObject.TextTransparency = 1
+		guiObject.TextStrokeTransparency = 1
+	end
+
+	if guiObject:IsA("ImageLabel") or guiObject:IsA("ImageButton") then
+		guiObject.ImageTransparency = 1
+	end
+
+	local uiStroke = guiObject:FindFirstChildOfClass("UIStroke") or guiObject:FindFirstChild("UIStroke")
+	if uiStroke then
+		uiStroke.Transparency = 1
+	end
+end
+
 local function cacheStatusRefs(day, frame)
+	if not frame then
+		dayStatusRefs[day] = {}
+		warn("⚠️ [DailyRewards] Missing MainElements.Day" .. tostring(day))
+		return
+	end
+
 	local stateDesign = frame:FindFirstChild("StateDesign")
 	local claimStatus = stateDesign and stateDesign:FindFirstChild("ClaimStatus")
 	local doneClaimingStatus = stateDesign and stateDesign:FindFirstChild("DoneClaimingStatus")
@@ -298,9 +397,11 @@ local function cacheStatusRefs(day, frame)
 	if not stateDesign then
 		warn("⚠️ [DailyRewards] Missing StateDesign under " .. frame:GetFullName())
 	end
+
 	if not claimStatus then
 		warn("⚠️ [DailyRewards] Missing ClaimStatus under " .. frame:GetFullName())
 	end
+
 	if not doneClaimingStatus then
 		warn("⚠️ [DailyRewards] Missing DoneClaimingStatus under " .. frame:GetFullName())
 	end
@@ -314,6 +415,8 @@ local function clearAllIndicators()
 end
 
 local function applyState(clientState)
+	latestClientState = clientState
+
 	if type(clientState) ~= "table" or type(clientState.DayStates) ~= "table" then
 		clearAllIndicators()
 		return false
@@ -321,10 +424,12 @@ local function applyState(clientState)
 
 	for day, refs in pairs(dayStatusRefs) do
 		local state = getDayState(clientState.DayStates, day)
+
 		local claimed = type(state) == "table" and state.Claimed == true
 		local ready = type(state) == "table" and state.Ready == true and not claimed
 
-		-- DoneClaimingStatus always wins if corrupted/late state ever says both are true.
+		-- These are the ONLY claim-status indicators.
+		-- HitButtons.DayX stays invisible and does not represent claimed state.
 		setGuiObjectVisible(refs.ClaimStatus, ready)
 		setGuiObjectVisible(refs.DoneClaimingStatus, claimed)
 	end
@@ -359,6 +464,55 @@ local function hideOtherGuis()
 	end
 end
 
+local function getPreferredDayHitButton()
+	for day = 1, 7 do
+		local refs = dayStatusRefs[day]
+		local hitButton = dayHitButtons[day]
+
+		if hitButton and refs and refs.ClaimStatus and refs.ClaimStatus.Visible then
+			return hitButton
+		end
+	end
+
+	for day = 1, 7 do
+		local hitButton = dayHitButtons[day]
+
+		if hitButton then
+			return hitButton
+		end
+	end
+
+	return nil
+end
+
+local function selectPreferredDayHitButton()
+	if not isOpen or not shouldUseGamepadSelection() then
+		return
+	end
+
+	local hitButton = getPreferredDayHitButton()
+
+	if hitButton then
+		makeInvisibleHitTarget(hitButton)
+		GuiService.SelectedObject = hitButton
+	end
+end
+
+local function clearDailyRewardGamepadSelection()
+	local selectedObject = GuiService.SelectedObject
+
+	if not selectedObject then
+		return
+	end
+
+	for _, hitButton in pairs(dayHitButtons) do
+		if selectedObject == hitButton then
+			GuiService.SelectedObject = nil
+			return
+		end
+	end
+end
+
 local function closeDailyRewards()
 	if not isOpen then
 		return
@@ -367,10 +521,14 @@ local function closeDailyRewards()
 	restoreHiddenGuis()
 	setMainFrameVisible(false)
 	clearStateLabels()
+	clearDailyRewardGamepadSelection()
 
 	local camera = getCamera(0.5)
+
 	if camera then
-		TweenService:Create(camera, FOV_TWEEN, { FieldOfView = savedFOV }):Play()
+		TweenService:Create(camera, FOV_TWEEN, {
+			FieldOfView = savedFOV,
+		}):Play()
 	end
 end
 
@@ -388,6 +546,7 @@ local function refreshState()
 
 	if ok then
 		applyState(clientState)
+		selectPreferredDayHitButton()
 	else
 		clearAllIndicators()
 		warn("⚠️ [DailyRewards] Failed to refresh state: " .. tostring(clientState))
@@ -400,6 +559,7 @@ local function queueAttributeRefresh()
 	end
 
 	attributeRefreshQueued = true
+
 	task.delay(ATTRIBUTE_REFRESH_DEBOUNCE_SECONDS, function()
 		attributeRefreshQueued = false
 		refreshState()
@@ -408,6 +568,7 @@ end
 
 local function getOrCreateUIScale(guiObject)
 	local uiScale = guiObject:FindFirstChildOfClass("UIScale")
+
 	if not uiScale then
 		uiScale = Instance.new("UIScale")
 		uiScale.Scale = 1
@@ -417,8 +578,65 @@ local function getOrCreateUIScale(guiObject)
 	return uiScale
 end
 
-local function wireDayFrame(day, frame)
-	if not frame or frame:GetAttribute("DailyRewardsBound") then
+local function attemptClaim(day)
+	if isClaiming then
+		return
+	end
+
+	isClaiming = true
+
+	local ok, success, message, clientState = pcall(function()
+		return claimFunction:InvokeServer(day)
+	end)
+
+	if ok then
+		if type(clientState) == "table" then
+			applyState(clientState)
+		else
+			refreshState()
+		end
+
+		if success then
+			showStateLabel(successLabel, message or "Reward has been claimed successfully!")
+		else
+			showStateLabel(failedLabel, message or "You're not ready for this yet!")
+		end
+	else
+		warn("⚠️ [DailyRewards] Claim request failed: " .. tostring(success))
+		showStateLabel(failedLabel, "Reward system is loading. Please try again.")
+		refreshState()
+	end
+
+	task.delay(CLAIM_CLIENT_COOLDOWN_SECONDS, function()
+		isClaiming = false
+	end)
+end
+
+local function isMouseInput()
+	local lastInputType = UserInputService:GetLastInputType()
+
+	return lastInputType == Enum.UserInputType.MouseMovement
+		or lastInputType == Enum.UserInputType.MouseButton1
+		or lastInputType == Enum.UserInputType.MouseButton2
+end
+
+local function isMouseOrTouchPressInput(input)
+	return input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function isConsoleActivationInput(input)
+	return input.KeyCode == Enum.KeyCode.ButtonA
+		or input.KeyCode == Enum.KeyCode.Return
+		or input.KeyCode == Enum.KeyCode.Space
+end
+
+local function wireDayFrame(day, frame, hitButton)
+	if not frame then
+		return
+	end
+
+	if frame:GetAttribute("DailyRewardsBound") then
 		return
 	end
 
@@ -426,30 +644,28 @@ local function wireDayFrame(day, frame)
 	frame.Active = true
 
 	local uiScale = getOrCreateUIScale(frame)
+
 	local isHovering = false
 	local isPressed = false
 	local lastClickSoundAt = 0
 
 	local function updateScale()
 		local targetScale = 1
+
 		if isPressed then
 			targetScale = DAY_CLICK_SCALE
 		elseif isHovering then
 			targetScale = DAY_HOVER_SCALE
 		end
 
-		TweenService:Create(uiScale, DAY_HOVER_TWEEN, { Scale = targetScale }):Play()
-	end
-
-	local function isMouseInput()
-		local lastInputType = UserInputService:GetLastInputType()
-		return lastInputType == Enum.UserInputType.MouseMovement
-			or lastInputType == Enum.UserInputType.MouseButton1
-			or lastInputType == Enum.UserInputType.MouseButton2
+		TweenService:Create(uiScale, DAY_HOVER_TWEEN, {
+			Scale = targetScale,
+		}):Play()
 	end
 
 	local function playClickOnce()
 		local now = os.clock()
+
 		if now - lastClickSoundAt < 0.08 then
 			return
 		end
@@ -458,83 +674,232 @@ local function wireDayFrame(day, frame)
 		safePlayClick()
 	end
 
-	local function attemptClaim()
-		if isClaiming then
+	local function setHovering(hovering, playSound)
+		if isHovering == hovering then
 			return
 		end
 
-		isClaiming = true
+		isHovering = hovering
 
-		local ok, success, message, clientState = pcall(function()
-			return claimFunction:InvokeServer(day)
-		end)
-
-		if ok then
-			if type(clientState) == "table" then
-				applyState(clientState)
-			else
-				refreshState()
-			end
-
-			if success then
-				showStateLabel(successLabel, message or "Reward has been claimed successfully!")
-			else
-				showStateLabel(failedLabel, message or "You're not ready for this yet!")
-			end
-		else
-			warn("⚠️ [DailyRewards] Claim request failed: " .. tostring(success))
-			showStateLabel(failedLabel, "Reward system is loading. Please try again.")
-			refreshState()
+		if hovering and playSound then
+			safePlayHover()
 		end
 
-		task.delay(CLAIM_CLIENT_COOLDOWN_SECONDS, function()
-			isClaiming = false
-		end)
+		updateScale()
 	end
+
+	local function clearPressed()
+		if not isPressed then
+			return
+		end
+
+		isPressed = false
+		updateScale()
+	end
+
+	local function beginPress(playSound)
+		isPressed = true
+
+		if playSound ~= false then
+			playClickOnce()
+		end
+
+		updateScale()
+	end
+
+	dayVisualControllers[day] = {
+		beginPress = beginPress,
+		clearPressed = clearPressed,
+		playClickOnce = playClickOnce,
+		setHovering = setHovering,
+	}
 
 	frame.MouseEnter:Connect(function()
 		if isHovering or not isMouseInput() then
 			return
 		end
 
-		isHovering = true
-		safePlayHover()
-		updateScale()
+		setHovering(true, true)
 	end)
 
 	frame.MouseLeave:Connect(function()
-		isHovering = false
-		isPressed = false
-		updateScale()
+		setHovering(false, false)
+		clearPressed()
 	end)
 
 	frame.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			isPressed = true
-			playClickOnce()
-			updateScale()
+		if isMouseOrTouchPressInput(input) then
+			beginPress(true)
 		end
 	end)
 
 	frame.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		if isMouseOrTouchPressInput(input) then
 			if not isPressed then
 				return
 			end
 
-			isPressed = false
-			updateScale()
-			attemptClaim()
+			clearPressed()
+			attemptClaim(day)
 		end
 	end)
+
+	if not hitButton then
+		return
+	end
+
+	if not hitButton:IsA("GuiObject") then
+		warn("⚠️ [DailyRewards] HitButtons.Day" .. tostring(day) .. " must be a GuiObject.")
+		return
+	end
+
+	dayHitButtons[day] = hitButton
+	dayHitButtonIsGuiButton[day] = hitButton:IsA("GuiButton")
+
+	makeInvisibleHitTarget(hitButton)
+
+	hitButton.MouseEnter:Connect(function()
+		if isHovering or not isMouseInput() then
+			return
+		end
+
+		setHovering(true, true)
+	end)
+
+	hitButton.MouseLeave:Connect(function()
+		setHovering(false, false)
+		clearPressed()
+	end)
+
+	hitButton.SelectionGained:Connect(function()
+		setHovering(true, true)
+	end)
+
+	hitButton.SelectionLost:Connect(function()
+		setHovering(false, false)
+		clearPressed()
+	end)
+
+	hitButton.InputBegan:Connect(function(input)
+		if isMouseOrTouchPressInput(input) or isConsoleActivationInput(input) then
+			beginPress(false)
+		end
+	end)
+
+	hitButton.InputEnded:Connect(function(input)
+		if isMouseOrTouchPressInput(input) or isConsoleActivationInput(input) then
+			clearPressed()
+		end
+
+		-- TextLabel support.
+		-- GuiButtons use Activated so we do not double-claim.
+		if not hitButton:IsA("GuiButton") and isMouseOrTouchPressInput(input) then
+			playClickOnce()
+			attemptClaim(day)
+		end
+	end)
+
+	if hitButton:IsA("GuiButton") then
+		hitButton.Activated:Connect(function()
+			playClickOnce()
+			clearPressed()
+			attemptClaim(day)
+		end)
+	end
 end
 
 for day = 1, 7 do
-	local frame = mainElements:WaitForChild("Day" .. tostring(day))
+	local dayName = "Day" .. tostring(day)
+
+	local frame = mainElements:FindFirstChild(dayName)
+	local hitButton = hitButtons:FindFirstChild(dayName)
+
 	dayFrames[day] = frame
+	dayHitButtons[day] = hitButton
+
+	if hitButton then
+		makeInvisibleHitTarget(hitButton)
+	else
+		warn("⚠️ [DailyRewards] Missing MainFrame > HitButtons > " .. dayName)
+	end
+
 	cacheStatusRefs(day, frame)
-	wireDayFrame(day, frame)
+	wireDayFrame(day, frame, hitButton)
 end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed or not isOpen then
+		return
+	end
+
+	if not isConsoleActivationInput(input) then
+		return
+	end
+
+	local selectedObject = GuiService.SelectedObject
+
+	if not selectedObject then
+		return
+	end
+
+	for day, hitButton in pairs(dayHitButtons) do
+		if selectedObject == hitButton and not dayHitButtonIsGuiButton[day] then
+			local controller = dayVisualControllers[day]
+
+			if controller then
+				controller.beginPress(false)
+				controller.playClickOnce()
+			end
+
+			attemptClaim(day)
+			return
+		end
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if not isOpen then
+		return
+	end
+
+	if not isConsoleActivationInput(input) then
+		return
+	end
+
+	local selectedObject = GuiService.SelectedObject
+
+	if not selectedObject then
+		return
+	end
+
+	for day, hitButton in pairs(dayHitButtons) do
+		if selectedObject == hitButton then
+			local controller = dayVisualControllers[day]
+
+			if controller then
+				controller.clearPressed()
+			end
+
+			return
+		end
+	end
+end)
+
+UserInputService.LastInputTypeChanged:Connect(function()
+	for _, hitButton in pairs(dayHitButtons) do
+		makeInvisibleHitTarget(hitButton)
+	end
+
+	if latestClientState then
+		applyState(latestClientState)
+	end
+
+	if shouldUseGamepadSelection() then
+		selectPreferredDayHitButton()
+	else
+		clearDailyRewardGamepadSelection()
+	end
+end)
 
 setMainFrameVisible(false)
 clearStateLabels()
@@ -543,6 +908,7 @@ refreshState()
 
 UIButtonUtils.SetupButton(openButton, function()
 	local camera = getCamera(2)
+
 	if camera then
 		savedFOV = camera.FieldOfView
 	end
@@ -555,8 +921,14 @@ UIButtonUtils.SetupButton(openButton, function()
 	clearStateLabels()
 	setMainFrameVisible(true)
 
+	for _, hitButton in pairs(dayHitButtons) do
+		makeInvisibleHitTarget(hitButton)
+	end
+
 	if camera then
-		TweenService:Create(camera, FOV_TWEEN, { FieldOfView = OPEN_FOV }):Play()
+		TweenService:Create(camera, FOV_TWEEN, {
+			FieldOfView = OPEN_FOV,
+		}):Play()
 	end
 
 	refreshState()
@@ -573,9 +945,11 @@ if dailyRewardsScreenGui then
 end
 
 stateChangedEvent.OnClientEvent:Connect(function(clientState)
-	-- Invalidate any older InvokeServer response that may return after this newer server push.
+	-- Invalidate older InvokeServer responses that may return after this server push.
 	refreshToken += 1
+
 	applyState(clientState)
+	selectPreferredDayHitButton()
 end)
 
 player:GetAttributeChangedSignal("DailyRewardsStateJson"):Connect(queueAttributeRefresh)
