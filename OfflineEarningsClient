@@ -56,6 +56,7 @@ local premiumResult = remotes:WaitForChild("OfflinePremiumClaimResult")
 mainFrame.Visible = false
 gui.Enabled = false
 local claimLocked = false
+local closeInProgress = false
 local baseAmount = 0
 local REQUEST_RETRIES = 90
 local REQUEST_RETRY_DELAY = 0.5
@@ -83,16 +84,28 @@ local function setState(success, msg)
 	end
 end
 
-local function closeUi(force)
-	if claimLocked and not force then return end
-	gui.Enabled = false
-	if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
-	playerGui:SetAttribute("OfflineEarningsFlowActive", false)
-end
-
 local function disableButtons(disabled)
 	obtainButton.Active = not disabled
 	premiumButton.Active = not disabled
+end
+
+local function resetUi()
+	mainFrame.Visible = false
+	successLabel.Visible = false
+	failedLabel.Visible = false
+	claimLocked = false
+	baseAmount = 0
+	disableButtons(false)
+end
+
+local function closeUi(force)
+	if closeInProgress or (claimLocked and not force) then return end
+	closeInProgress = true
+	gui.Enabled = false
+	if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+	playerGui:SetAttribute("OfflineEarningsFlowActive", false)
+	resetUi()
+	closeInProgress = false
 end
 
 local function showOfflineUi()
@@ -185,5 +198,13 @@ premiumResult.OnClientEvent:Connect(function(success, msg, amount)
 end)
 
 UIButtonUtils.SetupButton(exitButton, function() closeUi(false) end)
+
+gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+	if not closeInProgress and not gui.Enabled and mainFrame.Visible then
+		-- Other full-screen panels hide ScreenGuis directly. Treat that as a real
+		-- close so this join popup cannot reappear when the other panel restores UI.
+		closeUi(true)
+	end
+end)
 
 task.defer(maybeOpen)

@@ -428,6 +428,7 @@ local function wireDayFrame(day, frame)
 	local uiScale = getOrCreateUIScale(frame)
 	local isHovering = false
 	local isPressed = false
+	local activePressInput = nil
 	local lastClickSoundAt = 0
 
 	local function updateScale()
@@ -504,29 +505,35 @@ local function wireDayFrame(day, frame)
 
 	frame.MouseLeave:Connect(function()
 		isHovering = false
-		isPressed = false
+		if not activePressInput or activePressInput.UserInputType ~= Enum.UserInputType.Touch then
+			isPressed = false
+			activePressInput = nil
+		end
 		updateScale()
 	end)
 
+	local function finishPress(input)
+		if input ~= activePressInput then
+			return
+		end
+
+		activePressInput = nil
+		isPressed = false
+		updateScale()
+		attemptClaim()
+	end
+
 	frame.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			activePressInput = input
 			isPressed = true
 			playClickOnce()
 			updateScale()
 		end
 	end)
 
-	frame.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			if not isPressed then
-				return
-			end
-
-			isPressed = false
-			updateScale()
-			attemptClaim()
-		end
-	end)
+	frame.InputEnded:Connect(finishPress)
+	UserInputService.InputEnded:Connect(finishPress)
 end
 
 for day = 1, 7 do
