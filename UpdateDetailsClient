@@ -1,0 +1,126 @@
+-- Purpose: Client controller for the Update Log UI open/close behavior.
+-- Runs on: Client (LocalScript)
+-- Location: StarterGui > UpdateDetails > UpdateDetailsClient
+--
+-- Hierarchy:
+--   StarterGui > Bonuses > Updates > Button        (opens the update log)
+--   StarterGui > UpdateDetails > MainFrame         (update log UI)
+--   StarterGui > UpdateDetails > MainFrame > ExitButton (closes the update log)
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local updateDetailsGui = playerGui:WaitForChild("UpdateDetails")
+local updateDetailsScreenGui = updateDetailsGui:IsA("ScreenGui")
+	and updateDetailsGui
+	or updateDetailsGui:FindFirstAncestorWhichIsA("ScreenGui")
+
+local mainFrame = updateDetailsGui:WaitForChild("MainFrame")
+local exitButton = mainFrame:WaitForChild("ExitButton")
+
+local bonusesGui = playerGui:WaitForChild("Bonuses")
+local openButton = bonusesGui:WaitForChild("Updates"):WaitForChild("Button")
+
+local OPEN_FOV = 50
+local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+
+local isOpen = false
+local hiddenGuis = {}
+local savedFOV = 70
+
+if updateDetailsScreenGui then
+	updateDetailsScreenGui.ResetOnSpawn = false
+end
+
+local function getCamera()
+	return Workspace.CurrentCamera
+end
+
+local function restoreHiddenGuis()
+	for _, gui in ipairs(hiddenGuis) do
+		if gui and gui.Parent then
+			gui.Enabled = true
+		end
+	end
+
+	hiddenGuis = {}
+end
+
+local function hideOtherGuis()
+	hiddenGuis = {}
+
+	for _, gui in ipairs(playerGui:GetDescendants()) do
+		if gui:IsA("ScreenGui") and gui ~= updateDetailsScreenGui and gui.Enabled == true then
+			gui.Enabled = false
+			table.insert(hiddenGuis, gui)
+		end
+	end
+end
+
+local function setMainFrameVisible(isVisible)
+	isOpen = isVisible
+	mainFrame.Visible = isVisible
+	openButton.Visible = not isVisible
+end
+
+local function openUpdateDetails()
+	if isOpen then
+		return
+	end
+
+	local camera = getCamera()
+
+	if camera then
+		savedFOV = camera.FieldOfView
+	end
+
+	if updateDetailsScreenGui then
+		updateDetailsScreenGui.Enabled = true
+	end
+
+	hideOtherGuis()
+	setMainFrameVisible(true)
+
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, {
+			FieldOfView = OPEN_FOV,
+		}):Play()
+	end
+end
+
+local function closeUpdateDetails()
+	if not isOpen then
+		return
+	end
+
+	restoreHiddenGuis()
+	setMainFrameVisible(false)
+
+	local camera = getCamera()
+
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, {
+			FieldOfView = savedFOV,
+		}):Play()
+	end
+end
+
+setMainFrameVisible(false)
+
+UIButtonUtils.SetupButton(openButton, openUpdateDetails)
+UIButtonUtils.SetupButton(exitButton, closeUpdateDetails)
+
+if updateDetailsScreenGui then
+	updateDetailsScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if isOpen and not updateDetailsScreenGui.Enabled then
+			closeUpdateDetails()
+		end
+	end)
+end
