@@ -58,27 +58,65 @@ local function getReceiverUI()
 	return gui, gui:FindFirstChild("MainFrame")
 end
 
+local cachedStatusGui = nil
+local cachedNotificationContainer = nil
+local cachedStateLabels = nil
+local cachedFailedLabel = nil
+local cachedSuccessLabel = nil
+
+local function isAlive(instance)
+	return instance ~= nil and instance.Parent ~= nil
+end
+
 local function getStateLabels()
+	if isAlive(cachedStatusGui)
+		and isAlive(cachedNotificationContainer)
+		and isAlive(cachedStateLabels)
+		and isAlive(cachedFailedLabel)
+		and isAlive(cachedSuccessLabel)
+	then
+		return cachedFailedLabel, cachedSuccessLabel, cachedStatusGui, cachedNotificationContainer, cachedStateLabels
+	end
+
 	local statusGui = PlayerGui:FindFirstChild("GiftingStatus")
 	if not statusGui then
-		warn("⚠️ GiftingStatus ScreenGui missing in PlayerGui!")
-		return nil, nil
+		statusGui = PlayerGui:WaitForChild("GiftingStatus", 10)
+	end
+
+	if not statusGui then
+		warn("⚠️ GiftingStatus ScreenGui missing in PlayerGui after waiting!")
+		return nil, nil, nil, nil, nil
 	end
 
 	local container = statusGui:FindFirstChild("NotificationContainer")
 	if not container then
+		container = statusGui:WaitForChild("NotificationContainer", 10)
+	end
+
+	if not container then
 		warn("⚠️ NotificationContainer missing inside GiftingStatus!")
-		return nil, nil
+		return nil, nil, statusGui, nil, nil
 	end
 
 	local stateLabels = container:FindFirstChild("StateLabels")
 	if not stateLabels then
+		stateLabels = container:WaitForChild("StateLabels", 10)
+	end
+
+	if not stateLabels then
 		warn("⚠️ StateLabels missing inside NotificationContainer!")
-		return nil, nil
+		return nil, nil, statusGui, container, nil
 	end
 
 	local failedLabel = stateLabels:FindFirstChild("Failed")
+	if not failedLabel then
+		failedLabel = stateLabels:WaitForChild("Failed", 10)
+	end
+
 	local successLabel = stateLabels:FindFirstChild("Success")
+	if not successLabel then
+		successLabel = stateLabels:WaitForChild("Success", 10)
+	end
 
 	if not failedLabel then
 		warn("⚠️ Failed TextLabel missing inside StateLabels!")
@@ -88,7 +126,61 @@ local function getStateLabels()
 		warn("⚠️ Success TextLabel missing inside StateLabels!")
 	end
 
-	return failedLabel, successLabel
+	cachedStatusGui = statusGui
+	cachedNotificationContainer = container
+	cachedStateLabels = stateLabels
+	cachedFailedLabel = failedLabel
+	cachedSuccessLabel = successLabel
+
+	return failedLabel, successLabel, statusGui, container, stateLabels
+end
+
+local function setGuiVisible(instance, visible)
+	if not instance then return end
+
+	if instance:IsA("ScreenGui") then
+		instance.Enabled = visible
+	elseif instance:IsA("GuiObject") then
+		instance.Visible = visible
+
+		if visible and instance:IsA("CanvasGroup") then
+			instance.GroupTransparency = 0
+		end
+	end
+end
+
+local function forceGuiAncestryVisible(instance)
+	local current = instance
+
+	while current and current ~= PlayerGui do
+		setGuiVisible(current, true)
+		current = current.Parent
+	end
+end
+
+local function showTextLabel(label)
+	if not label then return end
+
+	forceGuiAncestryVisible(label)
+
+	if label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox") then
+		label.Visible = true
+		label.TextTransparency = 0
+	end
+
+	local stroke = label:FindFirstChildOfClass("UIStroke")
+	if stroke then
+		stroke.Enabled = true
+	end
+end
+
+local function hideTextLabel(label)
+	if not label then return end
+
+	if label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox") then
+		label.Text = ""
+		label.Visible = false
+	end
 end
 
 -- ============================================================================
@@ -106,8 +198,8 @@ if bootReceiverMain then bootReceiverMain.Visible = false end
 
 do
 	local failedLabel, successLabel = getStateLabels()
-	if failedLabel then failedLabel.Text = "" end
-	if successLabel then successLabel.Text = "" end
+	hideTextLabel(failedLabel)
+	hideTextLabel(successLabel)
 end
 
 -- ============================================================================
@@ -224,10 +316,10 @@ local function getStateIsPending(data)
 	return state == "Pending"
 end
 
--- This ONLY updates Text.
--- It does not change TextColor3, Position, Size, Transparency, Visible, or any styling.
+-- This updates text AND forces the correct status label to be visible.
+-- This fixes labels that are set to Visible = false in Roblox Studio.
 local function showStatusNotification(baseText, isSuccess)
-	local failedLabel, successLabel = getStateLabels()
+	local failedLabel, successLabel, statusGui, container, stateLabels = getStateLabels()
 	if not failedLabel or not successLabel then return end
 
 	baseText = tostring(baseText or "")
@@ -253,12 +345,18 @@ local function showStatusNotification(baseText, isSuccess)
 	local targetLabel = isSuccess and successLabel or failedLabel
 	local otherLabel = isSuccess and failedLabel or successLabel
 
+	setGuiVisible(statusGui, true)
+	setGuiVisible(container, true)
+	setGuiVisible(stateLabels, true)
+
+	hideTextLabel(otherLabel)
+	showTextLabel(targetLabel)
+
 	targetLabel.Text = displayText
-	otherLabel.Text = ""
 
 	statusState.Timer = task.delay(NOTIFICATION_DURATION, function()
 		if targetLabel and targetLabel.Parent and targetLabel.Text == displayText then
-			targetLabel.Text = ""
+			hideTextLabel(targetLabel)
 		end
 
 		if statusState.LastBaseText == baseText and statusState.LastIsSuccess == isSuccess then
