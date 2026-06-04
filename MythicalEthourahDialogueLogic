@@ -44,7 +44,7 @@ local PROMPT_NAME = "TalkPrompt"
 
 local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TYPEWRITER_SPEED = 0.02
-local LEAVE_DELAY = 1.5
+local LEAVE_DELAY = 2.5
 local SHOP_OPEN_DELAY_SECONDS = 2.0
 
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
@@ -441,19 +441,27 @@ local function startInteraction(npcModel)
 			end
 		end
 
-		-- ✅ CHANGE 1: Leave button — delay runs alongside typewrite (matches Angelo behaviour)
+		-- ✅ FIX: Leave button now waits for the goodbye typewriter to finish,
+		-- then gives players a short readable pause before restoring normal state.
 		connectBtn(BTN_LEAVE_ID, function()
 			if isLeaving then return end
+
 			isLeaving = true
 			clearConnections()
 			setButtonsState(false)
+
 			if dialogueLabel then
 				local coloredRedName = "<font color='" .. ETHOURAH_COLOR .. "'>" .. player.DisplayName .. "</font>"
 				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Aight slide out then. Come back when you ready to get serious </font>" .. coloredRedName .. "."
-				typewrite(dialogueLabel, goodbyeMsg)
+
+				typewrite(dialogueLabel, goodbyeMsg, function()
+					task.wait(LEAVE_DELAY)
+					stopInteraction()
+				end)
+			else
+				task.wait(LEAVE_DELAY)
+				stopInteraction()
 			end
-			task.wait(LEAVE_DELAY)
-			stopInteraction()
 		end)
 
 		connectBtn(BTN_INQUIRY_ID, function()
@@ -466,6 +474,7 @@ local function startInteraction(npcModel)
 				}
 				local loreText = inqMsgs[math.random(1, #inqMsgs)]
 				typewrite(dialogueLabel, loreText, function()
+					task.wait(1.25)
 					setButtonsState(true)
 				end)
 			end
