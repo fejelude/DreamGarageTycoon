@@ -65,6 +65,12 @@
 --        If player.Character is already nil when save() runs, this cache is
 --        used as a fallback. CharacterAdded clears the cache so a stale value
 --        from a previous death never contaminates the next snapshot.
+--
+-- PRODUCTION SETUP NOTE:
+--   This version does not dynamically create required remotes, bindables, or
+--   required hierarchy setup objects. Missing required setup logs a clear error.
+--   Runtime player-owned stats such as leaderstats/HiddenStats are still created
+--   because this data handler owns those values during player initialization.
 
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
@@ -153,33 +159,75 @@ local CONSTANTS = {
 	VERTICAL_OFFSET = 5
 }
 
+local REQUIRED_WAIT_SECONDS = 8
+
+local function failSetup(message)
+	error("[TycoonDataHandler] " .. message, 0)
+end
+
+local function getRequiredChild(parent, childName, className, pathForMessage, waitSeconds)
+	if not parent then
+		failSetup("Missing parent while looking for " .. tostring(pathForMessage or childName) .. ".")
+	end
+
+	local child = parent:FindFirstChild(childName)
+	if not child and waitSeconds and waitSeconds > 0 then
+		child = parent:WaitForChild(childName, waitSeconds)
+	end
+
+	local fullPath = pathForMessage or (parent:GetFullName() .. " > " .. childName)
+	if not child then
+		failSetup("Missing required instance: " .. fullPath .. ". Create it manually in Explorer; this script will not create it automatically.")
+	end
+
+	if className and not child:IsA(className) then
+		failSetup("Invalid required instance: " .. fullPath .. " must be a " .. className .. ", but found " .. child.ClassName .. ".")
+	end
+
+	return child
+end
+
+local function decodeJsonOrDefault(rawValue, defaultValue, context)
+	if type(rawValue) ~= "string" or rawValue == "" then
+		return defaultValue
+	end
+
+	local ok, decoded = pcall(function()
+		return HttpService:JSONDecode(rawValue)
+	end)
+
+	if ok then
+		return decoded
+	end
+
+	warn("⚠️ [TycoonDataHandler] Failed to decode JSON for " .. tostring(context or "unknown value") .. ": " .. tostring(decoded))
+	return defaultValue
+end
+
 -- ----------------------------------------------------------------------------
 -- 📂 ASSET REFERENCES
 -- ----------------------------------------------------------------------------
-local CarTools = ServerStorage:WaitForChild("CarTools")
-local CarModels = ServerStorage:WaitForChild("CarModels")
-local TycoonFolder = Workspace:WaitForChild("Tycoons")
+local CarTools = getRequiredChild(ServerStorage, "CarTools", "Folder", "ServerStorage > CarTools", REQUIRED_WAIT_SECONDS)
+local CarModels = getRequiredChild(ServerStorage, "CarModels", "Folder", "ServerStorage > CarModels", REQUIRED_WAIT_SECONDS)
+local TycoonFolder = getRequiredChild(Workspace, "Tycoons", "Folder", "Workspace > Tycoons", REQUIRED_WAIT_SECONDS)
 local AdminLogEvent = ServerStorage:FindFirstChild("TycoonAdminLog")
 
-local SettingsPersistenceEvent = ReplicatedStorage:FindFirstChild(SETTINGS_REMOTE_NAME)
-if not SettingsPersistenceEvent then
-	SettingsPersistenceEvent = Instance.new("RemoteEvent")
-	SettingsPersistenceEvent.Name = SETTINGS_REMOTE_NAME
-	SettingsPersistenceEvent.Parent = ReplicatedStorage
-end
+local SettingsPersistenceEvent = getRequiredChild(ReplicatedStorage, SETTINGS_REMOTE_NAME, "RemoteEvent", "ReplicatedStorage > " .. SETTINGS_REMOTE_NAME, REQUIRED_WAIT_SECONDS)
 
 -- 📚 MODULES
 local CarStats
+local carStatsModule = getRequiredChild(ReplicatedStorage, "CarStats", "ModuleScript", "ReplicatedStorage > CarStats", REQUIRED_WAIT_SECONDS)
 local success, err = pcall(function()
-	CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+	CarStats = require(carStatsModule)
 end)
-if not success then warn("⚠️ CarStats module not found.") end
+if not success then error("[TycoonDataHandler] Failed to require ReplicatedStorage > CarStats: " .. tostring(err), 0) end
 
 -- ----------------------------------------------------------------------------
 -- 🔒 STATE MANAGEMENT
 -- ----------------------------------------------------------------------------
 local SessionData = {}
 local PadLocks = {}
+local FreeRewardsClaimLocks = {}
 local save
 
 -- ----------------------------------------------------------------------------
@@ -507,9 +555,13 @@ local function giveTool(player, toolName, customAttributes)
 			gearTool:Destroy()
 		end
 
-		markDirty(player)
-		markIndexDiscovered(player, sourceTool.Name)
-		return true
+		if not (type(customAttributes) == "table" and customAttributes.SuppressDirty == true) then
+			markDirty(player)
+		end
+		if not (type(customAttributes) == "table" and customAttributes.SuppressIndexMark == true) then
+			markIndexDiscovered(player, sourceTool.Name)
+		end
+		return true, nil, backpackTool, gearTool
 	else
 		warn("⚠️ [DATA] Invalid tool requested: " .. tostring(toolName))
 		return false, "Invalid tool"
@@ -548,8 +600,11 @@ local function RestoreLayout(player, plot, layoutData)
 	if not layoutData or not plot then return end
 	if #layoutData > MAX_LAYOUT_SIZE then return end
 
-	local placedCarsFolder = plot:FindFirstChild("PlacedCars") or Instance.new("Folder", plot)
-	placedCarsFolder.Name = "PlacedCars"
+	local placedCarsFolder = plot:FindFirstChild("PlacedCars")
+	if not placedCarsFolder or not placedCarsFolder:IsA("Folder") then
+		warn("⚠️ [TycoonDataHandler] Missing required Folder: " .. plot:GetFullName() .. " > PlacedCars. Layout restore skipped; this script will not create it automatically.")
+		return
+	end
 
 	local validPads = {}
 	local playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
@@ -614,14 +669,18 @@ local function RestoreLayout(player, plot, layoutData)
 						newCar:PivotTo(padTop)
 						newCar.Parent = placedCarsFolder
 
-						isOccupied.Value = true
-						local linked = padPart:FindFirstChild("LinkedCar") or Instance.new("ObjectValue", padPart)
-						linked.Name = "LinkedCar"
-						linked.Value = newCar
+						local linked = padPart:FindFirstChild("LinkedCar")
+						if not linked or not linked:IsA("ObjectValue") then
+							warn("⚠️ [TycoonDataHandler] Missing required ObjectValue: " .. padPart:GetFullName() .. " > LinkedCar. Skipping restored car; this script will not create it automatically.")
+							newCar:Destroy()
+						else
+							isOccupied.Value = true
+							linked.Value = newCar
 
-						if padPart:FindFirstChild("PlacePrompt") then padPart.PlacePrompt.Enabled = false end
-						if padPart:FindFirstChild("PickupPrompt") then padPart.PickupPrompt.Enabled = true end
-						restoredCount += 1
+							if padPart:FindFirstChild("PlacePrompt") then padPart.PlacePrompt.Enabled = false end
+							if padPart:FindFirstChild("PickupPrompt") then padPart.PickupPrompt.Enabled = true end
+							restoredCount += 1
+						end
 					end
 				end
 			end
@@ -653,6 +712,7 @@ end
 local function countMatchingTools(player, targetToolId)
 	if not player or not targetToolId then return 0 end
 
+	-- StarterGear is only a respawn mirror and must not count as another owned car.
 	local total = 0
 	local function scan(container)
 		if not container then return end
@@ -664,7 +724,6 @@ local function countMatchingTools(player, targetToolId)
 	end
 
 	scan(player:FindFirstChild("Backpack"))
-	scan(player:FindFirstChild("StarterGear"))
 	if player.Character then scan(player.Character) end
 
 	return total
@@ -674,35 +733,140 @@ local function removeMatchingTools(player, targetToolId, requestedAmount)
 	if not player or not targetToolId then return 0 end
 
 	requestedAmount = math.max(1, tonumber(requestedAmount) or 1)
-	local removedCount = 0
+	local removedOwnedCount = 0
 
-	local function removeFromContainer(container)
-		if not container or removedCount >= requestedAmount then return end
+	local function removeFromOwnedContainer(container)
+		if not container or removedOwnedCount >= requestedAmount then return end
 		for _, child in ipairs(container:GetChildren()) do
-			if removedCount >= requestedAmount then break end
+			if removedOwnedCount >= requestedAmount then break end
 			if toolMatchesId(child, targetToolId) then
 				child:Destroy()
-				removedCount += 1
+				removedOwnedCount += 1
 			end
 		end
 	end
 
-	removeFromContainer(player:FindFirstChild("Backpack"))
-	removeFromContainer(player:FindFirstChild("StarterGear"))
-	if player.Character then removeFromContainer(player.Character) end
+	-- Remove real owned copies first. StarterGear mirrors are cleaned after and
+	-- do not contribute to the amount removed.
+	removeFromOwnedContainer(player:FindFirstChild("Backpack"))
+	if player.Character then removeFromOwnedContainer(player.Character) end
 
-	return removedCount
+	local mirrorsToRemove = removedOwnedCount
+	local starterGear = player:FindFirstChild("StarterGear")
+	if starterGear and mirrorsToRemove > 0 then
+		for _, child in ipairs(starterGear:GetChildren()) do
+			if mirrorsToRemove <= 0 then break end
+			if toolMatchesId(child, targetToolId) then
+				child:Destroy()
+				mirrorsToRemove -= 1
+			end
+		end
+	end
+
+	return removedOwnedCount
+end
+
+local function removeToolsByAttribute(player, attributeName, attributeValue)
+	if not player or type(attributeName) ~= "string" then return 0 end
+
+	local removed = 0
+	local function scan(container)
+		if not container then return end
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and child:GetAttribute(attributeName) == attributeValue then
+				child:Destroy()
+				removed += 1
+			end
+		end
+	end
+
+	scan(player:FindFirstChild("Backpack"))
+	scan(player:FindFirstChild("StarterGear"))
+	if player.Character then scan(player.Character) end
+
+	return removed
+end
+
+local function getWalletValue(player)
+	local leaderstats = player and player:FindFirstChild("leaderstats")
+	return leaderstats and leaderstats:FindFirstChild("Wallet") or nil
+end
+
+local function claimFreeReward(player, carName, walletCash)
+	if not player or not player.Parent then
+		return false, "Player missing"
+	end
+	if not save then
+		return false, "Save system unavailable"
+	end
+
+	carName = tostring(carName or "")
+	walletCash = math.max(0, math.floor(tonumber(walletCash) or 0))
+
+	if carName == "" then
+		return false, "Reward car is not configured."
+	end
+
+	local session = SessionData[player]
+	if not session or not session.DataLoaded then
+		return false, "Player data not loaded"
+	end
+
+	if player:GetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE) == true then
+		return false, "You have already claimed this reward."
+	end
+
+	if FreeRewardsClaimLocks[player] then
+		return false, "Reward claim is already running."
+	end
+
+	FreeRewardsClaimLocks[player] = true
+
+	local function finish(ok, message)
+		FreeRewardsClaimLocks[player] = nil
+		return ok, message
+	end
+
+	local wallet = getWalletValue(player)
+	if not wallet then
+		return finish(false, "Wallet not loaded")
+	end
+
+	local originalWallet = wallet.Value
+	local claimToken = HttpService:GenerateGUID(false)
+
+	local grantOk, grantMessage = giveTool(player, carName, {
+		Source = "FreeRewards",
+		BypassStorageLimit = true,
+		FreeRewardClaimToken = claimToken,
+	})
+	if not grantOk then
+		return finish(false, grantMessage or "Unable to add the reward car to your inventory.")
+	end
+
+	wallet.Value += walletCash
+	player:SetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE, true)
+	markDirty(player)
+
+	local saveOk = save(player, false, true)
+	if saveOk then
+		return finish(true)
+	end
+
+	-- Best-effort rollback. This protects against normal save failures. If the
+	-- server process dies mid-claim, the next load still falls back to persisted data.
+	wallet.Value = originalWallet
+	removeToolsByAttribute(player, "FreeRewardClaimToken", claimToken)
+	player:SetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE, false)
+	markDirty(player)
+
+	return finish(false, "Reward save failed. Please try again.")
 end
 
 -- ----------------------------------------------------------------------------
 -- 🔄 ADMIN API (BindableFunction)
 -- ----------------------------------------------------------------------------
-local AdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-if not AdminAPI then
-	AdminAPI = Instance.new("BindableFunction")
-	AdminAPI.Name = "TycoonAdminAPI"
-	AdminAPI.Parent = ServerStorage
-end
+local AdminAPI = getRequiredChild(ServerStorage, "TycoonAdminAPI", "BindableFunction", "ServerStorage > TycoonAdminAPI", REQUIRED_WAIT_SECONDS)
 
 AdminAPI.OnInvoke = function(action, player, ...)
 	if action == "ForceWipe" and player and SessionData[player] then
@@ -721,6 +885,10 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	elseif action == "GiveTool" and player then
 		local toolName, customAttributes = ...
 		return giveTool(player, toolName, customAttributes)
+
+	elseif action == "ClaimFreeReward" and player then
+		local carName, walletCash = ...
+		return claimFreeReward(player, carName, walletCash)
 
 	elseif action == "GrantStarterPack" and player then
 		if not save then
@@ -882,12 +1050,7 @@ end
 -- ----------------------------------------------------------------------------
 -- 🗡️ LEGENDARY CRAFTING INVENTORY API (BindableFunction)
 -- ----------------------------------------------------------------------------
-local LegendaryCraftingInventoryAPI = ServerStorage:FindFirstChild("LegendaryCraftingInventoryFunction")
-if not LegendaryCraftingInventoryAPI then
-	LegendaryCraftingInventoryAPI = Instance.new("BindableFunction")
-	LegendaryCraftingInventoryAPI.Name = "LegendaryCraftingInventoryFunction"
-	LegendaryCraftingInventoryAPI.Parent = ServerStorage
-end
+local LegendaryCraftingInventoryAPI = getRequiredChild(ServerStorage, "LegendaryCraftingInventoryFunction", "BindableFunction", "ServerStorage > LegendaryCraftingInventoryFunction", REQUIRED_WAIT_SECONDS)
 
 LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 	if not player then return false end
@@ -933,12 +1096,7 @@ end
 -- ----------------------------------------------------------------------------
 -- 🗡️ MYTHICAL CRAFTING INVENTORY API (BindableFunction)
 -- ----------------------------------------------------------------------------
-local MythicalCraftingInventoryAPI = ServerStorage:FindFirstChild("MythicalCraftingInventoryFunction")
-if not MythicalCraftingInventoryAPI then
-	MythicalCraftingInventoryAPI = Instance.new("BindableFunction")
-	MythicalCraftingInventoryAPI.Name = "MythicalCraftingInventoryFunction"
-	MythicalCraftingInventoryAPI.Parent = ServerStorage
-end
+local MythicalCraftingInventoryAPI = getRequiredChild(ServerStorage, "MythicalCraftingInventoryFunction", "BindableFunction", "ServerStorage > MythicalCraftingInventoryFunction", REQUIRED_WAIT_SECONDS)
 
 MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 	if not player then return false end
@@ -1100,7 +1258,10 @@ save = function(player, isClosing, force)
 		local currentUnlockedPad = player:GetAttribute("HighestUnlockedPad") or 1
 		local currentBaseLevel = player:GetAttribute("BaseLevel") or 1
 		local currentOwnedRaw = player:GetAttribute("OwnedBaseSkins") or "[]"
-		local currentOwnedSkins = HttpService:JSONDecode(currentOwnedRaw)
+		local currentOwnedSkins = decodeJsonOrDefault(currentOwnedRaw, { "Default" }, player.Name .. ".OwnedBaseSkins")
+		if type(currentOwnedSkins) ~= "table" then
+			currentOwnedSkins = { "Default" }
+		end
 		local currentEquippedSkin = player:GetAttribute("EquippedSkin") or "Default"
 		local currentRank = player:GetAttribute("Rank") or "Player"
 		local rankPersistenceBindable = ServerStorage:FindFirstChild("RankPersistenceFunction")
@@ -1445,7 +1606,7 @@ save = function(player, isClosing, force)
 	local syncEvent = game.ServerStorage:FindFirstChild("TycoonSaveCompleted")
 	if syncEvent then syncEvent:Fire(player.Name) end
 
-	player:SetAttribute("DataSaved", true)
+	player:SetAttribute("DataSaved", saveSucceeded == true)
 	return saveSucceeded
 end
 -- ----------------------------------------------------------------------------
@@ -1588,27 +1749,29 @@ local function InitializePlayer(player)
 	end
 	applySettingsAttributes(player, SessionData[player].SettingsState)
 
-	local shopBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
-	if shopBindable then shopBindable:Invoke("Load", player, data.ShopPurchases) end
-
-	local uncommonShopBindable = ServerStorage:FindFirstChild("UncommonShopPersistenceFunction")
-	if uncommonShopBindable then uncommonShopBindable:Invoke("Load", player, data.UncommonShopPurchases) end
-
-	local rareShopBindable = ServerStorage:FindFirstChild("RareShopPersistenceFunction")
-	if rareShopBindable then rareShopBindable:Invoke("Load", player, data.RareShopPurchases) end
-
-	local epicShopBindable = ServerStorage:FindFirstChild("EpicShopPersistenceFunction")
-	if epicShopBindable then epicShopBindable:Invoke("Load", player, data.EpicShopPurchases) end
-
-	local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
-	if legendaryShopBindable then
-		legendaryShopBindable:Invoke("Load", player, data.LegendaryShopPurchases)
+	local function safeShopLoad(bindableName, payload)
+		local bindable = ServerStorage:FindFirstChild(bindableName)
+		if not bindable then
+			return
+		end
+		if not bindable:IsA("BindableFunction") then
+			warn("⚠️ [TycoonDataHandler] " .. bindableName .. " exists but is not a BindableFunction. Skipping load.")
+			return
+		end
+		local ok, err = pcall(function()
+			bindable:Invoke("Load", player, payload)
+		end)
+		if not ok then
+			warn("⚠️ [TycoonDataHandler] " .. bindableName .. " load failed for " .. player.Name .. ": " .. tostring(err))
+		end
 	end
 
-	local mythicalShopBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
-	if mythicalShopBindable then
-		mythicalShopBindable:Invoke("Load", player, data.MythicalShopPurchases)
-	end
+	safeShopLoad("ShopPersistenceFunction", data.ShopPurchases)
+	safeShopLoad("UncommonShopPersistenceFunction", data.UncommonShopPurchases)
+	safeShopLoad("RareShopPersistenceFunction", data.RareShopPurchases)
+	safeShopLoad("EpicShopPersistenceFunction", data.EpicShopPurchases)
+	safeShopLoad("LegendaryShopPersistenceFunction", data.LegendaryShopPurchases)
+	safeShopLoad("MythicalShopPersistenceFunction", data.MythicalShopPurchases)
 
 	player:SetAttribute("HighestUnlockedPad", data.HighestUnlockedPad or 1)
 	player:SetAttribute("BaseLevel", data.BaseLevel or 1)
@@ -1651,11 +1814,18 @@ local function InitializePlayer(player)
 	player:SetAttribute("BankTransferLimitUsed", transferUsed)
 	player:SetAttribute("BankTransferLimitResetAt", transferResetAt)
 
-	local rankPersistenceBindable = ServerStorage:WaitForChild("RankPersistenceFunction", 10)
-	if rankPersistenceBindable then
+	local rankPersistenceBindable = ServerStorage:FindFirstChild("RankPersistenceFunction")
+	if rankPersistenceBindable and rankPersistenceBindable:IsA("BindableFunction") then
 		data.RankData.LegacyRank = data.Rank
 		data.RankData.CurrentRank = data.RankData.CurrentRank or data.Rank
-		rankPersistenceBindable:Invoke("Load", player, data.RankData)
+		local ok, rankErr = pcall(function()
+			rankPersistenceBindable:Invoke("Load", player, data.RankData)
+		end)
+		if not ok then
+			warn("⚠️ [TycoonDataHandler] RankPersistenceFunction load failed for " .. player.Name .. ": " .. tostring(rankErr))
+		end
+	elseif rankPersistenceBindable then
+		warn("⚠️ [TycoonDataHandler] ServerStorage > RankPersistenceFunction exists but is not a BindableFunction.")
 	end
 
 	-- 🎮 HOTBAR: restore slot assignments so the client can read them
@@ -1714,7 +1884,17 @@ local function InitializePlayer(player)
 
 	if data.Inventory then
 		for _, toolName in pairs(data.Inventory) do
-			giveTool(player, toolName)
+			if type(toolName) == "string" then
+				local restoreOk, restoreMessage = giveTool(player, toolName, {
+					BypassStorageLimit = true,
+					Source = "DataLoad",
+					SuppressDirty = true,
+					SuppressIndexMark = true,
+				})
+				if not restoreOk then
+					warn("⚠️ [DATA] Failed to restore saved tool for " .. player.Name .. ": " .. tostring(toolName) .. " (" .. tostring(restoreMessage) .. ")")
+				end
+			end
 		end
 	end
 
@@ -1735,10 +1915,12 @@ local function InitializePlayer(player)
 				plotName = player:GetAttribute("OccupiedPlot")
 			end
 			if plotName then
-				local plot = TycoonFolder:WaitForChild(plotName, 10)
+				local plot = TycoonFolder:FindFirstChild(plotName) or TycoonFolder:WaitForChild(plotName, 10)
 				if plot then
 					task.wait(1)
 					RestoreLayout(player, plot, data.Layout)
+				else
+					warn("⚠️ [TycoonDataHandler] Missing expected plot " .. tostring(plotName) .. " under Workspace > Tycoons for " .. player.Name .. ". Layout restore skipped.")
 				end
 			end
 		end)
@@ -1759,6 +1941,7 @@ end
 Players.PlayerAdded:Connect(InitializePlayer)
 Players.PlayerRemoving:Connect(function(player)
 	save(player, true)
+	FreeRewardsClaimLocks[player] = nil
 	SessionData[player] = nil
 end)
 
