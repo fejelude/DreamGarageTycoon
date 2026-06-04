@@ -44,7 +44,7 @@ local PROMPT_NAME = "TalkPrompt"
 
 local TWEEN_INFO = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TYPEWRITER_SPEED = 0.02
-local LEAVE_DELAY = 1.5
+local LEAVE_DELAY = 2.5
 local SHOP_OPEN_DELAY_SECONDS = 2.0
 
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
@@ -887,3 +887,6 @@ AngeloShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		end
 	end)
 end)
+
+
+
