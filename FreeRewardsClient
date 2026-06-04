@@ -1,0 +1,565 @@
+-- Purpose: Client controller for the Rewards Corner trigger zone, progress bars, claim button,
+--          UI transitions, and feedback labels.
+-- Runs on: Client
+-- Location: StarterGui > RewardsUi > FreeRewardsClient
+-- Expected setup:
+--   Workspace > RewardsCorner > TriggerPart
+--   StarterGui > RewardsUi > MainFrame
+--     ExitButton, ProgressBar.ForGroup/ForLike.Bar.Indicator, ClaimButton, StateLabels.Success/Failed
+
+local AvatarEditorService = game:GetService("AvatarEditorService")
+local GuiService = game:GetService("GuiService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local rewardsGui = playerGui:WaitForChild("RewardsUi")
+local rewardsScreenGui = rewardsGui:IsA("ScreenGui") and rewardsGui or rewardsGui:FindFirstAncestorWhichIsA("ScreenGui")
+local mainFrame = rewardsGui:WaitForChild("MainFrame")
+
+local exitButton = mainFrame:WaitForChild("ExitButton")
+local claimButton = mainFrame:WaitForChild("ClaimButton")
+local progressBar = mainFrame:WaitForChild("ProgressBar")
+local forGroup = progressBar:WaitForChild("ForGroup")
+local forLike = progressBar:WaitForChild("ForLike")
+local stateLabels = mainFrame:WaitForChild("StateLabels")
+local failedLabel = stateLabels:WaitForChild("Failed")
+local successLabel = stateLabels:WaitForChild("Success")
+
+local remotes = ReplicatedStorage:WaitForChild("FreeRewardsRemotes")
+local getStateFunction = remotes:WaitForChild("GetFreeRewardsState")
+local acknowledgeLikeEvent = remotes:WaitForChild("AcknowledgeFreeRewardLike")
+local claimFunction = remotes:WaitForChild("ClaimFreeReward")
+local stateChangedEvent = remotes:WaitForChild("FreeRewardsStateChanged")
+
+local triggerPart = Workspace:WaitForChild("RewardsCorner"):WaitForChild("TriggerPart")
+
+if rewardsScreenGui then
+	rewardsScreenGui.ResetOnSpawn = false
+end
+
+local OPEN_FOV = 50
+local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+local PROGRESS_TWEEN = TweenInfo.new(0.35, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+local LABEL_SHOW_SECONDS = 3
+local LABEL_FADE_OUT_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local CLAIM_CLIENT_COOLDOWN_SECONDS = 0.15
+local TRIGGER_PADDING_STUDS = 1.5
+local TRIGGER_SCAN_INTERVAL = 0.1
+
+local isOpen = false
+local isClaiming = false
+local hiddenGuis = {}
+local savedFOV = 70
+local latestClientState = nil
+local refreshToken = 0
+local lastTriggerScanAt = 0
+local characterIsInTrigger
+local likePromptPending = false
+local promptedForLikeThisOpen = false
+local dismissedUntilTriggerExit = false
+
+local labelHideToken = {}
+local labelTweens = {}
+local messageState = {}
+
+local function safePlayNamed(name)
+	if UIAudioConfig and type(UIAudioConfig.PlayNamed) == "function" then
+		UIAudioConfig.PlayNamed(name)
+	end
+end
+
+local function getCamera(waitSeconds)
+	local camera = Workspace.CurrentCamera
+	if camera then
+		return camera
+	end
+
+	local started = os.clock()
+	while waitSeconds and os.clock() - started < waitSeconds do
+		task.wait()
+		camera = Workspace.CurrentCamera
+		if camera then
+			return camera
+		end
+	end
+
+	return nil
+end
+
+local function getLabelUIStroke(label)
+	return label and (label:FindFirstChildOfClass("UIStroke") or label:FindFirstChild("UIStroke"))
+end
+
+local labelDefaults = {
+	[successLabel] = {
+		TextTransparency = successLabel.TextTransparency,
+		TextStrokeTransparency = successLabel.TextStrokeTransparency,
+		UIStrokeTransparency = getLabelUIStroke(successLabel) and getLabelUIStroke(successLabel).Transparency or nil,
+	},
+	[failedLabel] = {
+		TextTransparency = failedLabel.TextTransparency,
+		TextStrokeTransparency = failedLabel.TextStrokeTransparency,
+		UIStrokeTransparency = getLabelUIStroke(failedLabel) and getLabelUIStroke(failedLabel).Transparency or nil,
+	},
+}
+
+local function resetMessageState(label)
+	local state = messageState[label]
+	if state then
+		state.count = 0
+		state.baseText = nil
+	end
+end
+
+local function cancelLabelTween(label)
+	local tweens = labelTweens[label]
+	if not tweens then
+		return
+	end
+
+	for _, tween in pairs(tweens) do
+		if tween then
+			tween:Cancel()
+		end
+	end
+
+	labelTweens[label] = nil
+end
+
+local function resetLabelTransparency(label)
+	local defaults = labelDefaults[label]
+	if not defaults then
+		return
+	end
+
+	label.TextTransparency = defaults.TextTransparency
+	label.TextStrokeTransparency = defaults.TextStrokeTransparency
+
+	local uiStroke = getLabelUIStroke(label)
+	if uiStroke and defaults.UIStrokeTransparency ~= nil then
+		uiStroke.Transparency = defaults.UIStrokeTransparency
+	end
+end
+
+local function hideStateLabel(label)
+	if not label then
+		return
+	end
+
+	cancelLabelTween(label)
+	labelHideToken[label] = (labelHideToken[label] or 0) + 1
+	label.Visible = false
+	resetLabelTransparency(label)
+	resetMessageState(label)
+end
+
+local function fadeOutStateLabel(label)
+	if not label or not label.Visible then
+		return
+	end
+
+	cancelLabelTween(label)
+
+	local uiStroke = getLabelUIStroke(label)
+	local textTween = TweenService:Create(label, LABEL_FADE_OUT_INFO, {
+		TextTransparency = 1,
+		TextStrokeTransparency = 1,
+	})
+	local strokeTween = nil
+	if uiStroke then
+		strokeTween = TweenService:Create(uiStroke, LABEL_FADE_OUT_INFO, { Transparency = 1 })
+	end
+
+	local activeTweens = { Text = textTween, UIStroke = strokeTween }
+	labelTweens[label] = activeTweens
+
+	local connection
+	connection = textTween.Completed:Connect(function()
+		if connection then
+			connection:Disconnect()
+		end
+		if labelTweens[label] ~= activeTweens then
+			return
+		end
+		labelTweens[label] = nil
+		label.Visible = false
+		resetLabelTransparency(label)
+		resetMessageState(label)
+	end)
+
+	textTween:Play()
+	if strokeTween then
+		strokeTween:Play()
+	end
+end
+
+local function getOppositeStateLabel(label)
+	if label == successLabel then
+		return failedLabel
+	elseif label == failedLabel then
+		return successLabel
+	end
+	return nil
+end
+
+local function formatRepeatedMessage(baseText, count)
+	if count and count >= 2 then
+		return tostring(baseText) .. " (x" .. tostring(count) .. ")"
+	end
+	return tostring(baseText)
+end
+
+local function showStateLabel(label, baseText)
+	if not label then
+		return
+	end
+
+	baseText = tostring(baseText or "")
+	if baseText == "" then
+		return
+	end
+
+	hideStateLabel(getOppositeStateLabel(label))
+	cancelLabelTween(label)
+	resetLabelTransparency(label)
+
+	local state = messageState[label]
+	if not state then
+		state = { count = 0, baseText = nil }
+		messageState[label] = state
+	end
+
+	if state.baseText == baseText and label.Visible then
+		state.count += 1
+	else
+		state.count = 1
+		state.baseText = baseText
+	end
+
+	label.Text = formatRepeatedMessage(baseText, state.count)
+	label.Visible = true
+
+	labelHideToken[label] = (labelHideToken[label] or 0) + 1
+	local thisToken = labelHideToken[label]
+	task.delay(LABEL_SHOW_SECONDS, function()
+		if labelHideToken[label] == thisToken and label.Visible then
+			fadeOutStateLabel(label)
+		end
+	end)
+end
+
+local function clearStateLabels()
+	hideStateLabel(successLabel)
+	hideStateLabel(failedLabel)
+end
+
+local function createProgressController(container)
+	local bar = container:WaitForChild("Bar")
+	local indicator = bar:WaitForChild("Indicator")
+	local fullSize = bar.Size
+	local activeTween = nil
+
+	local function setProgress(completed, instant)
+		local alpha = completed and 1 or 0
+		local targetSize = UDim2.new(
+			fullSize.X.Scale * alpha,
+			fullSize.X.Offset * alpha,
+			fullSize.Y.Scale,
+			fullSize.Y.Offset
+		)
+
+		if activeTween then
+			activeTween:Cancel()
+			activeTween = nil
+		end
+
+		if instant then
+			bar.Size = targetSize
+		else
+			activeTween = TweenService:Create(bar, PROGRESS_TWEEN, { Size = targetSize })
+			activeTween:Play()
+		end
+
+		if indicator and indicator:IsA("TextLabel") then
+			indicator.Text = completed and "1/1" or "0/1"
+		end
+	end
+
+	setProgress(false, true)
+	return setProgress
+end
+
+local setGroupProgress = createProgressController(forGroup)
+local setLikeProgress = createProgressController(forLike)
+
+local function applyState(clientState, instant)
+	latestClientState = clientState
+
+	if type(clientState) ~= "table" then
+		setGroupProgress(false, instant)
+		setLikeProgress(false, instant)
+		return
+	end
+
+	setGroupProgress(clientState.GroupJoined == true, instant)
+	setLikeProgress(clientState.LikeCompleted == true, instant)
+end
+
+local function refreshState()
+	refreshToken += 1
+	local thisToken = refreshToken
+
+	local ok, clientState = pcall(function()
+		return getStateFunction:InvokeServer()
+	end)
+
+	if thisToken ~= refreshToken then
+		return
+	end
+
+	if ok then
+		applyState(clientState)
+	else
+		warn("⚠️ [FreeRewards] Failed to refresh state: " .. tostring(clientState))
+	end
+end
+
+local function restoreHiddenGuis()
+	for _, gui in ipairs(hiddenGuis) do
+		if gui and gui.Parent then
+			gui.Enabled = true
+		end
+	end
+	hiddenGuis = {}
+end
+
+local function hideOtherGuis()
+	hiddenGuis = {}
+
+	for _, gui in ipairs(playerGui:GetDescendants()) do
+		if gui:IsA("ScreenGui") and gui ~= rewardsScreenGui and gui.Enabled == true then
+			gui.Enabled = false
+			table.insert(hiddenGuis, gui)
+		end
+	end
+end
+
+local function setMainFrameVisible(visible)
+	isOpen = visible
+	mainFrame.Visible = visible
+end
+
+local function openRewards()
+	if dismissedUntilTriggerExit then
+		return
+	end
+
+	if isOpen then
+		return
+	end
+
+	local camera = getCamera(2)
+	if camera then
+		savedFOV = camera.FieldOfView
+	end
+
+	if rewardsScreenGui then
+		rewardsScreenGui.Enabled = true
+	end
+
+	hideOtherGuis()
+	clearStateLabels()
+	setMainFrameVisible(true)
+	promptedForLikeThisOpen = false
+	safePlayNamed("Open")
+
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, { FieldOfView = OPEN_FOV }):Play()
+	end
+
+	refreshState()
+end
+
+local function closeRewards(manualClose)
+	if manualClose and characterIsInTrigger() then
+		dismissedUntilTriggerExit = true
+	end
+
+	if not isOpen then
+		return
+	end
+
+	restoreHiddenGuis()
+	setMainFrameVisible(false)
+	clearStateLabels()
+
+	if GuiService.SelectedObject and GuiService.SelectedObject:IsDescendantOf(mainFrame) then
+		GuiService.SelectedObject = nil
+	end
+
+	local camera = getCamera(0.5)
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, { FieldOfView = savedFOV }):Play()
+	end
+end
+
+local function pointIsInsidePart(part, point)
+	local localPoint = part.CFrame:PointToObjectSpace(point)
+	local halfSize = part.Size * 0.5
+	local padding = TRIGGER_PADDING_STUDS
+
+	return math.abs(localPoint.X) <= halfSize.X + padding
+		and math.abs(localPoint.Y) <= halfSize.Y + padding
+		and math.abs(localPoint.Z) <= halfSize.Z + padding
+end
+
+characterIsInTrigger = function()
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return false
+	end
+
+	return pointIsInsidePart(triggerPart, root.Position)
+end
+
+local function acknowledgeLikeQuest()
+	acknowledgeLikeEvent:FireServer()
+end
+
+local function promptLikeQuest()
+	if likePromptPending then
+		return
+	end
+
+	likePromptPending = true
+	promptedForLikeThisOpen = true
+
+	local promptStarted = pcall(function()
+		AvatarEditorService:PromptSetFavorite(game.PlaceId, Enum.AvatarItemType.Asset, true)
+	end)
+
+	if not promptStarted then
+		showStateLabel(failedLabel, "Open the game page, like the experience, then click claim again.")
+		acknowledgeLikeQuest()
+		likePromptPending = false
+		return
+	end
+
+	showStateLabel(failedLabel, "Like the experience in the prompt, then click claim again.")
+
+	-- Roblox does not provide a secure server-side like verification signal. This
+	-- acknowledgement only completes the UI quest gate; the actual reward remains
+	-- server-validated and one-time saved.
+	task.delay(1.5, function()
+		acknowledgeLikeQuest()
+		likePromptPending = false
+	end)
+end
+
+local function attemptClaim()
+	if isClaiming then
+		return
+	end
+
+	if latestClientState and latestClientState.LikeCompleted ~= true and not promptedForLikeThisOpen then
+		promptLikeQuest()
+		return
+	end
+
+	isClaiming = true
+
+	local ok, success, message, clientState = pcall(function()
+		return claimFunction:InvokeServer()
+	end)
+
+	if ok then
+		if type(clientState) == "table" then
+			applyState(clientState)
+		else
+			refreshState()
+		end
+
+		if success then
+			showStateLabel(successLabel, message or "Reward claimed!")
+			if UIAudioConfig and type(UIAudioConfig.PlayNamed) == "function" then
+				UIAudioConfig.PlayNamed("BuySuccess")
+			end
+		else
+			showStateLabel(failedLabel, message or "Complete both quests before claiming your reward.")
+			if UIAudioConfig and type(UIAudioConfig.PlayNamed) == "function" then
+				UIAudioConfig.PlayNamed("BuyFail")
+			end
+		end
+	else
+		warn("⚠️ [FreeRewards] Claim request failed: " .. tostring(success))
+		showStateLabel(failedLabel, "Reward system is loading. Please try again.")
+		refreshState()
+	end
+
+	task.delay(CLAIM_CLIENT_COOLDOWN_SECONDS, function()
+		isClaiming = false
+	end)
+end
+
+setMainFrameVisible(false)
+clearStateLabels()
+applyState(nil, true)
+
+UIButtonUtils.SetupButton(exitButton, function()
+	closeRewards(true)
+end)
+UIButtonUtils.SetupButton(claimButton, attemptClaim)
+
+RunService.Heartbeat:Connect(function()
+	local now = os.clock()
+	if now - lastTriggerScanAt < TRIGGER_SCAN_INTERVAL then
+		return
+	end
+	lastTriggerScanAt = now
+
+	if characterIsInTrigger() then
+		openRewards()
+	else
+		dismissedUntilTriggerExit = false
+		closeRewards(false)
+	end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed or not isOpen then
+		return
+	end
+
+	if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB then
+		closeRewards(true)
+	end
+end)
+
+if rewardsScreenGui then
+	rewardsScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if isOpen and not rewardsScreenGui.Enabled then
+			closeRewards(false)
+		end
+	end)
+end
+
+stateChangedEvent.OnClientEvent:Connect(function(clientState)
+	refreshToken += 1
+	applyState(clientState)
+end)
+
+player:GetAttributeChangedSignal("FreeRewardsClaimed"):Connect(refreshState)
+player:GetAttributeChangedSignal("FreeRewardsLikeAcknowledged"):Connect(refreshState)
+player:GetAttributeChangedSignal("TycoonDataLoaded"):Connect(refreshState)
+player.CharacterAdded:Connect(refreshState)

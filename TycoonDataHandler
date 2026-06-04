@@ -127,6 +127,7 @@ local SETTINGS_SCHEMA_VERSION = 2
 local STARTER_CAR_NAME = "Delta Item"
 local SETTINGS_REMOTE_NAME = "SettingsPersistenceEvent"
 local DAILY_REWARDS_STATE_ATTRIBUTE = "DailyRewardsStateJson"
+local FREE_REWARDS_CLAIMED_ATTRIBUTE = "FreeRewardsClaimed"
 local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
 local DAILY_REWARDS_SECONDS_PER_DAY = 24 * 60 * 60
 
@@ -859,6 +860,13 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		markDirty(player)
 		return true
 
+	elseif action == "SaveNow" and player then
+		markDirty(player)
+		if not save then
+			return false, "Save system unavailable"
+		end
+		return save(player, false, true)
+
 	elseif action == "MarkInventoryCleared" and player then
 		local session = SessionData[player]
 		if session then
@@ -1146,6 +1154,7 @@ save = function(player, isClosing, force)
 			end
 		end
 		local currentDailyRewards = decodeDailyRewardsAttribute(player)
+		local currentFreeRewardsClaimed = player:GetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE) == true
 
 		if currentTransferResetAt > 0 and os.time() >= currentTransferResetAt then
 			currentTransferUsed = 0
@@ -1353,6 +1362,7 @@ save = function(player, isClosing, force)
 					oldData.Rebirth = currentRebirth
 					oldData.IndexDiscovered = currentIndexDiscovered
 					oldData.DailyRewards = currentDailyRewards
+					oldData.FreeRewardsClaimed = oldData.FreeRewardsClaimed == true or currentFreeRewardsClaimed
 					if starterPackClearRequested then
 						oldData.StarterPackPurchased = false
 						oldData.StarterPackPurchaseId = nil
@@ -1515,7 +1525,7 @@ local function InitializePlayer(player)
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player", RankData = {},
 		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {},
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
-		DailyRewards = sanitizeDailyRewardsData(nil)
+		DailyRewards = sanitizeDailyRewardsData(nil), FreeRewardsClaimed = false
 	}
 
 	data.Inventory              = data.Inventory              or {}
@@ -1541,6 +1551,7 @@ local function InitializePlayer(player)
 	data.StarterPackPurchaseId = type(data.StarterPackPurchaseId) == "string" and data.StarterPackPurchaseId or nil
 	data.StarterPackReceipts = type(data.StarterPackReceipts) == "table" and data.StarterPackReceipts or {}
 	data.DailyRewards = sanitizeDailyRewardsData(data.DailyRewards)
+	data.FreeRewardsClaimed = data.FreeRewardsClaimed == true
 	data.LastOfflineAt = math.max(0, math.floor(tonumber(data.LastOfflineAt) or 0))
 	player:SetAttribute("LastOfflineAt", data.LastOfflineAt)
 
@@ -1629,6 +1640,7 @@ local function InitializePlayer(player)
 	table.sort(discoveredList)
 	player:SetAttribute("IndexDiscoveredJson", HttpService:JSONEncode(discoveredList))
 	player:SetAttribute(DAILY_REWARDS_STATE_ATTRIBUTE, HttpService:JSONEncode(data.DailyRewards))
+	player:SetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE, data.FreeRewardsClaimed == true)
 
 	local transferUsed = math.max(0, math.floor(tonumber(data.BankTransferLimitUsed) or 0))
 	local transferResetAt = math.max(0, math.floor(tonumber(data.BankTransferLimitResetAt) or 0))
