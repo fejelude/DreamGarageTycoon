@@ -1,20 +1,37 @@
 -- Purpose: Server-authoritative Rewards Corner claiming for the one-time free reward.
 -- Runs on: Server
 -- Location: ServerScriptService > FreeRewardsService
--- Required world/UI setup:
---   Workspace > RewardsCorner > TriggerPart
+--
+-- Client owns UI open/close and trigger-range behavior.
+-- Server owns only:
+--   * state lookup
+--   * server-side group validation
+--   * like acknowledgement storage for the current session
+--   * one-time reward claim validation
+--   * calling TycoonDataHandler through TycoonAdminAPI
+--
+-- Required Explorer setup:
+--   ReplicatedStorage > FreeRewardsRemotes [Folder]
+--     GetFreeRewardsState [RemoteFunction]
+--     AcknowledgeFreeRewardLike [RemoteEvent]
+--     ClaimFreeReward [RemoteFunction]
+--     FreeRewardsStateChanged [RemoteEvent]
+--   ServerStorage > TycoonAdminAPI [BindableFunction]
+--   Workspace > RewardsCorner > TriggerPart [BasePart]
 --   StarterGui > RewardsUi > MainFrame
--- Security notes:
---   * Wallet Cash and Windsor grant happen only on the server.
---   * Group membership is checked with Player:IsInGroup on every state/claim request.
---   * Roblox does not expose a server-verifiable per-player "liked this experience" API.
---     The like requirement is therefore stored as a server-side session acknowledgement
---     after the client has directed the player to the current experience page/favorite prompt.
+--
+-- Notes:
+--   * This script intentionally does NOT open or close PlayerGui.
+--   * TriggerPart proximity is handled by the LocalScript.
+--   * Wallet Cash and Windsor grants happen only on the server.
+--   * Roblox does not expose a reliable server-verifiable per-player "liked this experience" API.
+--     The like step is therefore treated as a session acknowledgement from the client UI.
 --   * The one-time claimed flag is persisted by TycoonDataHandler through FreeRewardsClaimed.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
+local Workspace = game:GetService("Workspace")
 
 local REMOTES_FOLDER_NAME = "FreeRewardsRemotes"
 local GET_STATE_NAME = "GetFreeRewardsState"
@@ -29,43 +46,114 @@ local LIKE_ACKNOWLEDGED_ATTRIBUTE = "FreeRewardsLikeAcknowledged"
 local GROUP_ID = 35973937
 local REWARD_CAR_NAME = "Windsor"
 local REWARD_WALLET_CASH = 250000
+
 local DATA_READY_TIMEOUT_SECONDS = 12
 local CLAIM_COOLDOWN_SECONDS = 0.75
+local LIKE_ACK_COOLDOWN_SECONDS = 1
+local GROUP_STATE_CACHE_SECONDS = 3
+local REQUIRED_WAIT_SECONDS = 8
 
 local SUCCESS_MESSAGE = "Reward claimed! The Windsor Car has been added to your inventory, and 250,000 Wallet Cash has been added to your account."
 
-local remotesFolder = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
-if not remotesFolder then
-	remotesFolder = Instance.new("Folder")
-	remotesFolder.Name = REMOTES_FOLDER_NAME
-	remotesFolder.Parent = ReplicatedStorage
-end
-
-local function getRemote(name, className)
-	local remote = remotesFolder:FindFirstChild(name)
-	if not remote then
-		remote = Instance.new(className)
-		remote.Name = name
-		remote.Parent = remotesFolder
-	end
-	if not remote:IsA(className) then
-		error("[FreeRewards] " .. REMOTES_FOLDER_NAME .. "." .. name .. " must be a " .. className .. ".")
-	end
-	return remote
-end
-
-local getStateFunction = getRemote(GET_STATE_NAME, "RemoteFunction")
-local acknowledgeLikeEvent = getRemote(ACKNOWLEDGE_LIKE_NAME, "RemoteEvent")
-local claimFunction = getRemote(CLAIM_NAME, "RemoteFunction")
-local stateChangedEvent = getRemote(STATE_CHANGED_NAME, "RemoteEvent")
-
-local adminApi = ServerStorage:WaitForChild("TycoonAdminAPI")
-if not adminApi:IsA("BindableFunction") then
-	error("[FreeRewards] ServerStorage > TycoonAdminAPI must be a BindableFunction.")
-end
-
 local claimLocks = {}
 local lastClaimAttemptAt = {}
+local lastLikeAckAt = {}
+local groupStateCache = {}
+
+local function failSetup(message)
+	error("[FreeRewards] " .. message, 0)
+end
+
+local function getRequiredChild(parent, childName, className, pathForMessage, waitSeconds)
+	if not parent then
+		failSetup("Missing parent while looking for " .. tostring(pathForMessage or childName) .. ".")
+	end
+
+	local child = parent:FindFirstChild(childName)
+	if not child and waitSeconds and waitSeconds > 0 then
+		child = parent:WaitForChild(childName, waitSeconds)
+	end
+
+	local fullPath = pathForMessage or (parent:GetFullName() .. " > " .. childName)
+	if not child then
+		failSetup("Missing required instance: " .. fullPath .. ". Create it manually in Explorer; this script will not create it automatically.")
+	end
+
+	if className and not child:IsA(className) then
+		failSetup("Invalid required instance: " .. fullPath .. " must be a " .. className .. ", but found " .. child.ClassName .. ".")
+	end
+
+	return child
+end
+
+local remotesFolder = getRequiredChild(
+	ReplicatedStorage,
+	REMOTES_FOLDER_NAME,
+	"Folder",
+	"ReplicatedStorage > " .. REMOTES_FOLDER_NAME,
+	REQUIRED_WAIT_SECONDS
+)
+
+local getStateFunction = getRequiredChild(
+	remotesFolder,
+	GET_STATE_NAME,
+	"RemoteFunction",
+	"ReplicatedStorage > " .. REMOTES_FOLDER_NAME .. " > " .. GET_STATE_NAME,
+	REQUIRED_WAIT_SECONDS
+)
+
+local acknowledgeLikeEvent = getRequiredChild(
+	remotesFolder,
+	ACKNOWLEDGE_LIKE_NAME,
+	"RemoteEvent",
+	"ReplicatedStorage > " .. REMOTES_FOLDER_NAME .. " > " .. ACKNOWLEDGE_LIKE_NAME,
+	REQUIRED_WAIT_SECONDS
+)
+
+local claimFunction = getRequiredChild(
+	remotesFolder,
+	CLAIM_NAME,
+	"RemoteFunction",
+	"ReplicatedStorage > " .. REMOTES_FOLDER_NAME .. " > " .. CLAIM_NAME,
+	REQUIRED_WAIT_SECONDS
+)
+
+local stateChangedEvent = getRequiredChild(
+	remotesFolder,
+	STATE_CHANGED_NAME,
+	"RemoteEvent",
+	"ReplicatedStorage > " .. REMOTES_FOLDER_NAME .. " > " .. STATE_CHANGED_NAME,
+	REQUIRED_WAIT_SECONDS
+)
+
+local adminApi = getRequiredChild(
+	ServerStorage,
+	"TycoonAdminAPI",
+	"BindableFunction",
+	"ServerStorage > TycoonAdminAPI",
+	REQUIRED_WAIT_SECONDS
+)
+
+-- Validate the trigger exists, but do not bind Touched here.
+local rewardsCorner = getRequiredChild(
+	Workspace,
+	"RewardsCorner",
+	nil,
+	"Workspace > RewardsCorner",
+	REQUIRED_WAIT_SECONDS
+)
+
+getRequiredChild(
+	rewardsCorner,
+	"TriggerPart",
+	"BasePart",
+	"Workspace > RewardsCorner > TriggerPart",
+	REQUIRED_WAIT_SECONDS
+)
+
+local function clearGroupCache(player)
+	groupStateCache[player] = nil
+end
 
 local function ensureStateReady(player, timeoutSeconds)
 	if player:GetAttribute(DATA_READY_ATTRIBUTE) == true then
@@ -77,13 +165,14 @@ local function ensureStateReady(player, timeoutSeconds)
 		if player:GetAttribute(DATA_READY_ATTRIBUTE) == true then
 			return true
 		end
+
 		task.wait(0.1)
 	end
 
 	return player:GetAttribute(DATA_READY_ATTRIBUTE) == true
 end
 
-local function isInRewardsGroup(player)
+local function isInRewardsGroupFresh(player)
 	local ok, result = pcall(function()
 		return player:IsInGroup(GROUP_ID)
 	end)
@@ -96,6 +185,23 @@ local function isInRewardsGroup(player)
 	return result == true
 end
 
+local function isInRewardsGroupCached(player)
+	local cached = groupStateCache[player]
+	local now = os.clock()
+
+	if cached and now - cached.CheckedAt < GROUP_STATE_CACHE_SECONDS then
+		return cached.Value == true
+	end
+
+	local value = isInRewardsGroupFresh(player)
+	groupStateCache[player] = {
+		CheckedAt = now,
+		Value = value,
+	}
+
+	return value
+end
+
 local function hasAcknowledgedLike(player)
 	return player:GetAttribute(LIKE_ACKNOWLEDGED_ATTRIBUTE) == true
 end
@@ -104,137 +210,99 @@ local function hasClaimed(player)
 	return player:GetAttribute(CLAIMED_ATTRIBUTE) == true
 end
 
-local function buildClientState(player)
+local function buildClientState(player, useFreshGroupCheck)
 	local claimed = hasClaimed(player)
-	local groupJoined = isInRewardsGroup(player) or claimed
-	local likeAcknowledged = hasAcknowledgedLike(player) or claimed
+	local dataReady = player:GetAttribute(DATA_READY_ATTRIBUTE) == true
+
+	local groupJoined
+	if claimed then
+		groupJoined = true
+	elseif useFreshGroupCheck then
+		groupJoined = isInRewardsGroupFresh(player)
+	else
+		groupJoined = isInRewardsGroupCached(player)
+	end
+
+	local likeAcknowledged = claimed or hasAcknowledgedLike(player)
 
 	return {
+		Loading = not dataReady,
 		GroupJoined = groupJoined,
 		LikeCompleted = likeAcknowledged,
 		Claimed = claimed,
-		CanClaim = groupJoined and likeAcknowledged and not claimed,
+		CanClaim = dataReady and groupJoined and likeAcknowledged and not claimed,
 		RewardCarName = REWARD_CAR_NAME,
 		RewardWalletCash = REWARD_WALLET_CASH,
 		LikeIsAcknowledgement = true,
 	}
 end
 
-local function getWallet(player)
-	local leaderstats = player:FindFirstChild("leaderstats") or player:WaitForChild("leaderstats", 5)
-	if not leaderstats then
-		return nil
+local function fireState(player, useFreshGroupCheck)
+	if player and player.Parent then
+		stateChangedEvent:FireClient(player, buildClientState(player, useFreshGroupCheck == true))
 	end
-
-	return leaderstats:FindFirstChild("Wallet") or leaderstats:WaitForChild("Wallet", 5)
-end
-
-local function markDirty(player)
-	pcall(function()
-		adminApi:Invoke("MarkDirty", player)
-	end)
-end
-
-local function saveNow(player)
-	local ok, saveOk, saveMessage = pcall(function()
-		return adminApi:Invoke("SaveNow", player)
-	end)
-
-	if not ok then
-		warn("⚠️ [FreeRewards] SaveNow failed for " .. player.Name .. ": " .. tostring(saveOk))
-		return false, "Reward save failed. Please try again."
-	end
-
-	if saveOk ~= true then
-		return false, tostring(saveMessage or "Reward save failed. Please try again.")
-	end
-
-	return true
-end
-
-local function grantWindsor(player)
-	local ok, grantOk, grantMessage = pcall(function()
-		return adminApi:Invoke("GiveTool", player, REWARD_CAR_NAME, {
-			Source = "FreeRewards",
-			BypassStorageLimit = true,
-		})
-	end)
-
-	if not ok then
-		warn("⚠️ [FreeRewards] Failed to grant Windsor to " .. player.Name .. ": " .. tostring(grantOk))
-		return false, "Reward system is not ready yet."
-	end
-
-	if grantOk ~= true then
-		return false, tostring(grantMessage or "Unable to add the Windsor Car to your inventory.")
-	end
-
-	return true
 end
 
 local function tryClaim(player)
 	if not ensureStateReady(player, DATA_READY_TIMEOUT_SECONDS) then
-		return false, "Reward system is loading. Please try again.", buildClientState(player)
+		return false, "Reward system is loading. Please try again.", buildClientState(player, false)
 	end
 
 	local now = os.clock()
 	if lastClaimAttemptAt[player] and now - lastClaimAttemptAt[player] < CLAIM_COOLDOWN_SECONDS then
-		return false, "Please wait a moment before trying again.", buildClientState(player)
+		return false, "Please wait a moment before trying again.", buildClientState(player, false)
 	end
 	lastClaimAttemptAt[player] = now
 
 	if claimLocks[player] then
-		return false, "Please wait a moment before trying again.", buildClientState(player)
+		return false, "Please wait a moment before trying again.", buildClientState(player, false)
 	end
 
 	claimLocks[player] = true
 
-	local ok, success, message, state = pcall(function()
+	local ok, success, message = pcall(function()
 		if hasClaimed(player) then
-			return false, "You have already claimed this reward.", buildClientState(player)
+			return false, "You have already claimed this reward."
 		end
 
-		if not isInRewardsGroup(player) or not hasAcknowledgedLike(player) then
-			return false, "Complete both quests before claiming your reward.", buildClientState(player)
+		clearGroupCache(player)
+
+		if not isInRewardsGroupFresh(player) or not hasAcknowledgedLike(player) then
+			return false, "Complete both quests before claiming your reward."
 		end
 
-		local wallet = getWallet(player)
-		if not wallet then
-			return false, "Wallet is not ready yet.", buildClientState(player)
+		local claimOk, claimMessage = adminApi:Invoke("ClaimFreeReward", player, REWARD_CAR_NAME, REWARD_WALLET_CASH)
+		if claimOk ~= true then
+			return false, tostring(claimMessage or "Reward save failed. Please try again.")
 		end
 
-		local carOk, carMessage = grantWindsor(player)
-		if not carOk then
-			return false, carMessage, buildClientState(player)
-		end
-
-		wallet.Value += REWARD_WALLET_CASH
-		player:SetAttribute(CLAIMED_ATTRIBUTE, true)
-		markDirty(player)
-
-		local saveOk, saveMessage = saveNow(player)
-		if not saveOk then
-			warn("⚠️ [FreeRewards] Reward granted but immediate save failed for " .. player.Name .. ": " .. tostring(saveMessage))
-		end
-
-		local updatedState = buildClientState(player)
-		stateChangedEvent:FireClient(player, updatedState)
-		return true, SUCCESS_MESSAGE, updatedState
+		return true, SUCCESS_MESSAGE
 	end)
 
 	claimLocks[player] = nil
 
 	if not ok then
 		warn("⚠️ [FreeRewards] Claim failed for " .. player.Name .. ": " .. tostring(success))
-		return false, "Reward system is not ready yet.", buildClientState(player)
+		return false, "Reward system is not ready yet.", buildClientState(player, true)
 	end
 
-	return success, message, state
+	local updatedState = buildClientState(player, true)
+	stateChangedEvent:FireClient(player, updatedState)
+
+	return success, message, updatedState
 end
 
 getStateFunction.OnServerInvoke = function(player)
-	ensureStateReady(player, DATA_READY_TIMEOUT_SECONDS)
-	return buildClientState(player)
+	if player:GetAttribute(DATA_READY_ATTRIBUTE) ~= true then
+		task.spawn(function()
+			if ensureStateReady(player, DATA_READY_TIMEOUT_SECONDS) and player.Parent then
+				fireState(player, true)
+			end
+		end)
+	end
+
+	clearGroupCache(player)
+	return buildClientState(player, true)
 end
 
 acknowledgeLikeEvent.OnServerEvent:Connect(function(player)
@@ -242,9 +310,15 @@ acknowledgeLikeEvent.OnServerEvent:Connect(function(player)
 		return
 	end
 
+	local now = os.clock()
+	if lastLikeAckAt[player] and now - lastLikeAckAt[player] < LIKE_ACK_COOLDOWN_SECONDS then
+		return
+	end
+
+	lastLikeAckAt[player] = now
 	player:SetAttribute(LIKE_ACKNOWLEDGED_ATTRIBUTE, true)
-	local state = buildClientState(player)
-	stateChangedEvent:FireClient(player, state)
+
+	fireState(player, false)
 end)
 
 claimFunction.OnServerInvoke = function(player)
@@ -254,4 +328,6 @@ end
 Players.PlayerRemoving:Connect(function(player)
 	claimLocks[player] = nil
 	lastClaimAttemptAt[player] = nil
+	lastLikeAckAt[player] = nil
+	groupStateCache[player] = nil
 end)
