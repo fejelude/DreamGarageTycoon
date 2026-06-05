@@ -4,10 +4,13 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 
+local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI", 10)
+
 -- ============ CONFIG ============
 local SESSION_TIMEOUT_SECONDS = 60
 local TRIGGER_COOLDOWN_SECONDS = 1
 local MAX_GIFT_DISTANCE = 16
+local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
 -- ================================
 
 -- Create Remote if it doesn't exist
@@ -28,6 +31,15 @@ end
 -- ============================================================================
 -- HELPERS
 -- ============================================================================
+
+local RECEIVE_GIFTS_DISABLED_SELF_TEXT = "You need to enable Receive Gifts in Settings before you can send a player a car gift."
+local RECEIVE_GIFTS_DISABLED_TARGET_TEXT = "This player has Receive Gifts disabled."
+
+local function hasReceiveGiftsEnabled(player)
+	if not player then return false end
+	local value = player:GetAttribute("Setting_ReceiveGiftsEnabled")
+	return value ~= false
+end
 
 local function canReceiveGift(player)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
@@ -65,28 +77,40 @@ local function getRoot(player)
 	return character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso")
 end
 
+local function isDataLoaded(player)
+	return player and player:GetAttribute(DATA_READY_ATTRIBUTE) == true
+end
+
+local function validateGiftDistance(giver, receiver)
+	local giverRoot = getRoot(giver)
+	local receiverRoot = getRoot(receiver)
+
+	if not giverRoot or not receiverRoot then
+		return false, "Player is not ready for gifting."
+	end
+
+	local distance = (giverRoot.Position - receiverRoot.Position).Magnitude
+	if distance > MAX_GIFT_DISTANCE then
+		return false, "You are too far away to gift."
+	end
+
+	return true, nil
+end
+
 local function getToolUniqueId(tool)
 	if not tool then return nil end
 
 	return tool:GetAttribute("ToolId")
-		or tool:GetAttribute("CarToolId")
-		or tool:GetAttribute("UniqueId")
 end
 
 local function isValidCarTool(tool)
 	if typeof(tool) ~= "Instance" then return false end
 	if not tool:IsA("Tool") then return false end
 
-	-- Best validation options.
-	if tool:GetAttribute("CarToolPrepared") == true then return true end
-	if tool:GetAttribute("IsCarTool") == true then return true end
-	if getToolUniqueId(tool) ~= nil then return true end
+	if tool:GetAttribute("IssuedByServer") ~= true then return false end
 
-	-- Compatibility fallback from your old client logic.
-	-- If your game has non-car tools with Handles, remove this line and require one of the attributes above.
-	if tool:FindFirstChild("Handle") then return true end
-
-	return false
+	local toolId = getToolUniqueId(tool)
+	return type(toolId) == "string" and toolId ~= ""
 end
 
 local function isToolOwnedByPlayer(tool, player)
@@ -264,6 +288,22 @@ local function validatePromptRequest(giver, data)
 		return false, nil, nil, "Player has left the game."
 	end
 
+	if not isDataLoaded(giver) then
+		return false, nil, nil, "Your data is still loading."
+	end
+
+	if not isDataLoaded(receiver) then
+		return false, nil, nil, "This player's data is still loading."
+	end
+
+	if not hasReceiveGiftsEnabled(giver) then
+		return false, nil, nil, RECEIVE_GIFTS_DISABLED_SELF_TEXT
+	end
+
+	if not hasReceiveGiftsEnabled(receiver) then
+		return false, nil, nil, RECEIVE_GIFTS_DISABLED_TARGET_TEXT
+	end
+
 	if typeof(tool) ~= "Instance" or not tool:IsA("Tool") then
 		return false, nil, nil, "Invalid car tool."
 	end
@@ -277,16 +317,9 @@ local function validatePromptRequest(giver, data)
 		return false, nil, nil, "You must equip the car before gifting it."
 	end
 
-	local giverRoot = getRoot(giver)
-	local receiverRoot = getRoot(receiver)
-
-	if not giverRoot or not receiverRoot then
-		return false, nil, nil, "Player is not ready for gifting."
-	end
-
-	local distance = (giverRoot.Position - receiverRoot.Position).Magnitude
-	if distance > MAX_GIFT_DISTANCE then
-		return false, nil, nil, "You are too far away to gift."
+	local distanceOk, distanceReason = validateGiftDistance(giver, receiver)
+	if not distanceOk then
+		return false, nil, nil, distanceReason
 	end
 
 	if isPlayerBusy(giver) then
@@ -351,6 +384,26 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			return
 		end
 
+		if not isDataLoaded(session.Giver) then
+			failSession(session, "Your data is still loading.", nil)
+			return
+		end
+
+		if not isDataLoaded(session.Receiver) then
+			failSession(session, "This player's data is still loading.", nil)
+			return
+		end
+
+		if not hasReceiveGiftsEnabled(session.Giver) then
+			failSession(session, RECEIVE_GIFTS_DISABLED_SELF_TEXT, nil)
+			return
+		end
+
+		if not hasReceiveGiftsEnabled(session.Receiver) then
+			failSession(session, RECEIVE_GIFTS_DISABLED_TARGET_TEXT, nil)
+			return
+		end
+
 		if activeGiftsByReceiver[session.Receiver.UserId] ~= session then
 			failSession(session, session.Receiver.Name .. " is currently busy.", nil)
 			return
@@ -408,6 +461,26 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			return
 		end
 
+		if not isDataLoaded(session.Giver) then
+			failSession(session, "Your data is still loading.", nil)
+			return
+		end
+
+		if not isDataLoaded(player) then
+			failSession(session, "This player's data is still loading.", "Your data is still loading.")
+			return
+		end
+
+		if not hasReceiveGiftsEnabled(session.Giver) then
+			failSession(session, RECEIVE_GIFTS_DISABLED_SELF_TEXT, nil)
+			return
+		end
+
+		if not hasReceiveGiftsEnabled(player) then
+			failSession(session, RECEIVE_GIFTS_DISABLED_TARGET_TEXT, RECEIVE_GIFTS_DISABLED_TARGET_TEXT)
+			return
+		end
+
 		if not isToolOwnedByPlayer(session.Tool, session.Giver) then
 			failSession(session, "Gift failed: Car tool missing.", "Gift failed: Car tool missing.")
 			return
@@ -415,6 +488,12 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 
 		if not isValidCarTool(session.Tool) then
 			failSession(session, "Gift failed: Invalid car tool.", "Gift failed: Invalid car tool.")
+			return
+		end
+
+		local distanceOk, distanceReason = validateGiftDistance(session.Giver, player)
+		if not distanceOk then
+			failSession(session, distanceReason, distanceReason)
 			return
 		end
 
@@ -427,34 +506,22 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			return
 		end
 
-		local success, err = pcall(function()
-			local receiverBackpack = player:FindFirstChild("Backpack")
-			if not receiverBackpack then
-				error("Receiver Backpack missing.")
-			end
+		if not TycoonAdminAPI then
+			failSession(session, "Gift failed: Transfer service unavailable.", "Gift failed: Transfer service unavailable.")
+			return
+		end
 
-			local tool = session.Tool
-			local starterClone = tool:Clone()
-
-			removeRespawnMirror(session.Giver, session.ToolId, session.CarId)
-
-			tool.Parent = receiverBackpack
-
-			local receiverStarterGear = player:FindFirstChild("StarterGear")
-			if receiverStarterGear then
-				starterClone.Parent = receiverStarterGear
-			else
-				starterClone:Destroy()
-			end
+		local success, transferOk, giverMessage, receiverMessage = pcall(function()
+			return TycoonAdminAPI:Invoke("TransferTool", session.Giver, player, session.Tool)
 		end)
 
-		if not success then
-			warn("Gift transfer failed:", err)
+		if not success or not transferOk then
+			warn("Gift transfer failed:", success and giverMessage or transferOk)
 
 			failSession(
 				session,
-				"Gift failed: Could not transfer car.",
-				"Gift failed: Could not receive car."
+				giverMessage or "Gift failed: Could not transfer car.",
+				receiverMessage or "Gift failed: Could not receive car."
 			)
 
 			return
