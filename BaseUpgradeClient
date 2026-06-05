@@ -259,6 +259,24 @@ local function setMovement(active)
 	player:SetAttribute("MovementLock", not active)
 end
 
+
+local function closeBaseUpgradeFocusForGift()
+	local gui = PlayerGui:FindFirstChild(UI_NAME)
+	local frame = gui and gui:FindFirstChild(FRAME_NAME, true)
+
+	if frame then
+		frame.Visible = false
+	end
+	if gui then
+		gui.Enabled = false
+	end
+
+	setBlur(false)
+	toggleOtherGuis(false)
+	toggleNamedGuiObjects(false, "FriendBoost")
+	setMovement(true)
+end
+
 -- ============================================================================
 -- 🛍️ CARD LOGIC (BUY / EQUIP / UNEQUIP / GIFT)
 -- ============================================================================
@@ -428,6 +446,7 @@ local function ConnectCard(cardFrame, skinName)
 				return
 			end
 
+			closeBaseUpgradeFocusForGift()
 			_G.OpenGiftMenu(productId)
 		end
 
