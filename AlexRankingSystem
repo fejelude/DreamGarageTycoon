@@ -304,21 +304,63 @@ local function showRankPage(rankName)
 	setObjectVisible(getRankPage(rankName), true)
 end
 
+local function playTransientLabel(label, text, holdSeconds, onComplete)
+	label.Text = text
+	label.TextTransparency = 1
+	label.Visible = true
+
+	local stroke = label:FindFirstChildOfClass("UIStroke")
+	local targetStrokeTransparency = nil
+	if stroke then
+		targetStrokeTransparency = label:GetAttribute("TransientStrokeTransparency")
+		if targetStrokeTransparency == nil then
+			targetStrokeTransparency = stroke.Transparency
+			if targetStrokeTransparency >= 1 then
+				targetStrokeTransparency = 0
+			end
+			label:SetAttribute("TransientStrokeTransparency", targetStrokeTransparency)
+		end
+		stroke.Transparency = 1
+	end
+
+	TweenService:Create(label, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 0}):Play()
+	if stroke then
+		TweenService:Create(stroke, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Transparency = targetStrokeTransparency}):Play()
+	end
+
+	task.delay(holdSeconds, function()
+		if not label or not label.Parent then
+			if onComplete then onComplete() end
+			return
+		end
+
+		local fadeOut = TweenService:Create(label, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1})
+		fadeOut:Play()
+		if stroke and stroke.Parent then
+			TweenService:Create(stroke, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Transparency = 1}):Play()
+		end
+
+		fadeOut.Completed:Connect(function()
+			if label and label.Parent then
+				label.Visible = false
+				label.TextTransparency = 1
+			end
+			if stroke and stroke.Parent then
+				stroke.Transparency = 1
+			end
+			if onComplete then onComplete() end
+		end)
+	end)
+end
+
 local function showNotification(text)
 	if notificationBusy then return end
 	notificationBusy = true
 	local gui = getRankingGui()
 	local notification = gui and gui:FindFirstChild("Notification", true)
 	if notification and notification:IsA("TextLabel") then
-		notification.Text = text
-		notification.TextTransparency = 1
-		notification.Visible = true
-		TweenService:Create(notification, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 0}):Play()
-		task.delay(2.25, function()
-			if notification and notification.Parent then
-				TweenService:Create(notification, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1}):Play()
-			end
-			task.delay(0.4, function() notificationBusy = false end)
+		playTransientLabel(notification, text, 2.25, function()
+			notificationBusy = false
 		end)
 	else
 		warn("[AlexRankingSystem] " .. tostring(text))
@@ -333,15 +375,8 @@ local function showRequirementError(rankName, text)
 	local page2 = getPage2Frame(rankName)
 	local errorLabel = page2 and page2:FindFirstChild("Error", true)
 	if errorLabel and errorLabel:IsA("TextLabel") then
-		errorLabel.Text = text
-		errorLabel.TextTransparency = 1
-		errorLabel.Visible = true
-		TweenService:Create(errorLabel, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 0}):Play()
-		task.delay(2, function()
-			if errorLabel and errorLabel.Parent then
-				TweenService:Create(errorLabel, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1}):Play()
-			end
-			task.delay(0.4, function() errorBusy[rankName] = false end)
+		playTransientLabel(errorLabel, text, 2, function()
+			errorBusy[rankName] = false
 		end)
 	else
 		showNotification(text)
