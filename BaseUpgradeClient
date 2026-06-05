@@ -62,6 +62,9 @@ end
 -- 🛡️ STATE TRACKING
 local hiddenGuis = {} 
 local hiddenObjects = {} 
+local focusConnections = {}
+local watchedFocusGuis = {}
+local connectedCards = {}
 local currentBlur = nil 
 local feedbackDebounce = false 
 local isProcessingTransaction = false 
@@ -184,26 +187,66 @@ local function toggleNamedGuiObjects(shouldHide, objectName)
 	end
 end
 
+local GUI_FOCUS_WHITELIST = {
+	["Balance Indicator"] = true,
+	TouchGui = true,
+	Chat = true,
+	Notifications = true,
+	PurchasingState = true,
+}
+
+local function clearFocusConnections()
+	for _, connection in ipairs(focusConnections) do
+		if connection then connection:Disconnect() end
+	end
+	focusConnections = {}
+	watchedFocusGuis = {}
+end
+
+local function shouldIgnoreFocusGui(gui, myGui)
+	return not gui:IsA("ScreenGui")
+		or gui == myGui
+		or GUI_FOCUS_WHITELIST[gui.Name] == true
+end
+
+local function hideGuiForFocus(gui, myGui)
+	if shouldIgnoreFocusGui(gui, myGui) then return end
+	if gui.Enabled then
+		hiddenGuis[gui] = true
+		gui.Enabled = false
+	end
+end
+
+local function watchFocusGui(gui, myGui)
+	if shouldIgnoreFocusGui(gui, myGui) or watchedFocusGuis[gui] then return end
+	watchedFocusGuis[gui] = true
+	table.insert(focusConnections, gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if gui.Enabled then
+			hideGuiForFocus(gui, myGui)
+		end
+	end))
+end
+
 local function toggleOtherGuis(shouldHide)
 	local myGui = PlayerGui:FindFirstChild(UI_NAME)
 	if shouldHide then
-		if #hiddenGuis > 0 then return end
-		hiddenGuis = {}
-		for _, otherGui in pairs(PlayerGui:GetDescendants()) do
-			if otherGui:IsA("ScreenGui") 
-				and otherGui ~= myGui 
-				and otherGui.Enabled == true 
-				and otherGui.Name ~= "Balance Indicator"
-				and otherGui.Name ~= "TouchGui"
-				and otherGui.Name ~= "Chat"
-				and otherGui.Name ~= "Notifications" 
-			then
-				otherGui.Enabled = false
-				table.insert(hiddenGuis, otherGui)
-			end
+		clearFocusConnections()
+		for _, otherGui in ipairs(PlayerGui:GetDescendants()) do
+			watchFocusGui(otherGui, myGui)
+			hideGuiForFocus(otherGui, myGui)
 		end
+
+		table.insert(focusConnections, PlayerGui.DescendantAdded:Connect(function(child)
+			task.defer(function()
+				if child and child.Parent then
+					watchFocusGui(child, myGui)
+					hideGuiForFocus(child, myGui)
+				end
+			end)
+		end))
 	else
-		for _, otherGui in pairs(hiddenGuis) do
+		clearFocusConnections()
+		for otherGui in pairs(hiddenGuis) do
 			if otherGui and otherGui.Parent then
 				otherGui.Enabled = true
 			end
@@ -214,6 +257,24 @@ end
 
 local function setMovement(active)
 	player:SetAttribute("MovementLock", not active)
+end
+
+
+local function closeBaseUpgradeFocusForGift()
+	local gui = PlayerGui:FindFirstChild(UI_NAME)
+	local frame = gui and gui:FindFirstChild(FRAME_NAME, true)
+
+	if frame then
+		frame.Visible = false
+	end
+	if gui then
+		gui.Enabled = false
+	end
+
+	setBlur(false)
+	toggleOtherGuis(false)
+	toggleNamedGuiObjects(false, "FriendBoost")
+	setMovement(true)
 end
 
 -- ============================================================================
@@ -272,6 +333,8 @@ end
 
 local function ConnectCard(cardFrame, skinName)
 	UpdateCardVisuals(cardFrame, skinName)
+	if connectedCards[cardFrame] then return end
+	connectedCards[cardFrame] = true
 
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(function()
 		UpdateCardVisuals(cardFrame, skinName)
@@ -371,20 +434,20 @@ local function ConnectCard(cardFrame, skinName)
 	if btnGift then
 		local function onGiftClicked()
 			local skinData = BaseSkinStats[skinName]
+			local productId = skinData and skinData.ProductId
 
-			if skinData and skinData.ProductId then
-				if not _G.OpenGiftMenu then
-					local attempts = 0
-					while not _G.OpenGiftMenu and attempts < 10 do
-						task.wait(0.2)
-						attempts += 1
-					end
-				end
-
-				if _G.OpenGiftMenu then
-					_G.OpenGiftMenu(skinData.ProductId)
-				end
+			if not productId or productId <= 0 then
+				warn("⚠️ Base gift product id is missing for " .. tostring(skinName))
+				return
 			end
+
+			if not _G.OpenGiftMenu then
+				warn("⚠️ _G.OpenGiftMenu is not ready yet!")
+				return
+			end
+
+			closeBaseUpgradeFocusForGift()
+			_G.OpenGiftMenu(productId)
 		end
 
 		if Kit and Kit.Tween then 

@@ -85,6 +85,7 @@ end
 
 local function closeUi(force)
 	if claimLocked and not force then return end
+	mainFrame.Visible = false
 	gui.Enabled = false
 	if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
 	playerGui:SetAttribute("OfflineEarningsFlowActive", false)
@@ -93,6 +94,7 @@ end
 local function disableButtons(disabled)
 	obtainButton.Active = not disabled
 	premiumButton.Active = not disabled
+	exitButton.Active = not disabled
 end
 
 local function showOfflineUi()
@@ -134,27 +136,37 @@ local function maybeOpen()
 	showOfflineUi()
 end
 
-UIButtonUtils.SetupButton(obtainButton, function()
+local function claimAndClose(showSuccessMessage)
 	if claimLocked then return end
 	claimLocked = true
 	disableButtons(true)
 	local ok, success, msg, amount = pcall(function() return claimOffline:InvokeServer() end)
-	if not ok then
-		setState(false, "Claim failed. Please try again.")
-		claimLocked = false
-		disableButtons(false)
+	if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+
+	if ok and success then
+		baseAmount = 0
+		if showSuccessMessage then
+			setState(true, "$" .. formatMoney(amount) .. " has been transferred to your bank account.")
+			task.delay(1.4, function() closeUi(true) end)
+		else
+			closeUi(true)
+		end
 		return
 	end
-	if success then
-		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
-		setState(true, "$" .. formatMoney(amount) .. " has been transferred to your bank account.")
-		task.delay(1.4, function() closeUi(true) end)
-	else
-		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
-		setState(false, msg or "Claim failed. Please try again.")
-		claimLocked = false
-		disableButtons(false)
+
+	local errorMessage = ok and msg or "Claim failed. Please try again."
+	if errorMessage == "You have already claimed your offline earnings." or errorMessage == "No offline earnings available." then
+		closeUi(true)
+		return
 	end
+
+	setState(false, errorMessage)
+	claimLocked = false
+	disableButtons(false)
+end
+
+UIButtonUtils.SetupButton(obtainButton, function()
+	claimAndClose(true)
 end)
 
 UIButtonUtils.SetupButton(premiumButton, function()
@@ -184,6 +196,8 @@ premiumResult.OnClientEvent:Connect(function(success, msg, amount)
 	end
 end)
 
-UIButtonUtils.SetupButton(exitButton, function() closeUi(false) end)
+UIButtonUtils.SetupButton(exitButton, function()
+	claimAndClose(false)
+end)
 
 task.defer(maybeOpen)

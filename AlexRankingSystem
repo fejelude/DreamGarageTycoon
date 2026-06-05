@@ -15,6 +15,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TextChatService = game:GetService("TextChatService")
 
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
@@ -110,8 +111,7 @@ local function toggleOtherGuis(shouldHide)
 		for _, otherGui in pairs(playerGui:GetDescendants()) do
 			if otherGui:IsA("ScreenGui")
 				and otherGui.Name ~= GUI_ID
-				and otherGui.Enabled == true
-				and otherGui.Name ~= "Balance Indicator" then
+				and otherGui.Enabled == true then
 
 				otherGui.Enabled = false
 				table.insert(hiddenGuis, otherGui)
@@ -303,21 +303,63 @@ local function showRankPage(rankName)
 	setObjectVisible(getRankPage(rankName), true)
 end
 
+local function playTransientLabel(label, text, holdSeconds, onComplete)
+	label.Text = text
+	label.TextTransparency = 1
+	label.Visible = true
+
+	local stroke = label:FindFirstChildOfClass("UIStroke")
+	local targetStrokeTransparency = nil
+	if stroke then
+		targetStrokeTransparency = label:GetAttribute("TransientStrokeTransparency")
+		if targetStrokeTransparency == nil then
+			targetStrokeTransparency = stroke.Transparency
+			if targetStrokeTransparency >= 1 then
+				targetStrokeTransparency = 0
+			end
+			label:SetAttribute("TransientStrokeTransparency", targetStrokeTransparency)
+		end
+		stroke.Transparency = 1
+	end
+
+	TweenService:Create(label, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 0}):Play()
+	if stroke then
+		TweenService:Create(stroke, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Transparency = targetStrokeTransparency}):Play()
+	end
+
+	task.delay(holdSeconds, function()
+		if not label or not label.Parent then
+			if onComplete then onComplete() end
+			return
+		end
+
+		local fadeOut = TweenService:Create(label, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1})
+		fadeOut:Play()
+		if stroke and stroke.Parent then
+			TweenService:Create(stroke, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Transparency = 1}):Play()
+		end
+
+		fadeOut.Completed:Connect(function()
+			if label and label.Parent then
+				label.Visible = false
+				label.TextTransparency = 1
+			end
+			if stroke and stroke.Parent then
+				stroke.Transparency = 1
+			end
+			if onComplete then onComplete() end
+		end)
+	end)
+end
+
 local function showNotification(text)
 	if notificationBusy then return end
 	notificationBusy = true
 	local gui = getRankingGui()
 	local notification = gui and gui:FindFirstChild("Notification", true)
 	if notification and notification:IsA("TextLabel") then
-		notification.Text = text
-		notification.TextTransparency = 1
-		notification.Visible = true
-		TweenService:Create(notification, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 0}):Play()
-		task.delay(2.25, function()
-			if notification and notification.Parent then
-				TweenService:Create(notification, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1}):Play()
-			end
-			task.delay(0.4, function() notificationBusy = false end)
+		playTransientLabel(notification, text, 2.25, function()
+			notificationBusy = false
 		end)
 	else
 		warn("[AlexRankingSystem] " .. tostring(text))
@@ -332,15 +374,8 @@ local function showRequirementError(rankName, text)
 	local page2 = getPage2Frame(rankName)
 	local errorLabel = page2 and page2:FindFirstChild("Error", true)
 	if errorLabel and errorLabel:IsA("TextLabel") then
-		errorLabel.Text = text
-		errorLabel.TextTransparency = 1
-		errorLabel.Visible = true
-		TweenService:Create(errorLabel, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 0}):Play()
-		task.delay(2, function()
-			if errorLabel and errorLabel.Parent then
-				TweenService:Create(errorLabel, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1}):Play()
-			end
-			task.delay(0.4, function() errorBusy[rankName] = false end)
+		playTransientLabel(errorLabel, text, 2, function()
+			errorBusy[rankName] = false
 		end)
 	else
 		showNotification(text)
@@ -348,11 +383,53 @@ local function showRequirementError(rankName, text)
 	end
 end
 
-local function formatProgress(requirementProgress)
-	if requirementProgress.UniqueTarget then
-		return tostring(requirementProgress.Current) .. "/" .. tostring(requirementProgress.Target) .. "  •  " .. tostring(requirementProgress.UniqueCurrent or 0) .. "/" .. tostring(requirementProgress.UniqueTarget) .. " players"
+
+local function formatNumberWithPrefix(value)
+	local number = math.max(0, tonumber(value) or 0)
+	if number < 1000 then
+		return tostring(math.floor(number + 0.5))
 	end
-	return tostring(requirementProgress.Current or 0) .. "/" .. tostring(requirementProgress.Target or 1)
+
+	local suffixes = {"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"}
+	local suffixIndex = math.min(#suffixes, math.floor(math.log(number, 1000)))
+	local divisor = 1000 ^ suffixIndex
+	local scaled = number / divisor
+	local text
+
+	if scaled >= 100 then
+		text = string.format("%.0f", scaled)
+	elseif scaled >= 10 then
+		text = string.format("%.1f", scaled)
+	else
+		text = string.format("%.2f", scaled)
+	end
+
+	text = text:gsub("%.0$", ""):gsub("(%.[1-9])0$", "%1")
+	return text .. suffixes[suffixIndex]
+end
+
+local function getRequirementDefinition(rankName, requirementId)
+	local rankConfig = RankConfig.Ranks and RankConfig.Ranks[rankName]
+	if not rankConfig then return nil end
+
+	for _, requirement in ipairs(rankConfig.Requirements or {}) do
+		if requirement.Id == requirementId then
+			return requirement
+		end
+	end
+
+	return nil
+end
+
+local function formatProgress(requirementProgress, requirementDefinition)
+	local current = requirementProgress.Current or 0
+	local target = requirementProgress.Target or 1
+
+	if requirementDefinition and requirementDefinition.Type == "Hold" then
+		return formatNumberWithPrefix(current) .. " / " .. formatNumberWithPrefix(target)
+	end
+
+	return tostring(current) .. "/" .. tostring(target)
 end
 
 local function cacheInformationLabelState(label)
@@ -393,7 +470,7 @@ local function updateRequirementLabels(rankName, rankState)
 					if state.StrokeTransparency ~= nil then stroke.Transparency = state.StrokeTransparency end
 				end
 			else
-				label.Text = formatProgress(progress)
+				label.Text = formatProgress(progress, getRequirementDefinition(rankName, requirementId))
 				if stroke then stroke.Color = LIGHT_RED end
 			end
 		end
