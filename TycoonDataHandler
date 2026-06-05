@@ -129,7 +129,7 @@ local DEFAULT_CAR_STORAGE_LIMIT = 5
 local STARTER_PACK_CAR_NAME = "Senator"
 local STARTER_PACK_WALLET_CASH = 800000
 local MAX_LAYOUT_SIZE = 200
-local SETTINGS_SCHEMA_VERSION = 2
+local SETTINGS_SCHEMA_VERSION = 3
 local STARTER_CAR_NAME = "Delta Item"
 local SETTINGS_REMOTE_NAME = "SettingsPersistenceEvent"
 local DAILY_REWARDS_STATE_ATTRIBUTE = "DailyRewardsStateJson"
@@ -144,6 +144,8 @@ local DEFAULT_PLAYER_SETTINGS = {
 	CarAnimationEnabled = true,
 	RealTimeShadowsEnabled = true,
 	PotatoModeEnabled = false,
+	ReceiveGiftsEnabled = true,
+	AFKModeEnabled = false,
 }
 
 local PLAYER_SETTING_ATTRIBUTES = {
@@ -153,6 +155,8 @@ local PLAYER_SETTING_ATTRIBUTES = {
 	CarAnimationEnabled = "Setting_CarAnimationEnabled",
 	RealTimeShadowsEnabled = "Setting_RealTimeShadowsEnabled",
 	PotatoModeEnabled = "Setting_PotatoModeEnabled",
+	ReceiveGiftsEnabled = "Setting_ReceiveGiftsEnabled",
+	AFKModeEnabled = "Setting_AFKModeEnabled",
 }
 
 local CONSTANTS = {
