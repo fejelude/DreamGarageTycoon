@@ -77,7 +77,7 @@ local RankConfig = {
 		Requirements = {
 			{ Id = "Requirement1", Type = "Buy", Car = "Sirene", Shop = "Epic", Amount = 1 },
 			{ Id = "Requirement2", Type = "Buy", Car = "Classy", Shop = "Epic", Amount = 1 },
-			{ Id = "Requirement3", Type = "GiftReceivedUnique", Amount = 5, UniquePlayers = 3 },
+			{ Id = "Requirement3", Type = "GiftReceivedUnique", Amount = 5, UniquePlayers = 5, Description = "Receive 5 cars as gifts from 5 different players." },
 			{ Id = "Requirement4", Type = "Hold", Currency = "Bank", Amount = 2000000000000 },
 			{ Id = "Requirement5", Type = "GiftSentUnique", UniquePlayers = 8 },
 		},

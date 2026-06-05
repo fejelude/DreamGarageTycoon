@@ -255,15 +255,13 @@ local function evaluateRequirement(player, requirement)
 		current = countDictionary(progress.GiftSentPlayers)
 		target = requirement.UniquePlayers or target
 	elseif requirement.Type == "GiftReceivedUnique" then
-		local uniquePlayers = countDictionary(progress.GiftReceivedPlayers)
-		current = math.min(progress.GiftReceivedTotal or 0, target)
+		target = requirement.UniquePlayers or target
+		current = countDictionary(progress.GiftReceivedPlayers)
 		return {
 			Id = requirement.Id,
-			Current = current,
+			Current = math.min(current, target),
 			Target = target,
-			Complete = (progress.GiftReceivedTotal or 0) >= target and uniquePlayers >= (requirement.UniquePlayers or 1),
-			UniqueCurrent = uniquePlayers,
-			UniqueTarget = requirement.UniquePlayers or 1,
+			Complete = current >= target,
 		}
 	elseif requirement.Type == "Pad" then
 		current = (tonumber(player:GetAttribute("HighestUnlockedPad")) or 1) >= requirement.PadNumber and 1 or 0

@@ -15,6 +15,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TextChatService = game:GetService("TextChatService")
 
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
@@ -348,11 +349,53 @@ local function showRequirementError(rankName, text)
 	end
 end
 
-local function formatProgress(requirementProgress)
-	if requirementProgress.UniqueTarget then
-		return tostring(requirementProgress.Current) .. "/" .. tostring(requirementProgress.Target) .. "  •  " .. tostring(requirementProgress.UniqueCurrent or 0) .. "/" .. tostring(requirementProgress.UniqueTarget) .. " players"
+
+local function formatNumberWithPrefix(value)
+	local number = math.max(0, tonumber(value) or 0)
+	if number < 1000 then
+		return tostring(math.floor(number + 0.5))
 	end
-	return tostring(requirementProgress.Current or 0) .. "/" .. tostring(requirementProgress.Target or 1)
+
+	local suffixes = {"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"}
+	local suffixIndex = math.min(#suffixes, math.floor(math.log(number, 1000)))
+	local divisor = 1000 ^ suffixIndex
+	local scaled = number / divisor
+	local text
+
+	if scaled >= 100 then
+		text = string.format("%.0f", scaled)
+	elseif scaled >= 10 then
+		text = string.format("%.1f", scaled)
+	else
+		text = string.format("%.2f", scaled)
+	end
+
+	text = text:gsub("%.0$", ""):gsub("(%.[1-9])0$", "%1")
+	return text .. suffixes[suffixIndex]
+end
+
+local function getRequirementDefinition(rankName, requirementId)
+	local rankConfig = RankConfig.Ranks and RankConfig.Ranks[rankName]
+	if not rankConfig then return nil end
+
+	for _, requirement in ipairs(rankConfig.Requirements or {}) do
+		if requirement.Id == requirementId then
+			return requirement
+		end
+	end
+
+	return nil
+end
+
+local function formatProgress(requirementProgress, requirementDefinition)
+	local current = requirementProgress.Current or 0
+	local target = requirementProgress.Target or 1
+
+	if requirementDefinition and requirementDefinition.Type == "Hold" then
+		return formatNumberWithPrefix(current) .. " / " .. formatNumberWithPrefix(target)
+	end
+
+	return tostring(current) .. "/" .. tostring(target)
 end
 
 local function cacheInformationLabelState(label)
@@ -393,7 +436,7 @@ local function updateRequirementLabels(rankName, rankState)
 					if state.StrokeTransparency ~= nil then stroke.Transparency = state.StrokeTransparency end
 				end
 			else
-				label.Text = formatProgress(progress)
+				label.Text = formatProgress(progress, getRequirementDefinition(rankName, requirementId))
 				if stroke then stroke.Color = LIGHT_RED end
 			end
 		end

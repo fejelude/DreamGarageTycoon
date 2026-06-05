@@ -62,6 +62,8 @@ end
 -- 🛡️ STATE TRACKING
 local hiddenGuis = {} 
 local hiddenObjects = {} 
+local focusConnections = {}
+local connectedCards = {}
 local currentBlur = nil 
 local feedbackDebounce = false 
 local isProcessingTransaction = false 
@@ -184,26 +186,64 @@ local function toggleNamedGuiObjects(shouldHide, objectName)
 	end
 end
 
+local GUI_FOCUS_WHITELIST = {
+	["Balance Indicator"] = true,
+	TouchGui = true,
+	Chat = true,
+	Notifications = true,
+	PurchasingState = true,
+}
+
+local function clearFocusConnections()
+	for _, connection in ipairs(focusConnections) do
+		if connection then connection:Disconnect() end
+	end
+	focusConnections = {}
+end
+
+local function shouldIgnoreFocusGui(gui, myGui)
+	return not gui:IsA("ScreenGui")
+		or gui == myGui
+		or GUI_FOCUS_WHITELIST[gui.Name] == true
+end
+
+local function hideGuiForFocus(gui, myGui)
+	if shouldIgnoreFocusGui(gui, myGui) then return end
+	if gui.Enabled then
+		hiddenGuis[gui] = true
+		gui.Enabled = false
+	end
+end
+
+local function watchFocusGui(gui, myGui)
+	if shouldIgnoreFocusGui(gui, myGui) then return end
+	table.insert(focusConnections, gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if gui.Enabled then
+			hideGuiForFocus(gui, myGui)
+		end
+	end))
+end
+
 local function toggleOtherGuis(shouldHide)
 	local myGui = PlayerGui:FindFirstChild(UI_NAME)
 	if shouldHide then
-		if #hiddenGuis > 0 then return end
-		hiddenGuis = {}
-		for _, otherGui in pairs(PlayerGui:GetDescendants()) do
-			if otherGui:IsA("ScreenGui") 
-				and otherGui ~= myGui 
-				and otherGui.Enabled == true 
-				and otherGui.Name ~= "Balance Indicator"
-				and otherGui.Name ~= "TouchGui"
-				and otherGui.Name ~= "Chat"
-				and otherGui.Name ~= "Notifications" 
-			then
-				otherGui.Enabled = false
-				table.insert(hiddenGuis, otherGui)
-			end
+		clearFocusConnections()
+		for _, otherGui in ipairs(PlayerGui:GetChildren()) do
+			watchFocusGui(otherGui, myGui)
+			hideGuiForFocus(otherGui, myGui)
 		end
+
+		table.insert(focusConnections, PlayerGui.ChildAdded:Connect(function(child)
+			task.defer(function()
+				if child and child.Parent then
+					watchFocusGui(child, myGui)
+					hideGuiForFocus(child, myGui)
+				end
+			end)
+		end))
 	else
-		for _, otherGui in pairs(hiddenGuis) do
+		clearFocusConnections()
+		for otherGui in pairs(hiddenGuis) do
 			if otherGui and otherGui.Parent then
 				otherGui.Enabled = true
 			end
@@ -272,6 +312,8 @@ end
 
 local function ConnectCard(cardFrame, skinName)
 	UpdateCardVisuals(cardFrame, skinName)
+	if connectedCards[cardFrame] then return end
+	connectedCards[cardFrame] = true
 
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(function()
 		UpdateCardVisuals(cardFrame, skinName)
