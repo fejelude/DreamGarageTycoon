@@ -71,6 +71,8 @@ local emptyIndicator = nil
 local hiddenGuis = {}
 local hiddenObjects = {}
 local hiddenBonusWidgets = {}
+local focusConnections = {}
+local watchedFocusGuis = {}
 local btnConnections = {} 
 
 local SHOP_GUIS_WITH_DISABLE_CLEANUP = {
@@ -80,6 +82,10 @@ local SHOP_GUIS_WITH_DISABLE_CLEANUP = {
 }
 
 local GIFT_FOCUS_GUI_OBJECTS_TO_HIDE = {
+	"Bonuses",
+	"DailyRewards",
+	"Updates",
+	"Ads",
 	"FriendBoost",
 	"FriendsBoost",
 	"FriendBonus",
@@ -249,21 +255,57 @@ local function toggleGiftFocusGuiObjects(shouldHide)
 	end
 end
 
+local function clearFocusConnections()
+	for _, connection in ipairs(focusConnections) do
+		if connection then connection:Disconnect() end
+	end
+	table.clear(focusConnections)
+	table.clear(watchedFocusGuis)
+end
+
+local function shouldIgnoreGiftFocusGui(gui)
+	return not gui:IsA("ScreenGui")
+		or gui == screenGui
+		or gui.Name == "Confirmation"
+end
+
+local function hideGuiForGiftFocus(gui)
+	if shouldIgnoreGiftFocusGui(gui) then return end
+	if gui.Enabled then
+		hiddenGuis[gui] = true
+		gui.Enabled = false
+	end
+end
+
+local function watchGiftFocusGui(gui)
+	if shouldIgnoreGiftFocusGui(gui) or watchedFocusGuis[gui] then return end
+	watchedFocusGuis[gui] = true
+	table.insert(focusConnections, gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if gui.Enabled then
+			hideGuiForGiftFocus(gui)
+		end
+	end))
+end
+
 local function toggleOtherGuis(shouldHide)
 	if shouldHide then
-		if next(hiddenGuis) ~= nil then return end
+		clearFocusConnections()
 		table.clear(hiddenGuis)
-		for _, gui in pairs(PlayerGui:GetChildren()) do
-			if gui:IsA("ScreenGui")
-				and gui ~= screenGui
-				and gui.Name ~= "Confirmation"
-				and gui.Enabled then
-
-				gui.Enabled = false
-				hiddenGuis[gui] = true
-			end
+		for _, gui in pairs(PlayerGui:GetDescendants()) do
+			watchGiftFocusGui(gui)
+			hideGuiForGiftFocus(gui)
 		end
+
+		table.insert(focusConnections, PlayerGui.DescendantAdded:Connect(function(descendant)
+			task.defer(function()
+				if descendant and descendant.Parent then
+					watchGiftFocusGui(descendant)
+					hideGuiForGiftFocus(descendant)
+				end
+			end)
+		end))
 	else
+		clearFocusConnections()
 		for gui in pairs(hiddenGuis) do
 			if gui and gui.Parent then
 				gui.Enabled = true
@@ -420,7 +462,7 @@ local function closeShopGuisThatRestoreUIOnDisable()
 	local closedAnyShop = false
 
 	for _, shopGuiName in ipairs(SHOP_GUIS_WITH_DISABLE_CLEANUP) do
-		local shopGui = PlayerGui:FindFirstChild(shopGuiName)
+		local shopGui = PlayerGui:FindFirstChild(shopGuiName, true)
 		if shopGui and shopGui:IsA("ScreenGui") and shopGui.Enabled then
 			shopGui.Enabled = false
 			closedAnyShop = true

@@ -416,20 +416,19 @@ local function ConnectCard(cardFrame, skinName)
 	if btnGift then
 		local function onGiftClicked()
 			local skinData = BaseSkinStats[skinName]
+			local productId = skinData and skinData.ProductId
 
-			if skinData and skinData.ProductId then
-				if not _G.OpenGiftMenu then
-					local attempts = 0
-					while not _G.OpenGiftMenu and attempts < 10 do
-						task.wait(0.2)
-						attempts += 1
-					end
-				end
-
-				if _G.OpenGiftMenu then
-					_G.OpenGiftMenu(skinData.ProductId)
-				end
+			if not productId or productId <= 0 then
+				warn("⚠️ Base gift product id is missing for " .. tostring(skinName))
+				return
 			end
+
+			if not _G.OpenGiftMenu then
+				warn("⚠️ _G.OpenGiftMenu is not ready yet!")
+				return
+			end
+
+			_G.OpenGiftMenu(productId)
 		end
 
 		if Kit and Kit.Tween then 
