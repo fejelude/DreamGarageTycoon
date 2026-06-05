@@ -9,7 +9,6 @@ local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI", 10)
 -- ============ CONFIG ============
 local SESSION_TIMEOUT_SECONDS = 60
 local TRIGGER_COOLDOWN_SECONDS = 1
-local MAX_GIFT_DISTANCE = 16
 local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
 -- ================================
 
@@ -65,36 +64,8 @@ local function recordGift(giver, receiver, carId)
 	end
 end
 
-local function getRoot(player)
-	local character = player and player.Character
-	if not character then return nil end
-
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if humanoid and humanoid.Health <= 0 then
-		return nil
-	end
-
-	return character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso")
-end
-
 local function isDataLoaded(player)
 	return player and player:GetAttribute(DATA_READY_ATTRIBUTE) == true
-end
-
-local function validateGiftDistance(giver, receiver)
-	local giverRoot = getRoot(giver)
-	local receiverRoot = getRoot(receiver)
-
-	if not giverRoot or not receiverRoot then
-		return false, "Player is not ready for gifting."
-	end
-
-	local distance = (giverRoot.Position - receiverRoot.Position).Magnitude
-	if distance > MAX_GIFT_DISTANCE then
-		return false, "You are too far away to gift."
-	end
-
-	return true, nil
 end
 
 local function getToolUniqueId(tool)
@@ -117,31 +88,6 @@ local function isToolOwnedByPlayer(tool, player)
 	if not tool or not player then return false end
 
 	return tool.Parent == player.Character or tool.Parent == player:FindFirstChild("Backpack")
-end
-
-local function removeRespawnMirror(giver, toolId, fallbackName)
-	local starterGear = giver and giver:FindFirstChild("StarterGear")
-	if not starterGear then return end
-
-	if toolId ~= nil then
-		for _, child in ipairs(starterGear:GetChildren()) do
-			if child:IsA("Tool") and getToolUniqueId(child) == toolId then
-				child:Destroy()
-				return
-			end
-		end
-
-		return
-	end
-
-	if fallbackName then
-		for _, child in ipairs(starterGear:GetChildren()) do
-			if child:IsA("Tool") and child.Name == fallbackName then
-				child:Destroy()
-				return
-			end
-		end
-	end
 end
 
 local function getReceiverFromData(data)
@@ -317,11 +263,6 @@ local function validatePromptRequest(giver, data)
 		return false, nil, nil, "You must equip the car before gifting it."
 	end
 
-	local distanceOk, distanceReason = validateGiftDistance(giver, receiver)
-	if not distanceOk then
-		return false, nil, nil, distanceReason
-	end
-
 	if isPlayerBusy(giver) then
 		return false, nil, nil, "You already have a pending gift."
 	end
@@ -488,12 +429,6 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 
 		if not isValidCarTool(session.Tool) then
 			failSession(session, "Gift failed: Invalid car tool.", "Gift failed: Invalid car tool.")
-			return
-		end
-
-		local distanceOk, distanceReason = validateGiftDistance(session.Giver, player)
-		if not distanceOk then
-			failSession(session, distanceReason, distanceReason)
 			return
 		end
 

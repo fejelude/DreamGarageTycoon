@@ -230,6 +230,7 @@ local isGiverProcessing = false
 local isReceiverProcessing = false
 local giverGiftPending = false
 local currentGiverUserId = nil
+local receiverOpenToken = 0
 
 local currentPromptCarId = nil
 local currentPromptReceiverId = nil
@@ -578,6 +579,92 @@ local function bindReceiverEvents(receiverGui, receiverMain)
 	end)
 end
 
+
+local function displayReceiverGiftUI(data, token)
+	if token and receiverOpenToken ~= token then return end
+
+	local receiverGui, receiverMain = getReceiverUI()
+	if not receiverGui or not receiverMain then return end
+
+	if isReceiverProcessing or currentGiverUserId ~= nil then
+		local giverId = data and data.Giver and getUserIdFromInfo(data.Giver)
+		if giverId then
+			ActionRemote:FireServer("ReceiverBusy", {
+				GiverUserId = giverId
+			})
+		end
+		return
+	end
+
+	cancelPendingClose(receiverGui)
+	bindReceiverEvents(receiverGui, receiverMain)
+
+	pcall(function()
+		playSfx(SFX.Open)
+	end)
+
+	if receiverMain:IsA("CanvasGroup") then
+		receiverMain.GroupTransparency = 0
+	end
+
+	local giverInfo = data and data.Giver
+	currentGiverUserId = getUserIdFromInfo(giverInfo)
+
+	local giverName = getNameFromInfo(giverInfo)
+	local carData = getCarData(data and data.CarId)
+
+	setTextIfExists(receiverMain, "SenderName", "from: " .. giverName)
+	setTextIfExists(receiverMain, "CarName", carData.Name)
+
+	local carNameLabel = receiverMain:FindFirstChild("CarName")
+	if carNameLabel then
+		applyTierStyling(carNameLabel, carData.Rarity)
+	end
+
+	setImageIfExists(receiverMain, "CarImage", carData.Image)
+
+	local accepted = receiverMain:FindFirstChild("Accepted")
+	if accepted then
+		accepted.Visible = false
+	end
+
+	local buttons = receiverMain:FindFirstChild("Buttons")
+	local buttonFrame = buttons and buttons:FindFirstChild("ButtonFrame")
+
+	if buttonFrame then
+		local yes = buttonFrame:FindFirstChild("Yes")
+		local no = buttonFrame:FindFirstChild("No")
+
+		if yes then yes.Visible = true end
+		if no then no.Visible = true end
+	end
+
+	receiverMain.Visible = true
+	receiverGui.Enabled = true
+end
+
+local function openReceiverGiftUIAfterLoading(data)
+	receiverOpenToken += 1
+	local token = receiverOpenToken
+
+	if PlayerGui:GetAttribute("LoadingScreenActive") == true then
+		task.spawn(function()
+			while receiverOpenToken == token and PlayerGui:GetAttribute("LoadingScreenActive") == true do
+				PlayerGui:GetAttributeChangedSignal("LoadingScreenActive"):Wait()
+			end
+
+			if receiverOpenToken ~= token then return end
+			task.wait()
+			if receiverOpenToken ~= token then return end
+
+			displayReceiverGiftUI(data, token)
+		end)
+		return
+	end
+
+	displayReceiverGiftUI(data, token)
+end
+
 -- ============================================================================
 -- SERVER EVENTS
 -- ============================================================================
@@ -632,64 +719,7 @@ ActionRemote.OnClientEvent:Connect(function(action, data)
 		giverGui.Enabled = true
 
 	elseif action == "OpenReceiverUI" then
-		local receiverGui, receiverMain = getReceiverUI()
-		if not receiverGui or not receiverMain then return end
-
-		if isReceiverProcessing or currentGiverUserId ~= nil then
-			local giverId = data and data.Giver and getUserIdFromInfo(data.Giver)
-			if giverId then
-				ActionRemote:FireServer("ReceiverBusy", {
-					GiverUserId = giverId
-				})
-			end
-			return
-		end
-
-		cancelPendingClose(receiverGui)
-		bindReceiverEvents(receiverGui, receiverMain)
-
-		pcall(function()
-			playSfx(SFX.Open)
-		end)
-
-		if receiverMain:IsA("CanvasGroup") then
-			receiverMain.GroupTransparency = 0
-		end
-
-		local giverInfo = data and data.Giver
-		currentGiverUserId = getUserIdFromInfo(giverInfo)
-
-		local giverName = getNameFromInfo(giverInfo)
-		local carData = getCarData(data and data.CarId)
-
-		setTextIfExists(receiverMain, "SenderName", "from: " .. giverName)
-		setTextIfExists(receiverMain, "CarName", carData.Name)
-
-		local carNameLabel = receiverMain:FindFirstChild("CarName")
-		if carNameLabel then
-			applyTierStyling(carNameLabel, carData.Rarity)
-		end
-
-		setImageIfExists(receiverMain, "CarImage", carData.Image)
-
-		local accepted = receiverMain:FindFirstChild("Accepted")
-		if accepted then
-			accepted.Visible = false
-		end
-
-		local buttons = receiverMain:FindFirstChild("Buttons")
-		local buttonFrame = buttons and buttons:FindFirstChild("ButtonFrame")
-
-		if buttonFrame then
-			local yes = buttonFrame:FindFirstChild("Yes")
-			local no = buttonFrame:FindFirstChild("No")
-
-			if yes then yes.Visible = true end
-			if no then no.Visible = true end
-		end
-
-		receiverMain.Visible = true
-		receiverGui.Enabled = true
+		openReceiverGiftUIAfterLoading(data)
 
 	elseif action == "UpdateGiverUI" then
 		local text = data and data.Text or "Gift status updated."
@@ -715,6 +745,8 @@ ActionRemote.OnClientEvent:Connect(function(action, data)
 		showStatusNotification(text, not failed)
 
 	elseif action == "UpdateReceiverUI" then
+		receiverOpenToken += 1
+
 		local text = data and data.Text or "Gift status updated."
 		local failed = getStateIsFailed(data)
 
@@ -730,6 +762,8 @@ ActionRemote.OnClientEvent:Connect(function(action, data)
 		showStatusNotification(text, not failed)
 
 	elseif action == "CloseUI" then
+		receiverOpenToken += 1
+
 		isGiverProcessing = false
 		isReceiverProcessing = false
 		giverGiftPending = false
