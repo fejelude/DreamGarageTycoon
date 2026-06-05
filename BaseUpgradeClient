@@ -63,6 +63,7 @@ end
 local hiddenGuis = {} 
 local hiddenObjects = {} 
 local focusConnections = {}
+local watchedFocusGuis = {}
 local connectedCards = {}
 local currentBlur = nil 
 local feedbackDebounce = false 
@@ -199,6 +200,7 @@ local function clearFocusConnections()
 		if connection then connection:Disconnect() end
 	end
 	focusConnections = {}
+	watchedFocusGuis = {}
 end
 
 local function shouldIgnoreFocusGui(gui, myGui)
@@ -216,7 +218,8 @@ local function hideGuiForFocus(gui, myGui)
 end
 
 local function watchFocusGui(gui, myGui)
-	if shouldIgnoreFocusGui(gui, myGui) then return end
+	if shouldIgnoreFocusGui(gui, myGui) or watchedFocusGuis[gui] then return end
+	watchedFocusGuis[gui] = true
 	table.insert(focusConnections, gui:GetPropertyChangedSignal("Enabled"):Connect(function()
 		if gui.Enabled then
 			hideGuiForFocus(gui, myGui)
@@ -228,12 +231,12 @@ local function toggleOtherGuis(shouldHide)
 	local myGui = PlayerGui:FindFirstChild(UI_NAME)
 	if shouldHide then
 		clearFocusConnections()
-		for _, otherGui in ipairs(PlayerGui:GetChildren()) do
+		for _, otherGui in ipairs(PlayerGui:GetDescendants()) do
 			watchFocusGui(otherGui, myGui)
 			hideGuiForFocus(otherGui, myGui)
 		end
 
-		table.insert(focusConnections, PlayerGui.ChildAdded:Connect(function(child)
+		table.insert(focusConnections, PlayerGui.DescendantAdded:Connect(function(child)
 			task.defer(function()
 				if child and child.Parent then
 					watchFocusGui(child, myGui)
