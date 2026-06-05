@@ -29,6 +29,15 @@ end
 -- HELPERS
 -- ============================================================================
 
+local RECEIVE_GIFTS_DISABLED_SELF_TEXT = "You need to enable Receive Gifts in Settings before you can send a player a car gift."
+local RECEIVE_GIFTS_DISABLED_TARGET_TEXT = "This player has Receive Gifts disabled."
+
+local function hasReceiveGiftsEnabled(player)
+	if not player then return false end
+	local value = player:GetAttribute("Setting_ReceiveGiftsEnabled")
+	return value ~= false
+end
+
 local function canReceiveGift(player)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
 	if not rankApi then
@@ -264,6 +273,14 @@ local function validatePromptRequest(giver, data)
 		return false, nil, nil, "Player has left the game."
 	end
 
+	if not hasReceiveGiftsEnabled(giver) then
+		return false, nil, nil, RECEIVE_GIFTS_DISABLED_SELF_TEXT
+	end
+
+	if not hasReceiveGiftsEnabled(receiver) then
+		return false, nil, nil, RECEIVE_GIFTS_DISABLED_TARGET_TEXT
+	end
+
 	if typeof(tool) ~= "Instance" or not tool:IsA("Tool") then
 		return false, nil, nil, "Invalid car tool."
 	end
@@ -351,6 +368,16 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			return
 		end
 
+		if not hasReceiveGiftsEnabled(session.Giver) then
+			failSession(session, RECEIVE_GIFTS_DISABLED_SELF_TEXT, nil)
+			return
+		end
+
+		if not hasReceiveGiftsEnabled(session.Receiver) then
+			failSession(session, RECEIVE_GIFTS_DISABLED_TARGET_TEXT, nil)
+			return
+		end
+
 		if activeGiftsByReceiver[session.Receiver.UserId] ~= session then
 			failSession(session, session.Receiver.Name .. " is currently busy.", nil)
 			return
@@ -405,6 +432,16 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 		if not session.Giver or session.Giver.Parent ~= Players then
 			sendReceiverUpdate(player, "Failed", "Giver has left the game.")
 			clearSession(session)
+			return
+		end
+
+		if not hasReceiveGiftsEnabled(session.Giver) then
+			failSession(session, RECEIVE_GIFTS_DISABLED_SELF_TEXT, nil)
+			return
+		end
+
+		if not hasReceiveGiftsEnabled(player) then
+			failSession(session, RECEIVE_GIFTS_DISABLED_TARGET_TEXT, RECEIVE_GIFTS_DISABLED_TARGET_TEXT)
 			return
 		end
 

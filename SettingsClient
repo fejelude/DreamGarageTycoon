@@ -1,7 +1,7 @@
--- Purpose:    Settings UI — Music, SFX, LOD, Animation, Real-Time Shadows, Potato Mode
+-- Purpose:    Settings UI — Music, SFX, LOD, Animation, Real-Time Shadows, Potato Mode, Receive Gifts, AFK Mode
 -- Runs on:    Client (LocalScript)
 -- Location:   StarterGui/SettingsGui
--- Dependencies: ReplicatedStorage.UIButtonUtils, ReplicatedStorage.SettingsPersistenceEvent
+-- Dependencies: ReplicatedStorage.UIButtonUtils, ReplicatedStorage.SettingsPersistenceEvent, ReplicatedStorage.AFKModeEvent
 
 -- ─────────────────────────────────────────────────────────────
 -- SERVICES
@@ -10,12 +10,15 @@ local Players           = game:GetService("Players")
 local SoundService      = game:GetService("SoundService")
 local TweenService      = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService   = game:GetService("TeleportService")
+local UserInputService  = game:GetService("UserInputService")
 
 -- ─────────────────────────────────────────────────────────────
 -- DEPENDENCIES
 -- ─────────────────────────────────────────────────────────────
 local UIButtonUtils            = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 local SettingsPersistenceEvent = ReplicatedStorage:WaitForChild("SettingsPersistenceEvent")
+local AFKModeEvent             = ReplicatedStorage:WaitForChild("AFKModeEvent", 10)
 
 -- ─────────────────────────────────────────────────────────────
 -- PLAYER / GUI REFERENCES
@@ -68,6 +71,16 @@ local potatoModeFolder = performanceFolder:WaitForChild("PotatoMode")
 local btnPotatoModeOn  = potatoModeFolder:WaitForChild("PotatoModeOn")
 local btnPotatoModeOff = potatoModeFolder:WaitForChild("PotatoModeOff")
 
+local othersFolder = settingsButtons:WaitForChild("Others")
+
+local receiveGiftsFolder = othersFolder:WaitForChild("ReceiveGifts")
+local btnReceiveGiftsOn  = receiveGiftsFolder:WaitForChild("ReceiveGiftsOn")
+local btnReceiveGiftsOff = receiveGiftsFolder:WaitForChild("ReceiveGiftsOff")
+
+local afkModeFolder = othersFolder:WaitForChild("AFKMode")
+local btnAFKModeOn  = afkModeFolder:WaitForChild("AFKModeOn")
+local btnAFKModeOff = afkModeFolder:WaitForChild("AFKModeOff")
+
 -- ─────────────────────────────────────────────────────────────
 -- AUDIO / POTATO MODE REFERENCES
 -- ─────────────────────────────────────────────────────────────
@@ -86,6 +99,8 @@ local SETTINGS_ATTRIBUTES = {
 	CarAnimationEnabled    = "Setting_CarAnimationEnabled",
 	RealTimeShadowsEnabled = "Setting_RealTimeShadowsEnabled",
 	PotatoModeEnabled      = "Setting_PotatoModeEnabled",
+	ReceiveGiftsEnabled   = "Setting_ReceiveGiftsEnabled",
+	AFKModeEnabled        = "Setting_AFKModeEnabled",
 }
 
 -- Important:
@@ -101,9 +116,12 @@ local DEFAULT_SETTINGS = {
 	CarAnimationEnabled    = true,  -- Car Animations ON
 	RealTimeShadowsEnabled = true,  -- Real-Time Shadows ON
 	PotatoModeEnabled      = false, -- Potato Mode OFF
+	ReceiveGiftsEnabled   = true,  -- Receive Gifts ON
+	AFKModeEnabled        = false, -- AFK Mode OFF
 }
 
 local ORIGINAL_SHADOW_ATTR = "OriginalCastShadow"
+local AFK_RECONNECT_WARNING_ATTRIBUTE = "AFKModeReconnectStarting"
 
 -- ─────────────────────────────────────────────────────────────
 -- FORCE WINDOW CENTERING
@@ -188,6 +206,18 @@ local function syncButtonStates()
 		potatoEnabled = DEFAULT_SETTINGS.PotatoModeEnabled
 	end
 	setCurrentStateButtonVisibility(btnPotatoModeOn, btnPotatoModeOff, potatoEnabled == true)
+
+	local receiveGiftsEnabled = player:GetAttribute(SETTINGS_ATTRIBUTES.ReceiveGiftsEnabled)
+	if receiveGiftsEnabled == nil then
+		receiveGiftsEnabled = DEFAULT_SETTINGS.ReceiveGiftsEnabled
+	end
+	setCurrentStateButtonVisibility(btnReceiveGiftsOn, btnReceiveGiftsOff, receiveGiftsEnabled == true)
+
+	local afkModeEnabled = workspace:GetAttribute("AFKModeEnabled")
+	if afkModeEnabled == nil then
+		afkModeEnabled = DEFAULT_SETTINGS.AFKModeEnabled
+	end
+	setCurrentStateButtonVisibility(btnAFKModeOn, btnAFKModeOff, afkModeEnabled == true)
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -418,6 +448,99 @@ local function setPotatoModeEnabled(isEnabled, shouldPersist)
 	end
 end
 
+
+-- ─────────────────────────────────────────────────────────────
+-- RECEIVE GIFTS TOGGLE
+-- ─────────────────────────────────────────────────────────────
+local function setReceiveGiftsEnabled(isEnabled, shouldPersist)
+	isEnabled = isEnabled == true
+
+	setCurrentStateButtonVisibility(btnReceiveGiftsOn, btnReceiveGiftsOff, isEnabled)
+	player:SetAttribute(SETTINGS_ATTRIBUTES.ReceiveGiftsEnabled, isEnabled)
+
+	if shouldPersist ~= false then
+		persistSetting("ReceiveGiftsEnabled", isEnabled)
+	end
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- AFK MODE TOGGLE / IDLE RECONNECT HANDLING
+-- ─────────────────────────────────────────────────────────────
+local afkReconnectRequested = false
+
+local function setAFKModeEnabled(isEnabled, shouldPersist)
+	isEnabled = isEnabled == true
+
+	setCurrentStateButtonVisibility(btnAFKModeOn, btnAFKModeOff, isEnabled)
+	workspace:SetAttribute("AFKModeEnabled", isEnabled)
+	player:SetAttribute(SETTINGS_ATTRIBUTES.AFKModeEnabled, isEnabled)
+
+	if shouldPersist ~= false then
+		persistSetting("AFKModeEnabled", isEnabled)
+	end
+end
+
+local function showAFKReconnectLoadingState()
+	playerGui:SetAttribute("LoadingScreenActive", true)
+	player:SetAttribute(AFK_RECONNECT_WARNING_ATTRIBUTE, true)
+end
+
+local function fireAFKModeServer(action)
+	if not AFKModeEvent then
+		warn("[Settings] AFKModeEvent is missing — AFK Mode cannot update idle state.")
+		return false
+	end
+
+	AFKModeEvent:FireServer(action)
+	return true
+end
+
+local function sendAFKIdleStateStarted()
+	if afkReconnectRequested then return end
+	if workspace:GetAttribute("AFKModeEnabled") ~= true then return end
+
+	if fireAFKModeServer("IdleStateStarted") then
+		afkReconnectRequested = true
+	end
+end
+
+local function clearAFKIdleState()
+	if not afkReconnectRequested then return end
+	afkReconnectRequested = false
+	player:SetAttribute(AFK_RECONNECT_WARNING_ATTRIBUTE, false)
+	if AFKModeEvent then
+		AFKModeEvent:FireServer("IdleStateEnded")
+	end
+end
+
+player.Idled:Connect(function()
+	sendAFKIdleStateStarted()
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if input.UserInputType == Enum.UserInputType.MouseMovement then return end
+	clearAFKIdleState()
+end)
+
+if AFKModeEvent then
+	AFKModeEvent.OnClientEvent:Connect(function(action)
+		if action == "ReconnectStarting" then
+			showAFKReconnectLoadingState()
+		elseif action == "ReconnectCancelled" then
+			afkReconnectRequested = false
+			player:SetAttribute(AFK_RECONNECT_WARNING_ATTRIBUTE, false)
+			playerGui:SetAttribute("LoadingScreenActive", false)
+		end
+	end)
+end
+
+TeleportService.TeleportInitFailed:Connect(function(failedPlayer)
+	if failedPlayer ~= player then return end
+	afkReconnectRequested = false
+	player:SetAttribute(AFK_RECONNECT_WARNING_ATTRIBUTE, false)
+	playerGui:SetAttribute("LoadingScreenActive", false)
+end)
+
 -- ─────────────────────────────────────────────────────────────
 -- WIRE UP ALL BUTTONS
 -- ─────────────────────────────────────────────────────────────
@@ -492,6 +615,27 @@ UIButtonUtils.SetupButton(btnPotatoModeOff, function()
 	setPotatoModeEnabled(true)
 end)
 
+-- Receive Gifts:
+-- ON button means Receive Gifts is currently ON, so clicking it turns OFF.
+-- OFF button means Receive Gifts is currently OFF, so clicking it turns ON.
+UIButtonUtils.SetupButton(btnReceiveGiftsOn, function()
+	setReceiveGiftsEnabled(false)
+end)
+
+UIButtonUtils.SetupButton(btnReceiveGiftsOff, function()
+	setReceiveGiftsEnabled(true)
+end)
+
+-- AFK Mode:
+-- Same button style as Potato Mode; OFF by default.
+UIButtonUtils.SetupButton(btnAFKModeOn, function()
+	setAFKModeEnabled(false)
+end)
+
+UIButtonUtils.SetupButton(btnAFKModeOff, function()
+	setAFKModeEnabled(true)
+end)
+
 -- ─────────────────────────────────────────────────────────────
 -- SAVED SETTINGS LOADER
 -- ─────────────────────────────────────────────────────────────
@@ -512,6 +656,10 @@ local function applySettingValue(settingName, value, shouldPersist)
 		setRealTimeShadowsEnabled(v, shouldPersist)
 	elseif settingName == "PotatoModeEnabled" then
 		setPotatoModeEnabled(v, shouldPersist)
+	elseif settingName == "ReceiveGiftsEnabled" then
+		setReceiveGiftsEnabled(v, shouldPersist)
+	elseif settingName == "AFKModeEnabled" then
+		setAFKModeEnabled(v, shouldPersist)
 	end
 end
 
@@ -549,6 +697,8 @@ end
 --   Car Animations ON
 --   Real-Time Shadows ON
 --   Potato Mode OFF
+--   Receive Gifts ON
+--   AFK Mode OFF
 -- ─────────────────────────────────────────────────────────────
 window.Visible     = false
 openButton.Visible = true
