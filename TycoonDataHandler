@@ -1,4 +1,5 @@
 -- Purpose: Handles all DataStore operations, Security Validation, Session Management, and prevents item duplication.
+-- Production gifting hardening: final TransferTool validates Receive Gifts and rapid setting toggles are persisted reliably.
 -- Runs on: Server
 -- Location: ServerScriptService > TycoonDataHandler
 -- Dependencies: Players, ServerStorage, DataStoreService, Workspace, ReplicatedStorage, HttpService, CarStats, BaseSkinStats
@@ -159,6 +160,10 @@ local PLAYER_SETTING_ATTRIBUTES = {
 	AFKModeEnabled = "Setting_AFKModeEnabled",
 }
 
+local RECEIVE_GIFTS_DISABLED_SELF_TEXT = "You need to enable Receive Gifts in Settings before you can send a player a car gift."
+local RECEIVE_GIFTS_DISABLED_TARGET_TEXT = "This player has Receive Gifts disabled."
+local RECEIVE_GIFTS_DISABLED_RECEIVER_TEXT = "You have Receive Gifts disabled."
+
 local CONSTANTS = {
 	VERTICAL_OFFSET = 5
 }
@@ -217,6 +222,9 @@ local TycoonFolder = getRequiredChild(Workspace, "Tycoons", "Folder", "Workspace
 local AdminLogEvent = ServerStorage:FindFirstChild("TycoonAdminLog")
 
 local SettingsPersistenceEvent = getRequiredChild(ReplicatedStorage, SETTINGS_REMOTE_NAME, "RemoteEvent", "ReplicatedStorage > " .. SETTINGS_REMOTE_NAME, REQUIRED_WAIT_SECONDS)
+local SETTINGS_UPDATE_RATE_LIMIT_SECONDS = 0.15
+local lastSettingsUpdateByUserId = {}
+local pendingSettingsDirtyByUserId = {}
 
 -- 📚 MODULES
 local CarStats
@@ -248,6 +256,27 @@ local function markDirty(player)
 	if session and not session.IsDirty then
 		session.IsDirty = true
 	end
+end
+
+local function cancelPendingSettingsDirty(player)
+	local userId = player and player.UserId
+	local pendingTask = userId and pendingSettingsDirtyByUserId[userId]
+	if pendingTask then
+		task.cancel(pendingTask)
+		pendingSettingsDirtyByUserId[userId] = nil
+	end
+end
+
+local function scheduleSettingsDirty(player)
+	if not player or player.Parent ~= Players then return end
+	if pendingSettingsDirtyByUserId[player.UserId] then return end
+
+	pendingSettingsDirtyByUserId[player.UserId] = task.delay(SETTINGS_UPDATE_RATE_LIMIT_SECONDS, function()
+		pendingSettingsDirtyByUserId[player.UserId] = nil
+		if player.Parent == Players then
+			markDirty(player)
+		end
+	end)
 end
 
 local function sanitizeSettings(rawSettings)
@@ -292,6 +321,26 @@ local function getSessionSettings(player)
 	return getCurrentSettings(player)
 end
 
+local function hasReceiveGiftsEnabled(player)
+	if not player then return false end
+
+	local attributeName = PLAYER_SETTING_ATTRIBUTES.ReceiveGiftsEnabled
+	local attributeValue = player:GetAttribute(attributeName)
+	if type(attributeValue) == "boolean" then
+		return attributeValue == true
+	end
+
+	local session = SessionData[player]
+	if session and type(session.SettingsState) == "table" then
+		local savedValue = session.SettingsState.ReceiveGiftsEnabled
+		if type(savedValue) == "boolean" then
+			return savedValue == true
+		end
+	end
+
+	return DEFAULT_PLAYER_SETTINGS.ReceiveGiftsEnabled == true
+end
+
 local function setPlayerSetting(player, settingName, value, shouldMarkDirty)
 	local attributeName = PLAYER_SETTING_ATTRIBUTES[settingName]
 	if not attributeName or type(value) ~= "boolean" then
@@ -317,7 +366,31 @@ local function setPlayerSetting(player, settingName, value, shouldMarkDirty)
 end
 
 SettingsPersistenceEvent.OnServerEvent:Connect(function(player, settingName, value)
+	local attributeName = PLAYER_SETTING_ATTRIBUTES[settingName]
+	if not attributeName or type(value) ~= "boolean" then
+		return
+	end
+
+	local now = os.clock()
+	local lastUpdate = lastSettingsUpdateByUserId[player.UserId] or 0
+	if now - lastUpdate < SETTINGS_UPDATE_RATE_LIMIT_SECONDS then
+		-- Keep authoritative attributes in sync for rapid legitimate toggles immediately.
+		-- If the value changed, delay one dirty mark so the final rapid toggle still persists.
+		local changed = setPlayerSetting(player, settingName, value, false)
+		if changed then
+			scheduleSettingsDirty(player)
+		end
+		return
+	end
+
+	lastSettingsUpdateByUserId[player.UserId] = now
+	cancelPendingSettingsDirty(player)
 	setPlayerSetting(player, settingName, value, true)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	lastSettingsUpdateByUserId[player.UserId] = nil
+	cancelPendingSettingsDirty(player)
 end)
 
 -- ----------------------------------------------------------------------------
@@ -770,6 +843,93 @@ local function removeMatchingTools(player, targetToolId, requestedAmount)
 	return removedOwnedCount
 end
 
+
+local function transferToolBetweenPlayers(giver, receiver, tool)
+	if not giver or not receiver or not tool then
+		return false, "Gift failed: Missing transfer data."
+	end
+
+	if giver == receiver then
+		return false, "You cannot gift yourself."
+	end
+
+	if giver.Parent ~= Players or receiver.Parent ~= Players then
+		return false, "Player has left the game."
+	end
+
+	local giverSession = SessionData[giver]
+	if not giverSession or not giverSession.DataLoaded then
+		return false, "Your data is still loading."
+	end
+
+	local receiverSession = SessionData[receiver]
+	if not receiverSession or not receiverSession.DataLoaded then
+		return false, "This player's data is still loading."
+	end
+
+	-- Final server-authoritative Receive Gifts guard. This protects against stale
+	-- gift sessions, remote spoofing, and any direct AdminAPI TransferTool calls.
+	if not hasReceiveGiftsEnabled(giver) then
+		return false, RECEIVE_GIFTS_DISABLED_SELF_TEXT, nil
+	end
+
+	if not hasReceiveGiftsEnabled(receiver) then
+		return false, receiver.DisplayName .. " has Receive Gifts disabled.", RECEIVE_GIFTS_DISABLED_RECEIVER_TEXT
+	end
+
+	if not validateTool(tool) then
+		return false, "Gift failed: Invalid car tool."
+	end
+
+	local toolId = tool:GetAttribute("ToolId")
+	if tool.Parent ~= giver.Character and tool.Parent ~= giver:FindFirstChild("Backpack") then
+		return false, "Gift failed: Car tool missing."
+	end
+
+	if not canAddCarToStorage(receiver, 1) then
+		return false, receiver.DisplayName .. " has full car storage.", "Your car storage is full."
+	end
+
+	local receiverBackpack = receiver:FindFirstChild("Backpack")
+	if not receiverBackpack then
+		return false, "Gift failed: Could not transfer car.", "Gift failed: Could not receive car."
+	end
+
+	local starterClone = tool:Clone()
+
+	-- Clean the respawn mirror manually so the moved car does not come back on giver respawn.
+	local giverStarterGear = giver:FindFirstChild("StarterGear")
+	if giverStarterGear then
+		for _, child in ipairs(giverStarterGear:GetChildren()) do
+			if toolMatchesId(child, toolId) then
+				child:Destroy()
+				break
+			end
+		end
+	end
+
+	tool.Parent = receiverBackpack
+
+	local receiverStarterGear = receiver:FindFirstChild("StarterGear")
+	if receiverStarterGear then
+		starterClone.Parent = receiverStarterGear
+	else
+		starterClone:Destroy()
+	end
+
+	markDirty(giver)
+	markDirty(receiver)
+	markIndexDiscovered(receiver, toolId)
+
+	local giverSaveOk = save and save(giver, false, true)
+	local receiverSaveOk = save and save(receiver, false, true)
+	if not giverSaveOk or not receiverSaveOk then
+		warn("⚠️ [TycoonDataHandler] Player gift transferred but one or more force-saves failed. Dirty sessions will retry by autosave.")
+	end
+
+	return true
+end
+
 local function removeToolsByAttribute(player, attributeName, attributeValue)
 	if not player or type(attributeName) ~= "string" then return 0 end
 
@@ -889,6 +1049,10 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	elseif action == "GiveTool" and player then
 		local toolName, customAttributes = ...
 		return giveTool(player, toolName, customAttributes)
+
+	elseif action == "TransferTool" and player then
+		local receiver, tool = ...
+		return transferToolBetweenPlayers(player, receiver, tool)
 
 	elseif action == "ClaimFreeReward" and player then
 		local carName, walletCash = ...
