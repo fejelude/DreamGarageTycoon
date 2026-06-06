@@ -1,13 +1,17 @@
 -- Purpose: Handles server-side validation and state for car gifting
+-- Production fixes: cancels active sessions when Receive Gifts changes, prevents timeout/decline races during transfer, and hardens cleanup.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 
+local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI", 10)
+
 -- ============ CONFIG ============
 local SESSION_TIMEOUT_SECONDS = 60
 local TRIGGER_COOLDOWN_SECONDS = 1
-local MAX_GIFT_DISTANCE = 16
+local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
+local RECEIVE_GIFTS_ATTRIBUTE = "Setting_ReceiveGiftsEnabled"
 -- ================================
 
 -- Create Remote if it doesn't exist
@@ -31,10 +35,13 @@ end
 
 local RECEIVE_GIFTS_DISABLED_SELF_TEXT = "You need to enable Receive Gifts in Settings before you can send a player a car gift."
 local RECEIVE_GIFTS_DISABLED_TARGET_TEXT = "This player has Receive Gifts disabled."
+local RECEIVE_GIFTS_CANCELLED_SELF_TEXT = "Gift cancelled because you disabled Receive Gifts."
+local RECEIVE_GIFTS_CANCELLED_TARGET_TEXT = "Gift cancelled because this player disabled Receive Gifts."
+local RECEIVE_GIFTS_CANCELLED_RECEIVER_TEXT = "Gift cancelled because Receive Gifts is now disabled."
 
 local function hasReceiveGiftsEnabled(player)
 	if not player then return false end
-	local value = player:GetAttribute("Setting_ReceiveGiftsEnabled")
+	local value = player:GetAttribute(RECEIVE_GIFTS_ATTRIBUTE)
 	return value ~= false
 end
 
@@ -62,71 +69,30 @@ local function recordGift(giver, receiver, carId)
 	end
 end
 
-local function getRoot(player)
-	local character = player and player.Character
-	if not character then return nil end
-
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if humanoid and humanoid.Health <= 0 then
-		return nil
-	end
-
-	return character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso")
+local function isDataLoaded(player)
+	return player and player:GetAttribute(DATA_READY_ATTRIBUTE) == true
 end
 
 local function getToolUniqueId(tool)
 	if not tool then return nil end
 
 	return tool:GetAttribute("ToolId")
-		or tool:GetAttribute("CarToolId")
-		or tool:GetAttribute("UniqueId")
 end
 
 local function isValidCarTool(tool)
 	if typeof(tool) ~= "Instance" then return false end
 	if not tool:IsA("Tool") then return false end
 
-	-- Best validation options.
-	if tool:GetAttribute("CarToolPrepared") == true then return true end
-	if tool:GetAttribute("IsCarTool") == true then return true end
-	if getToolUniqueId(tool) ~= nil then return true end
+	if tool:GetAttribute("IssuedByServer") ~= true then return false end
 
-	-- Compatibility fallback from your old client logic.
-	-- If your game has non-car tools with Handles, remove this line and require one of the attributes above.
-	if tool:FindFirstChild("Handle") then return true end
-
-	return false
+	local toolId = getToolUniqueId(tool)
+	return type(toolId) == "string" and toolId ~= ""
 end
 
 local function isToolOwnedByPlayer(tool, player)
 	if not tool or not player then return false end
 
 	return tool.Parent == player.Character or tool.Parent == player:FindFirstChild("Backpack")
-end
-
-local function removeRespawnMirror(giver, toolId, fallbackName)
-	local starterGear = giver and giver:FindFirstChild("StarterGear")
-	if not starterGear then return end
-
-	if toolId ~= nil then
-		for _, child in ipairs(starterGear:GetChildren()) do
-			if child:IsA("Tool") and getToolUniqueId(child) == toolId then
-				child:Destroy()
-				return
-			end
-		end
-
-		return
-	end
-
-	if fallbackName then
-		for _, child in ipairs(starterGear:GetChildren()) do
-			if child:IsA("Tool") and child.Name == fallbackName then
-				child:Destroy()
-				return
-			end
-		end
-	end
 end
 
 local function getReceiverFromData(data)
@@ -196,14 +162,20 @@ end
 local activeGiftsByGiver = {}
 local activeGiftsByReceiver = {}
 local lastTriggerTime = {}
+local receiveGiftsSettingConnections = {}
+
+local function cancelSessionTimer(session)
+	if session and session.Timer then
+		task.cancel(session.Timer)
+		session.Timer = nil
+	end
+end
 
 local function clearSession(session)
 	if not session then return end
 
-	if session.Timer then
-		task.cancel(session.Timer)
-		session.Timer = nil
-	end
+	cancelSessionTimer(session)
+	session.State = "Closed"
 
 	local giver = session.Giver
 	local receiver = session.Receiver
@@ -224,13 +196,19 @@ local function setSessionTimer(session)
 	end
 
 	session.Timer = task.delay(SESSION_TIMEOUT_SECONDS, function()
-		if activeGiftsByGiver[session.Giver.UserId] ~= session then
+		if not session.Giver or activeGiftsByGiver[session.Giver.UserId] ~= session then
+			return
+		end
+
+		-- Do not let a timeout fire while the final transfer is already processing.
+		if session.State == "Processing" or session.State == "Closed" then
 			return
 		end
 
 		sendGiverUpdate(session.Giver, "Failed", "Gift request timed out.")
 
 		if session.State == "PendingReceiver" then
+			sendReceiverUpdate(session.Receiver, "Failed", "Gift request timed out.")
 			closePlayerUI(session.Receiver)
 		end
 
@@ -257,6 +235,66 @@ local function isPlayerBusy(player)
 		or activeGiftsByReceiver[player.UserId] ~= nil
 end
 
+local function cancelSessionForReceiveGiftsChange(session, changedPlayer)
+	if not session or session.State == "Closed" or session.State == "Processing" then
+		return
+	end
+
+	local giver = session.Giver
+	local receiver = session.Receiver
+
+	if changedPlayer == giver then
+		sendGiverUpdate(giver, "Failed", RECEIVE_GIFTS_CANCELLED_SELF_TEXT)
+		if receiver and receiver ~= giver then
+			sendReceiverUpdate(receiver, "Failed", giver.DisplayName .. " cancelled the gift.")
+		end
+	elseif changedPlayer == receiver then
+		sendGiverUpdate(giver, "Failed", receiver.DisplayName .. " disabled Receive Gifts.")
+		sendReceiverUpdate(receiver, "Failed", RECEIVE_GIFTS_CANCELLED_RECEIVER_TEXT)
+	else
+		sendGiverUpdate(giver, "Failed", "Gift request cancelled.")
+		sendReceiverUpdate(receiver, "Failed", "Gift request cancelled.")
+	end
+
+	if session.State == "PendingReceiver" and receiver then
+		closePlayerUI(receiver)
+	end
+
+	clearSession(session)
+end
+
+local function cancelActiveGiftSessionsForPlayer(player)
+	if not player then return end
+
+	local processed = {}
+	local sessionAsGiver = activeGiftsByGiver[player.UserId]
+	if sessionAsGiver and not processed[sessionAsGiver] then
+		processed[sessionAsGiver] = true
+		cancelSessionForReceiveGiftsChange(sessionAsGiver, player)
+	end
+
+	local sessionAsReceiver = activeGiftsByReceiver[player.UserId]
+	if sessionAsReceiver and not processed[sessionAsReceiver] then
+		processed[sessionAsReceiver] = true
+		cancelSessionForReceiveGiftsChange(sessionAsReceiver, player)
+	end
+end
+
+local function watchReceiveGiftsSetting(player)
+	if receiveGiftsSettingConnections[player.UserId] then
+		receiveGiftsSettingConnections[player.UserId]:Disconnect()
+		receiveGiftsSettingConnections[player.UserId] = nil
+	end
+
+	receiveGiftsSettingConnections[player.UserId] = player:GetAttributeChangedSignal(RECEIVE_GIFTS_ATTRIBUTE):Connect(function()
+		if hasReceiveGiftsEnabled(player) then
+			return
+		end
+
+		cancelActiveGiftSessionsForPlayer(player)
+	end)
+end
+
 local function validatePromptRequest(giver, data)
 	local receiver = getReceiverFromData(data)
 	local tool = data and data.Tool
@@ -271,6 +309,14 @@ local function validatePromptRequest(giver, data)
 
 	if receiver.Parent ~= Players then
 		return false, nil, nil, "Player has left the game."
+	end
+
+	if not isDataLoaded(giver) then
+		return false, nil, nil, "Your data is still loading."
+	end
+
+	if not isDataLoaded(receiver) then
+		return false, nil, nil, "This player's data is still loading."
 	end
 
 	if not hasReceiveGiftsEnabled(giver) then
@@ -292,18 +338,6 @@ local function validatePromptRequest(giver, data)
 	-- Require the tool to be equipped when the prompt is triggered.
 	if tool.Parent ~= giver.Character then
 		return false, nil, nil, "You must equip the car before gifting it."
-	end
-
-	local giverRoot = getRoot(giver)
-	local receiverRoot = getRoot(receiver)
-
-	if not giverRoot or not receiverRoot then
-		return false, nil, nil, "Player is not ready for gifting."
-	end
-
-	local distance = (giverRoot.Position - receiverRoot.Position).Magnitude
-	if distance > MAX_GIFT_DISTANCE then
-		return false, nil, nil, "You are too far away to gift."
 	end
 
 	if isPlayerBusy(giver) then
@@ -368,6 +402,16 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			return
 		end
 
+		if not isDataLoaded(session.Giver) then
+			failSession(session, "Your data is still loading.", nil)
+			return
+		end
+
+		if not isDataLoaded(session.Receiver) then
+			failSession(session, "This player's data is still loading.", nil)
+			return
+		end
+
 		if not hasReceiveGiftsEnabled(session.Giver) then
 			failSession(session, RECEIVE_GIFTS_DISABLED_SELF_TEXT, nil)
 			return
@@ -405,7 +449,7 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 
 	elseif action == "GiverDecline" then
 		local session = activeGiftsByGiver[player.UserId]
-		if not session then
+		if not session or session.State == "Processing" then
 			return
 		end
 
@@ -428,10 +472,21 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 
 		-- Prevent double-accept/race conditions before anything can yield.
 		session.State = "Processing"
+		cancelSessionTimer(session)
 
 		if not session.Giver or session.Giver.Parent ~= Players then
 			sendReceiverUpdate(player, "Failed", "Giver has left the game.")
 			clearSession(session)
+			return
+		end
+
+		if not isDataLoaded(session.Giver) then
+			failSession(session, "Your data is still loading.", nil)
+			return
+		end
+
+		if not isDataLoaded(player) then
+			failSession(session, "This player's data is still loading.", "Your data is still loading.")
 			return
 		end
 
@@ -464,34 +519,22 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			return
 		end
 
-		local success, err = pcall(function()
-			local receiverBackpack = player:FindFirstChild("Backpack")
-			if not receiverBackpack then
-				error("Receiver Backpack missing.")
-			end
+		if not TycoonAdminAPI then
+			failSession(session, "Gift failed: Transfer service unavailable.", "Gift failed: Transfer service unavailable.")
+			return
+		end
 
-			local tool = session.Tool
-			local starterClone = tool:Clone()
-
-			removeRespawnMirror(session.Giver, session.ToolId, session.CarId)
-
-			tool.Parent = receiverBackpack
-
-			local receiverStarterGear = player:FindFirstChild("StarterGear")
-			if receiverStarterGear then
-				starterClone.Parent = receiverStarterGear
-			else
-				starterClone:Destroy()
-			end
+		local success, transferOk, giverMessage, receiverMessage = pcall(function()
+			return TycoonAdminAPI:Invoke("TransferTool", session.Giver, player, session.Tool)
 		end)
 
-		if not success then
-			warn("Gift transfer failed:", err)
+		if not success or not transferOk then
+			warn("Gift transfer failed:", success and giverMessage or transferOk)
 
 			failSession(
 				session,
-				"Gift failed: Could not transfer car.",
-				"Gift failed: Could not receive car."
+				giverMessage or "Gift failed: Could not transfer car.",
+				receiverMessage or "Gift failed: Could not receive car."
 			)
 
 			return
@@ -558,8 +601,18 @@ end)
 -- CLEANUP
 -- ============================================================================
 
+Players.PlayerAdded:Connect(watchReceiveGiftsSetting)
+for _, existingPlayer in ipairs(Players:GetPlayers()) do
+	task.spawn(watchReceiveGiftsSetting, existingPlayer)
+end
+
 Players.PlayerRemoving:Connect(function(leavingPlayer)
 	lastTriggerTime[leavingPlayer.UserId] = nil
+
+	if receiveGiftsSettingConnections[leavingPlayer.UserId] then
+		receiveGiftsSettingConnections[leavingPlayer.UserId]:Disconnect()
+		receiveGiftsSettingConnections[leavingPlayer.UserId] = nil
+	end
 
 	local sessionAsGiver = activeGiftsByGiver[leavingPlayer.UserId]
 	if sessionAsGiver then
