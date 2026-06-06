@@ -1,19 +1,23 @@
--- Purpose: Handles 2x Money AFK Stand physical interactions, state, and teleporting.
+-- Purpose: Handles 2x Money AFK Stand physical interactions, state, and AFK Mode reconnect teleporting.
 -- Runs on: Server
 -- Location: ServerScriptService
--- Dependencies: Players, Workspace, ReplicatedStorage
--- Public API: None
--- Networking: Uses AFKStandEvent to communicate state changes to the client.
--- Security: Server-side validation for part touching and teleportation.
--- Performance: Utilizes debounces to prevent spam.
--- Notes: Expects `AFKStandEvent` to be manually created in ReplicatedStorage.
+-- Dependencies: Players, Workspace, ReplicatedStorage, TeleportService
+-- Networking: Uses AFKStandEvent for AFK stand UI and AFKModeEvent for Settings > AFK Mode idle reconnects.
+-- Production notes:
+--   - Cancels AFK Mode reconnect cleanly when the setting is turned off or player becomes active.
+--   - Re-checks the AFK Mode setting immediately before teleporting so toggle-off cannot race the teleport.
+--   - Tracks the exact AFK plot/session so plot IsAFK cannot get stuck after death, owner changes, or cleanup.
+--   - Restores humanoid movement server-side instead of relying only on client/local scripts.
+--   - Prevents clients from using AFKStandEvent "Exit" as a free teleport when they are not actually AFK.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 
-
+-- ============================================================================
+-- SETTINGS AFK MODE / IDLE RECONNECT SETUP
+-- ============================================================================
 local AFKModeEvent = ReplicatedStorage:FindFirstChild("AFKModeEvent")
 if not AFKModeEvent then
 	AFKModeEvent = Instance.new("RemoteEvent")
@@ -23,52 +27,110 @@ end
 
 local AFK_RECONNECT_DELAY_SECONDS = 14 * 60
 local AFK_RECONNECT_COOLDOWN_SECONDS = 5 * 60
+local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
+local AFK_MODE_SETTING_ATTRIBUTE = "Setting_AFKModeEnabled"
+
 local afkModeIdleSessions = {}
 local afkModeLastTeleportRequest = {}
+local afkModeSettingConnections = {}
 
 local function getAFKModeEnabled(player)
 	if not player then return false end
-	local value = player:GetAttribute("Setting_AFKModeEnabled")
-	return value == true
+	return player:GetAttribute(AFK_MODE_SETTING_ATTRIBUTE) == true
+end
+
+local function isPlayerReadyForAFKMode(player)
+	return player
+		and player.Parent == Players
+		and player:GetAttribute(DATA_READY_ATTRIBUTE) == true
+		and getAFKModeEnabled(player)
+end
+
+local function fireAFKModeClient(player, action)
+	if player and player.Parent == Players then
+		AFKModeEvent:FireClient(player, action)
+	end
 end
 
 local function cancelAFKModeIdleSession(player, shouldNotifyClient)
 	local userId = player and player.UserId
 	local session = userId and afkModeIdleSessions[userId]
-	if session and session.Task then
-		task.cancel(session.Task)
+
+	if session then
+		session.Cancelled = true
+		if session.Task then
+			task.cancel(session.Task)
+			session.Task = nil
+		end
 	end
 
 	if userId then
 		afkModeIdleSessions[userId] = nil
 	end
 
-	if shouldNotifyClient and player and player.Parent == Players then
-		AFKModeEvent:FireClient(player, "ReconnectCancelled")
+	if shouldNotifyClient then
+		fireAFKModeClient(player, "ReconnectCancelled")
 	end
 end
 
-local function teleportPlayerForAFKMode(player)
-	if not player or player.Parent ~= Players then return end
-	if not getAFKModeEnabled(player) then
+local function clearAFKModeSessionIfCurrent(player, session)
+	if not player then return end
+	local userId = player.UserId
+	if afkModeIdleSessions[userId] == session then
+		afkModeIdleSessions[userId] = nil
+	end
+	if session then
+		session.Cancelled = true
+		session.Task = nil
+	end
+end
+
+local function teleportPlayerForAFKMode(player, session)
+	if not player or player.Parent ~= Players then
+		clearAFKModeSessionIfCurrent(player, session)
+		return
+	end
+
+	local userId = player.UserId
+	if afkModeIdleSessions[userId] ~= session or session.Cancelled then
+		return
+	end
+
+	if not isPlayerReadyForAFKMode(player) then
 		cancelAFKModeIdleSession(player, true)
 		return
 	end
 
 	local now = os.clock()
-	local lastRequest = afkModeLastTeleportRequest[player.UserId] or 0
+	local lastRequest = afkModeLastTeleportRequest[userId] or 0
 	if now - lastRequest < AFK_RECONNECT_COOLDOWN_SECONDS then
+		-- Do not leave the client in a permanent "pending reconnect" state.
+		cancelAFKModeIdleSession(player, true)
 		return
 	end
-	afkModeLastTeleportRequest[player.UserId] = now
 
-	AFKModeEvent:FireClient(player, "ReconnectStarting")
+	session.State = "TeleportStarting"
+	fireAFKModeClient(player, "ReconnectStarting")
+
 	local teleportUIEvent = ReplicatedStorage:FindFirstChild("TeleportUIEvent")
 	if teleportUIEvent and teleportUIEvent:IsA("RemoteEvent") then
 		teleportUIEvent:FireClient(player, "FadeOut")
 	end
 
+	-- Let the client fade out, then re-check all cancellation conditions.
+	-- This closes the race where the player turns AFK Mode off after the warning starts.
 	task.wait(1)
+
+	if afkModeIdleSessions[userId] ~= session or session.Cancelled then
+		return
+	end
+
+	if not isPlayerReadyForAFKMode(player) then
+		cancelAFKModeIdleSession(player, true)
+		return
+	end
+
+	afkModeLastTeleportRequest[userId] = os.clock()
 
 	local teleportOptions = Instance.new("TeleportOptions")
 	teleportOptions:SetTeleportData({
@@ -91,27 +153,40 @@ local function teleportPlayerForAFKMode(player)
 	if not teleportOk then
 		warn("⚠️ AFKStandService: AFK Mode reconnect failed for " .. player.Name .. ": " .. tostring(teleportErr))
 		cancelAFKModeIdleSession(player, true)
+		return
 	end
+
+	clearAFKModeSessionIfCurrent(player, session)
 end
 
 local function startAFKModeIdleSession(player)
-	if not getAFKModeEnabled(player) then return end
-	if player:GetAttribute("TycoonDataLoaded") ~= true then return end
+	if not player or player.Parent ~= Players then return end
+
+	if not isPlayerReadyForAFKMode(player) then
+		-- The client may have fired Idled before data/settings replicated. Reset it so it can try again later.
+		cancelAFKModeIdleSession(player, true)
+		return
+	end
 
 	cancelAFKModeIdleSession(player, false)
 
 	local userId = player.UserId
-	local session = {}
-	session.Task = task.delay(AFK_RECONNECT_DELAY_SECONDS, function()
-		if afkModeIdleSessions[userId] ~= session then return end
-		afkModeIdleSessions[userId] = nil
-		teleportPlayerForAFKMode(player)
-	end)
+	local session = {
+		Cancelled = false,
+		State = "IdleWaiting",
+		Task = nil,
+	}
 
 	afkModeIdleSessions[userId] = session
+	session.Task = task.delay(AFK_RECONNECT_DELAY_SECONDS, function()
+		if afkModeIdleSessions[userId] ~= session or session.Cancelled then return end
+		teleportPlayerForAFKMode(player, session)
+	end)
 end
 
 AFKModeEvent.OnServerEvent:Connect(function(player, action)
+	if typeof(action) ~= "string" then return end
+
 	if action == "IdleStateStarted" then
 		startAFKModeIdleSession(player)
 	elseif action == "IdleStateEnded" then
@@ -119,6 +194,27 @@ AFKModeEvent.OnServerEvent:Connect(function(player, action)
 	end
 end)
 
+local function watchAFKModeSetting(player)
+	if afkModeSettingConnections[player.UserId] then
+		afkModeSettingConnections[player.UserId]:Disconnect()
+		afkModeSettingConnections[player.UserId] = nil
+	end
+
+	afkModeSettingConnections[player.UserId] = player:GetAttributeChangedSignal(AFK_MODE_SETTING_ATTRIBUTE):Connect(function()
+		if player:GetAttribute(AFK_MODE_SETTING_ATTRIBUTE) ~= true then
+			cancelAFKModeIdleSession(player, true)
+		end
+	end)
+end
+
+Players.PlayerAdded:Connect(watchAFKModeSetting)
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(watchAFKModeSetting, player)
+end
+
+-- ============================================================================
+-- PHYSICAL 2X MONEY AFK STAND SETUP
+-- ============================================================================
 local AFKEvent = ReplicatedStorage:WaitForChild("AFKStandEvent", 10)
 if not AFKEvent then
 	warn("⚠️ AFKStandService: 'AFKStandEvent' RemoteEvent not found in ReplicatedStorage! Please create it.")
@@ -146,30 +242,25 @@ if not standPart then
 end
 
 if not teleportPad then
-	warn("⚠️ AFKStandService: 'Teleport' pad not found! Players will not be teleported on exit.")
+	warn("⚠️ AFKStandService: 'Teleport' pad not found! Players will be unlocked on exit but not teleported.")
 end
 
 local tycoonsFolder = Workspace:WaitForChild("Tycoons", 10)
+if not tycoonsFolder then
+	warn("⚠️ AFKStandService: 'Tycoons' folder not found in Workspace! AFK Stand ownership validation will fail.")
+end
 
--- How long (seconds) after notifying the client we wait before hard-anchoring.
--- This window lets the client's animation fade-out (0.2s) finish so there is
--- no visible snap from "running" to "frozen". Keep this >= ANIM_STOP_FADE + 0.1
 local ANCHOR_DELAY = 0.35
-
--- Default Humanoid stats to restore on exit so the Animate LocalScript
--- resumes naturally (it keys off WalkSpeed > 0 to play movement animations).
 local DEFAULT_WALK_SPEED = 16
 local DEFAULT_JUMP_POWER = 50
+local DEFAULT_JUMP_HEIGHT = 7.2
 
-local debounce = {}
-local activeConnections = {}
+local touchDebounce = {}
+local activeAFKByUserId = {}
 
--- ============================================================================
--- 🔍 HELPER: Find which plot the player owns
--- ============================================================================
 local function getPlayerPlot(player)
 	if not tycoonsFolder then return nil end
-	for _, plot in pairs(tycoonsFolder:GetChildren()) do
+	for _, plot in ipairs(tycoonsFolder:GetChildren()) do
 		local ownerVal = plot:FindFirstChild("Owner")
 		if ownerVal and ownerVal.Value == player.Name then
 			return plot
@@ -178,137 +269,247 @@ local function getPlayerPlot(player)
 	return nil
 end
 
--- ============================================================================
--- 🔒 HELPER: Unanchor, restore movement stats, and teleport
--- Called for both the normal exit and the stuck-prevention edge case.
--- Restoring WalkSpeed/JumpPower is what tells the client Animate LocalScript
--- to resume animations — no extra remote needed.
--- ============================================================================
-local function restoreAndTeleport(player)
-	local character = player.Character
+local function getHumanoidSnapshot(humanoid)
+	if not humanoid then return nil end
+
+	local snapshot = {
+		WalkSpeed = humanoid.WalkSpeed,
+		JumpPower = DEFAULT_JUMP_POWER,
+		JumpHeight = DEFAULT_JUMP_HEIGHT,
+		AutoRotate = humanoid.AutoRotate,
+		UseJumpPower = true,
+	}
+
+	pcall(function()
+		snapshot.UseJumpPower = humanoid.UseJumpPower
+	end)
+
+	pcall(function()
+		snapshot.JumpPower = humanoid.JumpPower
+	end)
+
+	pcall(function()
+		snapshot.JumpHeight = humanoid.JumpHeight
+	end)
+
+	return snapshot
+end
+
+local function lockHumanoidForAFK(humanoid)
+	if not humanoid then return end
+
+	humanoid.WalkSpeed = 0
+	humanoid.AutoRotate = false
+
+	local useJumpPower = true
+	pcall(function()
+		useJumpPower = humanoid.UseJumpPower
+	end)
+
+	if useJumpPower then
+		pcall(function()
+			humanoid.JumpPower = 0
+		end)
+	else
+		pcall(function()
+			humanoid.JumpHeight = 0
+		end)
+	end
+end
+
+local function restoreHumanoidFromAFK(humanoid, snapshot)
+	if not humanoid then return end
+
+	humanoid.WalkSpeed = (snapshot and tonumber(snapshot.WalkSpeed)) or DEFAULT_WALK_SPEED
+	if snapshot and type(snapshot.AutoRotate) == "boolean" then
+		humanoid.AutoRotate = snapshot.AutoRotate
+	else
+		humanoid.AutoRotate = true
+	end
+
+	local useJumpPower = true
+	pcall(function()
+		useJumpPower = humanoid.UseJumpPower
+	end)
+
+	if useJumpPower then
+		local jumpPower = snapshot and tonumber(snapshot.JumpPower) or DEFAULT_JUMP_POWER
+		pcall(function()
+			humanoid.JumpPower = jumpPower
+		end)
+	else
+		local jumpHeight = snapshot and tonumber(snapshot.JumpHeight) or DEFAULT_JUMP_HEIGHT
+		pcall(function()
+			humanoid.JumpHeight = jumpHeight
+		end)
+	end
+end
+
+local function unlockCurrentCharacter(player, session, shouldTeleport)
+	local character = player and player.Character
 	if not character then return end
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 
-	player:SetAttribute("MovementLock", false)
+	restoreHumanoidFromAFK(humanoid, session and session.HumanoidSnapshot)
 
 	if hrp then
 		hrp.Anchored = false
-		if teleportPad then
+		if shouldTeleport and teleportPad then
 			hrp.CFrame = teleportPad.CFrame * CFrame.new(0, 3, 0)
 		end
 	end
 end
 
--- ============================================================================
--- 🗑️ HELPER: Full server-side AFK state cleanup
--- Clears attributes and disconnects the death watcher. Does NOT teleport —
--- callers decide that based on whether the character is still alive.
--- ============================================================================
 local function clearAFKState(player)
-	player:SetAttribute("IsAFK", false)
+	if not player then return nil end
 
-	local plot = getPlayerPlot(player)
-	if plot then
+	local userId = player.UserId
+	local session = activeAFKByUserId[userId]
+	activeAFKByUserId[userId] = nil
+
+	player:SetAttribute("IsAFK", false)
+	player:SetAttribute("MovementLock", false)
+
+	local plot = session and session.Plot
+	if plot and plot.Parent then
 		plot:SetAttribute("IsAFK", false)
+	else
+		local currentPlot = getPlayerPlot(player)
+		if currentPlot then
+			currentPlot:SetAttribute("IsAFK", false)
+		end
 	end
 
-	if activeConnections[player.UserId] then
-		activeConnections[player.UserId]:Disconnect()
-		activeConnections[player.UserId] = nil
+	if session and session.CharacterAddedConnection then
+		session.CharacterAddedConnection:Disconnect()
+		session.CharacterAddedConnection = nil
+	end
+
+	return session
+end
+
+local function finishAFK(player, shouldTeleport)
+	local session = clearAFKState(player)
+	unlockCurrentCharacter(player, session, shouldTeleport)
+end
+
+local function unlockStaleCharacterOnly(player)
+	if not player then return end
+	player:SetAttribute("MovementLock", false)
+
+	local character = player.Character
+	if not character then return end
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		hrp.Anchored = false
 	end
 end
 
 -- ============================================================================
--- 👟 TOUCHED EVENT — Enter AFK
+-- TOUCHED EVENT — Enter physical AFK stand
 -- ============================================================================
 standPart.Touched:Connect(function(hit)
-	local character = hit.Parent
-	if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+	local character = hit and hit.Parent
+	if not character then return end
 
 	local player = Players:GetPlayerFromCharacter(character)
 	if not player then return end
 
-	if debounce[player.UserId] then return end
-	debounce[player.UserId] = true
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or not hrp or humanoid.Health <= 0 then return end
 
+	local userId = player.UserId
+	if touchDebounce[userId] then return end
+	touchDebounce[userId] = true
 	task.delay(1, function()
-		debounce[player.UserId] = nil
+		touchDebounce[userId] = nil
 	end)
+
+	if activeAFKByUserId[userId] or player:GetAttribute("IsAFK") == true then
+		return
+	end
 
 	local plot = getPlayerPlot(player)
 	if not plot then return end
-
 	if plot:GetAttribute("IsAFK") == true then return end
 
-	-- Set state
+	local session = {
+		Player = player,
+		Character = character,
+		Plot = plot,
+		HumanoidSnapshot = getHumanoidSnapshot(humanoid),
+		CharacterAddedConnection = nil,
+	}
+
+	activeAFKByUserId[userId] = session
 	plot:SetAttribute("IsAFK", true)
 	player:SetAttribute("IsAFK", true)
-
-	-- Zero out movement now so the character decelerates cleanly on the client
-	-- before we hard-anchor. The client also fades out animation tracks at the
-	-- same moment it receives the "Enter" event below, so both sides are in sync.
 	player:SetAttribute("MovementLock", true)
+	lockHumanoidForAFK(humanoid)
 
-	-- Disconnect any stale death watcher
-	if activeConnections[player.UserId] then
-		activeConnections[player.UserId]:Disconnect()
-	end
-
-	-- Handle death: clear state but do NOT teleport — the old character is being
-	-- replaced and the new one spawns at the normal location automatically.
-	-- The client's own CharacterAdded handler cleans up visuals without firing
-	-- "Exit", so there is no double-clear race condition.
-	activeConnections[player.UserId] = player.CharacterAdded:Connect(function()
-		clearAFKState(player)
+	session.CharacterAddedConnection = player.CharacterAdded:Connect(function()
+		-- Death/respawn cleanup. Do not teleport; the new character should spawn normally.
+		if activeAFKByUserId[userId] == session then
+			clearAFKState(player)
+		end
+		task.defer(function()
+			unlockStaleCharacterOnly(player)
+		end)
 	end)
 
-	-- Notify client FIRST so it can start its animation fade-out immediately.
 	AFKEvent:FireClient(player, "Enter", plot.Name)
 
-	-- Delay the hard anchor so it lands AFTER the client's 0.2s animation
-	-- fade has finished. The player cannot meaningfully move in this window
-	-- because WalkSpeed is already 0.
 	task.delay(ANCHOR_DELAY, function()
-		-- Guard: player may have died or left during the delay
+		if activeAFKByUserId[userId] ~= session then return end
+		if player.Parent ~= Players then return end
 		if player:GetAttribute("IsAFK") ~= true then return end
-		local char = player.Character
-		if not char then return end
-		local hrp = char:FindFirstChild("HumanoidRootPart")
-		if hrp then
-			hrp.Anchored = true
+		if player.Character ~= character then return end
+
+		local currentHrp = character:FindFirstChild("HumanoidRootPart")
+		local currentHumanoid = character:FindFirstChildOfClass("Humanoid")
+		if currentHrp and currentHumanoid and currentHumanoid.Health > 0 then
+			currentHrp.Anchored = true
 		end
 	end)
 end)
 
 -- ============================================================================
--- 📡 REMOTE EVENT — Exit AFK (fired by client ExitButton)
+-- REMOTE EVENT — Exit physical AFK stand (fired by client ExitButton)
 -- ============================================================================
 AFKEvent.OnServerEvent:Connect(function(player, action)
 	if action ~= "Exit" then return end
 
+	local session = activeAFKByUserId[player.UserId]
 	local wasAFK = player:GetAttribute("IsAFK") == true
 
-	if not wasAFK then
-		-- State was already cleared (race with death handler). Still unanchor
-		-- and restore stats defensively so the player can never get stuck.
-		restoreAndTeleport(player)
+	if not session and not wasAFK then
+		-- Defensive unlock only. Do not teleport non-AFK players; otherwise exploiters
+		-- can fire this RemoteEvent to jump to the AFK exit pad.
+		unlockStaleCharacterOnly(player)
 		return
 	end
 
-	clearAFKState(player)
-	restoreAndTeleport(player)
+	finishAFK(player, true)
 end)
 
 -- ============================================================================
--- 🚪 PLAYER LEAVING — Cleanup
+-- PLAYER LEAVING — Cleanup
 -- ============================================================================
 Players.PlayerRemoving:Connect(function(player)
-	debounce[player.UserId] = nil
+	local userId = player.UserId
+	touchDebounce[userId] = nil
 	cancelAFKModeIdleSession(player, false)
-	afkModeLastTeleportRequest[player.UserId] = nil
+	afkModeLastTeleportRequest[userId] = nil
+
+	if afkModeSettingConnections[userId] then
+		afkModeSettingConnections[userId]:Disconnect()
+		afkModeSettingConnections[userId] = nil
+	end
+
 	clearAFKState(player)
-	-- No teleport — player is leaving the game entirely.
 end)
+
 
