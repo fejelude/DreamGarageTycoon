@@ -19,6 +19,8 @@ local HttpService = game:GetService("HttpService")
 
 local PURCHASE_HISTORY_NAMES = {"ReceiptHistory_V3"}
 local ActivePurchaseHistory = nil
+local activeReceiptLocks = {}
+local RECEIVE_GIFTS_ATTRIBUTE = "Setting_ReceiveGiftsEnabled"
 
 -- 🟢 COMMON SHOP CONFIG
 local TABLET_2X_ID = 3509697462
@@ -93,6 +95,20 @@ local EPIC_CAR_PRODUCT_IDS = {
 }
 
 -- 🔴 SKIP CRAFT TIME PRODUCT IDS
+local CAR_PRODUCT_INFO = {}
+for productId, carName in pairs(CAR_PRODUCT_IDS) do
+	CAR_PRODUCT_INFO[productId] = { CarName = carName, Rarity = "Common", FeedbackRemoteName = nil }
+end
+for productId, carName in pairs(UNCOMMON_CAR_PRODUCT_IDS) do
+	CAR_PRODUCT_INFO[productId] = { CarName = carName, Rarity = "Uncommon", FeedbackRemoteName = "DarrelPurchaseFeedback" }
+end
+for productId, carName in pairs(RARE_CAR_PRODUCT_IDS) do
+	CAR_PRODUCT_INFO[productId] = { CarName = carName, Rarity = "Rare", FeedbackRemoteName = "JacobPurchaseFeedback" }
+end
+for productId, carName in pairs(EPIC_CAR_PRODUCT_IDS) do
+	CAR_PRODUCT_INFO[productId] = { CarName = carName, Rarity = "Epic", FeedbackRemoteName = "RayWPurchaseFeedback" }
+end
+
 local LEGENDARY_SKIP_CRAFT_ID = 3573930334
 local MYTHICAL_SKIP_CRAFT_ID = 3573933156
 
@@ -114,6 +130,7 @@ local Remotes = ReplicatedStorage:WaitForChild("GiftRemotes")
 local NotifyGiftReceived = Remotes:WaitForChild("NotifyGiftReceived")
 
 local GlobalChatBroadcast = Remotes:WaitForChild("GlobalChatBroadcast", 10)
+local GiftPurchaseResult = Remotes:WaitForChild("GiftPurchaseResult", 10)
 
 -- RemoteEvent must be directly inside ReplicatedStorage.
 local BankTimerResetFeedback = ReplicatedStorage:WaitForChild("BankTimerResetFeedback")
@@ -147,6 +164,31 @@ local function safeInvoke(bindable, timeout, ...)
 	if not result[1] then return false, result[2] end
 
 	return true, table.unpack(result, 2, result.n)
+end
+
+local function hasReceiveGiftsEnabled(player)
+	if not player then return false end
+	return player:GetAttribute(RECEIVE_GIFTS_ATTRIBUTE) ~= false
+end
+
+local function fireGiftPurchaseResult(buyerPlayer, payload)
+	if GiftPurchaseResult and buyerPlayer and buyerPlayer.Parent then
+		GiftPurchaseResult:FireClient(buyerPlayer, payload)
+	end
+end
+
+local function savePlayerNow(player, timeout)
+	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not TycoonAdminAPI then
+		return false, "TycoonAdminAPI missing"
+	end
+
+	local invokeOk, saveOk, saveMessage = safeInvoke(TycoonAdminAPI, timeout or 10, "SaveNow", player)
+	if not invokeOk or saveOk ~= true then
+		return false, saveMessage or saveOk or "Save failed"
+	end
+
+	return true
 end
 
 local function getPurchaseHistoryStore()
@@ -207,7 +249,7 @@ end
 -- ============================================================================
 -- 🚗 HELPER: Give a car tool immediately upon purchase
 -- ============================================================================
-local function giveCarTool(targetPlayer, carName)
+local function giveCarTool(targetPlayer, carName, receiptInfo, isGift, buyerPlayer)
 	local CarTools = ServerStorage:FindFirstChild("CarTools")
 	local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName .. " Item", true))
 	if not tool then
@@ -221,13 +263,33 @@ local function giveCarTool(targetPlayer, carName)
 		return false
 	end
 
-	local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", targetPlayer, tool.Name, {
+	local attributes = {
 		IssuedByServer = true,
 		IssuedAt = os.time(),
 		ToolId = tool.Name,
-	})
+		BypassStorageLimit = true,
+		Source = isGift and "RobuxGift" or "RobuxPurchase",
+		ReceiptPurchaseId = receiptInfo.PurchaseId,
+		ReceiptProductId = receiptInfo.ProductId,
+	}
 
-	return invokeOk and giveResult == true
+	if isGift and buyerPlayer then
+		attributes.GiftSenderUserId = buyerPlayer.UserId
+		attributes.GiftReceiverUserId = targetPlayer.UserId
+	end
+
+	local invokeOk, giveResult, giveMessage = safeInvoke(TycoonAdminAPI, 5, "GiveTool", targetPlayer, tool.Name, attributes)
+	if not invokeOk or giveResult ~= true then
+		return false, giveMessage or giveResult or "GiveTool failed"
+	end
+
+	local saveOk, saveMessage = savePlayerNow(targetPlayer, 12)
+	if not saveOk then
+		warn("Robux car save failed for " .. targetPlayer.Name .. ": " .. tostring(saveMessage))
+		return false, "Save failed"
+	end
+
+	return true, giveMessage == "Already granted" and "Already granted" or nil
 end
 
 local function grantStarterPackRewards(player, purchaseId)
@@ -293,22 +355,43 @@ end
 -- ============================================================================
 -- 🎁 HELPER: Handle Car Purchase & Broadcasts
 -- ============================================================================
-local function handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, rarity, npcFeedbackName)
-	local purchaseSuccess = giveCarTool(targetPlayer, carName)
-	if not purchaseSuccess then return false end
+local function grantCarPurchase(buyerPlayer, targetPlayer, isGift, productInfo, receiptInfo)
+	local purchaseSuccess, grantMessage = giveCarTool(targetPlayer, productInfo.CarName, receiptInfo, isGift, buyerPlayer)
+	if not purchaseSuccess then
+		return false, grantMessage
+	end
+
+	return true, nil, {
+		ProductId = receiptInfo.ProductId,
+		CarName = productInfo.CarName,
+		Rarity = productInfo.Rarity,
+		FeedbackRemoteName = productInfo.FeedbackRemoteName,
+		IsGift = isGift,
+		BuyerPlayer = buyerPlayer,
+		TargetPlayer = targetPlayer,
+		AlreadyGranted = grantMessage == "Already granted",
+	}
+end
+
+local function runCarPostCommit(postCommit)
+	if not postCommit then return end
+
+	local buyerPlayer = postCommit.BuyerPlayer
+	local targetPlayer = postCommit.TargetPlayer
+	local carName = postCommit.CarName
+	local rarity = postCommit.Rarity
+	local isGift = postCommit.IsGift == true
 
 	recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, rarity)
 
 	local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
-	local feedbackRemote = ShopRemotes and npcFeedbackName and ShopRemotes:FindFirstChild(npcFeedbackName)
+	local feedbackRemote = ShopRemotes and postCommit.FeedbackRemoteName and ShopRemotes:FindFirstChild(postCommit.FeedbackRemoteName)
 
 	if isGift then
-		-- Keep Sender confirmation untouched
 		if feedbackRemote then
 			feedbackRemote:FireClient(buyerPlayer, carName, true, targetPlayer.Name)
 		end
 
-		-- Replace Receiver private notification with server-wide broadcast
 		if GlobalChatBroadcast then
 			GlobalChatBroadcast:FireAllClients({
 				Type = "CarGift",
@@ -318,14 +401,20 @@ local function handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carNa
 				Rarity = rarity
 			})
 		end
+
+		fireGiftPurchaseResult(buyerPlayer, {
+			Success = true,
+			ProductId = postCommit.ProductId,
+			CarName = carName,
+			Rarity = rarity,
+			ReceiverName = targetPlayer.Name,
+			ReceiverUserId = targetPlayer.UserId,
+		})
 	else
-		-- Normal non-gift purchase
 		if feedbackRemote then
 			feedbackRemote:FireClient(targetPlayer, carName, true)
 		end
 	end
-
-	return true
 end
 
 local starterPackRemotes = ReplicatedStorage:WaitForChild("StarterPackRemotes")
@@ -354,41 +443,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	end
 
 	local pid = receiptInfo.ProductId
-	local targetPlayer = buyerPlayer
-	local isGift = false
-	local giftReceiverId = nil
-	local consumeStaleGiftIntentAfterGrant = false
-
-	-- Peek gift intent without consuming it.
-	-- Some products are not giftable and must always apply to the buyer.
-	if _G.GetGiftReceiver then
-		giftReceiverId = _G.GetGiftReceiver(buyerId, false)
-
-		if giftReceiverId and pid ~= BANK_TRANSFER_SKIP_ID and pid ~= OFFLINE_10X_CLAIM_ID then
-			local receiver = Players:GetPlayerByUserId(giftReceiverId)
-			if receiver then
-				targetPlayer = receiver
-				isGift = true
-			end
-		end
-	end
-
-	local purchaseKey = buyerId .. "_" .. receiptInfo.PurchaseId
-	local alreadyProcessed = wasPurchaseProcessed(purchaseKey)
-
-	if alreadyProcessed == nil then
-		return Enum.ProductPurchaseDecision.NotProcessedYet
-	end
-
-	if alreadyProcessed then
-		return Enum.ProductPurchaseDecision.PurchaseGranted
-	end
-
-	local purchaseSuccess = false
-	local bankResetFeedback = nil
-	local offlinePremiumClientResult = nil
-	local adRewardClientResult = nil
-
+	local carProductInfo = CAR_PRODUCT_INFO[pid]
 	local skinFound = nil
 	if BaseSkinStats then
 		for name, data in pairs(BaseSkinStats) do
@@ -398,6 +453,62 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			end
 		end
 	end
+
+	local isGiftableProduct = carProductInfo ~= nil or skinFound ~= nil
+	local targetPlayer = buyerPlayer
+	local isGift = false
+	local giftReceiverId = nil
+	local consumeStaleGiftIntentAfterGrant = false
+	local giftFallbackMessage = nil
+	local giftIntentStatus = nil
+
+	if isGiftableProduct and _G.GetGiftIntent then
+		local giftIntent = nil
+		giftIntent, giftIntentStatus = _G.GetGiftIntent(buyerId, pid, false)
+		if giftIntent then
+			giftReceiverId = giftIntent.ReceiverUserId
+			local receiver = Players:GetPlayerByUserId(giftReceiverId)
+			if receiver and receiver ~= buyerPlayer and hasReceiveGiftsEnabled(buyerPlayer) and hasReceiveGiftsEnabled(receiver) then
+				targetPlayer = receiver
+				isGift = true
+			else
+				giftFallbackMessage = "Gift target unavailable. The car was delivered to you instead."
+				consumeStaleGiftIntentAfterGrant = true
+			end
+		elseif giftIntentStatus == "ProductMismatch" then
+			consumeStaleGiftIntentAfterGrant = true
+		end
+	elseif not isGiftableProduct and _G.GetGiftReceiver then
+		giftReceiverId = _G.GetGiftReceiver(buyerId, false)
+		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+	end
+
+	local purchaseKey = buyerId .. "_" .. receiptInfo.PurchaseId
+	if activeReceiptLocks[purchaseKey] then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	activeReceiptLocks[purchaseKey] = true
+	local function finish(decision)
+		activeReceiptLocks[purchaseKey] = nil
+		return decision
+	end
+
+	local alreadyProcessed = wasPurchaseProcessed(purchaseKey)
+
+	if alreadyProcessed == nil then
+		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+	end
+
+	if alreadyProcessed then
+		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
+	end
+
+	local purchaseSuccess = false
+	local bankResetFeedback = nil
+	local offlinePremiumClientResult = nil
+	local adRewardClientResult = nil
+	local carPostCommit = nil
 
 	-- ─── REWARDED VIDEO AD ────────────────────────────────────────────────────
 	if AdRewardsConfig.IsConfigured() and pid == AdRewardsConfig.DEV_PRODUCT_ID then
@@ -532,24 +643,27 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 
 		-- ─── 🟢 COMMON CAR ───────────────────────────────────────────────────────
-	elseif CAR_PRODUCT_IDS[pid] then
-		local carName = CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Common", nil)
+	elseif carProductInfo then
+		local grantMessage = nil
+		purchaseSuccess, grantMessage, carPostCommit = grantCarPurchase(buyerPlayer, targetPlayer, isGift, carProductInfo, receiptInfo)
+		if not purchaseSuccess then
+			warn("Robux car receipt grant failed:", tostring(grantMessage), "ProductId:", pid, "PurchaseId:", receiptInfo.PurchaseId)
+		end
 
 		-- ─── 🔵 UNCOMMON CAR ─────────────────────────────────────────────────────
 	elseif UNCOMMON_CAR_PRODUCT_IDS[pid] then
 		local carName = UNCOMMON_CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Uncommon", "DarrelPurchaseFeedback")
+		purchaseSuccess = false
 
 		-- ─── 🟣 RARE CAR ─────────────────────────────────────────────────────────
 	elseif RARE_CAR_PRODUCT_IDS[pid] then
 		local carName = RARE_CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Rare", "JacobPurchaseFeedback")
+		purchaseSuccess = false
 
 		-- ─── 🟡 EPIC CAR ─────────────────────────────────────────────────────────
 	elseif EPIC_CAR_PRODUCT_IDS[pid] then
 		local carName = EPIC_CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = handleCarPurchaseSuccess(buyerPlayer, targetPlayer, isGift, carName, "Epic", "RayWPurchaseFeedback")
+		purchaseSuccess = false
 
 		-- ─── ⏩ SKIP CRAFT TIMES ─────────────────────────────────────────────────
 	elseif pid == LEGENDARY_SKIP_CRAFT_ID then
@@ -583,7 +697,14 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 		if table.find(ownedTable, skinFound) then
 			warn("🛡️ Security: Blocked purchase! " .. targetPlayer.Name .. " already owns the " .. skinFound .. " pad.")
-			return Enum.ProductPurchaseDecision.NotProcessedYet
+			purchaseSuccess = true
+			if isGift then
+				fireGiftPurchaseResult(buyerPlayer, {
+					Success = false,
+					ProductId = pid,
+					Message = targetPlayer.Name .. " already owns this item.",
+				})
+			end
 		else
 			table.insert(ownedTable, skinFound)
 			targetPlayer:SetAttribute("OwnedBaseSkins", HttpService:JSONEncode(ownedTable))
@@ -604,7 +725,19 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	-- ─── FINALIZE ─────────────────────────────────────────────────────────────
 	if purchaseSuccess then
 		if not markPurchaseProcessed(purchaseKey) then
-			return Enum.ProductPurchaseDecision.NotProcessedYet
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+
+		runCarPostCommit(carPostCommit)
+		if carPostCommit and giftFallbackMessage then
+			fireGiftPurchaseResult(buyerPlayer, {
+				Success = false,
+				ProductId = pid,
+				CarName = carPostCommit.CarName,
+				Rarity = carPostCommit.Rarity,
+				Message = giftFallbackMessage,
+				GrantedToBuyer = true,
+			})
 		end
 
 		local adRewardReceiptGranted = ServerStorage:FindFirstChild("AdRewardReceiptGranted")
@@ -629,10 +762,14 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			end
 		end
 
-		if _G.GetGiftReceiver then
+		if _G.ClearGiftIntent then
 			if isGift and giftReceiverId then
-				_G.GetGiftReceiver(buyerId, true)
+				_G.ClearGiftIntent(buyerId, pid)
 			elseif consumeStaleGiftIntentAfterGrant then
+				_G.ClearGiftIntent(buyerId)
+			end
+		elseif _G.GetGiftReceiver then
+			if (isGift and giftReceiverId) or consumeStaleGiftIntentAfterGrant then
 				_G.GetGiftReceiver(buyerId, true)
 			end
 		end
@@ -652,8 +789,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			)
 		end
 
-		return Enum.ProductPurchaseDecision.PurchaseGranted
+		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 	end
 
-	return Enum.ProductPurchaseDecision.NotProcessedYet
+	return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 end

@@ -126,6 +126,7 @@ local MIN_SAVE_INTERVAL = 60
 local MAX_RETRIES = 3
 
 local MAX_INVENTORY_SIZE = 500
+local MAX_ROBUX_RECEIPT_HISTORY = 300
 local DEFAULT_CAR_STORAGE_LIMIT = 5
 local STARTER_PACK_CAR_NAME = "Senator"
 local STARTER_PACK_WALLET_CASH = 800000
@@ -137,6 +138,60 @@ local DAILY_REWARDS_STATE_ATTRIBUTE = "DailyRewardsStateJson"
 local FREE_REWARDS_CLAIMED_ATTRIBUTE = "FreeRewardsClaimed"
 local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
 local DAILY_REWARDS_SECONDS_PER_DAY = 24 * 60 * 60
+
+local function sanitizeRobuxReceiptHistory(raw)
+	local history = {}
+	if type(raw) ~= "table" then
+		return history
+	end
+
+	for receiptId, receiptData in pairs(raw) do
+		if type(receiptId) == "string" and receiptId ~= "" then
+			if type(receiptData) == "table" then
+				history[receiptId] = {
+					ToolId = type(receiptData.ToolId) == "string" and receiptData.ToolId or nil,
+					ProductId = tonumber(receiptData.ProductId),
+					GrantedAt = math.max(0, math.floor(tonumber(receiptData.GrantedAt) or 0)),
+					Source = type(receiptData.Source) == "string" and receiptData.Source or nil,
+				}
+			elseif receiptData == true then
+				history[receiptId] = { GrantedAt = 0 }
+			end
+		end
+	end
+
+	return history
+end
+
+local function compactRobuxReceiptHistory(raw)
+	local history = sanitizeRobuxReceiptHistory(raw)
+	local entries = {}
+
+	for receiptId, receiptData in pairs(history) do
+		table.insert(entries, {
+			ReceiptId = receiptId,
+			Data = receiptData,
+			GrantedAt = tonumber(receiptData.GrantedAt) or 0,
+		})
+	end
+
+	table.sort(entries, function(a, b)
+		if a.GrantedAt == b.GrantedAt then
+			return a.ReceiptId > b.ReceiptId
+		end
+		return a.GrantedAt > b.GrantedAt
+	end)
+
+	local compact = {}
+	for index, entry in ipairs(entries) do
+		if index > MAX_ROBUX_RECEIPT_HISTORY then
+			break
+		end
+		compact[entry.ReceiptId] = entry.Data
+	end
+
+	return compact
+end
 
 local DEFAULT_PLAYER_SETTINGS = {
 	MusicMuted = false,
@@ -583,7 +638,36 @@ end
 
 local function giveTool(player, toolName, customAttributes)
 	if not player or not player.Parent then return false, "Player missing" end
-	local bypassStorageLimit = type(customAttributes) == "table" and customAttributes.BypassStorageLimit == true
+	local receiptId = nil
+	local receiptProductId = nil
+	local receiptSource = nil
+	if type(customAttributes) == "table" then
+		local rawReceiptId = customAttributes.ReceiptPurchaseId or customAttributes.PurchaseId
+		if rawReceiptId ~= nil then
+			receiptId = tostring(rawReceiptId)
+			if receiptId == "" then receiptId = nil end
+		end
+		receiptProductId = tonumber(customAttributes.ReceiptProductId)
+		receiptSource = type(customAttributes.Source) == "string" and customAttributes.Source or nil
+	end
+
+	local session = SessionData[player]
+	if receiptId then
+		if not session or not session.DataLoaded then
+			return false, "Player data not loaded"
+		end
+		if not player:FindFirstChild("Backpack") then
+			return false, "Backpack not loaded"
+		end
+
+		session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+		if session.RobuxProductReceipts[receiptId] then
+			return true, "Already granted", nil, nil, true
+		end
+	end
+
+	local bypassStorageLimit = type(customAttributes) == "table"
+		and (customAttributes.BypassStorageLimit == true or customAttributes.Source == "RobuxGift")
 	if not bypassStorageLimit and not canAddCarToStorage(player, 1) then
 		return false, "Car storage full"
 	end
@@ -637,6 +721,16 @@ local function giveTool(player, toolName, customAttributes)
 		end
 		if not (type(customAttributes) == "table" and customAttributes.SuppressIndexMark == true) then
 			markIndexDiscovered(player, sourceTool.Name)
+		end
+		if receiptId and session then
+			session.RobuxProductReceipts[receiptId] = {
+				ToolId = sourceTool.Name,
+				ProductId = receiptProductId,
+				GrantedAt = os.time(),
+				Source = receiptSource,
+			}
+			session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+			markDirty(player)
 		end
 		return true, nil, backpackTool, gearTool
 	else
@@ -1463,6 +1557,7 @@ save = function(player, isClosing, force)
 				end
 			end
 		end
+		local robuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
 		do
 			local raw = player:GetAttribute("IndexDiscoveredJson")
 			if type(raw) == "string" and raw ~= "" then
@@ -1710,6 +1805,11 @@ save = function(player, isClosing, force)
 							oldData.StarterPackPurchaseId = starterPackPurchaseId
 						end
 					end
+					local mergedRobuxProductReceipts = sanitizeRobuxReceiptHistory(oldData.RobuxProductReceipts)
+					for receiptId, receiptData in pairs(robuxProductReceipts) do
+						mergedRobuxProductReceipts[receiptId] = receiptData
+					end
+					oldData.RobuxProductReceipts = compactRobuxReceiptHistory(mergedRobuxProductReceipts)
 					oldData.Settings = currentSettings
 					oldData.SettingsVersion = SETTINGS_SCHEMA_VERSION
 
@@ -1796,6 +1896,7 @@ local function InitializePlayer(player)
 		StarterPackPurchased = false,
 		StarterPackPurchaseId = nil,
 		StarterPackReceipts = {},
+		RobuxProductReceipts = {},
 		StarterPackGrantInProgress = false,
 		StarterPackSaveConfirmed = false,
 		StarterPackClearRequested = false,
@@ -1854,6 +1955,7 @@ local function InitializePlayer(player)
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player", RankData = {},
 		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {},
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
+		RobuxProductReceipts = {},
 		DailyRewards = sanitizeDailyRewardsData(nil), FreeRewardsClaimed = false
 	}
 
@@ -1879,6 +1981,7 @@ local function InitializePlayer(player)
 	data.StarterPackPurchased = data.StarterPackPurchased == true
 	data.StarterPackPurchaseId = type(data.StarterPackPurchaseId) == "string" and data.StarterPackPurchaseId or nil
 	data.StarterPackReceipts = type(data.StarterPackReceipts) == "table" and data.StarterPackReceipts or {}
+	data.RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
 	data.DailyRewards = sanitizeDailyRewardsData(data.DailyRewards)
 	data.FreeRewardsClaimed = data.FreeRewardsClaimed == true
 	data.LastOfflineAt = math.max(0, math.floor(tonumber(data.LastOfflineAt) or 0))
@@ -1907,6 +2010,7 @@ local function InitializePlayer(player)
 	SessionData[player].StarterPackPurchaseId = data.StarterPackPurchaseId
 	SessionData[player].StarterPackSaveConfirmed = data.StarterPackPurchased == true
 	SessionData[player].StarterPackReceipts = {}
+	SessionData[player].RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
 	for receiptId, purchased in pairs(data.StarterPackReceipts) do
 		if type(receiptId) == "string" and purchased == true then
 			SessionData[player].StarterPackReceipts[receiptId] = true

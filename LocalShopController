@@ -61,6 +61,14 @@ local RemoteUpdate = Remotes:WaitForChild("ShopUpdate")
 local FuncGetState = Remotes:WaitForChild("GetShopState")
 local FuncBuyCar = Remotes:WaitForChild("BuyLocalCar")
 
+local function clearGiftIntent(productId)
+	local giftRemotes = ReplicatedStorage:FindFirstChild("GiftRemotes")
+	local cancelGiftIntent = giftRemotes and giftRemotes:FindFirstChild("CancelGiftIntent")
+	if cancelGiftIntent then
+		cancelGiftIntent:FireServer(productId)
+	end
+end
+
 -- 🛡️ STATE
 local currentState = nil
 local purchaseDebounce = {} 
@@ -297,6 +305,7 @@ local function init()
 	Kit.Tween:SetupButton(rerollBtn, function()
 		UIAudioConfig.PlayRobux()
 		UIAudioConfig.ShowPurchaseLoading()
+		clearGiftIntent(REROLL_PRODUCT_ID)
 		MarketplaceService:PromptProductPurchase(player, REROLL_PRODUCT_ID)
 	end)
 
@@ -338,6 +347,7 @@ local function init()
 					if pid and pid > 0 then
 						UIAudioConfig.PlayRobux()
 						UIAudioConfig.ShowPurchaseLoading()
+						clearGiftIntent(pid)
 						MarketplaceService:PromptProductPurchase(player, pid)
 					else
 						warn("⚠️ Robux ID is 0 for " .. carName)
