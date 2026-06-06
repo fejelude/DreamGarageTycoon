@@ -213,7 +213,7 @@ local function syncButtonStates()
 	end
 	setCurrentStateButtonVisibility(btnReceiveGiftsOn, btnReceiveGiftsOff, receiveGiftsEnabled == true)
 
-	local afkModeEnabled = workspace:GetAttribute("AFKModeEnabled")
+	local afkModeEnabled = player:GetAttribute(SETTINGS_ATTRIBUTES.AFKModeEnabled)
 	if afkModeEnabled == nil then
 		afkModeEnabled = DEFAULT_SETTINGS.AFKModeEnabled
 	end
@@ -467,20 +467,17 @@ end
 -- AFK MODE TOGGLE / IDLE RECONNECT HANDLING
 -- ─────────────────────────────────────────────────────────────
 local afkReconnectRequested = false
+local afkReconnectLoading = false
 
-local function setAFKModeEnabled(isEnabled, shouldPersist)
-	isEnabled = isEnabled == true
-
-	setCurrentStateButtonVisibility(btnAFKModeOn, btnAFKModeOff, isEnabled)
-	workspace:SetAttribute("AFKModeEnabled", isEnabled)
-	player:SetAttribute(SETTINGS_ATTRIBUTES.AFKModeEnabled, isEnabled)
-
-	if shouldPersist ~= false then
-		persistSetting("AFKModeEnabled", isEnabled)
-	end
+local function hideAFKReconnectLoadingState()
+	afkReconnectLoading = false
+	player:SetAttribute(AFK_RECONNECT_WARNING_ATTRIBUTE, false)
+	playerGui:SetAttribute("LoadingScreenActive", false)
 end
 
 local function showAFKReconnectLoadingState()
+	afkReconnectRequested = true
+	afkReconnectLoading = true
 	playerGui:SetAttribute("LoadingScreenActive", true)
 	player:SetAttribute(AFK_RECONNECT_WARNING_ATTRIBUTE, true)
 end
@@ -495,21 +492,42 @@ local function fireAFKModeServer(action)
 	return true
 end
 
-local function sendAFKIdleStateStarted()
-	if afkReconnectRequested then return end
-	if workspace:GetAttribute("AFKModeEnabled") ~= true then return end
+local clearAFKIdleState
+clearAFKIdleState = function(shouldNotifyServer)
+	if not afkReconnectRequested and not afkReconnectLoading then
+		return
+	end
 
-	if fireAFKModeServer("IdleStateStarted") then
-		afkReconnectRequested = true
+	afkReconnectRequested = false
+	hideAFKReconnectLoadingState()
+
+	if shouldNotifyServer ~= false and AFKModeEvent then
+		AFKModeEvent:FireServer("IdleStateEnded")
 	end
 end
 
-local function clearAFKIdleState()
-	if not afkReconnectRequested then return end
-	afkReconnectRequested = false
-	player:SetAttribute(AFK_RECONNECT_WARNING_ATTRIBUTE, false)
-	if AFKModeEvent then
-		AFKModeEvent:FireServer("IdleStateEnded")
+local function setAFKModeEnabled(isEnabled, shouldPersist)
+	isEnabled = isEnabled == true
+
+	setCurrentStateButtonVisibility(btnAFKModeOn, btnAFKModeOff, isEnabled)
+	player:SetAttribute(SETTINGS_ATTRIBUTES.AFKModeEnabled, isEnabled)
+
+	if shouldPersist ~= false then
+		persistSetting("AFKModeEnabled", isEnabled)
+	end
+
+	-- If the player disables AFK Mode while an idle reconnect is pending or already
+	-- showing the loading overlay, clear the client immediately and notify the server.
+	if not isEnabled then
+		clearAFKIdleState(shouldPersist ~= false)
+	end
+end
+
+local function sendAFKIdleStateStarted()
+	if afkReconnectRequested then return end
+	if player:GetAttribute(SETTINGS_ATTRIBUTES.AFKModeEnabled) ~= true then return end
+	if fireAFKModeServer("IdleStateStarted") then
+		afkReconnectRequested = true
 	end
 end
 
@@ -517,28 +535,46 @@ player.Idled:Connect(function()
 	sendAFKIdleStateStarted()
 end)
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if input.UserInputType == Enum.UserInputType.MouseMovement then return end
-	clearAFKIdleState()
-end)
+local function handleAFKActivity(input)
+	if not input then return end
+
+	local userInputType = input.UserInputType
+	if userInputType == Enum.UserInputType.MouseMovement
+		or userInputType == Enum.UserInputType.MouseButton1
+		or userInputType == Enum.UserInputType.MouseButton2
+		or userInputType == Enum.UserInputType.MouseButton3
+		or userInputType == Enum.UserInputType.MouseWheel
+		or userInputType == Enum.UserInputType.Touch
+		or userInputType == Enum.UserInputType.Keyboard
+		or userInputType == Enum.UserInputType.Gamepad1
+		or userInputType == Enum.UserInputType.Gamepad2
+		or userInputType == Enum.UserInputType.Gamepad3
+		or userInputType == Enum.UserInputType.Gamepad4
+		or userInputType == Enum.UserInputType.Gamepad5
+		or userInputType == Enum.UserInputType.Gamepad6
+		or userInputType == Enum.UserInputType.Gamepad7
+		or userInputType == Enum.UserInputType.Gamepad8
+	then
+		clearAFKIdleState(true)
+	end
+end
+
+UserInputService.InputBegan:Connect(handleAFKActivity)
+UserInputService.InputChanged:Connect(handleAFKActivity)
 
 if AFKModeEvent then
 	AFKModeEvent.OnClientEvent:Connect(function(action)
 		if action == "ReconnectStarting" then
 			showAFKReconnectLoadingState()
 		elseif action == "ReconnectCancelled" then
-			afkReconnectRequested = false
-			player:SetAttribute(AFK_RECONNECT_WARNING_ATTRIBUTE, false)
-			playerGui:SetAttribute("LoadingScreenActive", false)
+			clearAFKIdleState(false)
 		end
 	end)
 end
 
 TeleportService.TeleportInitFailed:Connect(function(failedPlayer)
 	if failedPlayer ~= player then return end
-	afkReconnectRequested = false
-	player:SetAttribute(AFK_RECONNECT_WARNING_ATTRIBUTE, false)
-	playerGui:SetAttribute("LoadingScreenActive", false)
+	clearAFKIdleState(false)
 end)
 
 -- ─────────────────────────────────────────────────────────────
