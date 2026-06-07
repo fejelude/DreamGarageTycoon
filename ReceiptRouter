@@ -621,30 +621,42 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		-- ─── SHOP REROLLS ────────────────────────────────────────────────────────
 	elseif pid == SHOP_REROLL_ID then
 		if ShopRerollFunc then
-			ShopRerollFunc:Invoke(targetPlayer)
-			purchaseSuccess = true
+			local ok, result = safeInvoke(ShopRerollFunc, 5, targetPlayer)
+			purchaseSuccess = ok and result ~= false
+			if not purchaseSuccess then
+				warn("⚠️ ShopRerollFunction failed: " .. tostring(result))
+			end
 		end
 
 	elseif pid == UNCOMMON_SHOP_REROLL_ID then
 		if UncommonShopRerollFunc then
-			UncommonShopRerollFunc:Invoke(targetPlayer)
-			purchaseSuccess = true
+			local ok, result = safeInvoke(UncommonShopRerollFunc, 5, targetPlayer)
+			purchaseSuccess = ok and result ~= false
+			if not purchaseSuccess then
+				warn("⚠️ UncommonShopRerollFunction failed: " .. tostring(result))
+			end
 		else
 			warn("⚠️ UncommonShopRerollFunction missing!")
 		end
 
 	elseif pid == RARE_SHOP_REROLL_ID then
 		if RareShopRerollFunc then
-			RareShopRerollFunc:Invoke(targetPlayer)
-			purchaseSuccess = true
+			local ok, result = safeInvoke(RareShopRerollFunc, 5, targetPlayer)
+			purchaseSuccess = ok and result ~= false
+			if not purchaseSuccess then
+				warn("⚠️ RareShopRerollFunction failed: " .. tostring(result))
+			end
 		else
 			warn("⚠️ RareShopRerollFunction missing!")
 		end
 
 	elseif pid == EPIC_SHOP_REROLL_ID then
 		if EpicShopRerollFunc then
-			EpicShopRerollFunc:Invoke(targetPlayer)
-			purchaseSuccess = true
+			local ok, result = safeInvoke(EpicShopRerollFunc, 5, targetPlayer)
+			purchaseSuccess = ok and result ~= false
+			if not purchaseSuccess then
+				warn("⚠️ EpicShopRerollFunction failed: " .. tostring(result))
+			end
 		else
 			warn("⚠️ EpicShopRerollFunction missing!")
 		end
