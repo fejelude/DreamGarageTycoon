@@ -6,8 +6,6 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
-local RECEIVE_GIFTS_ATTRIBUTE = "Setting_ReceiveGiftsEnabled"
-
 local function getOrCreate(parent, className, name)
 	local existing = parent:FindFirstChild(name)
 	if existing and existing:IsA(className) then
@@ -46,12 +44,6 @@ local lastIntentTime = {}
 local INTENT_COOLDOWN = 0.75
 local INTENT_TTL = 600
 
-local function hasReceiveGiftsEnabled(player)
-	if not player then return false end
-	local value = player:GetAttribute(RECEIVE_GIFTS_ATTRIBUTE)
-	return value ~= false
-end
-
 local function pruneExpiredIntent(buyerUserId)
 	local intent = pendingGifts[buyerUserId]
 	if intent and intent.ExpiresAt <= os.clock() then
@@ -87,14 +79,6 @@ local function validateIntentRequest(buyer, productId, receiverUserId)
 	local receiverPlayer = Players:GetPlayerByUserId(receiverUserId)
 	if not receiverPlayer then
 		return false, "Player left the server"
-	end
-
-	if not hasReceiveGiftsEnabled(buyer) then
-		return false, "Enable Receive Gifts before sending gifts"
-	end
-
-	if not hasReceiveGiftsEnabled(receiverPlayer) then
-		return false, receiverPlayer.DisplayName .. " has Receive Gifts disabled"
 	end
 
 	return true

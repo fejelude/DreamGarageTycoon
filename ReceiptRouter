@@ -20,7 +20,6 @@ local HttpService = game:GetService("HttpService")
 local PURCHASE_HISTORY_NAMES = {"ReceiptHistory_V3"}
 local ActivePurchaseHistory = nil
 local activeReceiptLocks = {}
-local RECEIVE_GIFTS_ATTRIBUTE = "Setting_ReceiveGiftsEnabled"
 
 -- 🟢 COMMON SHOP CONFIG
 local TABLET_2X_ID = 3509697462
@@ -164,11 +163,6 @@ local function safeInvoke(bindable, timeout, ...)
 	if not result[1] then return false, result[2] end
 
 	return true, table.unpack(result, 2, result.n)
-end
-
-local function hasReceiveGiftsEnabled(player)
-	if not player then return false end
-	return player:GetAttribute(RECEIVE_GIFTS_ATTRIBUTE) ~= false
 end
 
 local function fireGiftPurchaseResult(buyerPlayer, payload)
@@ -475,7 +469,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		if giftIntent then
 			giftReceiverId = giftIntent.ReceiverUserId
 			local receiver = Players:GetPlayerByUserId(giftReceiverId)
-			if receiver and receiver ~= buyerPlayer and hasReceiveGiftsEnabled(buyerPlayer) and hasReceiveGiftsEnabled(receiver) then
+			if receiver and receiver ~= buyerPlayer then
 				targetPlayer = receiver
 				isGift = true
 			else
