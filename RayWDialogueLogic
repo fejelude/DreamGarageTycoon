@@ -494,7 +494,8 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipi
 
 		local reactionText = ""
 		if giftRecipientName then
-			reactionText = "Gift sent! <font color='"..USER_COLOR.."'><b>" .. giftRecipientName .. "</b></font> received the <font color='"..EPIC_COLOR.."'><b>" .. carId .. "</b></font>."
+			local senderName = giftSenderName or player.Name
+			reactionText = "Thanks, <font color='"..USER_COLOR.."'><b>" .. senderName .. "</b></font>! You successfully sent this gift. <font color='"..USER_COLOR.."'><b>" .. giftRecipientName .. "</b></font> received the <font color='"..EPIC_COLOR.."'><b>" .. carId .. "</b></font>."
 		else
 			local poolToUse = isRobux and "RobuxReactions" or "Reactions"
 			reactionText = getRandomDialogue(poolToUse, carId, carData.CPS)

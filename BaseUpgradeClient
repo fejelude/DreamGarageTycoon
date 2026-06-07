@@ -24,6 +24,14 @@ local Remotes = ReplicatedStorage:WaitForChild("ShopRemotes")
 local OpenEvent = Remotes:WaitForChild("OpenBaseUpgrade")
 local TransactionFunc = Remotes:WaitForChild("BaseUpgradeTransaction")
 
+local function clearGiftIntent(productId)
+	local giftRemotes = ReplicatedStorage:FindFirstChild("GiftRemotes")
+	local cancelGiftIntent = giftRemotes and giftRemotes:FindFirstChild("CancelGiftIntent")
+	if cancelGiftIntent then
+		cancelGiftIntent:FireServer(productId)
+	end
+end
+
 -- 📦 REQUIRE KIT
 local Kit
 pcall(function()
@@ -386,6 +394,10 @@ local function ConnectCard(cardFrame, skinName)
 
 			UIAudioConfig.PlayRobux()
 			UIAudioConfig.ShowPurchaseLoading()
+			local skinData = BaseSkinStats[skinName]
+			if skinData and skinData.ProductId then
+				clearGiftIntent(skinData.ProductId)
+			end
 			TransactionFunc:InvokeServer(skinName, "Robux")
 
 			task.wait(1)

@@ -1,64 +1,172 @@
 -- [[ SERVER SCRIPT: GiftIntentHandler (HARDENED) ]]
--- Purpose: Remembers who a player wants to gift AND creates the necessary Remotes.
+-- Purpose: Creates gift remotes and owns the server-authoritative Robux gift intent.
 -- Runs on: Server
 -- Location: ServerScriptService
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
--- 🛠️ Use existing Remotes
-local Remotes = ReplicatedStorage:WaitForChild("GiftRemotes") 
-local SetIntentEvent = Remotes:WaitForChild("SetGiftIntent")
+local function getOrCreate(parent, className, name)
+	local existing = parent:FindFirstChild(name)
+	if existing and existing:IsA(className) then
+		return existing
+	end
 
--- 🗄️ STORAGE: { [BuyerUserId] = ReceiverUserId }
+	if existing then
+		warn("[GiftIntentHandler] Replacing invalid " .. name .. " (" .. existing.ClassName .. ") with " .. className)
+		existing:Destroy()
+	end
+
+	local created = Instance.new(className)
+	created.Name = name
+	created.Parent = parent
+	return created
+end
+
+local Remotes = ReplicatedStorage:FindFirstChild("GiftRemotes")
+if not Remotes then
+	Remotes = Instance.new("Folder")
+	Remotes.Name = "GiftRemotes"
+	Remotes.Parent = ReplicatedStorage
+end
+
+local SetIntentEvent = getOrCreate(Remotes, "RemoteEvent", "SetGiftIntent")
+local CreateIntentFunction = getOrCreate(Remotes, "RemoteFunction", "CreateGiftIntent")
+local CancelIntentEvent = getOrCreate(Remotes, "RemoteEvent", "CancelGiftIntent")
+getOrCreate(Remotes, "RemoteEvent", "NotifyGiftReceived")
+getOrCreate(Remotes, "RemoteEvent", "GlobalChatBroadcast")
+getOrCreate(Remotes, "RemoteEvent", "GiftPurchaseResult")
+
+-- { [buyerUserId] = { ReceiverUserId, ProductId, CreatedAt, ExpiresAt } }
 local pendingGifts = {}
-
--- FIX: Rate-limit intent sets per player to prevent spam/flooding
 local lastIntentTime = {}
-local INTENT_COOLDOWN = 1 -- seconds
 
--- 📡 LISTEN FOR INTENT
-SetIntentEvent.OnServerEvent:Connect(function(buyer, receiverUserId)
-	-- Security: Validate Input Type
+local INTENT_COOLDOWN = 0.75
+local INTENT_TTL = 600
+
+local function pruneExpiredIntent(buyerUserId)
+	local intent = pendingGifts[buyerUserId]
+	if intent and intent.ExpiresAt <= os.clock() then
+		pendingGifts[buyerUserId] = nil
+		return nil
+	end
+	return intent
+end
+
+local function validateIntentRequest(buyer, productId, receiverUserId)
+	if not buyer or not buyer.Parent then
+		return false, "Buyer left the server"
+	end
+
+	if typeof(productId) ~= "number" or productId <= 0 or productId ~= productId then
+		return false, "Invalid gift product"
+	end
+
 	if typeof(receiverUserId) ~= "number" then
-		return
+		return false, "Invalid receiver"
 	end
 
-	-- FIX: Prevent self-gifting exploit
 	if receiverUserId == buyer.UserId then
-		return
+		return false, "You cannot gift yourself"
 	end
 
-	-- FIX: Rate limit
 	local now = os.clock()
 	if lastIntentTime[buyer.UserId] and (now - lastIntentTime[buyer.UserId]) < INTENT_COOLDOWN then
-		return
+		return false, "Please wait a moment"
 	end
 	lastIntentTime[buyer.UserId] = now
 
-	-- FIX: Validate that the receiver actually exists in this server
 	local receiverPlayer = Players:GetPlayerByUserId(receiverUserId)
 	if not receiverPlayer then
+		return false, "Player left the server"
+	end
+
+	return true
+end
+
+local function setIntent(buyer, productId, receiverUserId)
+	local valid, message = validateIntentRequest(buyer, productId, receiverUserId)
+	if not valid then
+		return false, message
+	end
+
+	local now = os.clock()
+	pendingGifts[buyer.UserId] = {
+		ReceiverUserId = receiverUserId,
+		ProductId = math.floor(productId),
+		CreatedAt = now,
+		ExpiresAt = now + INTENT_TTL,
+	}
+
+	return true, "Gift ready"
+end
+
+CreateIntentFunction.OnServerInvoke = function(buyer, productId, receiverUserId)
+	return setIntent(buyer, productId, receiverUserId)
+end
+
+-- Backwards-compatible event path. New clients use CreateGiftIntent so the
+-- purchase prompt only opens after the server has committed the intent.
+SetIntentEvent.OnServerEvent:Connect(function(buyer, receiverUserId, productId)
+	if typeof(productId) ~= "number" then
+		return
+	end
+	setIntent(buyer, productId, receiverUserId)
+end)
+
+CancelIntentEvent.OnServerEvent:Connect(function(buyer, productId)
+	local intent = pendingGifts[buyer.UserId]
+	if not intent then
 		return
 	end
 
-	pendingGifts[buyer.UserId] = receiverUserId
+	if typeof(productId) == "number" and intent.ProductId ~= math.floor(productId) then
+		return
+	end
+
+	pendingGifts[buyer.UserId] = nil
 end)
 
--- 🧹 CLEANUP (If player leaves, clear memory)
 Players.PlayerRemoving:Connect(function(player)
 	pendingGifts[player.UserId] = nil
 	lastIntentTime[player.UserId] = nil
 end)
 
--- 🔒 EXPOSE DATA TO RECEIPT ROUTER
--- FIX: Changed to a Peek + Clear design. GetGiftReceiver now takes an
--- optional `consume` parameter. The ReceiptRouter should:
---   1. Peek first (consume = false) to determine the target
---   2. Only consume (consume = true) AFTER the item grant succeeds
--- This prevents the gift intent from being lost on a failed ProcessReceipt retry.
+-- ReceiptRouter API. Intents are consumed only after the receipt is fully
+-- granted and marked, so receipt retries keep the same target.
+_G.GetGiftIntent = function(buyerUserId, productId, consume)
+	local intent = pruneExpiredIntent(buyerUserId)
+	if not intent then
+		return nil, "NoIntent"
+	end
+
+	if typeof(productId) == "number" and intent.ProductId ~= math.floor(productId) then
+		return nil, "ProductMismatch", intent
+	end
+
+	if consume then
+		pendingGifts[buyerUserId] = nil
+	end
+
+	return intent, nil
+end
+
+_G.ClearGiftIntent = function(buyerUserId, productId)
+	local intent = pendingGifts[buyerUserId]
+	if not intent then return false end
+
+	if typeof(productId) == "number" and intent.ProductId ~= math.floor(productId) then
+		return false
+	end
+
+	pendingGifts[buyerUserId] = nil
+	return true
+end
+
+-- Backwards-compatible API for older scripts.
 _G.GetGiftReceiver = function(buyerUserId, consume)
-	local receiverId = pendingGifts[buyerUserId]
+	local intent = pruneExpiredIntent(buyerUserId)
+	local receiverId = intent and intent.ReceiverUserId
 
 	if receiverId and consume then
 		pendingGifts[buyerUserId] = nil
