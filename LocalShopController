@@ -170,6 +170,15 @@ local function setFocusMode(active)
 	end
 end
 
+local function cleanupShopFocus()
+	isProcessingPurchase = false
+	for carName in pairs(purchaseDebounce) do
+		purchaseDebounce[carName] = false
+	end
+	shopFeedback:Clear()
+	setFocusMode(false)
+end
+
 -- ============================================================================
 -- 🧠 RENDER LOGIC
 -- ============================================================================
@@ -310,8 +319,14 @@ local function init()
 	end)
 
 	Kit.Tween:SetupButton(closeBtn, function() 
-		setFocusMode(false) 
+		cleanupShopFocus()
 		gui.Enabled = false 
+	end)
+
+	gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if not gui.Enabled then
+			cleanupShopFocus()
+		end
 	end)
 
 	for _, carName in ipairs(SHOP_CARS) do

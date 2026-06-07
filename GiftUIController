@@ -83,6 +83,7 @@ local watchedFocusGuis = {}
 local btnConnections = {} 
 
 local SHOP_GUIS_WITH_DISABLE_CLEANUP = {
+	"LocalShopUI",
 	"UncommonShopUi",
 	"RareShopUi",
 	"EpicShopUi",
@@ -274,6 +275,7 @@ local function shouldIgnoreGiftFocusGui(gui)
 	return not gui:IsA("ScreenGui")
 		or gui == screenGui
 		or gui.Name == "Confirmation"
+		or gui.Name == "PurchasingState"
 end
 
 local function hideGuiForGiftFocus(gui)
@@ -490,7 +492,7 @@ local function closeShopGuisThatRestoreUIOnDisable()
 		end
 	end
 
-	-- Uncommon/Rare/Epic shop controllers restore their previously hidden UI from
+	-- Shop controllers restore their previously hidden UI from
 	-- their Enabled=false cleanup listener. Wait one frame so GiftUI captures and
 	-- hides that restored UI itself, instead of the shop restoring it after the
 	-- gift menu is already open.
@@ -605,6 +607,8 @@ local function UpdateSlots()
 						pendingGiftProductId = productId
 						pendingGiftReceiverId = capturedTarget.UserId
 						SetIndicator("Preparing gift...", Color3.fromRGB(255, 255, 100))
+						UIAudioConfig.PlayRobux()
+						UIAudioConfig.ShowPurchaseLoading()
 
 						local intentOk, accepted, message = pcall(function()
 							return CreateIntentFunction:InvokeServer(productId, capturedTarget.UserId)
@@ -612,13 +616,12 @@ local function UpdateSlots()
 
 						if not intentOk or accepted ~= true then
 							resetGiftPurchaseState()
+							UIAudioConfig.HidePurchaseLoading()
 							SetIndicator(tostring(message or accepted or "Gift unavailable"), Color3.fromRGB(255, 85, 85))
 							playSfx(SFX.Error, 0.6, screenGui)
 							return
 						end
 
-						UIAudioConfig.PlayRobux()
-						UIAudioConfig.ShowPurchaseLoading()
 						SetIndicator("Opening purchase...", Color3.fromRGB(255, 255, 100))
 
 						local promptOk, promptErr = pcall(function()
@@ -657,25 +660,23 @@ end
 -- 🧾 PURCHASE FEEDBACK
 -- ============================================================================
 local function closeAfterCommittedGift()
-	task.delay(1.5, function()
-		if player:GetAttribute("MovementLock") then
+	task.delay(0.35, function()
+		if mainFrame then
 			mainFrame.Visible = false
-			screenGui.Enabled = false
-			isMenuOpen = false
-			detector.Visible = false
-
-			task.spawn(function()
-				while player:GetAttribute("MovementLock") do
-					task.wait(0.5)
-				end
-				toggleOtherGuis(false)
-				toggleGiftFocusGuiObjects(false)
-				setMovementLocked(false)
-				tweenFov(normalFov)
-			end)
-		else
-			setFocusMode(false)
 		end
+		if screenGui then
+			screenGui.Enabled = false
+		end
+		if detector then
+			detector.Visible = false
+		end
+
+		isMenuOpen = false
+		clearFocusConnections()
+		toggleOtherGuis(false)
+		toggleGiftFocusGuiObjects(false)
+		setMovementLocked(false)
+		tweenFov(normalFov)
 	end)
 end
 

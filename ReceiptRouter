@@ -388,28 +388,35 @@ local function runCarPostCommit(postCommit)
 	local feedbackRemote = ShopRemotes and postCommit.FeedbackRemoteName and ShopRemotes:FindFirstChild(postCommit.FeedbackRemoteName)
 
 	if isGift then
-		if feedbackRemote then
-			feedbackRemote:FireClient(buyerPlayer, carName, true, targetPlayer.Name)
-		end
-
-		if GlobalChatBroadcast then
-			GlobalChatBroadcast:FireAllClients({
-				Type = "CarGift",
-				SenderName = buyerPlayer.Name,
-				ReceiverName = targetPlayer.Name,
-				CarName = carName,
-				Rarity = rarity
-			})
-		end
+		local buyerName = buyerPlayer.Name
+		local targetName = targetPlayer.Name
 
 		fireGiftPurchaseResult(buyerPlayer, {
 			Success = true,
 			ProductId = postCommit.ProductId,
 			CarName = carName,
 			Rarity = rarity,
-			ReceiverName = targetPlayer.Name,
+			ReceiverName = targetName,
 			ReceiverUserId = targetPlayer.UserId,
 		})
+
+		if feedbackRemote then
+			task.delay(0.5, function()
+				if buyerPlayer and buyerPlayer.Parent then
+					feedbackRemote:FireClient(buyerPlayer, carName, true, targetName, buyerName)
+				end
+			end)
+		end
+
+		if GlobalChatBroadcast then
+			GlobalChatBroadcast:FireAllClients({
+				Type = "CarGift",
+				SenderName = buyerName,
+				ReceiverName = targetName,
+				CarName = carName,
+				Rarity = rarity
+			})
+		end
 	else
 		if feedbackRemote then
 			feedbackRemote:FireClient(targetPlayer, carName, true)
