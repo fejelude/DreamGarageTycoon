@@ -586,12 +586,10 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 		end
 
 		session.ActiveCrafts[carName] = os.time() + recipe.CraftTime
-		session.AwardedCrafts[carName] = os.time()
 
 		local saveOk, saveMessage = savePlayerNow(player)
 		if not saveOk then
 			session.ActiveCrafts[carName] = nil
-			session.AwardedCrafts[carName] = nil
 			return false, saveMessage or "Save failed. Craft was not started."
 		end
 
@@ -633,80 +631,108 @@ end
 -- =========================
 SkipCraftFunc.OnInvoke = function(player)
 	if not player then return false, "No player provided" end
-	local session = getSession(player)
+	if not player.Parent then return false, "Player left before craft skip could be granted" end
 
-	for completedCar in pairs(session.CompletedCrafts) do
-		if RECIPES[completedCar] then
-			local saveOk, saveMessage = savePlayerNow(player)
-			if saveOk then
-				return true, "Already granted"
-			end
-			return false, saveMessage or "System error saving completed craft"
-		end
+	local uid = player.UserId
+	if InteractionLocks[uid] then
+		-- ProcessReceipt will return NotProcessedYet, letting Roblox retry after the
+		-- in-flight craft/sacrifice/save operation finishes instead of racing it.
+		return false, "Craft transaction in progress"
 	end
 
-	local activeCars = {}
-	if session.PendingPremiumCraft then
-		table.insert(activeCars, {
-			CarName = session.PendingPremiumCraft,
-			WasPendingPremium = true,
-			OriginalEndTime = nil,
-		})
-		session.PendingPremiumCraft = nil
-	else
-		for carName, endTime in pairs(session.ActiveCrafts) do
+	InteractionLocks[uid] = true
+
+	local pOk, logicOk, msg = pcall(function()
+		local session = getSession(player)
+
+		for completedCar in pairs(session.CompletedCrafts) do
+			if RECIPES[completedCar] then
+				local saveOk, saveMessage = savePlayerNow(player)
+				if saveOk then
+					return true, "Already granted"
+				end
+				return false, saveMessage or "System error saving completed craft"
+			end
+		end
+
+		local activeCars = {}
+		if session.PendingPremiumCraft then
 			table.insert(activeCars, {
-				CarName = carName,
-				WasPendingPremium = false,
-				OriginalEndTime = endTime,
+				CarName = session.PendingPremiumCraft,
+				WasPendingPremium = true,
+				OriginalEndTime = nil,
 			})
-		end
-	end
-
-	local foundActive = false
-	local grantFailureMessage = nil
-	for _, craftInfo in ipairs(activeCars) do
-		local carName = craftInfo.CarName
-		session.ActiveCrafts[carName] = nil
-		session.CompletedCrafts[carName] = os.time()
-		session.CraftProgress[carName] = {}
-		local realToolName = RECIPES[carName].TargetCar
-		local alreadyAwarded = session.AwardedCrafts[carName] ~= nil
-		session.AwardedCrafts[carName] = session.AwardedCrafts[carName] or os.time()
-		local invokeOk, giveResult, giveMessage = grantCraftReward(player, carName, realToolName, "LegendaryCraftSkip")
-
-		if invokeOk and giveResult ~= false then
-			local saveOk, saveMessage = savePlayerNow(player)
-			if not saveOk then
-				warn("[LegendaryShop] Failed to save skipped " .. realToolName .. " for " .. player.Name .. ": " .. tostring(saveMessage))
-				return false, saveMessage or "System error saving item"
-			end
-			if not alreadyAwarded then
-				recordRankCraft(player, realToolName)
-				savePlayerNow(player)
-			end
-			pushUpdate(player, session, "Skipped")
-			foundActive = true
+			session.PendingPremiumCraft = nil
 		else
-			warn("⚠️ [LegendaryShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name)
-			grantFailureMessage = giveMessage or giveResult or "System error granting item"
-			if craftInfo.WasPendingPremium then
-				session.PendingPremiumCraft = carName
-			else
-				session.ActiveCrafts[carName] = craftInfo.OriginalEndTime
-			end
-			session.CompletedCrafts[carName] = nil
-			if not alreadyAwarded then
-				session.AwardedCrafts[carName] = nil
+			for carName, endTime in pairs(session.ActiveCrafts) do
+				table.insert(activeCars, {
+					CarName = carName,
+					WasPendingPremium = false,
+					OriginalEndTime = endTime,
+				})
 			end
 		end
+
+		local foundActive = false
+		local grantFailureMessage = nil
+		for _, craftInfo in ipairs(activeCars) do
+			local carName = craftInfo.CarName
+			local recipe = RECIPES[carName]
+			if not recipe then
+				grantFailureMessage = "Invalid craft recipe"
+				continue
+			end
+
+			session.ActiveCrafts[carName] = nil
+			session.CompletedCrafts[carName] = os.time()
+			session.CraftProgress[carName] = {}
+			local realToolName = recipe.TargetCar
+			local alreadyAwarded = session.AwardedCrafts[carName] ~= nil
+			session.AwardedCrafts[carName] = session.AwardedCrafts[carName] or os.time()
+			local invokeOk, giveResult, giveMessage = grantCraftReward(player, carName, realToolName, "LegendaryCraftSkip")
+
+			if invokeOk and giveResult ~= false then
+				local saveOk, saveMessage = savePlayerNow(player)
+				if not saveOk then
+					warn("[LegendaryShop] Failed to save skipped " .. realToolName .. " for " .. player.Name .. ": " .. tostring(saveMessage))
+					return false, saveMessage or "System error saving item"
+				end
+				if not alreadyAwarded then
+					recordRankCraft(player, realToolName)
+					savePlayerNow(player)
+				end
+				pushUpdate(player, session, "Skipped")
+				foundActive = true
+			else
+				warn("⚠️ [LegendaryShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name)
+				grantFailureMessage = giveMessage or giveResult or "System error granting item"
+				if craftInfo.WasPendingPremium then
+					session.PendingPremiumCraft = carName
+				else
+					session.ActiveCrafts[carName] = craftInfo.OriginalEndTime
+				end
+				session.CompletedCrafts[carName] = nil
+				if not alreadyAwarded then
+					session.AwardedCrafts[carName] = nil
+				end
+			end
+		end
+
+		if not foundActive then
+			return false, grantFailureMessage or "No active crafts to skip"
+		end
+
+		return true, "Success"
+	end)
+
+	InteractionLocks[uid] = nil
+
+	if not pOk then
+		warn("Legendary Shop Skip Error:", logicOk)
+		return false, "Internal System Error"
 	end
 
-	if not foundActive then
-		return false, grantFailureMessage or "No active crafts to skip"
-	end
-
-	return true, "Success"
+	return logicOk, msg
 end
 
 -- =========================
@@ -720,10 +746,13 @@ task.spawn(function()
 		for uid, session in pairs(PlayerSessions) do
 			local player = Players:GetPlayerByUserId(uid)
 			if not player then continue end
+			if InteractionLocks[uid] then continue end
 
-			local dirty = false
+			InteractionLocks[uid] = true
+			local pOk, err = pcall(function()
+				local dirty = false
 
-			for carName, endTime in pairs(session.ActiveCrafts) do
+				for carName, endTime in pairs(session.ActiveCrafts) do
 				if now >= endTime then
 					session.ActiveCrafts[carName]   = nil
 					session.CompletedCrafts[carName] = now
@@ -754,9 +783,15 @@ task.spawn(function()
 				end
 			end
 
-			if dirty then
-				pushUpdate(player, session, "Complete")
-				savePlayerNow(player)
+				if dirty then
+					pushUpdate(player, session, "Complete")
+					savePlayerNow(player)
+				end
+			end)
+
+			InteractionLocks[uid] = nil
+			if not pOk then
+				warn("Legendary Shop Completion Error:", err)
 			end
 		end
 	end

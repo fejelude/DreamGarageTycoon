@@ -678,6 +678,13 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 		-- ─── ⏩ SKIP CRAFT TIMES ─────────────────────────────────────────────────
 	elseif pid == LEGENDARY_SKIP_CRAFT_ID then
+		-- Craft skip products are account-specific and must never consume a
+		-- stale gift receiver. A delayed receipt should always complete the
+		-- buyer's own saved pending/active craft after they rejoin.
+		isGift = false
+		targetPlayer = buyerPlayer
+		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+
 		local ok, success, msg = safeInvoke(SkipLegendaryCraftFunc, 20, targetPlayer)
 		if ok and success then
 			purchaseSuccess = true
@@ -686,6 +693,13 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 
 	elseif pid == MYTHICAL_SKIP_CRAFT_ID then
+		-- Craft skip products are account-specific and must never consume a
+		-- stale gift receiver. A delayed receipt should always complete the
+		-- buyer's own saved pending/active craft after they rejoin.
+		isGift = false
+		targetPlayer = buyerPlayer
+		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+
 		local ok, success, msg = safeInvoke(SkipMythicalCraftFunc, 20, targetPlayer)
 		if ok and success then
 			purchaseSuccess = true
