@@ -1,0 +1,168 @@
+-- ============================================================
+-- RankQuestNotificationClient
+-- Purpose : Displays rank quest completion notifications.
+-- Runs on : Client (StarterPlayerScripts)
+-- Deps    : ReplicatedStorage.RankRemotes, ReplicatedStorage.UIAudioConfig
+-- UI      : StarterGui > Notifications > RankNotificationFrame > RankNotificationLabel
+-- ============================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
+
+local RankRemotes = ReplicatedStorage:WaitForChild("RankRemotes")
+local GetRankState = RankRemotes:WaitForChild("GetRankState")
+local RankUpdate = RankRemotes:WaitForChild("RankUpdate")
+
+local player = Players.LocalPlayer
+
+local DISPLAY_TIME = 5
+
+local notificationQueue = {}
+local isDisplaying = false
+local lastRankState = nil
+local hasBaseline = false
+
+local function getUI()
+	local playerGui = player:FindFirstChild("PlayerGui")
+	if not playerGui then return nil end
+
+	local notificationsGui = playerGui:FindFirstChild("Notifications")
+	if not notificationsGui then return nil end
+
+	notificationsGui.DisplayOrder = 999999
+	notificationsGui.Enabled = true
+
+	local frame = notificationsGui:FindFirstChild("RankNotificationFrame")
+	local label = frame and frame:FindFirstChild("RankNotificationLabel")
+
+	if frame then
+		frame:SetAttribute("ExternallyManaged", true)
+	end
+
+	return notificationsGui, frame, label
+end
+
+local function bringNotificationToFront(frame)
+	if not frame then return end
+	local topZIndex = 10000
+	if frame:IsA("GuiObject") then
+		frame.ZIndex = topZIndex
+	end
+	for _, inst in ipairs(frame:GetDescendants()) do
+		if inst:IsA("GuiObject") then
+			inst.ZIndex = topZIndex + 1
+		end
+	end
+end
+
+local function processQueue()
+	if isDisplaying or #notificationQueue == 0 then return end
+
+	local _, frame, label = getUI()
+	if not (frame and label and label:IsA("TextLabel")) then
+		task.delay(1, processQueue)
+		return
+	end
+
+	isDisplaying = true
+	local message = table.remove(notificationQueue, 1)
+
+	bringNotificationToFront(frame)
+	label.Text = message
+	label.Visible = true
+	frame.Visible = true
+	UIAudioConfig.PlayRankQuestComplete()
+
+	task.wait(DISPLAY_TIME)
+
+	if #notificationQueue == 0 then
+		frame.Visible = false
+		task.wait(0.2)
+	end
+
+	isDisplaying = false
+	processQueue()
+end
+
+local function showNotification(message)
+	if type(message) ~= "string" or message == "" then return end
+	table.insert(notificationQueue, message)
+	task.spawn(processQueue)
+end
+
+local function getActiveRankName(state)
+	if type(state) ~= "table" or type(state.Ranks) ~= "table" then
+		return nil
+	end
+
+	for _, rankName in ipairs(RankConfig.Order or {}) do
+		local rankState = state.Ranks[rankName]
+		if type(rankState) == "table" and rankState.Completed ~= true and rankState.PreviousComplete == true then
+			return rankName
+		end
+	end
+
+	return nil
+end
+
+local function didAnyRequirementComplete(previousRankState, currentRankState)
+	if type(previousRankState) ~= "table" or type(currentRankState) ~= "table" then
+		return false
+	end
+	if type(previousRankState.Requirements) ~= "table" or type(currentRankState.Requirements) ~= "table" then
+		return false
+	end
+
+	for requirementId, currentRequirement in pairs(currentRankState.Requirements) do
+		local previousRequirement = previousRankState.Requirements[requirementId]
+		local wasComplete = type(previousRequirement) == "table" and previousRequirement.Complete == true
+		local isComplete = type(currentRequirement) == "table" and currentRequirement.Complete == true
+		if isComplete and not wasComplete then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function handleRankState(state)
+	if type(state) ~= "table" then return end
+
+	if not hasBaseline then
+		lastRankState = state
+		hasBaseline = true
+		return
+	end
+
+	local activeRankName = getActiveRankName(state)
+	if activeRankName and lastRankState and type(lastRankState.Ranks) == "table" then
+		local currentRankState = state.Ranks[activeRankName]
+		local previousRankState = lastRankState.Ranks[activeRankName]
+
+		if didAnyRequirementComplete(previousRankState, currentRankState) then
+			if currentRankState.RequirementsComplete == true then
+				showNotification("You’ve completed all quests for " .. activeRankName .. ". Claim your rank at the NPC to proceed. 😁♥️")
+			else
+				showNotification("😊 You have successfully completed a quest for " .. activeRankName .. ".")
+			end
+		end
+	end
+
+	lastRankState = state
+end
+
+RankUpdate.OnClientEvent:Connect(handleRankState)
+
+task.spawn(function()
+	local ok, state = pcall(function()
+		return GetRankState:InvokeServer()
+	end)
+	if ok then
+		handleRankState(state)
+	else
+		warn("[RankQuestNotificationClient] Failed to load initial rank state: " .. tostring(state))
+	end
+end)
