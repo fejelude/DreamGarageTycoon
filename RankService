@@ -30,6 +30,7 @@ local RankUpdate = requireChild(RankRemotes, "RankUpdate", "RemoteEvent")
 local RankAnnouncement = requireChild(RankRemotes, "RankAnnouncement", "RemoteEvent")
 
 local Sessions = {}
+local PlayerConnections = {}
 
 local function newProgress()
 	return {
@@ -43,6 +44,122 @@ local function newProgress()
 	}
 end
 
+local function sanitizeCount(value)
+	local numeric = tonumber(value)
+	if not numeric or numeric ~= numeric or numeric == math.huge or numeric == -math.huge then
+		return 0
+	end
+
+	numeric = math.floor(numeric)
+	if numeric < 0 then return 0 end
+	return numeric
+end
+
+local function sanitizeTarget(value)
+	local numeric = tonumber(value)
+	if not numeric or numeric ~= numeric or numeric == math.huge or numeric == -math.huge then
+		return math.huge
+	end
+
+	return math.max(1, math.floor(numeric))
+end
+
+local function sanitizeCountMap(raw)
+	local map = {}
+	if type(raw) ~= "table" then
+		return map
+	end
+
+	for key, value in pairs(raw) do
+		local count = sanitizeCount(value)
+		if type(key) == "string" and key ~= "" and count > 0 then
+			map[key] = count
+		end
+	end
+
+	return map
+end
+
+local function sanitizePlayerSet(raw)
+	local set = {}
+	if type(raw) ~= "table" then
+		return set
+	end
+
+	for key, value in pairs(raw) do
+		local keep = value == true or sanitizeCount(value) > 0
+		if keep and key ~= nil then
+			set[tostring(key)] = true
+		end
+	end
+
+	return set
+end
+
+local function sanitizeProgress(raw)
+	raw = type(raw) == "table" and raw or {}
+	return {
+		Purchases = sanitizeCountMap(raw.Purchases),
+		Crafted = sanitizeCountMap(raw.Crafted),
+		Obtained = sanitizeCountMap(raw.Obtained),
+		GiftSentTotal = sanitizeCount(raw.GiftSentTotal),
+		GiftSentPlayers = sanitizePlayerSet(raw.GiftSentPlayers),
+		GiftReceivedTotal = sanitizeCount(raw.GiftReceivedTotal),
+		GiftReceivedPlayers = sanitizePlayerSet(raw.GiftReceivedPlayers),
+	}
+end
+
+local function isLegacyProgressShape(raw)
+	return type(raw) == "table"
+		and (
+			raw.Purchases ~= nil
+			or raw.Crafted ~= nil
+			or raw.Obtained ~= nil
+			or raw.GiftSentTotal ~= nil
+			or raw.GiftSentPlayers ~= nil
+			or raw.GiftReceivedTotal ~= nil
+			or raw.GiftReceivedPlayers ~= nil
+		)
+end
+
+local function newProgressByRank()
+	local progressByRank = {}
+	for _, rankName in ipairs(RankConfig.Order) do
+		progressByRank[rankName] = newProgress()
+	end
+	return progressByRank
+end
+
+local function getFirstIncompleteRank(data)
+	for _, rankName in ipairs(RankConfig.Order) do
+		local rankData = RankConfig.Ranks[rankName]
+		local previousRank = rankData and rankData.PreviousRank
+		if data.CompletedRanks[rankName] ~= true and (not previousRank or data.CompletedRanks[previousRank] == true) then
+			return rankName
+		end
+	end
+	return nil
+end
+
+local function normalizeProgressByRank(raw, data)
+	local progressByRank = newProgressByRank()
+
+	if isLegacyProgressShape(raw) then
+		local activeRank = getFirstIncompleteRank(data)
+		if activeRank then
+			progressByRank[activeRank] = sanitizeProgress(raw)
+		end
+		return progressByRank
+	end
+
+	raw = type(raw) == "table" and raw or {}
+	for _, rankName in ipairs(RankConfig.Order) do
+		progressByRank[rankName] = sanitizeProgress(raw[rankName])
+	end
+
+	return progressByRank
+end
+
 local function normalizeLoadedData(data)
 	data = type(data) == "table" and data or {}
 	local savedRank = data.CurrentRank or RankConfig.DefaultRankName
@@ -50,26 +167,19 @@ local function normalizeLoadedData(data)
 	if RankConfig.GetRankValue(legacyRank) > RankConfig.GetRankValue(savedRank) then
 		savedRank = legacyRank
 	end
+	if savedRank ~= RankConfig.DefaultRankName and not RankConfig.Ranks[savedRank] then
+		savedRank = RankConfig.DefaultRankName
+	end
 	data.CurrentRank = savedRank
 	data.CompletedRanks = type(data.CompletedRanks) == "table" and data.CompletedRanks or {}
 	data.ClaimedRewards = type(data.ClaimedRewards) == "table" and data.ClaimedRewards or {}
-	data.Progress = type(data.Progress) == "table" and data.Progress or newProgress()
-
-	local defaults = newProgress()
 	for _, rankName in ipairs(RankConfig.Order) do
-		if RankConfig.GetRankValue(rankName) <= RankConfig.GetRankValue(data.CurrentRank) then
-			data.CompletedRanks[rankName] = true
-			data.ClaimedRewards[rankName] = true
-		end
+		local unlocked = RankConfig.GetRankValue(rankName) <= RankConfig.GetRankValue(data.CurrentRank)
+		data.CompletedRanks[rankName] = unlocked or nil
+		data.ClaimedRewards[rankName] = unlocked or nil
 	end
 
-	for key, value in pairs(defaults) do
-		if type(value) == "table" then
-			data.Progress[key] = type(data.Progress[key]) == "table" and data.Progress[key] or {}
-		else
-			data.Progress[key] = tonumber(data.Progress[key]) or 0
-		end
-	end
+	data.Progress = normalizeProgressByRank(data.Progress, data)
 
 	return data
 end
@@ -81,6 +191,25 @@ local function markDirty(player)
 			pcall(function() api:Invoke("MarkDirty", player) end)
 		end)
 	end
+end
+
+local function trackConnection(player, connection)
+	if not connection then return end
+	PlayerConnections[player] = PlayerConnections[player] or {}
+	table.insert(PlayerConnections[player], connection)
+end
+
+local function disconnectPlayer(player)
+	local connections = PlayerConnections[player]
+	if connections then
+		for _, connection in ipairs(connections) do
+			if connection then
+				connection:Disconnect()
+			end
+		end
+	end
+	PlayerConnections[player] = nil
+	Sessions[player] = nil
 end
 
 local function getSession(player)
@@ -96,12 +225,50 @@ local function countDictionary(dictionary)
 	return total
 end
 
+local function getRankProgress(session, rankName)
+	session.Progress = type(session.Progress) == "table" and session.Progress or newProgressByRank()
+	session.Progress[rankName] = sanitizeProgress(session.Progress[rankName])
+	return session.Progress[rankName]
+end
+
+local function getActiveRankName(session)
+	for _, rankName in ipairs(RankConfig.Order) do
+		local rankData = RankConfig.Ranks[rankName]
+		local previousRank = rankData and rankData.PreviousRank
+		if session.CompletedRanks[rankName] ~= true and (not previousRank or session.CompletedRanks[previousRank] == true) then
+			return rankName
+		end
+	end
+	return nil
+end
+
 local function progressKey(shopName, carName)
 	return tostring(shopName or "Any") .. ":" .. RankConfig.NormalizeCarName(carName)
 end
 
-local function increment(dictionary, key, amount)
-	dictionary[key] = (tonumber(dictionary[key]) or 0) + (amount or 1)
+local function incrementCapped(dictionary, key, amount, target)
+	target = sanitizeTarget(target)
+	local current = sanitizeCount(dictionary[key])
+	local nextValue = math.min(current + (amount or 1), target)
+	dictionary[key] = nextValue
+	return nextValue > current
+end
+
+local function incrementFieldCapped(progress, fieldName, amount, target)
+	target = sanitizeTarget(target)
+	local current = sanitizeCount(progress[fieldName])
+	local nextValue = math.min(current + (amount or 1), target)
+	progress[fieldName] = nextValue
+	return nextValue > current
+end
+
+local function addUniquePlayerCapped(set, userId, target)
+	if userId == nil then return false end
+	target = sanitizeTarget(target)
+	if set[tostring(userId)] then return false end
+	if countDictionary(set) >= target then return false end
+	set[tostring(userId)] = true
+	return true
 end
 
 local function getInventoryCarCount(player)
@@ -235,9 +402,9 @@ local function getCurrencyValue(player, currency)
 	return 0
 end
 
-local function evaluateRequirement(player, requirement)
+local function evaluateRequirement(player, rankName, requirement)
 	local session = getSession(player)
-	local progress = session.Progress
+	local progress = getRankProgress(session, rankName)
 	local current = 0
 	local target = requirement.Amount or 1
 
@@ -263,6 +430,8 @@ local function evaluateRequirement(player, requirement)
 			Target = target,
 			Complete = current >= target,
 		}
+	elseif requirement.Type == "GiftReceived" then
+		current = progress.GiftReceivedTotal or 0
 	elseif requirement.Type == "Pad" then
 		current = (tonumber(player:GetAttribute("HighestUnlockedPad")) or 1) >= requirement.PadNumber and 1 or 0
 	elseif requirement.Type == "BaseLevel" then
@@ -286,7 +455,7 @@ local function buildState(player)
 		local requirements = {}
 		local allComplete = true
 		for _, requirement in ipairs(rankData.Requirements) do
-			local result = evaluateRequirement(player, requirement)
+			local result = evaluateRequirement(player, rankName, requirement)
 			requirements[requirement.Id] = result
 			if not result.Complete then allComplete = false end
 		end
@@ -344,7 +513,7 @@ local function claimRank(player, rankName)
 	end
 
 	for _, requirement in ipairs(rankData.Requirements) do
-		if not evaluateRequirement(player, requirement).Complete then
+		if not evaluateRequirement(player, rankName, requirement).Complete then
 			return false, "Finish all requirements before claiming " .. rankName .. ".", buildState(player)
 		end
 	end
@@ -355,15 +524,67 @@ end
 
 local function recordCarObtained(player, carName, source, shopName)
 	local session = getSession(player)
-	local normalized = RankConfig.NormalizeCarName(carName)
-	increment(session.Progress.Obtained, normalized, 1)
-	if source == "Buy" then
-		increment(session.Progress.Purchases, progressKey(shopName, carName), 1)
-	elseif source == "Craft" then
-		increment(session.Progress.Crafted, normalized, 1)
+	local activeRank = getActiveRankName(session)
+	local rankData = activeRank and RankConfig.Ranks[activeRank]
+	if not rankData then
+		return false
 	end
+
+	local progress = getRankProgress(session, activeRank)
+	local normalized = RankConfig.NormalizeCarName(carName)
+	local changed = false
+
+	for _, requirement in ipairs(rankData.Requirements or {}) do
+		local target = requirement.Amount or 1
+		local requirementCar = RankConfig.NormalizeCarName(requirement.Car)
+
+		if requirement.Type == "Obtain" and requirementCar == normalized then
+			changed = incrementCapped(progress.Obtained, normalized, 1, target) or changed
+		elseif source == "Buy" and requirement.Type == "Buy" and progressKey(requirement.Shop, requirement.Car) == progressKey(shopName, carName) then
+			changed = incrementCapped(progress.Purchases, progressKey(shopName, carName), 1, target) or changed
+		elseif source == "Craft" and requirement.Type == "Craft" and requirementCar == normalized then
+			changed = incrementCapped(progress.Crafted, normalized, 1, target) or changed
+		end
+	end
+
+	if not changed then
+		return false
+	end
+
 	markDirty(player)
 	pushState(player)
+	return true
+end
+
+local function recordGiftProgress(player, otherPlayer, isSender)
+	local session = getSession(player)
+	local activeRank = getActiveRankName(session)
+	local rankData = activeRank and RankConfig.Ranks[activeRank]
+	if not rankData then
+		return false
+	end
+
+	local progress = getRankProgress(session, activeRank)
+	local changed = false
+
+	for _, requirement in ipairs(rankData.Requirements or {}) do
+		if isSender and requirement.Type == "GiftSent" then
+			changed = incrementFieldCapped(progress, "GiftSentTotal", 1, requirement.Amount or 1) or changed
+		elseif isSender and requirement.Type == "GiftSentUnique" and otherPlayer then
+			changed = addUniquePlayerCapped(progress.GiftSentPlayers, otherPlayer.UserId, requirement.UniquePlayers or requirement.Amount or 1) or changed
+		elseif not isSender and requirement.Type == "GiftReceived" then
+			changed = incrementFieldCapped(progress, "GiftReceivedTotal", 1, requirement.Amount or 1) or changed
+		elseif not isSender and requirement.Type == "GiftReceivedUnique" and otherPlayer then
+			changed = addUniquePlayerCapped(progress.GiftReceivedPlayers, otherPlayer.UserId, requirement.UniquePlayers or requirement.Amount or 1) or changed
+		end
+	end
+
+	if changed then
+		markDirty(player)
+		pushState(player)
+	end
+
+	return changed
 end
 
 local RankProgressAPI = requireChild(ServerStorage, "RankProgressAPI", "BindableFunction")
@@ -379,19 +600,11 @@ RankProgressAPI.OnInvoke = function(action, player, ...)
 		return true
 	elseif action == "CarGiftSent" then
 		local receiver, carName = ...
-		local giverSession = getSession(player)
-		giverSession.Progress.GiftSentTotal += 1
-		if receiver then giverSession.Progress.GiftSentPlayers[tostring(receiver.UserId)] = true end
-		markDirty(player)
-		pushState(player)
+		recordGiftProgress(player, receiver, true)
 
 		if receiver then
-			local receiverSession = getSession(receiver)
-			receiverSession.Progress.GiftReceivedTotal += 1
-			receiverSession.Progress.GiftReceivedPlayers[tostring(player.UserId)] = true
+			recordGiftProgress(receiver, player, false)
 			recordCarObtained(receiver, carName, "Gift", nil)
-			markDirty(receiver)
-			pushState(receiver)
 		end
 		return true
 	elseif action == "Refresh" then
@@ -419,7 +632,7 @@ RankPersistenceFunction.OnInvoke = function(action, player, data)
 			Progress = session.Progress,
 		}
 	elseif action == "Close" then
-		Sessions[player] = nil
+		disconnectPlayer(player)
 		return true
 	end
 	return false
@@ -440,35 +653,55 @@ ClaimRank.OnServerInvoke = function(player, rankName)
 end
 
 local function hookPlayer(player)
+	disconnectPlayer(player)
 	getSession(player)
 	applyBenefits(player)
 
-	player.CharacterAdded:Connect(function()
+	trackConnection(player, player.CharacterAdded:Connect(function()
 		task.wait(0.25)
-		applyBenefits(player)
-	end)
+		if player.Parent then
+			applyBenefits(player)
+		end
+	end))
 
 	local function hookValue(value)
 		if value then
-			value.Changed:Connect(function() pushState(player) end)
+			trackConnection(player, value.Changed:Connect(function()
+				if player.Parent then
+					pushState(player)
+				end
+			end))
 		end
 	end
 
 	task.spawn(function()
 		local leaderstats = player:WaitForChild("leaderstats", 30)
 		local hiddenStats = player:WaitForChild("HiddenStats", 30)
+		if not player.Parent or not PlayerConnections[player] then
+			return
+		end
 		hookValue(leaderstats and leaderstats:FindFirstChild("Wallet"))
 		hookValue(hiddenStats and hiddenStats:FindFirstChild("Cash"))
-		pushState(player)
+		if PlayerConnections[player] then
+			pushState(player)
+		end
 	end)
 
-	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(function() pushState(player) end)
-	player:GetAttributeChangedSignal("BaseLevel"):Connect(function() pushState(player) end)
+	trackConnection(player, player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(function()
+		if player.Parent and PlayerConnections[player] then
+			pushState(player)
+		end
+	end))
+	trackConnection(player, player:GetAttributeChangedSignal("BaseLevel"):Connect(function()
+		if player.Parent and PlayerConnections[player] then
+			pushState(player)
+		end
+	end))
 end
 
 Players.PlayerAdded:Connect(hookPlayer)
 Players.PlayerRemoving:Connect(function(player)
-	Sessions[player] = nil
+	disconnectPlayer(player)
 end)
 
 for _, player in ipairs(Players:GetPlayers()) do
