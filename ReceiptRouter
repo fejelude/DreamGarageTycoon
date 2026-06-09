@@ -333,17 +333,15 @@ local function recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, 
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
 	if not rankApi then return end
 
-	task.spawn(function()
-		if isGift then
-			pcall(function()
-				rankApi:Invoke("CarGiftSent", buyerPlayer, targetPlayer, carName)
-			end)
-		else
-			pcall(function()
-				rankApi:Invoke("CarObtained", targetPlayer, carName, "Buy", rarity)
-			end)
-		end
-	end)
+	if isGift then
+		pcall(function()
+			rankApi:Invoke("CarGiftSent", buyerPlayer, targetPlayer, carName)
+		end)
+	else
+		pcall(function()
+			rankApi:Invoke("CarObtained", targetPlayer, carName, "Buy", rarity)
+		end)
+	end
 end
 
 -- ============================================================================
@@ -680,7 +678,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 		-- ─── ⏩ SKIP CRAFT TIMES ─────────────────────────────────────────────────
 	elseif pid == LEGENDARY_SKIP_CRAFT_ID then
-		local ok, success, msg = safeInvoke(SkipLegendaryCraftFunc, 5, targetPlayer)
+		local ok, success, msg = safeInvoke(SkipLegendaryCraftFunc, 20, targetPlayer)
 		if ok and success then
 			purchaseSuccess = true
 		else
@@ -688,7 +686,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 
 	elseif pid == MYTHICAL_SKIP_CRAFT_ID then
-		local ok, success, msg = safeInvoke(SkipMythicalCraftFunc, 5, targetPlayer)
+		local ok, success, msg = safeInvoke(SkipMythicalCraftFunc, 20, targetPlayer)
 		if ok and success then
 			purchaseSuccess = true
 		else

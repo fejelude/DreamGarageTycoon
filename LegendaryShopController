@@ -46,12 +46,12 @@ local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
 -- ============================================================================
 local SHOP_CARS = { "Neo-Periscopio", "Neo-Performante", "Neo-Zentorno", "Neo-Revuelto", "Yamura", "LaRossa" }
 local RECIPES   = {
-	["Neo-Periscopio"] = { TargetCar = "Neo-Periscopio", Cash = 500000000000, Razor = 2, Maverick = 3, Galadriel = 4, Riva = 5, CraftTime = 21600 },
-	["Neo-Performante"] = { TargetCar = "Neo-Performante", Cash = 800000000000, Sovereign = 2, Stuttgart = 3, Kingston = 3, Riva = 5, CraftTime = 28800 },
-	["Neo-Zentorno"] = { TargetCar = "Neo-Zentorno", Cash = 1200000000000, Classy = 2, Sadie = 2, Blackhead = 3, Riva = 4, CraftTime = 36000 },
-	["Neo-Revuelto"] = { TargetCar = "Neo-Revuelto", Cash = 1800000000000, Shaguar = 2, Vipera = 3, Mia = 2, Riva = 4, CraftTime = 43200 },
-	["Yamura"]  = { TargetCar = "Yamura", Cash = 2700000000000, Sirene = 2, Vortex = 1, Camara = 3, Mia = 2, CraftTime = 64800 },
-	["LaRossa"] = { TargetCar = "La Rossa", Cash = 4000000000000, Vortex = 2, Corvo = 3, Mia = 3, Riva = 5, CraftTime = 86400 },
+	["Neo-Periscopio"] = { TargetCar = "Neo-Periscopio", Cash = 500000000000, Razor = 2, Maverick = 3, Galadriel = 4, Riva = 5, CraftTime = 43200 },
+	["Neo-Performante"] = { TargetCar = "Neo-Performante", Cash = 800000000000, Sovereign = 2, Stuttgart = 3, Kingston = 3, Riva = 5, CraftTime = 57600 },
+	["Neo-Zentorno"] = { TargetCar = "Neo-Zentorno", Cash = 1200000000000, Classy = 2, Sadie = 2, Blackhead = 3, Riva = 4, CraftTime = 72000 },
+	["Neo-Revuelto"] = { TargetCar = "Neo-Revuelto", Cash = 1800000000000, Shaguar = 2, Vipera = 3, Mia = 2, Riva = 4, CraftTime = 86400 },
+	["Yamura"]  = { TargetCar = "Yamura", Cash = 2700000000000, Sirene = 2, Vortex = 1, Camara = 3, Mia = 2, CraftTime = 129600 },
+	["LaRossa"] = { TargetCar = "La Rossa", Cash = 4000000000000, Vortex = 2, Corvo = 3, Mia = 3, Riva = 5, CraftTime = 172800 },
 }
 local BLUR_SIZE = 24
 
@@ -73,6 +73,7 @@ local LegendaryRemotes = Remotes:WaitForChild("LegendaryShop")
 local RemoteOpen       = LegendaryRemotes:WaitForChild("OpenShopUI")
 local RemoteUpdate     = LegendaryRemotes:WaitForChild("LegendaryShopUpdate")
 local FuncGetState     = LegendaryRemotes:WaitForChild("GetLegendaryShopState")
+local FuncPrepareSacrifice = LegendaryRemotes:WaitForChild("PrepareLegendarySacrifice")
 local FuncCraftCar     = LegendaryRemotes:WaitForChild("CraftLegendaryCar")
 local FuncSacrifice    = LegendaryRemotes:WaitForChild("SacrificeLegendaryIngredient")
 
@@ -862,8 +863,18 @@ local function AttemptSacrifice(carName, ingredient)
 		and ("$" .. FormatCommas(requiredAmount - currentAmount))
 		or  ("1 " .. ingredient)
 
+	local prepareOk, prepareSuccess, confirmationTokenOrMessage = pcall(function()
+		return FuncPrepareSacrifice:InvokeServer(carName, ingredient)
+	end)
+	if not prepareOk or not prepareSuccess then
+		Kit.Sound:Play("BuyFail")
+		showFeedback(tostring(confirmationTokenOrMessage or "Sacrifice unavailable"), FEEDBACK_COLORS.FailCash)
+		return
+	end
+	local confirmationToken = confirmationTokenOrMessage
+
 	local confirmText = string.format(
-		"<font color='%s'>Do you want to sacrifice </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>%s</font></b><font color='%s'>?</font>",
+		"<font color='%s'>Are you sure you want to sacrifice </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>%s</font></b><font color='%s'>?</font>",
 		CONFIRMATION_COLORS.Accent,    CONFIRMATION_COLORS.Sacrifice, escapeRichText(sacrificeText),
 		CONFIRMATION_COLORS.Accent,    CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
 		CONFIRMATION_COLORS.Accent
@@ -881,7 +892,7 @@ local function AttemptSacrifice(carName, ingredient)
 		Kit.Sound:Play("Click")
 
 		task.spawn(function()
-			local success, msg = FuncSacrifice:InvokeServer(carName, ingredient)
+			local success, msg = FuncSacrifice:InvokeServer(carName, ingredient, confirmationToken)
 			if requestSessionId == shopSessionId then isProcessingPurchase = false end
 			if not isActiveShopSession(requestSessionId) then mainFrame.Visible = true; return end
 
@@ -1410,9 +1421,10 @@ local function init()
 				"Construction of the <font color='#B652FF'>" .. dName .. "</font> is done. A flawless execution. It's already there in your Inventory.",
 			}))
 		elseif newState.Reason == "Skipped" then
+			local dName = carName and getDisplayCarName(carName) or "your car"
 			if carName then acknowledgedCrafts[carName] = true end
 			angeloSpeak(
-				"<font color='#B652FF'>I used magic to do this immediately</font>, it drains my energy, so I need payment to do it. The car should be in your Inventory.",
+				"<font color='#B652FF'>I used magic to do this immediately</font>, it drains my energy, so I need payment to do it. The <font color='#B652FF'>" .. dName .. "</font> should be in your Inventory.",
 				function()
 					if isShopOpen then mainFrame.Visible = true end
 				end

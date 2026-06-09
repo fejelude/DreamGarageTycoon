@@ -124,6 +124,8 @@ local PlayerDataStore = DataStoreService:GetDataStore(DATA_KEY)
 local AUTOSAVE_INTERVAL = 180
 local MIN_SAVE_INTERVAL = 60
 local MAX_RETRIES = 3
+local SAVE_LOCK_WAIT_SECONDS = 12
+local CLOSING_SAVE_LOCK_WAIT_SECONDS = 25
 
 local MAX_INVENTORY_SIZE = 500
 local MAX_ROBUX_RECEIPT_HISTORY = 300
@@ -295,6 +297,7 @@ if not success then error("[TycoonDataHandler] Failed to require ReplicatedStora
 local SessionData = {}
 local PadLocks = {}
 local FreeRewardsClaimLocks = {}
+local PendingCriticalSaveTasks = {}
 local save
 
 -- ----------------------------------------------------------------------------
@@ -308,9 +311,36 @@ end
 
 local function markDirty(player)
 	local session = SessionData[player]
-	if session and not session.IsDirty then
+	if session then
 		session.IsDirty = true
+		session.DirtyVersion = (session.DirtyVersion or 0) + 1
 	end
+end
+
+local function queueCriticalSave(player, delaySeconds)
+	if not player or not SessionData[player] then
+		return false, "Player data not loaded"
+	end
+	if not save then
+		return false, "Save system unavailable"
+	end
+
+	markDirty(player)
+
+	local userId = player.UserId
+	if PendingCriticalSaveTasks[userId] then
+		return true
+	end
+
+	PendingCriticalSaveTasks[userId] = task.delay(math.max(1, tonumber(delaySeconds) or 8), function()
+		PendingCriticalSaveTasks[userId] = nil
+		local session = SessionData[player]
+		if session and session.DataLoaded and session.IsDirty then
+			save(player, false, true)
+		end
+	end)
+
+	return true
 end
 
 local function cancelPendingSettingsDirty(player)
@@ -880,6 +910,58 @@ local function toolMatchesId(tool, targetToolId)
 		)
 end
 
+local function toolIdMatchesTarget(toolId, targetToolId)
+	if type(toolId) ~= "string" or type(targetToolId) ~= "string" then
+		return false
+	end
+
+	local cleanToolId = toolId:gsub(" Item$", "")
+	local cleanTargetId = targetToolId:gsub(" Item$", "")
+	return cleanToolId == cleanTargetId
+end
+
+local function getHotbarReservationCount(player, targetToolId)
+	if not player or type(targetToolId) ~= "string" then return 0 end
+
+	local reserved = 0
+	for i = 1, 6 do
+		local hotbarToolId = player:GetAttribute("HotbarSlot" .. i)
+		if toolIdMatchesTarget(hotbarToolId, targetToolId) then
+			reserved += 1
+		end
+	end
+
+	return reserved
+end
+
+local function hasProtectedSacrificeAttribute(tool)
+	if not tool then return true end
+
+	for _, attributeName in ipairs({
+		"Locked",
+		"IsLocked",
+		"Favorite",
+		"Favorited",
+		"IsFavorite",
+		"Favourite",
+		"Favourited",
+		"IsFavourite",
+	}) do
+		if tool:GetAttribute(attributeName) == true then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function isProtectedFromSacrifice(player, tool)
+	if not tool or not tool:IsA("Tool") then return true end
+	if hasProtectedSacrificeAttribute(tool) then return true end
+	if player and player.Character and tool.Parent == player.Character then return true end
+	return false
+end
+
 local function countMatchingTools(player, targetToolId)
 	if not player or not targetToolId then return 0 end
 
@@ -888,16 +970,15 @@ local function countMatchingTools(player, targetToolId)
 	local function scan(container)
 		if not container then return end
 		for _, child in ipairs(container:GetChildren()) do
-			if toolMatchesId(child, targetToolId) then
+			if toolMatchesId(child, targetToolId) and not isProtectedFromSacrifice(player, child) then
 				total += 1
 			end
 		end
 	end
 
 	scan(player:FindFirstChild("Backpack"))
-	if player.Character then scan(player.Character) end
 
-	return total
+	return math.max(0, total - getHotbarReservationCount(player, targetToolId))
 end
 
 local function removeMatchingTools(player, targetToolId, requestedAmount)
@@ -905,12 +986,17 @@ local function removeMatchingTools(player, targetToolId, requestedAmount)
 
 	requestedAmount = math.max(1, tonumber(requestedAmount) or 1)
 	local removedOwnedCount = 0
+	local hotbarReservations = getHotbarReservationCount(player, targetToolId)
 
 	local function removeFromOwnedContainer(container)
 		if not container or removedOwnedCount >= requestedAmount then return end
 		for _, child in ipairs(container:GetChildren()) do
 			if removedOwnedCount >= requestedAmount then break end
-			if toolMatchesId(child, targetToolId) then
+			if toolMatchesId(child, targetToolId) and not isProtectedFromSacrifice(player, child) then
+				if hotbarReservations > 0 then
+					hotbarReservations -= 1
+					continue
+				end
 				child:Destroy()
 				removedOwnedCount += 1
 			end
@@ -920,7 +1006,6 @@ local function removeMatchingTools(player, targetToolId, requestedAmount)
 	-- Remove real owned copies first. StarterGear mirrors are cleaned after and
 	-- do not contribute to the amount removed.
 	removeFromOwnedContainer(player:FindFirstChild("Backpack"))
-	if player.Character then removeFromOwnedContainer(player.Character) end
 
 	local mirrorsToRemove = removedOwnedCount
 	local starterGear = player:FindFirstChild("StarterGear")
@@ -990,6 +1075,7 @@ local function transferToolBetweenPlayers(giver, receiver, tool)
 	end
 
 	local starterClone = tool:Clone()
+	local receiverStarterClone = nil
 
 	-- Clean the respawn mirror manually so the moved car does not come back on giver respawn.
 	local giverStarterGear = giver:FindFirstChild("StarterGear")
@@ -1007,6 +1093,7 @@ local function transferToolBetweenPlayers(giver, receiver, tool)
 	local receiverStarterGear = receiver:FindFirstChild("StarterGear")
 	if receiverStarterGear then
 		starterClone.Parent = receiverStarterGear
+		receiverStarterClone = starterClone
 	else
 		starterClone:Destroy()
 	end
@@ -1018,7 +1105,33 @@ local function transferToolBetweenPlayers(giver, receiver, tool)
 	local giverSaveOk = save and save(giver, false, true)
 	local receiverSaveOk = save and save(receiver, false, true)
 	if not giverSaveOk or not receiverSaveOk then
-		warn("⚠️ [TycoonDataHandler] Player gift transferred but one or more force-saves failed. Dirty sessions will retry by autosave.")
+		warn("[TycoonDataHandler] Player gift transfer save failed; rolling back transfer.")
+		if receiverStarterClone and receiverStarterClone.Parent then
+			receiverStarterClone:Destroy()
+		end
+
+		local giverBackpack = giver:FindFirstChild("Backpack")
+		if giverBackpack and tool and tool.Parent == receiverBackpack then
+			tool.Parent = giverBackpack
+		end
+
+		if giverStarterGear and tool and tool.Parent then
+			local hasMirror = false
+			for _, child in ipairs(giverStarterGear:GetChildren()) do
+				if toolMatchesId(child, toolId) then
+					hasMirror = true
+					break
+				end
+			end
+			if not hasMirror then
+				local mirror = tool:Clone()
+				mirror.Parent = giverStarterGear
+			end
+		end
+
+		markDirty(giver)
+		markDirty(receiver)
+		return false, "Gift failed: Could not save transfer.", "Gift failed: Could not save received car."
 	end
 
 	return true
@@ -1297,6 +1410,10 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		end
 		return save(player, false, true)
 
+	elseif action == "QueueSaveSoon" and player then
+		local delaySeconds = ...
+		return queueCriticalSave(player, delaySeconds)
+
 	elseif action == "MarkInventoryCleared" and player then
 		local session = SessionData[player]
 		if session then
@@ -1350,6 +1467,17 @@ LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 	elseif action == "MarkDirty" then
 		markDirty(player)
 		return true
+
+	elseif action == "SaveNow" then
+		markDirty(player)
+		if not save then
+			return false, "Save system unavailable"
+		end
+		return save(player, false, true)
+
+	elseif action == "QueueSaveSoon" then
+		local delaySeconds = ...
+		return queueCriticalSave(player, delaySeconds)
 	end
 
 	return false
@@ -1396,6 +1524,17 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 	elseif action == "MarkDirty" then
 		markDirty(player)
 		return true
+
+	elseif action == "SaveNow" then
+		markDirty(player)
+		if not save then
+			return false, "Save system unavailable"
+		end
+		return save(player, false, true)
+
+	elseif action == "QueueSaveSoon" then
+		local delaySeconds = ...
+		return queueCriticalSave(player, delaySeconds)
 	end
 
 	return false
@@ -1484,18 +1623,15 @@ save = function(player, isClosing, force)
 	if not session or not session.DataLoaded then return false end
 
 	if session.IsSaving then
-		if isClosing then
-			local s = os.clock()
-			while session.IsSaving and (os.clock() - s < 5) do
-				task.wait(0.05)
-			end
-			if session.IsSaving then
-				warn("⚠️ [Save] Closing save aborted — autosave still running for " .. player.Name)
-				session.IsSaving = false
-				return false
-			end
-		else
-			return false
+		local waitLimit = isClosing and CLOSING_SAVE_LOCK_WAIT_SECONDS or SAVE_LOCK_WAIT_SECONDS
+		local startedWaiting = os.clock()
+		while session.IsSaving and (os.clock() - startedWaiting < waitLimit) do
+			task.wait(0.05)
+		end
+		if session.IsSaving then
+			warn("[Save] Save request could not get lock for " .. player.Name .. "; keeping session dirty for retry.")
+			session.IsDirty = true
+			return false, "Save already in progress"
 		end
 	end
 
@@ -1503,6 +1639,7 @@ save = function(player, isClosing, force)
 	if not force and not session.IsDirty and not isClosing then return true end
 
 	session.IsSaving = true
+	local saveDirtyVersion = session.DirtyVersion or 0
 
 	local saveSucceeded = false
 
@@ -1838,16 +1975,19 @@ save = function(player, isClosing, force)
 	end
 
 	if saveSucceeded then
-		session.IsDirty = false
-		session.LastSave = os.time()
-		session.SacrificeOccurred = false
-		session.ExplicitClear = false
-		if session.StarterPackClearRequested then
-			session.StarterPackSaveConfirmed = false
-		else
-			session.StarterPackSaveConfirmed = session.StarterPackPurchased == true
+		local hasNewerDirtyState = (session.DirtyVersion or 0) ~= saveDirtyVersion
+		session.IsDirty = hasNewerDirtyState
+		session.LastSave = hasNewerDirtyState and 0 or os.time()
+		if not hasNewerDirtyState then
+			session.SacrificeOccurred = false
+			session.ExplicitClear = false
+			if session.StarterPackClearRequested then
+				session.StarterPackSaveConfirmed = false
+			else
+				session.StarterPackSaveConfirmed = session.StarterPackPurchased == true
+			end
+			session.StarterPackClearRequested = false
 		end
-		session.StarterPackClearRequested = false
 	end
 
 	if isClosing then
@@ -1884,6 +2024,7 @@ local function InitializePlayer(player)
 	SessionData[player] = {
 		LastSave          = os.time(),
 		IsDirty           = false,
+		DirtyVersion      = 0,
 		DataLoaded        = false,
 		ExplicitClear     = false,
 		IsSaving          = false,
@@ -2212,9 +2353,20 @@ end
 
 Players.PlayerAdded:Connect(InitializePlayer)
 Players.PlayerRemoving:Connect(function(player)
+	local pendingSaveTask = PendingCriticalSaveTasks[player.UserId]
+	if pendingSaveTask then
+		task.cancel(pendingSaveTask)
+		PendingCriticalSaveTasks[player.UserId] = nil
+	end
 	save(player, true)
 	FreeRewardsClaimLocks[player] = nil
 	SessionData[player] = nil
+end)
+
+game:BindToClose(function()
+	for _, player in ipairs(Players:GetPlayers()) do
+		save(player, true)
+	end
 end)
 
 task.spawn(function()

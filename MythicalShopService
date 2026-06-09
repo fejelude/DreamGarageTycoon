@@ -29,6 +29,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage     = game:GetService("ServerStorage")
 local Players           = game:GetService("Players")
+local HttpService       = game:GetService("HttpService")
 
 
 -- =========================
@@ -119,6 +120,7 @@ local RemoteRequestOpen = getRemote("RequestOpenShop",             "RemoteEvent"
 local RemoteOpen        = getRemote("OpenShopUI",                  "RemoteEvent")
 local RemoteUpdate      = getRemote("MythicalShopUpdate",          "RemoteEvent")
 local FuncGetState      = getRemote("GetMythicalShopState",        "RemoteFunction")
+local FuncPrepareSacrifice = getRemote("PrepareMythicalSacrifice", "RemoteFunction")
 local FuncCraftCar      = getRemote("CraftMythicalCar",            "RemoteFunction")
 local FuncSacrifice     = getRemote("SacrificeMythicalIngredient", "RemoteFunction")
 local FuncAcknowledge   = getRemote("AcknowledgeMythicalCraft",    "RemoteFunction")
@@ -151,6 +153,8 @@ end
 local PlayerSessions    = {}   -- [uid] = { CraftProgress, ActiveCrafts, CompletedCrafts }
 local InteractionLocks  = {}   -- [uid] = true/nil
 local LastOpenRequestAt = {}   -- [uid] = os.clock()
+local PendingSacrificeConfirmations = {} -- [uid] = { [token] = { CarName, Ingredient, ExpiresAt } }
+local CONFIRMATION_TOKEN_TTL_SECONDS = 30
 
 -- =========================
 -- HELPERS
@@ -188,6 +192,47 @@ local function safeInvoke(bindable, timeout, ...)
 	return true, table.unpack(result, 2, result.n)
 end
 
+local function invokeInventory(action, ...)
+	local args = table.pack(...)
+	local ok, result1, result2, result3 = pcall(function()
+		return MythicalInventoryBindable:Invoke(action, table.unpack(args, 1, args.n))
+	end)
+	if not ok then
+		return false, result1
+	end
+	return true, result1, result2, result3
+end
+
+local function savePlayerNow(player)
+	local invokeOk, saveOk, saveMessage = invokeInventory("SaveNow", player)
+	if not invokeOk then
+		return false, tostring(saveOk or "Save system error")
+	end
+	if saveOk ~= true then
+		return false, tostring(saveMessage or saveOk or "Save failed")
+	end
+	return true
+end
+
+local function queuePlayerSaveSoon(player)
+	local invokeOk, saveOk, saveMessage = invokeInventory("QueueSaveSoon", player, 8)
+	if not invokeOk then
+		return false, tostring(saveOk or "Save system error")
+	end
+	if saveOk ~= true then
+		return false, tostring(saveMessage or saveOk or "Save queue failed")
+	end
+	return true
+end
+
+local function grantCraftReward(player, recipeCarName, realToolName, source)
+	return invokeInventory("GiveTool", player, realToolName, {
+		BypassStorageLimit = true,
+		Source = source,
+		CraftRecipe = recipeCarName,
+	})
+end
+
 -- =========================
 -- SESSION
 -- =========================
@@ -203,6 +248,8 @@ local function getSession(player)
 			},
 			ActiveCrafts   = {},
 			CompletedCrafts = {},
+			AwardedCrafts = {},
+			PendingPremiumCraft = nil,
 		}
 	end
 	return PlayerSessions[uid]
@@ -213,6 +260,8 @@ local function buildStatePayload(session)
 		CraftProgress   = session.CraftProgress,
 		ActiveCrafts    = session.ActiveCrafts,
 		CompletedCrafts = session.CompletedCrafts,
+		AwardedCrafts   = session.AwardedCrafts,
+		PendingPremiumCraft = session.PendingPremiumCraft,
 	}
 end
 
@@ -246,6 +295,14 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 			if type(data.CompletedCrafts) == "table" then
 				session.CompletedCrafts = data.CompletedCrafts
 			end
+			if type(data.AwardedCrafts) == "table" then
+				session.AwardedCrafts = data.AwardedCrafts
+			end
+			if type(data.PendingPremiumCraft) == "string" and RECIPES[data.PendingPremiumCraft] then
+				session.PendingPremiumCraft = data.PendingPremiumCraft
+			else
+				session.PendingPremiumCraft = nil
+			end
 
 			-- Ensure per-car sub-tables always exist
 			session.CraftProgress["Centurion"] = session.CraftProgress["Centurion"] or {}
@@ -263,6 +320,8 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 			CraftProgress   = session.CraftProgress,
 			ActiveCrafts    = session.ActiveCrafts,
 			CompletedCrafts = session.CompletedCrafts,
+			AwardedCrafts   = session.AwardedCrafts,
+			PendingPremiumCraft = session.PendingPremiumCraft,
 		}
 
 	elseif action == "Close" then
@@ -270,16 +329,61 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 		PlayerSessions[uid]    = nil
 		InteractionLocks[uid]  = nil
 		LastOpenRequestAt[uid] = nil
+		PendingSacrificeConfirmations[uid] = nil
 	end
 end
 
 local function recordRankCraft(player, carName)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
 	if rankApi then
-		task.spawn(function()
-			pcall(function() rankApi:Invoke("CarObtained", player, carName, "Craft", nil) end)
-		end)
+		return pcall(function() rankApi:Invoke("CarObtained", player, carName, "Craft", nil) end)
 	end
+	return false
+end
+
+local function clearExpiredSacrificeConfirmations(uid)
+	local confirmations = PendingSacrificeConfirmations[uid]
+	if not confirmations then return end
+
+	local now = os.clock()
+	for token, confirmation in pairs(confirmations) do
+		if type(confirmation) ~= "table" or (confirmation.ExpiresAt or 0) <= now then
+			confirmations[token] = nil
+		end
+	end
+end
+
+local function issueSacrificeConfirmation(player, carName, ingredient)
+	local uid = player.UserId
+	clearExpiredSacrificeConfirmations(uid)
+
+	local token = HttpService:GenerateGUID(false)
+	PendingSacrificeConfirmations[uid] = PendingSacrificeConfirmations[uid] or {}
+	PendingSacrificeConfirmations[uid][token] = {
+		CarName = carName,
+		Ingredient = ingredient,
+		ExpiresAt = os.clock() + CONFIRMATION_TOKEN_TTL_SECONDS,
+	}
+
+	return token
+end
+
+local function consumeSacrificeConfirmation(player, carName, ingredient, token)
+	if type(token) ~= "string" or token == "" then
+		return false
+	end
+
+	local uid = player.UserId
+	clearExpiredSacrificeConfirmations(uid)
+
+	local confirmations = PendingSacrificeConfirmations[uid]
+	local confirmation = confirmations and confirmations[token]
+	if type(confirmation) ~= "table" then
+		return false
+	end
+
+	confirmations[token] = nil
+	return confirmation.CarName == carName and confirmation.Ingredient == ingredient
 end
 
 -- =========================
@@ -320,7 +424,7 @@ RemoteRequestOpen.OnServerEvent:Connect(function(player)
 	end
 end)
 
-FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
+FuncPrepareSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	if typeof(carName) ~= "string" or typeof(ingredient) ~= "string" then
 		return false, "Invalid Request"
 	end
@@ -363,12 +467,45 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 
 	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
 
+	local session = getSession(player)
+	local progress = session.CraftProgress[carName] or {}
+	local requiredAmount = recipe[ingredient]
+	local currentAmount = progress[ingredient] or 0
+	if currentAmount >= requiredAmount then return false, "Ingredient already complete!" end
+	if next(session.ActiveCrafts) then return false, "Craft already in progress!" end
+	if session.PendingPremiumCraft then return false, "Premium craft purchase already pending!" end
+
+	if ingredient ~= "Cash" then
+		local hasOk, owns = invokeInventory("HasTool", player, ingredient, 1)
+		if not hasOk then return false, "System error checking inventory." end
+		if not owns then return false, getMissingIngredientMessage(ingredient) end
+	end
+
+	return true, issueSacrificeConfirmation(player, carName, ingredient)
+end
+
+FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmationToken)
+	if typeof(carName) ~= "string" or typeof(ingredient) ~= "string" then
+		return false, "Invalid Request"
+	end
+	if not player or not player.Parent then return false, "Player missing" end
+
+	local recipe = RECIPES[carName]
+	if not recipe              then return false, "Invalid Mythical Car" end
+	if not recipe[ingredient]  then return false, "Invalid Ingredient"    end
+
+	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
+
 	local uid = player.UserId
 	if InteractionLocks[uid] then return false, "Transaction in progress" end
 
 	InteractionLocks[uid] = true
 
 	local pOk, logicOk, msg = pcall(function()
+		if not consumeSacrificeConfirmation(player, carName, ingredient, confirmationToken) then
+			return false, "Sacrifice confirmation required."
+		end
+
 		local session        = getSession(player)
 		if not session.CraftProgress[carName] then session.CraftProgress[carName] = {} end
 		local progress       = session.CraftProgress[carName]
@@ -376,7 +513,8 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 		local currentAmount  = progress[ingredient] or 0
 
 		if currentAmount >= requiredAmount   then return false, "Ingredient already complete!" end
-		if session.ActiveCrafts[carName]     then return false, "Craft already in progress!"  end
+		if next(session.ActiveCrafts)         then return false, "Craft already in progress!"  end
+		if session.PendingPremiumCraft        then return false, "Premium craft purchase already pending!" end
 
 		if ingredient == "Cash" then
 			local cost   = requiredAmount - currentAmount
@@ -385,25 +523,44 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient)
 			if not wallet               then return false, "Wallet Not Found" end
 			if wallet.Value < cost      then return false, "Insufficient Cash (Withdraw from ATM)" end
 
+			local originalWallet = wallet.Value
 			wallet.Value -= cost
 			session.CraftProgress[carName][ingredient] = requiredAmount
+
+			local saveOk, saveMessage = queuePlayerSaveSoon(player)
+			if not saveOk then
+				wallet.Value = originalWallet
+				session.CraftProgress[carName][ingredient] = currentAmount
+				savePlayerNow(player)
+				return false, saveMessage or "Save failed. Sacrifice was not consumed."
+			end
 		else
-			local hasOk, owns = safeInvoke(MythicalInventoryBindable, 2, "HasTool", player, ingredient, 1)
+			local hasOk, owns = invokeInventory("HasTool", player, ingredient, 1)
 			if not hasOk  then return false, "System error checking inventory." end
 			if not owns   then return false, getMissingIngredientMessage(ingredient) end
 
 			local removeOk, removedOk, removedCount =
-				safeInvoke(MythicalInventoryBindable, 2, "RemoveTool", player, ingredient, 1)
+				invokeInventory("RemoveTool", player, ingredient, 1)
 			if not removeOk               then return false, "System error removing car."          end
 			if not removedOk or (removedCount or 0) < 1 then
 				return false, getMissingIngredientMessage(ingredient)
 			end
 
 			session.CraftProgress[carName][ingredient] = currentAmount + 1
+
+			local saveOk, saveMessage = queuePlayerSaveSoon(player)
+			if not saveOk then
+				session.CraftProgress[carName][ingredient] = currentAmount
+				invokeInventory("GiveTool", player, ingredient, {
+					BypassStorageLimit = true,
+					Source = "SacrificeRollback",
+				})
+				savePlayerNow(player)
+				return false, saveMessage or "Save failed. Sacrifice was not consumed."
+			end
 		end
 
 		pushUpdate(player, session, "Sacrifice")
-		safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
 
 		return true, "Success"
 	end)
@@ -467,9 +624,19 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 	local pOk, logicOk, msg = pcall(function()
 		local session = getSession(player)
 
-		if session.ActiveCrafts[carName]   then return false, "Crafting already in progress!" end
+		if next(session.ActiveCrafts) then return false, "Crafting already in progress!" end
 
 		if session.CompletedCrafts[carName] then return false, "You already crafted this!"    end
+
+		if session.PendingPremiumCraft then
+			if session.PendingPremiumCraft ~= carName then
+				return false, "Premium craft purchase already pending!"
+			end
+			if isPremiumRequest then
+				return true, "PendingPremium"
+			end
+			session.PendingPremiumCraft = nil
+		end
 
 		local progress = session.CraftProgress[carName] or {}
 
@@ -483,13 +650,29 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 
 		if isPremiumRequest then
 			session.PendingPremiumCraft = carName
+			local saveOk, saveMessage = savePlayerNow(player)
+			if not saveOk then
+				session.PendingPremiumCraft = nil
+				return false, saveMessage or "Save failed. Premium craft was not started."
+			end
+			pushUpdate(player, session, "PendingPremium")
 			return true, "PendingPremium"
 		end
 
 		session.ActiveCrafts[carName] = os.time() + recipe.CraftTime
+		session.AwardedCrafts[carName] = os.time()
+
+		local saveOk, saveMessage = savePlayerNow(player)
+		if not saveOk then
+			session.ActiveCrafts[carName] = nil
+			session.AwardedCrafts[carName] = nil
+			return false, saveMessage or "Save failed. Craft was not started."
+		end
+
+		recordRankCraft(player, recipe.TargetCar)
+		savePlayerNow(player)
 
 		pushUpdate(player, session, "Craft")
-		safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
 
 		return true, "Success"
 	end)
@@ -513,7 +696,7 @@ FuncAcknowledge.OnServerInvoke = function(player, carName)
 	if session.CompletedCrafts[carName] then
 		session.CompletedCrafts[carName] = nil
 		pushUpdate(player, session, "Acknowledge")
-		safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
+		savePlayerNow(player)
 		return true
 	end
 	return false
@@ -526,10 +709,23 @@ SkipCraftFunc.OnInvoke = function(player)
 	if not player then return false, "No player provided" end
 	local session = getSession(player)
 
+	for completedCar in pairs(session.CompletedCrafts) do
+		if RECIPES[completedCar] then
+			local saveOk, saveMessage = savePlayerNow(player)
+			if saveOk then
+				return true, "Already granted"
+			end
+			return false, saveMessage or "System error saving completed craft"
+		end
+	end
+
 	local skippedCar = session.PendingPremiumCraft
+	local wasPendingPremium = skippedCar ~= nil
+	local originalEndTime = nil
 	if not skippedCar then
 		for carName, endTime in pairs(session.ActiveCrafts) do
 			skippedCar = carName
+			originalEndTime = endTime
 			break
 		end
 	end
@@ -544,19 +740,35 @@ SkipCraftFunc.OnInvoke = function(player)
 	session.CraftProgress[skippedCar] = {}
 
 	local realToolName = RECIPES[skippedCar].TargetCar
-	local invokeOk, giveResult = safeInvoke(MythicalInventoryBindable, 3, "GiveTool", player, realToolName)
+	local alreadyAwarded = session.AwardedCrafts[skippedCar] ~= nil
+	session.AwardedCrafts[skippedCar] = session.AwardedCrafts[skippedCar] or os.time()
+	local invokeOk, giveResult, giveMessage = grantCraftReward(player, skippedCar, realToolName, "MythicalCraftSkip")
 
 	if invokeOk and giveResult ~= false then
-		recordRankCraft(player, realToolName)
+		local saveOk, saveMessage = savePlayerNow(player)
+		if not saveOk then
+			warn("[MythicalShop] Failed to save skipped " .. realToolName .. " for " .. player.Name .. ": " .. tostring(saveMessage))
+			return false, saveMessage or "System error saving item"
+		end
+		if not alreadyAwarded then
+			recordRankCraft(player, realToolName)
+			savePlayerNow(player)
+		end
 		print("✅ [MythicalShop] SKIP Granted " .. realToolName .. " to " .. player.Name)
 		pushUpdate(player, session, "Skipped")
-		safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
 		return true, "Success"
 	else
 		warn("⚠️ [MythicalShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name)
-		session.ActiveCrafts[skippedCar] = os.time() + 60 -- revert and retry in 1m if failed
+		if wasPendingPremium then
+			session.PendingPremiumCraft = skippedCar
+		else
+			session.ActiveCrafts[skippedCar] = originalEndTime
+		end
 		session.CompletedCrafts[skippedCar] = nil
-		return false, "System error granting item"
+		if not alreadyAwarded then
+			session.AwardedCrafts[skippedCar] = nil
+		end
+		return false, giveMessage or giveResult or "System error granting item"
 	end
 end
 
@@ -581,25 +793,33 @@ task.spawn(function()
 					session.CraftProgress[carName] = {}
 
 					local realToolName           = RECIPES[carName].TargetCar
-					local invokeOk, giveResult   =
-						safeInvoke(MythicalInventoryBindable, 3, "GiveTool", player, realToolName)
+					local alreadyAwarded = session.AwardedCrafts[carName] ~= nil
+					session.AwardedCrafts[carName] = session.AwardedCrafts[carName] or now
+					local invokeOk, giveResult, giveMessage =
+						grantCraftReward(player, carName, realToolName, "MythicalCraftComplete")
 
 					if invokeOk and giveResult ~= false then
-						recordRankCraft(player, realToolName)
+						if not alreadyAwarded then
+							recordRankCraft(player, realToolName)
+						end
+						savePlayerNow(player)
 						print("✅ [MythicalShop] Granted " .. realToolName .. " to " .. player.Name)
 						dirty = true
 					else
 						warn("⚠️ [MythicalShop] Failed to grant " .. realToolName .. " to " .. player.Name)
 						-- Revert so the loop retries on the next tick
-						session.ActiveCrafts[carName] = os.time() + 30
+						session.ActiveCrafts[carName] = endTime
 						session.CompletedCrafts[carName] = nil
+						if not alreadyAwarded then
+							session.AwardedCrafts[carName] = nil
+						end
 					end
 				end
 			end
 
 			if dirty then
 				pushUpdate(player, session, "Complete")
-				safeInvoke(MythicalInventoryBindable, 2, "MarkDirty", player)
+				savePlayerNow(player)
 			end
 		end
 	end
