@@ -1129,7 +1129,11 @@ local function AttemptCraft(carName, isPremium)
 
 			if success then
 				if isPremium then
-					-- Premium: fire Robux prompt immediately; return to crafting frame.
+					-- Show the custom Robux loading state as soon as the premium
+					-- purchase prompt opens; RobuxPurchaseState hides it when the
+					-- prompt finishes, succeeds, fails, or is cancelled.
+					UIAudioConfig.PlayRobux()
+					UIAudioConfig.ShowPurchaseLoading()
 					MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
 					restoreToCraftingFrame()
 				else

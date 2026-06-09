@@ -709,17 +709,16 @@ SkipCraftFunc.OnInvoke = function(player)
 	local pOk, logicOk, msg = pcall(function()
 		local session = getSession(player)
 
-		for completedCar in pairs(session.CompletedCrafts) do
-			if RECIPES[completedCar] then
-				if session.PendingPremiumCraft == completedCar then
-					session.PendingPremiumCraft = nil
-				end
-				local saveOk, saveMessage = savePlayerNow(player)
-				if saveOk then
-					return true, "Already granted"
-				end
-				return false, saveMessage or "System error saving completed craft"
+		if session.PendingPremiumCraft
+			and session.CompletedCrafts[session.PendingPremiumCraft]
+			and not session.ActiveCrafts[session.PendingPremiumCraft]
+		then
+			session.PendingPremiumCraft = nil
+			local saveOk, saveMessage = savePlayerNow(player)
+			if saveOk then
+				return true, "Already granted"
 			end
+			return false, saveMessage or "System error saving completed craft"
 		end
 
 		local activeCars = {}
@@ -786,6 +785,19 @@ SkipCraftFunc.OnInvoke = function(player)
 		end
 
 		if not foundActive then
+			for completedCar in pairs(session.CompletedCrafts) do
+				if RECIPES[completedCar] then
+					if session.PendingPremiumCraft == completedCar then
+						session.PendingPremiumCraft = nil
+					end
+					local saveOk, saveMessage = savePlayerNow(player)
+					if saveOk then
+						return true, "Already granted"
+					end
+					return false, saveMessage or "System error saving completed craft"
+				end
+			end
+
 			return false, grantFailureMessage or "No active crafts to skip"
 		end
 
