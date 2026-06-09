@@ -19,19 +19,29 @@ local RankUpdate = RankRemotes:WaitForChild("RankUpdate")
 local player = Players.LocalPlayer
 
 local DISPLAY_TIME = 5
+local STARTUP_BASELINE_TIMEOUT = 30
+local STARTUP_SETTLE_SECONDS = 0.5
+local VISIBILITY_REFRESH_SECONDS = 0.1
 
 local notificationQueue = {}
 local isDisplaying = false
 local lastRankState = nil
-local hasBaseline = false
+local baselineReady = false
+
+local function getPlayerGui()
+	return player:FindFirstChild("PlayerGui")
+end
 
 local function getUI()
-	local playerGui = player:FindFirstChild("PlayerGui")
+	local playerGui = getPlayerGui()
 	if not playerGui then return nil end
 
 	local notificationsGui = playerGui:FindFirstChild("Notifications")
 	if not notificationsGui then return nil end
 
+	-- NPC dialogue scripts temporarily disable other ScreenGuis. Rank quest
+	-- notifications are intentionally independent, so keep this GUI enabled
+	-- whenever this script needs to show or prepare its own frame.
 	notificationsGui.DisplayOrder = 999999
 	notificationsGui.Enabled = true
 
@@ -58,6 +68,34 @@ local function bringNotificationToFront(frame)
 	end
 end
 
+local function hideRankNotificationFrame()
+	local playerGui = getPlayerGui()
+	local notificationsGui = playerGui and playerGui:FindFirstChild("Notifications")
+	local frame = notificationsGui and notificationsGui:FindFirstChild("RankNotificationFrame")
+	local label = frame and frame:FindFirstChild("RankNotificationLabel")
+
+	if frame and frame:IsA("GuiObject") then
+		frame.Visible = false
+		frame:SetAttribute("ExternallyManaged", true)
+	end
+	if label and label:IsA("GuiObject") then
+		label.Visible = false
+	end
+end
+
+local function keepNotificationVisible(message, endTime)
+	while os.clock() < endTime and isDisplaying do
+		local _, frame, label = getUI()
+		if frame and label and label:IsA("TextLabel") then
+			bringNotificationToFront(frame)
+			label.Text = message
+			label.Visible = true
+			frame.Visible = true
+		end
+		task.wait(VISIBILITY_REFRESH_SECONDS)
+	end
+end
+
 local function processQueue()
 	if isDisplaying or #notificationQueue == 0 then return end
 
@@ -76,10 +114,11 @@ local function processQueue()
 	frame.Visible = true
 	UIAudioConfig.PlayRankQuestComplete()
 
-	task.wait(DISPLAY_TIME)
+	keepNotificationVisible(message, os.clock() + DISPLAY_TIME)
 
 	if #notificationQueue == 0 then
 		frame.Visible = false
+		label.Visible = false
 		task.wait(0.2)
 	end
 
@@ -131,9 +170,8 @@ end
 local function handleRankState(state)
 	if type(state) ~= "table" then return end
 
-	if not hasBaseline then
+	if not baselineReady then
 		lastRankState = state
-		hasBaseline = true
 		return
 	end
 
@@ -154,15 +192,36 @@ local function handleRankState(state)
 	lastRankState = state
 end
 
-RankUpdate.OnClientEvent:Connect(handleRankState)
+local function waitForStartupBaseline()
+	local playerGui = player:WaitForChild("PlayerGui")
+	hideRankNotificationFrame()
 
-task.spawn(function()
+	local startedAt = os.clock()
+	while player.Parent and player:GetAttribute("TycoonDataLoaded") ~= true and os.clock() - startedAt < STARTUP_BASELINE_TIMEOUT do
+		task.wait(0.1)
+	end
+
+	while player.Parent and playerGui:GetAttribute("LoadingScreenActive") == true and os.clock() - startedAt < STARTUP_BASELINE_TIMEOUT do
+		task.wait(0.1)
+	end
+
+	-- Allow any final RankUpdate fired by data hydration to become the baseline
+	-- instead of a player-facing completion notification.
+	task.wait(STARTUP_SETTLE_SECONDS)
+
 	local ok, state = pcall(function()
 		return GetRankState:InvokeServer()
 	end)
-	if ok then
-		handleRankState(state)
-	else
+	if ok and type(state) == "table" then
+		lastRankState = state
+	elseif not ok then
 		warn("[RankQuestNotificationClient] Failed to load initial rank state: " .. tostring(state))
 	end
-end)
+
+	baselineReady = true
+	hideRankNotificationFrame()
+end
+
+RankUpdate.OnClientEvent:Connect(handleRankState)
+
+task.spawn(waitForStartupBaseline)
