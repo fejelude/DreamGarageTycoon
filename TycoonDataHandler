@@ -124,6 +124,8 @@ local PlayerDataStore = DataStoreService:GetDataStore(DATA_KEY)
 local AUTOSAVE_INTERVAL = 180
 local MIN_SAVE_INTERVAL = 60
 local MAX_RETRIES = 3
+local SAVE_LOCK_WAIT_SECONDS = 12
+local CLOSING_SAVE_LOCK_WAIT_SECONDS = 25
 
 local MAX_INVENTORY_SIZE = 500
 local MAX_ROBUX_RECEIPT_HISTORY = 300
@@ -308,8 +310,9 @@ end
 
 local function markDirty(player)
 	local session = SessionData[player]
-	if session and not session.IsDirty then
+	if session then
 		session.IsDirty = true
+		session.DirtyVersion = (session.DirtyVersion or 0) + 1
 	end
 end
 
@@ -1581,18 +1584,15 @@ save = function(player, isClosing, force)
 	if not session or not session.DataLoaded then return false end
 
 	if session.IsSaving then
-		if isClosing then
-			local s = os.clock()
-			while session.IsSaving and (os.clock() - s < 5) do
-				task.wait(0.05)
-			end
-			if session.IsSaving then
-				warn("⚠️ [Save] Closing save aborted — autosave still running for " .. player.Name)
-				session.IsSaving = false
-				return false
-			end
-		else
-			return false
+		local waitLimit = isClosing and CLOSING_SAVE_LOCK_WAIT_SECONDS or SAVE_LOCK_WAIT_SECONDS
+		local startedWaiting = os.clock()
+		while session.IsSaving and (os.clock() - startedWaiting < waitLimit) do
+			task.wait(0.05)
+		end
+		if session.IsSaving then
+			warn("[Save] Save request could not get lock for " .. player.Name .. "; keeping session dirty for retry.")
+			session.IsDirty = true
+			return false, "Save already in progress"
 		end
 	end
 
@@ -1600,6 +1600,7 @@ save = function(player, isClosing, force)
 	if not force and not session.IsDirty and not isClosing then return true end
 
 	session.IsSaving = true
+	local saveDirtyVersion = session.DirtyVersion or 0
 
 	local saveSucceeded = false
 
@@ -1935,16 +1936,19 @@ save = function(player, isClosing, force)
 	end
 
 	if saveSucceeded then
-		session.IsDirty = false
-		session.LastSave = os.time()
-		session.SacrificeOccurred = false
-		session.ExplicitClear = false
-		if session.StarterPackClearRequested then
-			session.StarterPackSaveConfirmed = false
-		else
-			session.StarterPackSaveConfirmed = session.StarterPackPurchased == true
+		local hasNewerDirtyState = (session.DirtyVersion or 0) ~= saveDirtyVersion
+		session.IsDirty = hasNewerDirtyState
+		session.LastSave = hasNewerDirtyState and 0 or os.time()
+		if not hasNewerDirtyState then
+			session.SacrificeOccurred = false
+			session.ExplicitClear = false
+			if session.StarterPackClearRequested then
+				session.StarterPackSaveConfirmed = false
+			else
+				session.StarterPackSaveConfirmed = session.StarterPackPurchased == true
+			end
+			session.StarterPackClearRequested = false
 		end
-		session.StarterPackClearRequested = false
 	end
 
 	if isClosing then
@@ -1981,6 +1985,7 @@ local function InitializePlayer(player)
 	SessionData[player] = {
 		LastSave          = os.time(),
 		IsDirty           = false,
+		DirtyVersion      = 0,
 		DataLoaded        = false,
 		ExplicitClear     = false,
 		IsSaving          = false,
