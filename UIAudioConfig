@@ -325,7 +325,6 @@ function UIAudioConfig.CreateStateFeedback(container)
 			if legacyIndicator then
 				label = legacyIndicator
 			else
-				warn("[UIAudioConfig] StateLabels.Success/Failed missing for feedback: " .. tostring(baseText))
 				return
 			end
 		end

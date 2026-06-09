@@ -214,6 +214,17 @@ local function savePlayerNow(player)
 	return true
 end
 
+local function queuePlayerSaveSoon(player)
+	local invokeOk, saveOk, saveMessage = invokeInventory("QueueSaveSoon", player, 8)
+	if not invokeOk then
+		return false, tostring(saveOk or "Save system error")
+	end
+	if saveOk ~= true then
+		return false, tostring(saveMessage or saveOk or "Save queue failed")
+	end
+	return true
+end
+
 local function grantCraftReward(player, recipeCarName, realToolName, source)
 	return invokeInventory("GiveTool", player, realToolName, {
 		BypassStorageLimit = true,
@@ -516,7 +527,7 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 			wallet.Value -= cost
 			session.CraftProgress[carName][ingredient] = requiredAmount
 
-			local saveOk, saveMessage = savePlayerNow(player)
+			local saveOk, saveMessage = queuePlayerSaveSoon(player)
 			if not saveOk then
 				wallet.Value = originalWallet
 				session.CraftProgress[carName][ingredient] = currentAmount
@@ -537,7 +548,7 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 
 			session.CraftProgress[carName][ingredient] = currentAmount + 1
 
-			local saveOk, saveMessage = savePlayerNow(player)
+			local saveOk, saveMessage = queuePlayerSaveSoon(player)
 			if not saveOk then
 				session.CraftProgress[carName][ingredient] = currentAmount
 				invokeInventory("GiveTool", player, ingredient, {

@@ -297,6 +297,7 @@ if not success then error("[TycoonDataHandler] Failed to require ReplicatedStora
 local SessionData = {}
 local PadLocks = {}
 local FreeRewardsClaimLocks = {}
+local PendingCriticalSaveTasks = {}
 local save
 
 -- ----------------------------------------------------------------------------
@@ -314,6 +315,32 @@ local function markDirty(player)
 		session.IsDirty = true
 		session.DirtyVersion = (session.DirtyVersion or 0) + 1
 	end
+end
+
+local function queueCriticalSave(player, delaySeconds)
+	if not player or not SessionData[player] then
+		return false, "Player data not loaded"
+	end
+	if not save then
+		return false, "Save system unavailable"
+	end
+
+	markDirty(player)
+
+	local userId = player.UserId
+	if PendingCriticalSaveTasks[userId] then
+		return true
+	end
+
+	PendingCriticalSaveTasks[userId] = task.delay(math.max(1, tonumber(delaySeconds) or 8), function()
+		PendingCriticalSaveTasks[userId] = nil
+		local session = SessionData[player]
+		if session and session.DataLoaded and session.IsDirty then
+			save(player, false, true)
+		end
+	end)
+
+	return true
 end
 
 local function cancelPendingSettingsDirty(player)
@@ -1383,6 +1410,10 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		end
 		return save(player, false, true)
 
+	elseif action == "QueueSaveSoon" and player then
+		local delaySeconds = ...
+		return queueCriticalSave(player, delaySeconds)
+
 	elseif action == "MarkInventoryCleared" and player then
 		local session = SessionData[player]
 		if session then
@@ -1443,6 +1474,10 @@ LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 			return false, "Save system unavailable"
 		end
 		return save(player, false, true)
+
+	elseif action == "QueueSaveSoon" then
+		local delaySeconds = ...
+		return queueCriticalSave(player, delaySeconds)
 	end
 
 	return false
@@ -1496,6 +1531,10 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 			return false, "Save system unavailable"
 		end
 		return save(player, false, true)
+
+	elseif action == "QueueSaveSoon" then
+		local delaySeconds = ...
+		return queueCriticalSave(player, delaySeconds)
 	end
 
 	return false
@@ -2314,6 +2353,11 @@ end
 
 Players.PlayerAdded:Connect(InitializePlayer)
 Players.PlayerRemoving:Connect(function(player)
+	local pendingSaveTask = PendingCriticalSaveTasks[player.UserId]
+	if pendingSaveTask then
+		task.cancel(pendingSaveTask)
+		PendingCriticalSaveTasks[player.UserId] = nil
+	end
 	save(player, true)
 	FreeRewardsClaimLocks[player] = nil
 	SessionData[player] = nil

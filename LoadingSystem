@@ -1451,8 +1451,39 @@ local PRELOAD_CLASSES = {
 	SurfaceAppearance = true,
 }
 
+local function hasContentId(value)
+	return type(value) == "string" and value ~= "" and value ~= "rbxassetid://"
+end
+
 local function shouldPreload(inst)
-	return PRELOAD_CLASSES[inst.ClassName] == true
+	if not PRELOAD_CLASSES[inst.ClassName] then
+		return false
+	end
+
+	if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+		return hasContentId(inst.Image)
+	elseif inst:IsA("Sound") then
+		return hasContentId(inst.SoundId)
+	elseif inst:IsA("Decal") or inst:IsA("Texture") then
+		return hasContentId(inst.Texture)
+	elseif inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam") then
+		return hasContentId(inst.Texture)
+	elseif inst:IsA("Animation") then
+		return hasContentId(inst.AnimationId)
+	elseif inst:IsA("VideoFrame") then
+		return hasContentId(inst.Video)
+	elseif inst:IsA("MeshPart") then
+		return hasContentId(inst.MeshId) or hasContentId(inst.TextureID)
+	elseif inst:IsA("SpecialMesh") then
+		return hasContentId(inst.MeshId) or hasContentId(inst.TextureId)
+	elseif inst:IsA("SurfaceAppearance") then
+		return hasContentId(inst.ColorMap)
+			or hasContentId(inst.MetalnessMap)
+			or hasContentId(inst.NormalMap)
+			or hasContentId(inst.RoughnessMap)
+	end
+
+	return true
 end
 
 local function buildPreloadList()
@@ -1499,7 +1530,11 @@ local function preloadAssets()
 				loadedCount += 1
 
 				if status and status.Name and status.Name ~= "Success" then
-					table.insert(failedAssets, tostring(assetId) .. " [" .. status.Name .. "]")
+					local assetLabel = tostring(assetId or "")
+					if assetLabel == "" then
+						assetLabel = "unknown asset"
+					end
+					table.insert(failedAssets, assetLabel .. " [" .. status.Name .. "]")
 				end
 			end)
 		end)
