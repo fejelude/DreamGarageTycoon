@@ -186,8 +186,9 @@ local function safeInvoke(bindable, timeout, ...)
 end
 
 local function invokeInventory(action, ...)
+	local args = table.pack(...)
 	local ok, result1, result2, result3 = pcall(function()
-		return LegendaryInventoryBindable:Invoke(action, ...)
+		return LegendaryInventoryBindable:Invoke(action, table.unpack(args, 1, args.n))
 	end)
 	if not ok then
 		return false, result1
