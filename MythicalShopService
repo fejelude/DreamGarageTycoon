@@ -122,6 +122,7 @@ local RemoteUpdate      = getRemote("MythicalShopUpdate",          "RemoteEvent"
 local FuncGetState      = getRemote("GetMythicalShopState",        "RemoteFunction")
 local FuncPrepareSacrifice = getRemote("PrepareMythicalSacrifice", "RemoteFunction")
 local FuncCraftCar      = getRemote("CraftMythicalCar",            "RemoteFunction")
+local FuncRequestSkip   = getRemote("PrepareMythicalCraftSkip",      "RemoteFunction")
 local FuncSacrifice     = getRemote("SacrificeMythicalIngredient", "RemoteFunction")
 local FuncAcknowledge   = getRemote("AcknowledgeMythicalCraft",    "RemoteFunction")
 
@@ -575,6 +576,69 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 	return logicOk, msg
 end
 
+-- =========================
+-- PREPARE PREMIUM SKIP
+--
+-- Called immediately before any Robux skip prompt (including the Active Craft
+-- frame). This makes every client entry point use the same persisted backend
+-- state that ProcessReceipt consumes. If the receipt callback is delayed until
+-- a later server or after rejoin, PendingPremiumCraft still identifies the
+-- exact craft to complete.
+-- =========================
+FuncRequestSkip.OnServerInvoke = function(player, carName)
+	if typeof(carName) ~= "string" then return false, "Invalid Request" end
+	if not player or not player.Parent then return false, "Player missing" end
+
+	local recipe = RECIPES[carName]
+	if not recipe then return false, "Invalid Mythical Car" end
+
+	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
+
+	local uid = player.UserId
+	if InteractionLocks[uid] then return false, "Transaction in progress" end
+
+	InteractionLocks[uid] = true
+
+	local pOk, logicOk, msg = pcall(function()
+		local session = getSession(player)
+
+		if session.CompletedCrafts[carName] then
+			return false, "Craft already completed"
+		end
+
+		if session.PendingPremiumCraft then
+			if session.PendingPremiumCraft ~= carName then
+				return false, "Another premium craft purchase is already pending"
+			end
+			pushUpdate(player, session, "PendingPremium")
+			return true, "PendingPremium"
+		end
+
+		if not session.ActiveCrafts[carName] then
+			return false, "No active craft to skip"
+		end
+
+		session.PendingPremiumCraft = carName
+		local saveOk, saveMessage = savePlayerNow(player)
+		if not saveOk then
+			session.PendingPremiumCraft = nil
+			return false, saveMessage or "Save failed. Premium skip was not prepared."
+		end
+
+		pushUpdate(player, session, "PendingPremium")
+		return true, "PendingPremium"
+	end)
+
+	InteractionLocks[uid] = nil
+
+	if not pOk then
+		warn("Mythical Shop Prepare Skip Error:", logicOk)
+		return false, "Internal System Error"
+	end
+
+	return logicOk, msg
+end
+
 FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 	if typeof(carName) ~= "string" then return false, "Invalid Request" end
 	if not player or not player.Parent then return false, "Player missing" end
@@ -660,12 +724,10 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 		end
 
 		session.ActiveCrafts[carName] = os.time() + recipe.CraftTime
-		session.AwardedCrafts[carName] = os.time()
 
 		local saveOk, saveMessage = savePlayerNow(player)
 		if not saveOk then
 			session.ActiveCrafts[carName] = nil
-			session.AwardedCrafts[carName] = nil
 			return false, saveMessage or "Save failed. Craft was not started."
 		end
 
@@ -707,69 +769,123 @@ end
 -- =========================
 SkipCraftFunc.OnInvoke = function(player)
 	if not player then return false, "No player provided" end
-	local session = getSession(player)
+	if not player.Parent then return false, "Player left before craft skip could be granted" end
 
-	for completedCar in pairs(session.CompletedCrafts) do
-		if RECIPES[completedCar] then
+	local uid = player.UserId
+	if InteractionLocks[uid] then
+		-- ProcessReceipt will return NotProcessedYet, letting Roblox retry after the
+		-- in-flight craft/sacrifice/save operation finishes instead of racing it.
+		return false, "Craft transaction in progress"
+	end
+
+	InteractionLocks[uid] = true
+
+	local pOk, logicOk, msg = pcall(function()
+		local session = getSession(player)
+
+		if session.PendingPremiumCraft
+			and session.CompletedCrafts[session.PendingPremiumCraft]
+			and not session.ActiveCrafts[session.PendingPremiumCraft]
+		then
+			session.PendingPremiumCraft = nil
 			local saveOk, saveMessage = savePlayerNow(player)
 			if saveOk then
 				return true, "Already granted"
 			end
 			return false, saveMessage or "System error saving completed craft"
 		end
-	end
 
-	local skippedCar = session.PendingPremiumCraft
-	local wasPendingPremium = skippedCar ~= nil
-	local originalEndTime = nil
-	if not skippedCar then
-		for carName, endTime in pairs(session.ActiveCrafts) do
-			skippedCar = carName
-			originalEndTime = endTime
-			break
-		end
-	end
-
-	if not skippedCar then
-		return false, "No active crafts to skip"
-	end
-
-	session.PendingPremiumCraft = nil
-	session.ActiveCrafts[skippedCar] = nil
-	session.CompletedCrafts[skippedCar] = os.time()
-	session.CraftProgress[skippedCar] = {}
-
-	local realToolName = RECIPES[skippedCar].TargetCar
-	local alreadyAwarded = session.AwardedCrafts[skippedCar] ~= nil
-	session.AwardedCrafts[skippedCar] = session.AwardedCrafts[skippedCar] or os.time()
-	local invokeOk, giveResult, giveMessage = grantCraftReward(player, skippedCar, realToolName, "MythicalCraftSkip")
-
-	if invokeOk and giveResult ~= false then
-		local saveOk, saveMessage = savePlayerNow(player)
-		if not saveOk then
-			warn("[MythicalShop] Failed to save skipped " .. realToolName .. " for " .. player.Name .. ": " .. tostring(saveMessage))
-			return false, saveMessage or "System error saving item"
-		end
-		if not alreadyAwarded then
-			recordRankCraft(player, realToolName)
-			savePlayerNow(player)
-		end
-		print("✅ [MythicalShop] SKIP Granted " .. realToolName .. " to " .. player.Name)
-		pushUpdate(player, session, "Skipped")
-		return true, "Success"
-	else
-		warn("⚠️ [MythicalShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name)
-		if wasPendingPremium then
-			session.PendingPremiumCraft = skippedCar
+		local activeCars = {}
+		if session.PendingPremiumCraft then
+			table.insert(activeCars, {
+				CarName = session.PendingPremiumCraft,
+				WasPendingPremium = true,
+				OriginalEndTime = nil,
+			})
+			session.PendingPremiumCraft = nil
 		else
-			session.ActiveCrafts[skippedCar] = originalEndTime
+			for carName, endTime in pairs(session.ActiveCrafts) do
+				table.insert(activeCars, {
+					CarName = carName,
+					WasPendingPremium = false,
+					OriginalEndTime = endTime,
+				})
+			end
 		end
-		session.CompletedCrafts[skippedCar] = nil
-		if not alreadyAwarded then
-			session.AwardedCrafts[skippedCar] = nil
+
+		local foundActive = false
+		local grantFailureMessage = nil
+		for _, craftInfo in ipairs(activeCars) do
+			local carName = craftInfo.CarName
+			local recipe = RECIPES[carName]
+			if not recipe then
+				grantFailureMessage = "Invalid craft recipe"
+				continue
+			end
+
+			session.ActiveCrafts[carName] = nil
+			session.CompletedCrafts[carName] = os.time()
+			session.CraftProgress[carName] = {}
+			local realToolName = recipe.TargetCar
+			local alreadyAwarded = session.AwardedCrafts[carName] ~= nil
+			session.AwardedCrafts[carName] = session.AwardedCrafts[carName] or os.time()
+			local invokeOk, giveResult, giveMessage = grantCraftReward(player, carName, realToolName, "MythicalCraftSkip")
+
+			if invokeOk and giveResult ~= false then
+				local saveOk, saveMessage = savePlayerNow(player)
+				if not saveOk then
+					warn("[MythicalShop] Failed to save skipped " .. realToolName .. " for " .. player.Name .. ": " .. tostring(saveMessage))
+					return false, saveMessage or "System error saving item"
+				end
+				if not alreadyAwarded then
+					recordRankCraft(player, realToolName)
+					savePlayerNow(player)
+				end
+				pushUpdate(player, session, "Skipped")
+				foundActive = true
+			else
+				warn("⚠️ [MythicalShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name)
+				grantFailureMessage = giveMessage or giveResult or "System error granting item"
+				if craftInfo.WasPendingPremium then
+					session.PendingPremiumCraft = carName
+				else
+					session.ActiveCrafts[carName] = craftInfo.OriginalEndTime
+				end
+				session.CompletedCrafts[carName] = nil
+				if not alreadyAwarded then
+					session.AwardedCrafts[carName] = nil
+				end
+			end
 		end
-		return false, giveMessage or giveResult or "System error granting item"
+
+		if not foundActive then
+			for completedCar in pairs(session.CompletedCrafts) do
+				if RECIPES[completedCar] then
+					if session.PendingPremiumCraft == completedCar then
+						session.PendingPremiumCraft = nil
+					end
+					local saveOk, saveMessage = savePlayerNow(player)
+					if saveOk then
+						return true, "Already granted"
+					end
+					return false, saveMessage or "System error saving completed craft"
+				end
+			end
+
+			return false, grantFailureMessage or "No active crafts to skip"
+		end
+
+		return true, "Success"
+	end)
+
+	InteractionLocks[uid] = nil
+
+	if not pOk then
+		warn("Mythical Shop Skip Error:", logicOk)
+		return false, "Internal System Error"
 	end
+
+	return logicOk, msg
 end
 
 -- =========================
@@ -783,12 +899,18 @@ task.spawn(function()
 		for uid, session in pairs(PlayerSessions) do
 			local player = Players:GetPlayerByUserId(uid)
 			if not player then continue end
+			if InteractionLocks[uid] then continue end
 
-			local dirty = false
+			InteractionLocks[uid] = true
+			local pOk, err = pcall(function()
+				local dirty = false
 
-			for carName, endTime in pairs(session.ActiveCrafts) do
+				for carName, endTime in pairs(session.ActiveCrafts) do
 				if now >= endTime then
 					session.ActiveCrafts[carName]   = nil
+					if session.PendingPremiumCraft == carName then
+						session.PendingPremiumCraft = nil
+					end
 					session.CompletedCrafts[carName] = now -- save timestamp for dialogue
 					session.CraftProgress[carName] = {}
 
@@ -817,9 +939,15 @@ task.spawn(function()
 				end
 			end
 
-			if dirty then
-				pushUpdate(player, session, "Complete")
-				savePlayerNow(player)
+				if dirty then
+					pushUpdate(player, session, "Complete")
+					savePlayerNow(player)
+				end
+			end)
+
+			InteractionLocks[uid] = nil
+			if not pOk then
+				warn("Mythical Shop Completion Error:", err)
 			end
 		end
 	end

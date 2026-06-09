@@ -75,6 +75,7 @@ local RemoteUpdate     = LegendaryRemotes:WaitForChild("LegendaryShopUpdate")
 local FuncGetState     = LegendaryRemotes:WaitForChild("GetLegendaryShopState")
 local FuncPrepareSacrifice = LegendaryRemotes:WaitForChild("PrepareLegendarySacrifice")
 local FuncCraftCar     = LegendaryRemotes:WaitForChild("CraftLegendaryCar")
+local FuncRequestSkip  = LegendaryRemotes:WaitForChild("PrepareLegendaryCraftSkip")
 local FuncSacrifice    = LegendaryRemotes:WaitForChild("SacrificeLegendaryIngredient")
 
 local DialogueEvent = nil
@@ -724,6 +725,29 @@ local function UpdateCraftingUI(carName)
 	end
 end
 
+local function promptPreparedCraftSkip(carName)
+	if typeof(carName) ~= "string" or carName == "" then return false end
+	if isProcessingPurchase then return false end
+
+	isProcessingPurchase = true
+	local invokeOk, success, msg = pcall(function()
+		return FuncRequestSkip:InvokeServer(carName)
+	end)
+	isProcessingPurchase = false
+
+	if invokeOk and success then
+		UIAudioConfig.PlayRobux()
+		UIAudioConfig.ShowPurchaseLoading()
+		MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
+		return true
+	end
+
+	local message = invokeOk and tostring(msg or "Skip unavailable") or "Skip unavailable"
+	showFeedback(message, FEEDBACK_COLORS.FailRobux)
+	warn("⚠️ [LegendaryShop] Premium skip prompt blocked: " .. message)
+	return false
+end
+
 -- ============================================================================
 -- 📊  ACTIVE CRAFT PANEL
 --
@@ -769,11 +793,15 @@ local function UpdateActiveCraftPanel()
 			skipBtn:SetAttribute("Connected", true)
 			Kit.Tween:SetupButton(skipBtn, function()
 				if skipBtn.Visible and skipBtn.Active and isShopOpen then
-					if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[activeCar] then
-						-- FIX: Robux prompt fires immediately — no in-game confirmation.
-						UIAudioConfig.PlayRobux()
-						UIAudioConfig.ShowPurchaseLoading()
-						MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
+					local latestActiveCar = nil
+					if currentState and currentState.ActiveCrafts then
+						for c in pairs(currentState.ActiveCrafts) do
+							latestActiveCar = c
+							break
+						end
+					end
+					if latestActiveCar then
+						promptPreparedCraftSkip(latestActiveCar)
 					end
 				end
 			end)
@@ -989,8 +1017,10 @@ local function AttemptCraft(carName, isPremium)
 		end
 
 		if isPremium and currentState.ActiveCrafts[carName] then
-			-- Premium skip on the specific car being crafted
-			MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
+			-- Premium skip on the specific car being crafted. Prepare the same
+			-- server-side pending skip state used by receipt processing before
+			-- opening the Robux prompt.
+			promptPreparedCraftSkip(carName)
 			return
 		end
 
@@ -1100,7 +1130,11 @@ local function AttemptCraft(carName, isPremium)
 
 			if success then
 				if isPremium then
-					-- FIX: Fire the Robux prompt immediately after the craft starts.
+					-- Show the custom Robux loading state as soon as the premium
+					-- purchase prompt opens; RobuxPurchaseState hides it when the
+					-- prompt finishes, succeeds, fails, or is cancelled.
+					UIAudioConfig.PlayRobux()
+					UIAudioConfig.ShowPurchaseLoading()
 					MarketplaceService:PromptProductPurchase(player, LEGENDARY_SKIP_PRODUCT_ID)
 					restoreToCraftingFrame()
 				else
