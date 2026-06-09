@@ -114,6 +114,7 @@ local RemoteUpdate      = getRemote("LegendaryShopUpdate",         "RemoteEvent"
 local FuncGetState      = getRemote("GetLegendaryShopState",       "RemoteFunction")
 local FuncPrepareSacrifice = getRemote("PrepareLegendarySacrifice", "RemoteFunction")
 local FuncCraftCar      = getRemote("CraftLegendaryCar",           "RemoteFunction")
+local FuncRequestSkip   = getRemote("PrepareLegendaryCraftSkip",      "RemoteFunction")
 local FuncSacrifice     = getRemote("SacrificeLegendaryIngredient","RemoteFunction")
 local FuncAcknowledge   = getRemote("AcknowledgeLegendaryCraft",   "RemoteFunction")
 
@@ -531,6 +532,69 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 	return logicOk, msg
 end
 
+-- =========================
+-- PREPARE PREMIUM SKIP
+--
+-- Called immediately before any Robux skip prompt (including the Active Craft
+-- frame). This makes every client entry point use the same persisted backend
+-- state that ProcessReceipt consumes. If the receipt callback is delayed until
+-- a later server or after rejoin, PendingPremiumCraft still identifies the
+-- exact craft to complete.
+-- =========================
+FuncRequestSkip.OnServerInvoke = function(player, carName)
+	if typeof(carName) ~= "string" then return false, "Invalid Request" end
+	if not player or not player.Parent then return false, "Player missing" end
+
+	local recipe = RECIPES[carName]
+	if not recipe then return false, "Invalid Legendary Car" end
+
+	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
+
+	local uid = player.UserId
+	if InteractionLocks[uid] then return false, "Transaction in progress" end
+
+	InteractionLocks[uid] = true
+
+	local pOk, logicOk, msg = pcall(function()
+		local session = getSession(player)
+
+		if session.CompletedCrafts[carName] then
+			return false, "Craft already completed"
+		end
+
+		if session.PendingPremiumCraft then
+			if session.PendingPremiumCraft ~= carName then
+				return false, "Another premium craft purchase is already pending"
+			end
+			pushUpdate(player, session, "PendingPremium")
+			return true, "PendingPremium"
+		end
+
+		if not session.ActiveCrafts[carName] then
+			return false, "No active craft to skip"
+		end
+
+		session.PendingPremiumCraft = carName
+		local saveOk, saveMessage = savePlayerNow(player)
+		if not saveOk then
+			session.PendingPremiumCraft = nil
+			return false, saveMessage or "Save failed. Premium skip was not prepared."
+		end
+
+		pushUpdate(player, session, "PendingPremium")
+		return true, "PendingPremium"
+	end)
+
+	InteractionLocks[uid] = nil
+
+	if not pOk then
+		warn("Legendary Shop Prepare Skip Error:", logicOk)
+		return false, "Internal System Error"
+	end
+
+	return logicOk, msg
+end
+
 FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 	if typeof(carName) ~= "string" then return false, "Invalid Request" end
 	if not player or not player.Parent then return false, "Player missing" end
@@ -647,6 +711,9 @@ SkipCraftFunc.OnInvoke = function(player)
 
 		for completedCar in pairs(session.CompletedCrafts) do
 			if RECIPES[completedCar] then
+				if session.PendingPremiumCraft == completedCar then
+					session.PendingPremiumCraft = nil
+				end
 				local saveOk, saveMessage = savePlayerNow(player)
 				if saveOk then
 					return true, "Already granted"
@@ -755,6 +822,9 @@ task.spawn(function()
 				for carName, endTime in pairs(session.ActiveCrafts) do
 				if now >= endTime then
 					session.ActiveCrafts[carName]   = nil
+					if session.PendingPremiumCraft == carName then
+						session.PendingPremiumCraft = nil
+					end
 					session.CompletedCrafts[carName] = now
 					session.CraftProgress[carName] = {}
 

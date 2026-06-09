@@ -75,6 +75,7 @@ local RemoteUpdate     = MythicalRemotes:WaitForChild("MythicalShopUpdate")
 local FuncGetState     = MythicalRemotes:WaitForChild("GetMythicalShopState")
 local FuncPrepareSacrifice = MythicalRemotes:WaitForChild("PrepareMythicalSacrifice")
 local FuncCraftCar     = MythicalRemotes:WaitForChild("CraftMythicalCar")
+local FuncRequestSkip  = MythicalRemotes:WaitForChild("PrepareMythicalCraftSkip")
 local FuncSacrifice    = MythicalRemotes:WaitForChild("SacrificeMythicalIngredient")
 
 local DialogueEvent = nil
@@ -723,6 +724,29 @@ local function UpdateCraftingUI(carName)
 	end
 end
 
+local function promptPreparedCraftSkip(carName)
+	if typeof(carName) ~= "string" or carName == "" then return false end
+	if isProcessingPurchase then return false end
+
+	isProcessingPurchase = true
+	local invokeOk, success, msg = pcall(function()
+		return FuncRequestSkip:InvokeServer(carName)
+	end)
+	isProcessingPurchase = false
+
+	if invokeOk and success then
+		UIAudioConfig.PlayRobux()
+		UIAudioConfig.ShowPurchaseLoading()
+		MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
+		return true
+	end
+
+	local message = invokeOk and tostring(msg or "Skip unavailable") or "Skip unavailable"
+	showFeedback(message, FEEDBACK_COLORS.FailRobux)
+	warn("⚠️ [MythicalShop] Premium skip prompt blocked: " .. message)
+	return false
+end
+
 -- ============================================================================
 -- 📊  ACTIVE CRAFT PANEL
 --
@@ -771,10 +795,15 @@ local function UpdateActiveCraftPanel()
 			skipBtn:SetAttribute("Connected", true)
 			Kit.Tween:SetupButton(skipBtn, function()
 				if skipBtn.Visible and skipBtn.Active and isShopOpen then
-					if currentState and currentState.ActiveCrafts and currentState.ActiveCrafts[activeCar] then
-						UIAudioConfig.PlayRobux()
-						UIAudioConfig.ShowPurchaseLoading()
-						MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
+					local latestActiveCar = nil
+					if currentState and currentState.ActiveCrafts then
+						for c in pairs(currentState.ActiveCrafts) do
+							latestActiveCar = c
+							break
+						end
+					end
+					if latestActiveCar then
+						promptPreparedCraftSkip(latestActiveCar)
 					end
 				end
 			end)
@@ -991,8 +1020,10 @@ local function AttemptCraft(carName, isPremium)
 		end
 
 		if isPremium and currentState.ActiveCrafts[carName] then
-			-- Premium skip on the specific car being crafted
-			MarketplaceService:PromptProductPurchase(player, MYTHICAL_SKIP_PRODUCT_ID)
+			-- Premium skip on the specific car being crafted. Prepare the same
+			-- server-side pending skip state used by receipt processing before
+			-- opening the Robux prompt.
+			promptPreparedCraftSkip(carName)
 			return
 		end
 
