@@ -17,6 +17,7 @@ local UIAudioConfig = {}
 UIAudioConfig.HOVER_VOLUME  = 1.5
 UIAudioConfig.CLICK_VOLUME  = 1.8
 UIAudioConfig.ROBUX_VOLUME  = 1.5
+UIAudioConfig.RANK_QUEST_COMPLETE_VOLUME = 0.8
 
 -- Sound asset IDs
 local HOVER_SFX_ID = "rbxassetid://73899820361873"
@@ -155,6 +156,7 @@ local NAMED_SFX = {
 	AutoRestock = { Id = "rbxassetid://134952684776633", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 2.0, Key = "Restock" },
 	Restock = { Id = "rbxassetid://134952684776633", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 2.0, Key = "Restock" },
 	GlobalRestock = { Id = "rbxassetid://81822437427070", Volume = 1.0, Pitch = 1.0, Variance = 0, Dedupe = 2.0, Key = "Restock" },
+	RankQuestComplete = { Id = "rbxassetid://140350065916052", Volume = UIAudioConfig.RANK_QUEST_COMPLETE_VOLUME, Pitch = 1.0, Variance = 0.03, Dedupe = 0.1 },
 }
 
 
@@ -186,6 +188,10 @@ end
 
 function UIAudioConfig.PlayRestock()
 	UIAudioConfig.PlayNamed("GlobalRestock")
+end
+
+function UIAudioConfig.PlayRankQuestComplete()
+	UIAudioConfig.PlayNamed("RankQuestComplete")
 end
 
 -- ============================================================================
