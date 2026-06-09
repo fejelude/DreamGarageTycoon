@@ -90,9 +90,9 @@ local RankConfig = {
 		PreviousRank = "MVP+",
 		Requirements = {
 			{ Id = "Requirement1", Type = "Buy", Car = "Vortex", Shop = "Epic", Amount = 2 },
-			{ Id = "Requirement2", Type = "Craft", Car = "Neo Revuelto", Amount = 1 },
+			{ Id = "Requirement2", Type = "CraftOrObtain", Car = "Neo Revuelto", Amount = 1, Description = "Craft or obtain 1 Neo Revuelto." },
 			{ Id = "Requirement3", Type = "Obtain", Car = "Yamura", Amount = 1 },
-			{ Id = "Requirement4", Type = "Craft", Car = "La Rossa", Amount = 1 },
+			{ Id = "Requirement4", Type = "CraftOrObtain", Car = "La Rossa", Amount = 1, Description = "Craft or obtain 1 La Rossa." },
 			{ Id = "Requirement5", Type = "BaseLevel", Level = 2, Amount = 1 },
 		},
 		Benefits = { Multiplier = 6, ShopAccess = "Mythical", ChatTag = "MVP++", ExtraStorage = 6, WithdrawalLimit = 100000000000000 },

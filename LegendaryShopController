@@ -73,6 +73,7 @@ local LegendaryRemotes = Remotes:WaitForChild("LegendaryShop")
 local RemoteOpen       = LegendaryRemotes:WaitForChild("OpenShopUI")
 local RemoteUpdate     = LegendaryRemotes:WaitForChild("LegendaryShopUpdate")
 local FuncGetState     = LegendaryRemotes:WaitForChild("GetLegendaryShopState")
+local FuncPrepareSacrifice = LegendaryRemotes:WaitForChild("PrepareLegendarySacrifice")
 local FuncCraftCar     = LegendaryRemotes:WaitForChild("CraftLegendaryCar")
 local FuncSacrifice    = LegendaryRemotes:WaitForChild("SacrificeLegendaryIngredient")
 
@@ -862,8 +863,18 @@ local function AttemptSacrifice(carName, ingredient)
 		and ("$" .. FormatCommas(requiredAmount - currentAmount))
 		or  ("1 " .. ingredient)
 
+	local prepareOk, prepareSuccess, confirmationTokenOrMessage = pcall(function()
+		return FuncPrepareSacrifice:InvokeServer(carName, ingredient)
+	end)
+	if not prepareOk or not prepareSuccess then
+		Kit.Sound:Play("BuyFail")
+		showFeedback(tostring(confirmationTokenOrMessage or "Sacrifice unavailable"), FEEDBACK_COLORS.FailCash)
+		return
+	end
+	local confirmationToken = confirmationTokenOrMessage
+
 	local confirmText = string.format(
-		"<font color='%s'>Do you want to sacrifice </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>%s</font></b><font color='%s'>?</font>",
+		"<font color='%s'>Are you sure you want to sacrifice </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>%s</font></b><font color='%s'>?</font>",
 		CONFIRMATION_COLORS.Accent,    CONFIRMATION_COLORS.Sacrifice, escapeRichText(sacrificeText),
 		CONFIRMATION_COLORS.Accent,    CONFIRMATION_COLORS.Target,    escapeRichText(displayName),
 		CONFIRMATION_COLORS.Accent
@@ -881,7 +892,7 @@ local function AttemptSacrifice(carName, ingredient)
 		Kit.Sound:Play("Click")
 
 		task.spawn(function()
-			local success, msg = FuncSacrifice:InvokeServer(carName, ingredient)
+			local success, msg = FuncSacrifice:InvokeServer(carName, ingredient, confirmationToken)
 			if requestSessionId == shopSessionId then isProcessingPurchase = false end
 			if not isActiveShopSession(requestSessionId) then mainFrame.Visible = true; return end
 

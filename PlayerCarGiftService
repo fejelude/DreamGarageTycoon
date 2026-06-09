@@ -61,10 +61,8 @@ end
 local function recordGift(giver, receiver, carId)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
 	if rankApi then
-		task.spawn(function()
-			pcall(function()
-				rankApi:Invoke("CarGiftSent", giver, receiver, carId)
-			end)
+		pcall(function()
+			rankApi:Invoke("CarGiftSent", giver, receiver, carId)
 		end)
 	end
 end

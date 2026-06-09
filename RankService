@@ -193,6 +193,15 @@ local function markDirty(player)
 	end
 end
 
+local function requestSave(player)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if api then
+		task.spawn(function()
+			pcall(function() api:Invoke("SaveNow", player) end)
+		end)
+	end
+end
+
 local function trackConnection(player, connection)
 	if not connection then return end
 	PlayerConnections[player] = PlayerConnections[player] or {}
@@ -412,8 +421,9 @@ local function evaluateRequirement(player, rankName, requirement)
 		current = progress.Purchases[progressKey(requirement.Shop, requirement.Car)] or 0
 	elseif requirement.Type == "Craft" then
 		current = progress.Crafted[RankConfig.NormalizeCarName(requirement.Car)] or 0
-	elseif requirement.Type == "Obtain" then
-		current = progress.Obtained[RankConfig.NormalizeCarName(requirement.Car)] or 0
+	elseif requirement.Type == "Obtain" or requirement.Type == "CraftOrObtain" then
+		local normalizedCar = RankConfig.NormalizeCarName(requirement.Car)
+		current = math.max(progress.Obtained[normalizedCar] or 0, progress.Crafted[normalizedCar] or 0)
 	elseif requirement.Type == "Hold" then
 		current = getCurrencyValue(player, requirement.Currency)
 	elseif requirement.Type == "GiftSent" then
@@ -538,7 +548,7 @@ local function recordCarObtained(player, carName, source, shopName)
 		local target = requirement.Amount or 1
 		local requirementCar = RankConfig.NormalizeCarName(requirement.Car)
 
-		if requirement.Type == "Obtain" and requirementCar == normalized then
+		if (requirement.Type == "Obtain" or requirement.Type == "CraftOrObtain") and requirementCar == normalized then
 			changed = incrementCapped(progress.Obtained, normalized, 1, target) or changed
 		elseif source == "Buy" and requirement.Type == "Buy" and progressKey(requirement.Shop, requirement.Car) == progressKey(shopName, carName) then
 			changed = incrementCapped(progress.Purchases, progressKey(shopName, carName), 1, target) or changed
@@ -553,6 +563,7 @@ local function recordCarObtained(player, carName, source, shopName)
 
 	markDirty(player)
 	pushState(player)
+	requestSave(player)
 	return true
 end
 
@@ -582,6 +593,7 @@ local function recordGiftProgress(player, otherPlayer, isSender)
 	if changed then
 		markDirty(player)
 		pushState(player)
+		requestSave(player)
 	end
 
 	return changed

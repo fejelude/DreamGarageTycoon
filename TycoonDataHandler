@@ -880,6 +880,58 @@ local function toolMatchesId(tool, targetToolId)
 		)
 end
 
+local function toolIdMatchesTarget(toolId, targetToolId)
+	if type(toolId) ~= "string" or type(targetToolId) ~= "string" then
+		return false
+	end
+
+	local cleanToolId = toolId:gsub(" Item$", "")
+	local cleanTargetId = targetToolId:gsub(" Item$", "")
+	return cleanToolId == cleanTargetId
+end
+
+local function getHotbarReservationCount(player, targetToolId)
+	if not player or type(targetToolId) ~= "string" then return 0 end
+
+	local reserved = 0
+	for i = 1, 6 do
+		local hotbarToolId = player:GetAttribute("HotbarSlot" .. i)
+		if toolIdMatchesTarget(hotbarToolId, targetToolId) then
+			reserved += 1
+		end
+	end
+
+	return reserved
+end
+
+local function hasProtectedSacrificeAttribute(tool)
+	if not tool then return true end
+
+	for _, attributeName in ipairs({
+		"Locked",
+		"IsLocked",
+		"Favorite",
+		"Favorited",
+		"IsFavorite",
+		"Favourite",
+		"Favourited",
+		"IsFavourite",
+	}) do
+		if tool:GetAttribute(attributeName) == true then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function isProtectedFromSacrifice(player, tool)
+	if not tool or not tool:IsA("Tool") then return true end
+	if hasProtectedSacrificeAttribute(tool) then return true end
+	if player and player.Character and tool.Parent == player.Character then return true end
+	return false
+end
+
 local function countMatchingTools(player, targetToolId)
 	if not player or not targetToolId then return 0 end
 
@@ -888,16 +940,15 @@ local function countMatchingTools(player, targetToolId)
 	local function scan(container)
 		if not container then return end
 		for _, child in ipairs(container:GetChildren()) do
-			if toolMatchesId(child, targetToolId) then
+			if toolMatchesId(child, targetToolId) and not isProtectedFromSacrifice(player, child) then
 				total += 1
 			end
 		end
 	end
 
 	scan(player:FindFirstChild("Backpack"))
-	if player.Character then scan(player.Character) end
 
-	return total
+	return math.max(0, total - getHotbarReservationCount(player, targetToolId))
 end
 
 local function removeMatchingTools(player, targetToolId, requestedAmount)
@@ -905,12 +956,17 @@ local function removeMatchingTools(player, targetToolId, requestedAmount)
 
 	requestedAmount = math.max(1, tonumber(requestedAmount) or 1)
 	local removedOwnedCount = 0
+	local hotbarReservations = getHotbarReservationCount(player, targetToolId)
 
 	local function removeFromOwnedContainer(container)
 		if not container or removedOwnedCount >= requestedAmount then return end
 		for _, child in ipairs(container:GetChildren()) do
 			if removedOwnedCount >= requestedAmount then break end
-			if toolMatchesId(child, targetToolId) then
+			if toolMatchesId(child, targetToolId) and not isProtectedFromSacrifice(player, child) then
+				if hotbarReservations > 0 then
+					hotbarReservations -= 1
+					continue
+				end
 				child:Destroy()
 				removedOwnedCount += 1
 			end
@@ -920,7 +976,6 @@ local function removeMatchingTools(player, targetToolId, requestedAmount)
 	-- Remove real owned copies first. StarterGear mirrors are cleaned after and
 	-- do not contribute to the amount removed.
 	removeFromOwnedContainer(player:FindFirstChild("Backpack"))
-	if player.Character then removeFromOwnedContainer(player.Character) end
 
 	local mirrorsToRemove = removedOwnedCount
 	local starterGear = player:FindFirstChild("StarterGear")
@@ -990,6 +1045,7 @@ local function transferToolBetweenPlayers(giver, receiver, tool)
 	end
 
 	local starterClone = tool:Clone()
+	local receiverStarterClone = nil
 
 	-- Clean the respawn mirror manually so the moved car does not come back on giver respawn.
 	local giverStarterGear = giver:FindFirstChild("StarterGear")
@@ -1007,6 +1063,7 @@ local function transferToolBetweenPlayers(giver, receiver, tool)
 	local receiverStarterGear = receiver:FindFirstChild("StarterGear")
 	if receiverStarterGear then
 		starterClone.Parent = receiverStarterGear
+		receiverStarterClone = starterClone
 	else
 		starterClone:Destroy()
 	end
@@ -1018,7 +1075,33 @@ local function transferToolBetweenPlayers(giver, receiver, tool)
 	local giverSaveOk = save and save(giver, false, true)
 	local receiverSaveOk = save and save(receiver, false, true)
 	if not giverSaveOk or not receiverSaveOk then
-		warn("⚠️ [TycoonDataHandler] Player gift transferred but one or more force-saves failed. Dirty sessions will retry by autosave.")
+		warn("[TycoonDataHandler] Player gift transfer save failed; rolling back transfer.")
+		if receiverStarterClone and receiverStarterClone.Parent then
+			receiverStarterClone:Destroy()
+		end
+
+		local giverBackpack = giver:FindFirstChild("Backpack")
+		if giverBackpack and tool and tool.Parent == receiverBackpack then
+			tool.Parent = giverBackpack
+		end
+
+		if giverStarterGear and tool and tool.Parent then
+			local hasMirror = false
+			for _, child in ipairs(giverStarterGear:GetChildren()) do
+				if toolMatchesId(child, toolId) then
+					hasMirror = true
+					break
+				end
+			end
+			if not hasMirror then
+				local mirror = tool:Clone()
+				mirror.Parent = giverStarterGear
+			end
+		end
+
+		markDirty(giver)
+		markDirty(receiver)
+		return false, "Gift failed: Could not save transfer.", "Gift failed: Could not save received car."
 	end
 
 	return true
@@ -1350,6 +1433,13 @@ LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 	elseif action == "MarkDirty" then
 		markDirty(player)
 		return true
+
+	elseif action == "SaveNow" then
+		markDirty(player)
+		if not save then
+			return false, "Save system unavailable"
+		end
+		return save(player, false, true)
 	end
 
 	return false
@@ -1396,6 +1486,13 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 	elseif action == "MarkDirty" then
 		markDirty(player)
 		return true
+
+	elseif action == "SaveNow" then
+		markDirty(player)
+		if not save then
+			return false, "Save system unavailable"
+		end
+		return save(player, false, true)
 	end
 
 	return false
@@ -2215,6 +2312,12 @@ Players.PlayerRemoving:Connect(function(player)
 	save(player, true)
 	FreeRewardsClaimLocks[player] = nil
 	SessionData[player] = nil
+end)
+
+game:BindToClose(function()
+	for _, player in ipairs(Players:GetPlayers()) do
+		save(player, true)
+	end
 end)
 
 task.spawn(function()
