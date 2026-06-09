@@ -23,7 +23,7 @@ local RECIPES = {
 		Maverick  = 3,
 		Galadriel = 4,
 		Riva      = 5,
-		CraftTime = 21600, -- 6 hours
+		CraftTime = 43200, -- 12 hours
 	},
 	["Neo-Performante"] = {
 		TargetCar = "Neo-Performante",
@@ -32,7 +32,7 @@ local RECIPES = {
 		Stuttgart = 3,
 		Kingston  = 3,
 		Riva      = 5,
-		CraftTime = 28800, -- 8 hours
+		CraftTime = 57600, -- 16 hours
 	},
 	["Neo-Zentorno"] = {
 		TargetCar = "Neo-Zentorno",
@@ -41,7 +41,7 @@ local RECIPES = {
 		Sadie     = 2,
 		Blackhead = 3,
 		Riva      = 4,
-		CraftTime = 36000, -- 10 hours
+		CraftTime = 72000, -- 20 hours
 	},
 	["Neo-Revuelto"] = {
 		TargetCar = "Neo-Revuelto",
@@ -50,7 +50,7 @@ local RECIPES = {
 		Vipera    = 3,
 		Mia       = 2,
 		Riva      = 4,
-		CraftTime = 43200, -- 12 hours
+		CraftTime = 86400, -- 24 hours
 	},
 	["Yamura"] = {
 		TargetCar = "Yamura",
@@ -59,7 +59,7 @@ local RECIPES = {
 		Vortex    = 1,
 		Camara    = 3,
 		Mia       = 2,
-		CraftTime = 64800, -- 18 hours
+		CraftTime = 129600, -- 36 hours
 	},
 	["LaRossa"] = {
 		TargetCar = "La Rossa",
@@ -68,7 +68,7 @@ local RECIPES = {
 		Corvo     = 3,
 		Mia       = 3,
 		Riva      = 5,
-		CraftTime = 86400, -- 24 hours
+		CraftTime = 172800, -- 48 hours
 	},
 }
 
@@ -205,6 +205,14 @@ local function savePlayerNow(player)
 		return false, tostring(saveMessage or saveOk or "Save failed")
 	end
 	return true
+end
+
+local function grantCraftReward(player, recipeCarName, realToolName, source)
+	return invokeInventory("GiveTool", player, realToolName, {
+		BypassStorageLimit = true,
+		Source = source,
+		CraftRecipe = recipeCarName,
+	})
 end
 
 -- =========================
@@ -628,23 +636,33 @@ SkipCraftFunc.OnInvoke = function(player)
 
 	local activeCars = {}
 	if session.PendingPremiumCraft then
-		table.insert(activeCars, session.PendingPremiumCraft)
+		table.insert(activeCars, {
+			CarName = session.PendingPremiumCraft,
+			WasPendingPremium = true,
+			OriginalEndTime = nil,
+		})
 		session.PendingPremiumCraft = nil
 	else
-		for carName in pairs(session.ActiveCrafts) do
-			table.insert(activeCars, carName)
+		for carName, endTime in pairs(session.ActiveCrafts) do
+			table.insert(activeCars, {
+				CarName = carName,
+				WasPendingPremium = false,
+				OriginalEndTime = endTime,
+			})
 		end
 	end
 
 	local foundActive = false
-	for _, carName in ipairs(activeCars) do
+	local grantFailureMessage = nil
+	for _, craftInfo in ipairs(activeCars) do
+		local carName = craftInfo.CarName
 		session.ActiveCrafts[carName] = nil
 		session.CompletedCrafts[carName] = os.time()
 		session.CraftProgress[carName] = {}
 		local realToolName = RECIPES[carName].TargetCar
 		local alreadyAwarded = session.AwardedCrafts[carName] ~= nil
 		session.AwardedCrafts[carName] = session.AwardedCrafts[carName] or os.time()
-		local invokeOk, giveResult = invokeInventory("GiveTool", player, realToolName)
+		local invokeOk, giveResult, giveMessage = grantCraftReward(player, carName, realToolName, "LegendaryCraftSkip")
 
 		if invokeOk and giveResult ~= false then
 			local saveOk, saveMessage = savePlayerNow(player)
@@ -660,7 +678,12 @@ SkipCraftFunc.OnInvoke = function(player)
 			foundActive = true
 		else
 			warn("⚠️ [LegendaryShop] Failed to grant skipped " .. realToolName .. " to " .. player.Name)
-			session.ActiveCrafts[carName] = os.time() + 60
+			grantFailureMessage = giveMessage or giveResult or "System error granting item"
+			if craftInfo.WasPendingPremium then
+				session.PendingPremiumCraft = carName
+			else
+				session.ActiveCrafts[carName] = craftInfo.OriginalEndTime
+			end
 			session.CompletedCrafts[carName] = nil
 			if not alreadyAwarded then
 				session.AwardedCrafts[carName] = nil
@@ -669,7 +692,7 @@ SkipCraftFunc.OnInvoke = function(player)
 	end
 
 	if not foundActive then
-		return false, "No active crafts to skip"
+		return false, grantFailureMessage or "No active crafts to skip"
 	end
 
 	return true, "Success"
@@ -698,8 +721,8 @@ task.spawn(function()
 					local realToolName           = RECIPES[carName].TargetCar
 					local alreadyAwarded = session.AwardedCrafts[carName] ~= nil
 					session.AwardedCrafts[carName] = session.AwardedCrafts[carName] or now
-					local invokeOk, giveResult   =
-						invokeInventory("GiveTool", player, realToolName)
+					local invokeOk, giveResult, giveMessage =
+						grantCraftReward(player, carName, realToolName, "LegendaryCraftComplete")
 
 					if invokeOk and giveResult ~= false then
 						if not alreadyAwarded then
@@ -711,7 +734,7 @@ task.spawn(function()
 					else
 						warn("⚠️ [LegendaryShop] Failed to grant " .. realToolName .. " to " .. player.Name)
 						-- Revert so the loop retries on the next tick
-						session.ActiveCrafts[carName]   = os.time() + 30
+						session.ActiveCrafts[carName]   = endTime
 						session.CompletedCrafts[carName] = nil
 						if not alreadyAwarded then
 							session.AwardedCrafts[carName] = nil

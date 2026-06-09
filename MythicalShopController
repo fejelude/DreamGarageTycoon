@@ -1421,9 +1421,10 @@ local function init()
 				"Construction of the <font color='#B652FF'>" .. dName .. "</font> is done. A flawless execution. It's already there in your inventory.",
 			}))
 		elseif newState.Reason == "Skipped" then
+			local dName = carName and getDisplayCarName(carName) or "your car"
 			if carName then acknowledgedCrafts[carName] = true end
 			ethourahSpeak(
-				"<font color='#B652FF'>I used magic to do this immediately</font>, it drains my energy, so I need payment to do it. The car should be in your inventory.",
+				"<font color='#B652FF'>I used magic to do this immediately</font>, it drains my energy, so I need payment to do it. The <font color='#B652FF'>" .. dName .. "</font> should be in your inventory.",
 				function()
 					if isShopOpen then mainFrame.Visible = true end
 				end
