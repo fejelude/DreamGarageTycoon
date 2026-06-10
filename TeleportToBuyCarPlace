@@ -19,9 +19,11 @@ local padIsOneDirectional = folder:WaitForChild("OneWay")
 local pad1 = folder:WaitForChild("Pad1")
 local pad2 = folder:WaitForChild("Pad2")
 
-local activeTeleports = {}
+-- Cooldown after teleporting.
+-- This helps prevent players from instantly teleporting back and getting stuck in a loop.
+local TELEPORT_COOLDOWN = 5
 
-local DEBOUNCE_TIME = 6
+local activeTeleports = {}
 
 local function createSFXTemplate(name, soundId)
 	local sound = Instance.new("Sound")
@@ -45,7 +47,7 @@ local function warpPlayer(character, targetPad, soundTemplate)
 	task.wait(1)
 
 	-- SECURITY: Because we yielded, state could have changed.
-	-- Verify the character still exists and is alive before moving them.
+	-- We verify the character still exists and is alive before moving them.
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 
@@ -71,8 +73,8 @@ local function warpPlayer(character, targetPad, soundTemplate)
 	teleportEvent:FireClient(player, "FadeIn")
 end
 
-local function onPadTouched(hit, sourcePad, targetPad, soundTemplate, isOneWayCheck)
-	local character = hit.Parent
+local function onPadTouched(hit, targetPad, soundTemplate, isOneWayCheck)
+	local character = hit:FindFirstAncestorOfClass("Model")
 	if not character then return end
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -84,27 +86,30 @@ local function onPadTouched(hit, sourcePad, targetPad, soundTemplate, isOneWayCh
 			return
 		end
 
-		if not activeTeleports[character] then
-			activeTeleports[character] = true
-
-			-- Use task.spawn so the touch event doesn't yield,
-			-- allowing multiple people to step on it at once.
-			task.spawn(function()
-				warpPlayer(character, targetPad, soundTemplate)
-			end)
-
-			-- 6 second debounce to prevent repeated teleporting
-			task.delay(DEBOUNCE_TIME, function()
-				activeTeleports[character] = nil
-			end)
+		-- Prevent this character from teleporting again during cooldown
+		if activeTeleports[character] then
+			return
 		end
+
+		activeTeleports[character] = true
+
+		-- Use task.spawn so the touch event does not yield,
+		-- allowing multiple people to step on the teleporter at once.
+		task.spawn(function()
+			warpPlayer(character, targetPad, soundTemplate)
+		end)
+
+		-- 5 second cooldown to prevent teleport loops
+		task.delay(TELEPORT_COOLDOWN, function()
+			activeTeleports[character] = nil
+		end)
 	end
 end
 
 pad1.Touched:Connect(function(hit)
-	onPadTouched(hit, pad1, pad2, sfxGoingToTemplate, false)
+	onPadTouched(hit, pad2, sfxGoingToTemplate, false)
 end)
 
 pad2.Touched:Connect(function(hit)
-	onPadTouched(hit, pad2, pad1, sfxGoingBackTemplate, true)
+	onPadTouched(hit, pad1, sfxGoingBackTemplate, true)
 end)
