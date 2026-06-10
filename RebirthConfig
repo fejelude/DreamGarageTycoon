@@ -54,7 +54,11 @@ function RebirthConfig.GetCost(nextRebirth)
 end
 
 function RebirthConfig.GetMultiplier(rebirth)
-	return (tonumber(rebirth) or 0) + 1
+	rebirth = math.clamp(math.floor(tonumber(rebirth) or 0), 0, RebirthConfig.MAX_REBIRTH)
+
+	-- Rebirth count is the additive economy contribution: Rebirth 18 = +18x.
+	-- Rebirth 0 still displays as x1 so brand-new players never see a 0x multiplier.
+	return math.max(1, rebirth)
 end
 
 return RebirthConfig

@@ -197,7 +197,9 @@ premiumResult.OnClientEvent:Connect(function(success, msg, amount)
 end)
 
 UIButtonUtils.SetupButton(exitButton, function()
-	claimAndClose(false)
+	-- Exit should still perform the standard 1x offline claim and show the same
+	-- bank-transfer confirmation as the normal Claim button.
+	claimAndClose(true)
 end)
 
 task.defer(maybeOpen)
