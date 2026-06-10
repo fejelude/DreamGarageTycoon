@@ -8,6 +8,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
@@ -19,11 +20,19 @@ local RankUpdate = RankRemotes:WaitForChild("RankUpdate")
 local player = Players.LocalPlayer
 
 local DISPLAY_TIME = 5
+local FADE_OUT_TIME = 0.5
 local STARTUP_BASELINE_TIMEOUT = 30
 local STARTUP_SETTLE_SECONDS = 0.5
 local VISIBILITY_REFRESH_SECONDS = 0.1
 
-local notificationQueue = {}
+local notificationState = {
+	baseMessage = nil,
+	count = 0,
+	hideToken = 0,
+	fadeTween = nil,
+	strokeTween = nil,
+}
+local labelDefaults = {}
 local isDisplaying = false
 local lastRankState = nil
 local baselineReady = false
@@ -83,53 +92,186 @@ local function hideRankNotificationFrame()
 	end
 end
 
-local function keepNotificationVisible(message, endTime)
-	while os.clock() < endTime and isDisplaying do
+local function getLabelStroke(label)
+	return label and label:FindFirstChildOfClass("UIStroke")
+end
+
+local function getLabelDefaults(label)
+	if not label then return nil end
+	local defaults = labelDefaults[label]
+	if defaults then return defaults end
+
+	local stroke = getLabelStroke(label)
+	defaults = {
+		TextTransparency = label.TextTransparency,
+		TextStrokeTransparency = label.TextStrokeTransparency,
+		UIStrokeTransparency = stroke and stroke.Transparency or nil,
+	}
+	labelDefaults[label] = defaults
+	return defaults
+end
+
+local function cancelFadeTweens()
+	if notificationState.fadeTween then
+		notificationState.fadeTween:Cancel()
+		notificationState.fadeTween = nil
+	end
+	if notificationState.strokeTween then
+		notificationState.strokeTween:Cancel()
+		notificationState.strokeTween = nil
+	end
+end
+
+local function setLabelVisible(label)
+	if not label then return end
+	local defaults = getLabelDefaults(label)
+	label.Visible = true
+	label.TextTransparency = defaults and defaults.TextTransparency or 0
+	label.TextStrokeTransparency = defaults and defaults.TextStrokeTransparency or label.TextStrokeTransparency
+	local stroke = getLabelStroke(label)
+	if stroke and defaults and defaults.UIStrokeTransparency ~= nil then
+		stroke.Transparency = defaults.UIStrokeTransparency
+	end
+end
+
+local function formatNotificationText(baseMessage, count)
+	if count and count >= 2 then
+		return tostring(baseMessage) .. " (x" .. tostring(count) .. ")"
+	end
+	return tostring(baseMessage)
+end
+
+local function playRankQuestSound()
+	if type(UIAudioConfig) ~= "table" then
+		return
+	end
+
+	local playFn = UIAudioConfig.PlayRankQuestComplete
+	if type(playFn) ~= "function" then
+		playFn = UIAudioConfig.PlayNamed
+		if type(playFn) ~= "function" then
+			warn("[RankQuestNotificationClient] UIAudioConfig has no rank quest completion sound function.")
+			return
+		end
+	end
+
+	local ok, err = pcall(function()
+		if playFn == UIAudioConfig.PlayNamed then
+			playFn("RankQuestComplete")
+		else
+			playFn()
+		end
+	end)
+
+	if not ok then
+		warn("[RankQuestNotificationClient] Failed to play rank quest completion sound: " .. tostring(err))
+	end
+end
+
+local function keepNotificationVisible(token)
+	while notificationState.hideToken == token and isDisplaying do
 		local _, frame, label = getUI()
 		if frame and label and label:IsA("TextLabel") then
 			bringNotificationToFront(frame)
-			label.Text = message
-			label.Visible = true
+			label.Text = formatNotificationText(notificationState.baseMessage, notificationState.count)
+			setLabelVisible(label)
 			frame.Visible = true
 		end
 		task.wait(VISIBILITY_REFRESH_SECONDS)
 	end
 end
 
-local function processQueue()
-	if isDisplaying or #notificationQueue == 0 then return end
-
-	local _, frame, label = getUI()
-	if not (frame and label and label:IsA("TextLabel")) then
-		task.delay(1, processQueue)
+local function fadeOutNotification(token)
+	if notificationState.hideToken ~= token then
 		return
 	end
 
-	isDisplaying = true
-	local message = table.remove(notificationQueue, 1)
-
-	bringNotificationToFront(frame)
-	label.Text = message
-	label.Visible = true
-	frame.Visible = true
-	UIAudioConfig.PlayRankQuestComplete()
-
-	keepNotificationVisible(message, os.clock() + DISPLAY_TIME)
-
-	if #notificationQueue == 0 then
-		frame.Visible = false
-		label.Visible = false
-		task.wait(0.2)
+	local _, frame, label = getUI()
+	if not (frame and label and label:IsA("TextLabel")) then
+		isDisplaying = false
+		return
 	end
 
-	isDisplaying = false
-	processQueue()
+	cancelFadeTweens()
+
+	local stroke = getLabelStroke(label)
+	notificationState.fadeTween = TweenService:Create(label, TweenInfo.new(FADE_OUT_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		TextTransparency = 1,
+		TextStrokeTransparency = 1,
+	})
+	if stroke then
+		notificationState.strokeTween = TweenService:Create(stroke, TweenInfo.new(FADE_OUT_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Transparency = 1,
+		})
+	end
+
+	local activeTween = notificationState.fadeTween
+	local connection
+	connection = activeTween.Completed:Connect(function()
+		if connection then
+			connection:Disconnect()
+		end
+		if notificationState.hideToken ~= token or notificationState.fadeTween ~= activeTween then
+			return
+		end
+
+		frame.Visible = false
+		label.Visible = false
+		local defaults = getLabelDefaults(label)
+		label.TextTransparency = defaults and defaults.TextTransparency or 0
+		label.TextStrokeTransparency = defaults and defaults.TextStrokeTransparency or label.TextStrokeTransparency
+		if stroke and defaults and defaults.UIStrokeTransparency ~= nil then
+			stroke.Transparency = defaults.UIStrokeTransparency
+		end
+
+		notificationState.baseMessage = nil
+		notificationState.count = 0
+		notificationState.fadeTween = nil
+		notificationState.strokeTween = nil
+		isDisplaying = false
+	end)
+
+	notificationState.fadeTween:Play()
+	if notificationState.strokeTween then
+		notificationState.strokeTween:Play()
+	end
 end
 
-local function showNotification(message)
-	if type(message) ~= "string" or message == "" then return end
-	table.insert(notificationQueue, message)
-	task.spawn(processQueue)
+local function showNotification(baseMessage, increment)
+	if type(baseMessage) ~= "string" or baseMessage == "" then return end
+	increment = math.max(1, math.floor(tonumber(increment) or 1))
+
+	local _, frame, label = getUI()
+	if not (frame and label and label:IsA("TextLabel")) then
+		task.delay(1, function()
+			showNotification(baseMessage, increment)
+		end)
+		return
+	end
+
+	cancelFadeTweens()
+
+	if notificationState.baseMessage == baseMessage and frame.Visible then
+		notificationState.count += increment
+	else
+		notificationState.baseMessage = baseMessage
+		notificationState.count = increment
+	end
+
+	notificationState.hideToken += 1
+	local token = notificationState.hideToken
+	isDisplaying = true
+
+	bringNotificationToFront(frame)
+	label.Text = formatNotificationText(notificationState.baseMessage, notificationState.count)
+	setLabelVisible(label)
+	frame.Visible = true
+	playRankQuestSound()
+
+	task.spawn(keepNotificationVisible, token)
+	task.delay(DISPLAY_TIME, function()
+		fadeOutNotification(token)
+	end)
 end
 
 local function getActiveRankName(state)
@@ -147,24 +289,25 @@ local function getActiveRankName(state)
 	return nil
 end
 
-local function didAnyRequirementComplete(previousRankState, currentRankState)
+local function countNewCompletedRequirements(previousRankState, currentRankState)
 	if type(previousRankState) ~= "table" or type(currentRankState) ~= "table" then
-		return false
+		return 0
 	end
 	if type(previousRankState.Requirements) ~= "table" or type(currentRankState.Requirements) ~= "table" then
-		return false
+		return 0
 	end
 
+	local completedCount = 0
 	for requirementId, currentRequirement in pairs(currentRankState.Requirements) do
 		local previousRequirement = previousRankState.Requirements[requirementId]
 		local wasComplete = type(previousRequirement) == "table" and previousRequirement.Complete == true
 		local isComplete = type(currentRequirement) == "table" and currentRequirement.Complete == true
 		if isComplete and not wasComplete then
-			return true
+			completedCount += 1
 		end
 	end
 
-	return false
+	return completedCount
 end
 
 local function handleRankState(state)
@@ -180,11 +323,12 @@ local function handleRankState(state)
 		local currentRankState = state.Ranks[activeRankName]
 		local previousRankState = lastRankState.Ranks[activeRankName]
 
-		if didAnyRequirementComplete(previousRankState, currentRankState) then
+		local newlyCompletedCount = countNewCompletedRequirements(previousRankState, currentRankState)
+		if newlyCompletedCount > 0 then
 			if currentRankState.RequirementsComplete == true then
-				showNotification("You’ve completed all quests for " .. activeRankName .. ". Claim your rank at the NPC to proceed. 😁♥️")
+				showNotification("You’ve completed all quests for " .. activeRankName .. ". Claim your rank at the NPC to proceed. 😁♥️", newlyCompletedCount)
 			else
-				showNotification("😊 You have successfully completed a quest for " .. activeRankName .. ".")
+				showNotification("😊 You have successfully completed a quest for " .. activeRankName .. ".", newlyCompletedCount)
 			end
 		end
 	end

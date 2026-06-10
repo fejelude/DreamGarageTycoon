@@ -218,6 +218,7 @@ local dragSourceButton = nil   -- inventory button ref when source is inventory
 local scheduleRender  -- forward declaration
 local renderCurrentTab -- forward declaration
 local updateHotbarUI  -- forward declaration
+local refreshSlotVisual -- forward declaration
 
 local DRAG_ICON_ALPHA        = 0.25
 local DRAG_TWEEN_INFO        = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -535,7 +536,7 @@ local function setHotbarNameGlow(nameLabel, rarity)
 	end
 end
 
-local function refreshSlotVisual(slotIndex)
+refreshSlotVisual = function(slotIndex)
 	if not slotsFolder then return end
 	local slot = slotsFolder:FindFirstChild("Slot" .. slotIndex)
 	if not slot then return end
