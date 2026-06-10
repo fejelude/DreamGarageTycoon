@@ -1,6 +1,7 @@
 -- [[ SERVER SCRIPT: TycoonEconomy (Friend Bonus + Accumulator Fix + SKINS) ]]
 -- [[ UPDATED: Added Friend Multiplier (10% per friend, max 50%) ]]
 -- [[ UPDATED: Added Skin Multiplier (e.g. 25% for Gold) ]]
+-- [[ UPDATED: Multiplier sources now stack additively instead of exponentially. ]]
 -- [[ FIXES: "Zero Income" Bug, Name Mismatch Lookup, API Lag Prevention ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -122,6 +123,27 @@ local function GetSkinMultiplier(player)
 	return 1 -- Default (No Boost)
 end
 
+local function getPositiveMultiplierContribution(multiplier, noBoostMultiplier)
+	multiplier = tonumber(multiplier) or noBoostMultiplier
+	noBoostMultiplier = tonumber(noBoostMultiplier) or 1
+
+	if multiplier <= noBoostMultiplier then
+		return 0
+	end
+
+	return multiplier
+end
+
+local function getRebirthMultiplierContribution(player, rebirthMultiplier)
+	local rebirth = math.floor(tonumber(player:GetAttribute("Rebirth")) or 0)
+	if rebirth <= 0 then
+		return 0
+	end
+
+	-- Rebirth 18 should add +18x, not multiply another source by 18.
+	return tonumber(rebirthMultiplier) or rebirth
+end
+
 local function GetActualEarningsMultiplier(player)
 	if not player then return 1 end
 
@@ -131,7 +153,14 @@ local function GetActualEarningsMultiplier(player)
 	local rankMultiplier = tonumber(player:GetAttribute("RankResourceMultiplier")) or 1
 	local rebirthMultiplier = tonumber(player:GetAttribute("RebirthMultiplier")) or 1
 
-	return ((((friendMultiplier * premiumMultiplier) * skinMultiplier) * rankMultiplier) * rebirthMultiplier)
+	local totalMultiplier = 0
+	totalMultiplier += getPositiveMultiplierContribution(friendMultiplier, 1)
+	totalMultiplier += getPositiveMultiplierContribution(premiumMultiplier, 1)
+	totalMultiplier += getPositiveMultiplierContribution(skinMultiplier, 1)
+	totalMultiplier += getPositiveMultiplierContribution(rankMultiplier, 1)
+	totalMultiplier += getRebirthMultiplierContribution(player, rebirthMultiplier)
+
+	return math.max(1, totalMultiplier)
 end
 
 local function RefreshActualEarningsMultiplier(player)
@@ -152,6 +181,12 @@ local function watchEarningsMultiplierAttributes(player)
 		RefreshActualEarningsMultiplier(player)
 	end)
 	player:GetAttributeChangedSignal("RebirthMultiplier"):Connect(function()
+		RefreshActualEarningsMultiplier(player)
+	end)
+	player:GetAttributeChangedSignal("Rebirth"):Connect(function()
+		RefreshActualEarningsMultiplier(player)
+	end)
+	player:GetPropertyChangedSignal("MembershipType"):Connect(function()
 		RefreshActualEarningsMultiplier(player)
 	end)
 end

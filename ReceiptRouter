@@ -585,7 +585,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		local currentRebirth = math.floor(tonumber(targetPlayer:GetAttribute("Rebirth")) or 0)
 		if currentRebirth < RebirthConfig.MAX_REBIRTH then
 			targetPlayer:SetAttribute("Rebirth", currentRebirth + 1)
-			targetPlayer:SetAttribute("RebirthMultiplier", (currentRebirth + 1) + 1)
+			targetPlayer:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(currentRebirth + 1))
 			purchaseSuccess = true
 		end
 

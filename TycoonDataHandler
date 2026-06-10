@@ -80,6 +80,8 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
+local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
+
 local function getIndexProgressionAPI(waitSeconds)
 	local existing = ReplicatedStorage:FindFirstChild("IndexProgressionAPI")
 	if existing then
@@ -2193,7 +2195,7 @@ local function InitializePlayer(player)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
 	player:SetAttribute("Rank", data.Rank)
 	player:SetAttribute("Rebirth", data.Rebirth)
-	player:SetAttribute("RebirthMultiplier", data.Rebirth + 1)
+	player:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(data.Rebirth))
 	local discoveredSet = {}
 	for _, toolName in ipairs(data.IndexDiscovered) do
 		if type(toolName) == "string" then
