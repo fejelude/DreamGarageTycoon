@@ -31,6 +31,8 @@ local RankAnnouncement = requireChild(RankRemotes, "RankAnnouncement", "RemoteEv
 
 local Sessions = {}
 local PlayerConnections = {}
+local PendingSessionCleanup = {}
+local PLAYER_REMOVING_SESSION_GRACE_SECONDS = 120
 
 local function newProgress()
 	return {
@@ -208,7 +210,7 @@ local function trackConnection(player, connection)
 	table.insert(PlayerConnections[player], connection)
 end
 
-local function disconnectPlayer(player)
+local function disconnectPlayerConnections(player)
 	local connections = PlayerConnections[player]
 	if connections then
 		for _, connection in ipairs(connections) do
@@ -218,7 +220,28 @@ local function disconnectPlayer(player)
 		end
 	end
 	PlayerConnections[player] = nil
+end
+
+local function disconnectPlayer(player)
+	disconnectPlayerConnections(player)
+	PendingSessionCleanup[player] = nil
 	Sessions[player] = nil
+end
+
+local function schedulePlayerSessionCleanup(player)
+	disconnectPlayerConnections(player)
+	PendingSessionCleanup[player] = (PendingSessionCleanup[player] or 0) + 1
+	local cleanupToken = PendingSessionCleanup[player]
+
+	-- TycoonDataHandler asks RankPersistenceFunction for a final snapshot during
+	-- PlayerRemoving. Keep the rank session briefly so connection ordering cannot
+	-- replace in-progress quest data with a fresh empty session before saving.
+	task.delay(PLAYER_REMOVING_SESSION_GRACE_SECONDS, function()
+		if PendingSessionCleanup[player] == cleanupToken and not player.Parent then
+			PendingSessionCleanup[player] = nil
+			Sessions[player] = nil
+		end
+	end)
 end
 
 local function getSession(player)
@@ -666,6 +689,7 @@ end
 
 local function hookPlayer(player)
 	disconnectPlayer(player)
+	PendingSessionCleanup[player] = nil
 	getSession(player)
 	applyBenefits(player)
 
@@ -713,7 +737,7 @@ end
 
 Players.PlayerAdded:Connect(hookPlayer)
 Players.PlayerRemoving:Connect(function(player)
-	disconnectPlayer(player)
+	schedulePlayerSessionCleanup(player)
 end)
 
 for _, player in ipairs(Players:GetPlayers()) do

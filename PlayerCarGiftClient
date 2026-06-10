@@ -210,7 +210,7 @@ local SFX = {
 	Open = "rbxassetid://6895079853",
 	Click = "rbxassetid://126294184545314",
 	Success = "rbxassetid://73743814975286",
-	Error = "rbxassetid://1526487928"
+	Error = "rbxassetid://83517496538471"
 }
 
 local function playSfx(soundId, volume, parent)
