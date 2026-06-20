@@ -33,6 +33,12 @@ local baseEquipCooldowns = {}
 local BASE_SWITCH_COOLDOWN_SECONDS = 60
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
+local function formatBaseSwitchCooldownMessage(remainingSeconds)
+	remainingSeconds = math.max(1, math.ceil(tonumber(remainingSeconds) or 1))
+	local unit = remainingSeconds == 1 and "second" or "seconds"
+	return "Please wait " .. tostring(remainingSeconds) .. " more " .. unit .. " before switching bases."
+end
+
 local function getLevelModel(plot, levelName)
 	local altName = levelName == "Level1" and "Level 1" or (levelName == "Level2" and "Level 2" or levelName)
 	local model = plot:FindFirstChild(levelName) or plot:FindFirstChild(altName)
@@ -125,26 +131,40 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 		local skinData = StatsModule[skinName]
 
 
-		if actionType == "BaseEquip" then
+		if actionType == "BaseEquip" or actionType == "BaseUnequip" then
 			local requestedLevel = math.floor(tonumber(skinName) or 0)
 			if requestedLevel ~= 1 and requestedLevel ~= 2 then
 				return false, "Invalid base level."
 			end
 
 			local ownedBaseLevel = math.max(1, tonumber(player:GetAttribute("OwnedBaseLevel")) or tonumber(player:GetAttribute("BaseLevel")) or 1)
-			if requestedLevel > ownedBaseLevel then
-				return false, "You haven't unlocked Level " .. tostring(requestedLevel) .. " yet."
+			local currentBaseLevel = math.max(1, tonumber(player:GetAttribute("BaseLevel")) or 1)
+			local targetLevel = requestedLevel
+			local successMessage = "Equipped Level " .. tostring(requestedLevel) .. " Base."
+
+			if actionType == "BaseUnequip" then
+				if requestedLevel ~= currentBaseLevel then
+					return false, "Level " .. tostring(requestedLevel) .. " is not currently active."
+				end
+
+				if requestedLevel == 1 then
+					return false, "Level 1 is currently active."
+				end
+
+				targetLevel = 1
+				successMessage = "Switched back to Level 1 Base."
+			elseif requestedLevel == currentBaseLevel then
+				return false, "Level " .. tostring(requestedLevel) .. " is currently active."
 			end
 
-			local currentBaseLevel = math.max(1, tonumber(player:GetAttribute("BaseLevel")) or 1)
-			if requestedLevel == currentBaseLevel then
-				return false, "Level " .. tostring(requestedLevel) .. " Base is already equipped."
+			if targetLevel > ownedBaseLevel then
+				return false, "You haven't unlocked Level " .. tostring(targetLevel) .. " yet."
 			end
 
 			local now = os.time()
 			local nextAllowed = baseEquipCooldowns[player.UserId] or 0
 			if now < nextAllowed then
-				return false, "Please wait 1 minute before switching bases again."
+				return false, formatBaseSwitchCooldownMessage(nextAllowed - now)
 			end
 
 			local plot = getPlayerPlot(player)
@@ -152,14 +172,14 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 				return false, "Base unavailable. Please try again."
 			end
 
-			local migrated, migrateMessage = migratePadOccupancy(plot, currentBaseLevel, requestedLevel)
+			local migrated, migrateMessage = migratePadOccupancy(plot, currentBaseLevel, targetLevel)
 			if not migrated then
 				return false, migrateMessage or "Base switch failed."
 			end
 
 			baseEquipCooldowns[player.UserId] = now + BASE_SWITCH_COOLDOWN_SECONDS
-			player:SetAttribute("BaseLevel", requestedLevel)
-			return true, "Equipped Level " .. tostring(requestedLevel) .. " Base."
+			player:SetAttribute("BaseLevel", targetLevel)
+			return true, successMessage
 
 		end
 

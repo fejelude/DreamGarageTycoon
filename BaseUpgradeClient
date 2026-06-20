@@ -116,8 +116,6 @@ end
 -- ============================================================================
 -- 💎 ROBUX PURCHASE LISTENER
 -- ============================================================================
--- 💎 ROBUX PURCHASE LISTENER
--- ============================================================================
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, isPurchased)
 	if userId ~= player.UserId then return end
 
@@ -520,11 +518,23 @@ local function ConnectBaseEquipFrame(scroller, level)
 	end
 
 	if btnUnequip then
-		local function showAlreadyEquipped()
-			ShowFeedback("Level " .. tostring(level) .. " Base is already equipped.", "CashFail")
+		local function requestUnequip()
+			if isProcessingTransaction then return end
+			isProcessingTransaction = true
+
+			local success, msg = TransactionFunc:InvokeServer(level, "BaseUnequip")
+			if success then
+				ShowFeedback(msg or "Switched back to Level 1 Base.", "EquipSuccess")
+			else
+				ShowFeedback(msg or "You must always have an active base.", "CashFail")
+			end
+
+			task.wait(0.2)
+			isProcessingTransaction = false
 		end
-		if Kit and Kit.Tween then Kit.Tween:SetupButton(btnUnequip, showAlreadyEquipped)
-		else btnUnequip.MouseButton1Click:Connect(showAlreadyEquipped) end
+
+		if Kit and Kit.Tween then Kit.Tween:SetupButton(btnUnequip, requestUnequip)
+		else btnUnequip.MouseButton1Click:Connect(requestUnequip) end
 	end
 end
 
