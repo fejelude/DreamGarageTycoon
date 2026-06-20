@@ -332,6 +332,7 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 					end
 				end
 
+				player:SetAttribute("OwnedBaseLevel", math.max(2, tonumber(player:GetAttribute("OwnedBaseLevel")) or baseLevel or 1))
 				player:SetAttribute("BaseLevel", 2)
 				updatePadVisuals(plot, currentLevel, 2)
 
@@ -426,11 +427,12 @@ local function setupPlot(plot)
 				if player then
 					local savedLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
 					local savedBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+					local savedOwnedBaseLevel = tonumber(player:GetAttribute("OwnedBaseLevel")) or savedBaseLevel
 					updatePadVisuals(plot, savedLevel, savedBaseLevel)
 
 					local level2BuyButton = plot:FindFirstChild("Level2BuyButton") or plot:FindFirstChild("Level 2 Buy Button")
 					if level2BuyButton then
-						toggleVisual(level2BuyButton, savedBaseLevel < 2, savedBaseLevel < 2)
+						toggleVisual(level2BuyButton, savedOwnedBaseLevel < 2, savedOwnedBaseLevel < 2)
 					end
 
 					currentConnection = {
@@ -442,9 +444,16 @@ local function setupPlot(plot)
 						player:GetAttributeChangedSignal("BaseLevel"):Connect(function()
 							local currentLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
 							local newBase = tonumber(player:GetAttribute("BaseLevel")) or 1
+							local ownedBase = tonumber(player:GetAttribute("OwnedBaseLevel")) or newBase
 							updatePadVisuals(plot, currentLevel, newBase)
 							if level2BuyButton then
-								toggleVisual(level2BuyButton, newBase < 2, newBase < 2)
+								toggleVisual(level2BuyButton, ownedBase < 2, ownedBase < 2)
+							end
+						end),
+						player:GetAttributeChangedSignal("OwnedBaseLevel"):Connect(function()
+							local ownedBase = tonumber(player:GetAttribute("OwnedBaseLevel")) or tonumber(player:GetAttribute("BaseLevel")) or 1
+							if level2BuyButton then
+								toggleVisual(level2BuyButton, ownedBase < 2, ownedBase < 2)
 							end
 						end)
 					}
@@ -490,7 +499,7 @@ local function setupPlot(plot)
 				toggleVisual(level2BuyButton, false, false)
 			else
 				local player = Players:FindFirstChild(ownerVal.Value)
-				local baseLvl = player and tonumber(player:GetAttribute("BaseLevel")) or 1
+				local baseLvl = player and (tonumber(player:GetAttribute("OwnedBaseLevel")) or tonumber(player:GetAttribute("BaseLevel"))) or 1
 				toggleVisual(level2BuyButton, baseLvl < 2, baseLvl < 2)
 			end
 			setupLevel2BuyButton(plot, level2BuyButton)

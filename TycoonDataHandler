@@ -1658,6 +1658,7 @@ save = function(player, isClosing, force)
 
 		local currentUnlockedPad = player:GetAttribute("HighestUnlockedPad") or 1
 		local currentBaseLevel = player:GetAttribute("BaseLevel") or 1
+		local currentOwnedBaseLevel = math.max(tonumber(player:GetAttribute("OwnedBaseLevel")) or 1, tonumber(currentBaseLevel) or 1)
 		local currentOwnedRaw = player:GetAttribute("OwnedBaseSkins") or "[]"
 		local currentOwnedSkins = decodeJsonOrDefault(currentOwnedRaw, { "Default" }, player.Name .. ".OwnedBaseSkins")
 		if type(currentOwnedSkins) ~= "table" then
@@ -1917,6 +1918,7 @@ save = function(player, isClosing, force)
 					oldData.EquippedSkin      = currentEquippedSkin
 					oldData.HighestUnlockedPad = currentUnlockedPad
 					oldData.BaseLevel = currentBaseLevel
+					oldData.OwnedBaseLevel = currentOwnedBaseLevel
 					oldData.Rank = currentRank
 					oldData.RankData = currentRankData
 					oldData.HotbarSlots = currentHotbar
@@ -2092,7 +2094,7 @@ local function InitializePlayer(player)
 	if not loadSuccess then player:Kick("Data Load Error. Rejoin.") return end
 
 	data = data or {
-		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1, BaseLevel = 1,
+		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1, BaseLevel = 1, OwnedBaseLevel = 1,
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player", RankData = {},
@@ -2113,6 +2115,7 @@ local function InitializePlayer(player)
 	data.OwnedBaseSkins         = data.OwnedBaseSkins         or { "Default" }
 	data.EquippedSkin           = data.EquippedSkin           or "Default"
 	data.BaseLevel              = data.BaseLevel              or 1
+	data.OwnedBaseLevel         = math.max(tonumber(data.OwnedBaseLevel) or 1, tonumber(data.BaseLevel) or 1)
 	data.Rank                   = data.Rank                   or "Player"
 	data.RankData               = data.RankData               or {}
 	data.BankTransferLimitUsed  = data.BankTransferLimitUsed  or 0
@@ -2190,6 +2193,7 @@ local function InitializePlayer(player)
 
 	player:SetAttribute("HighestUnlockedPad", data.HighestUnlockedPad or 1)
 	player:SetAttribute("BaseLevel", data.BaseLevel or 1)
+	player:SetAttribute("OwnedBaseLevel", data.OwnedBaseLevel or data.BaseLevel or 1)
 	local ownedJson = HttpService:JSONEncode(data.OwnedBaseSkins)
 	player:SetAttribute("OwnedBaseSkins", ownedJson)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
@@ -2252,6 +2256,7 @@ local function InitializePlayer(player)
 
 	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(setDirty)
 	player:GetAttributeChangedSignal("BaseLevel"):Connect(setDirty)
+	player:GetAttributeChangedSignal("OwnedBaseLevel"):Connect(setDirty)
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
 	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rank"):Connect(setDirty)
