@@ -1,0 +1,140 @@
+-- Purpose: Client controller for Shop UI open/close behavior.
+-- Runs on: Client (LocalScript)
+-- Location: StarterGui > ShopUI > ShopClient
+--
+-- Hierarchy:
+--   StarterGui > MainButtons > Shop             (opens the shop)
+--   StarterGui > ShopUI > MainFrame             (shop UI)
+--   StarterGui > ShopUI > MainFrame > CloseButton (closes the shop)
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local shopGui = playerGui:WaitForChild("ShopUI")
+local shopScreenGui = shopGui:IsA("ScreenGui")
+	and shopGui
+	or shopGui:FindFirstAncestorWhichIsA("ScreenGui")
+
+local mainFrame = shopGui:WaitForChild("MainFrame")
+local closeButton = mainFrame:WaitForChild("CloseButton")
+
+local mainButtonsGui = playerGui:WaitForChild("MainButtons")
+local buttonsContainer = mainButtonsGui:FindFirstChild("Buttons") or mainButtonsGui
+local openButton = buttonsContainer:WaitForChild("Shop")
+
+local OPEN_FOV = 50
+local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+
+local isOpen = false
+local hiddenGuis = {}
+local savedFOV = 70
+
+if shopScreenGui then
+	shopScreenGui.ResetOnSpawn = false
+end
+
+local function getCamera(waitSeconds)
+	local camera = Workspace.CurrentCamera
+	if camera then
+		return camera
+	end
+
+	if waitSeconds and waitSeconds > 0 then
+		local started = os.clock()
+		repeat
+			task.wait()
+			camera = Workspace.CurrentCamera
+		until camera or (os.clock() - started) >= waitSeconds
+	end
+
+	return camera
+end
+
+local function restoreHiddenGuis()
+	for _, gui in ipairs(hiddenGuis) do
+		if gui and gui.Parent then
+			gui.Enabled = true
+		end
+	end
+
+	hiddenGuis = {}
+end
+
+local function hideOtherGuis()
+	hiddenGuis = {}
+
+	for _, gui in ipairs(playerGui:GetDescendants()) do
+		if gui:IsA("ScreenGui") and gui ~= shopScreenGui and gui.Enabled == true then
+			gui.Enabled = false
+			table.insert(hiddenGuis, gui)
+		end
+	end
+end
+
+local function setMainFrameVisible(visible)
+	isOpen = visible
+	mainFrame.Visible = visible
+	openButton.Visible = not visible
+end
+
+local function openShop()
+	if isOpen then
+		return
+	end
+
+	local camera = getCamera(2)
+
+	if camera then
+		savedFOV = camera.FieldOfView
+	end
+
+	if shopScreenGui then
+		shopScreenGui.Enabled = true
+	end
+
+	hideOtherGuis()
+	setMainFrameVisible(true)
+
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, {
+			FieldOfView = OPEN_FOV,
+		}):Play()
+	end
+end
+
+local function closeShop()
+	if not isOpen then
+		return
+	end
+
+	restoreHiddenGuis()
+	setMainFrameVisible(false)
+
+	local camera = getCamera(0.5)
+
+	if camera then
+		TweenService:Create(camera, FOV_TWEEN, {
+			FieldOfView = savedFOV,
+		}):Play()
+	end
+end
+
+setMainFrameVisible(false)
+
+UIButtonUtils.SetupButton(openButton, openShop)
+UIButtonUtils.SetupButton(closeButton, closeShop)
+
+if shopScreenGui then
+	shopScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if isOpen and not shopScreenGui.Enabled then
+			closeShop()
+		end
+	end)
+end
