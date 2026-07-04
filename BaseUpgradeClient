@@ -45,7 +45,6 @@ local UI_NAME = "BaseUpgradeUI"
 local FRAME_NAME = "MainFrame"
 local SCROLLER_NAME = "UpgradeScroller" 
 local CLOSE_BTN_NAME = "CloseButton"
-local FEEDBACK_LBL_NAME = "Indicator-purchase"
 local BLUR_SIZE = 24 
 
 -- 🎵 SOUND PRE-LOADING (✅ FULLY SEPARATED IDs)
@@ -74,7 +73,6 @@ local focusConnections = {}
 local watchedFocusGuis = {}
 local connectedCards = {}
 local currentBlur = nil 
-local feedbackDebounce = false 
 local isProcessingTransaction = false 
 
 -- ============================================================================
@@ -86,49 +84,33 @@ local function PlaySound(name)
 end
 
 -- ============================================================================
--- 🎨 FEEDBACK SYSTEM
+-- 🎨 STATE LABEL FEEDBACK SYSTEM
 -- ============================================================================
-local function ShowFeedback(message, statusType)
+local shopFeedback = nil
+
+local function getShopFeedback()
 	local gui = PlayerGui:FindFirstChild(UI_NAME)
-	if not gui then return end
-	local frame = gui:FindFirstChild(FRAME_NAME)
-	if not frame then return end
+	local frame = gui and gui:FindFirstChild(FRAME_NAME, true)
+	if not frame then return nil end
 
-	local feedbackLbl = frame:FindFirstChild(FEEDBACK_LBL_NAME, true)
-	if not feedbackLbl then return end 
-
-	-- 🔊 Trigger the specific sound based on the exact transaction result
-	if statusType == "CashSuccess" or statusType == "RobuxSuccess" then
-		feedbackLbl.TextColor3 = Color3.fromRGB(85, 255, 127) 
-		PlaySound(statusType) 
-	else
-		feedbackLbl.TextColor3 = Color3.fromRGB(255, 85, 85) 
-		PlaySound(statusType) -- ✅ Now plays "CashFail" or "RobuxFail" specifically
+	if not shopFeedback then
+		shopFeedback = UIAudioConfig.CreateStateFeedback(frame)
 	end
 
-	feedbackDebounce = true
-	feedbackLbl.Text = message
-	feedbackLbl.TextTransparency = 1
-	feedbackLbl.Visible = true
-	feedbackLbl.ZIndex = 10
-	-- FIX: Sync UIStroke with parent TextLabel fade
-	local fbStroke = feedbackLbl:FindFirstChildOfClass("UIStroke")
-	if fbStroke then fbStroke.Transparency = 1 end
+	return shopFeedback
+end
 
-	local fadeIn = TweenService:Create(feedbackLbl, TweenInfo.new(0.3), {TextTransparency = 0})
-	fadeIn:Play()
-	if fbStroke then TweenService:Create(fbStroke, TweenInfo.new(0.3), {Transparency = 0}):Play() end
-	fadeIn.Completed:Wait()
+local function ShowFeedback(message, statusType)
+	local feedback = getShopFeedback()
+	if not feedback then return end
 
-	task.wait(1.5)
-
-	local fadeOut = TweenService:Create(feedbackLbl, TweenInfo.new(0.5), {TextTransparency = 1})
-	fadeOut:Play()
-	if fbStroke then TweenService:Create(fbStroke, TweenInfo.new(0.5), {Transparency = 1}):Play() end
-	fadeOut.Completed:Connect(function()
-		feedbackLbl.Visible = false
-		feedbackDebounce = false
-	end)
+	if statusType == "CashSuccess" or statusType == "RobuxSuccess" or statusType == "EquipSuccess" then
+		PlaySound(statusType == "EquipSuccess" and "Equip" or statusType)
+		feedback:Success(message or "Purchase successful.")
+	else
+		PlaySound(statusType or "CashFail")
+		feedback:Failed(message or "Purchase failed.")
+	end
 end
 
 -- ============================================================================
@@ -147,9 +129,9 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 
 	if isBaseSkin then
 		if isPurchased then
-			ShowFeedback("Purchase Successful!", "RobuxSuccess")
+			ShowFeedback("Purchase successful.", "RobuxSuccess")
 		else
-			ShowFeedback("Purchase Cancelled", "RobuxFail") -- ✅ Triggers specific Robux fail sound
+			ShowFeedback("Purchase cancelled.", "RobuxFail") -- ✅ Triggers specific Robux fail sound
 		end
 	end
 end)
@@ -373,9 +355,9 @@ local function ConnectCard(cardFrame, skinName)
 			local success, msg = TransactionFunc:InvokeServer(skinName, "Cash")
 
 			if success then 
-				ShowFeedback("Purchase Successful!", "CashSuccess")
+				ShowFeedback(msg or "Purchase successful.", "CashSuccess")
 			else 
-				ShowFeedback(msg or "Purchase Failed", "CashFail") -- ✅ Triggers specific Cash fail sound
+				ShowFeedback(msg or "Purchase failed.", "CashFail") -- ✅ Triggers specific Cash fail sound
 			end
 
 			task.wait(0.2) 
@@ -470,6 +452,92 @@ local function ConnectCard(cardFrame, skinName)
 	end
 end
 
+
+local function getOwnedBaseLevel()
+	return math.max(1, tonumber(player:GetAttribute("OwnedBaseLevel")) or tonumber(player:GetAttribute("BaseLevel")) or 1)
+end
+
+local function getEquippedBaseLevel()
+	return math.max(1, tonumber(player:GetAttribute("BaseLevel")) or 1)
+end
+
+local function UpdateBaseEquipVisuals(scroller)
+	local selection = scroller and scroller:FindFirstChild("BaseCardSelection", true)
+	if not selection then return end
+
+	local ownedLevel = getOwnedBaseLevel()
+	local equippedLevel = getEquippedBaseLevel()
+
+	for level = 1, 2 do
+		local buyFrame = selection:FindFirstChild("Level" .. tostring(level) .. "BuyFrame", true)
+		if buyFrame then
+			local btnEquip = buyFrame:FindFirstChild("Equip", true)
+			local btnUnequip = buyFrame:FindFirstChild("Unequip", true)
+			local isOwned = ownedLevel >= level
+			local isEquipped = equippedLevel == level
+
+			if btnEquip and btnEquip:IsA("GuiObject") then
+				btnEquip.Visible = isOwned and not isEquipped
+			end
+			if btnUnequip and btnUnequip:IsA("GuiObject") then
+				btnUnequip.Visible = isOwned and isEquipped
+			end
+		end
+	end
+end
+
+local connectedBaseEquipButtons = {}
+
+local function ConnectBaseEquipFrame(scroller, level)
+	local selection = scroller and scroller:FindFirstChild("BaseCardSelection", true)
+	local buyFrame = selection and selection:FindFirstChild("Level" .. tostring(level) .. "BuyFrame", true)
+	if not buyFrame or connectedBaseEquipButtons[buyFrame] then return end
+	connectedBaseEquipButtons[buyFrame] = true
+
+	local btnEquip = resolveGuiButton(buyFrame:FindFirstChild("Equip", true))
+	local btnUnequip = resolveGuiButton(buyFrame:FindFirstChild("Unequip", true))
+
+	local function requestEquip()
+		if isProcessingTransaction then return end
+		isProcessingTransaction = true
+
+		local success, msg = TransactionFunc:InvokeServer(level, "BaseEquip")
+		if success then
+			ShowFeedback(msg or ("Equipped Level " .. tostring(level) .. " Base."), "EquipSuccess")
+		else
+			ShowFeedback(msg or "Purchase failed.", "CashFail")
+		end
+
+		task.wait(0.2)
+		isProcessingTransaction = false
+	end
+
+	if btnEquip then
+		if Kit and Kit.Tween then Kit.Tween:SetupButton(btnEquip, requestEquip)
+		else btnEquip.MouseButton1Click:Connect(requestEquip) end
+	end
+
+	if btnUnequip then
+		local function requestUnequip()
+			if isProcessingTransaction then return end
+			isProcessingTransaction = true
+
+			local success, msg = TransactionFunc:InvokeServer(level, "BaseUnequip")
+			if success then
+				ShowFeedback(msg or "Switched back to Level 1 Base.", "EquipSuccess")
+			else
+				ShowFeedback(msg or "You must always have an active base.", "CashFail")
+			end
+
+			task.wait(0.2)
+			isProcessingTransaction = false
+		end
+
+		if Kit and Kit.Tween then Kit.Tween:SetupButton(btnUnequip, requestUnequip)
+		else btnUnequip.MouseButton1Click:Connect(requestUnequip) end
+	end
+end
+
 local function SetupShop()
 	local gui = PlayerGui:WaitForChild(UI_NAME, 5)
 	if not gui then return end
@@ -487,6 +555,10 @@ local function SetupShop()
 
 	local card3 = scroller:FindFirstChild("Card3", true)
 	if card3 then ConnectCard(card3, "Rainbow") end
+
+	ConnectBaseEquipFrame(scroller, 1)
+	ConnectBaseEquipFrame(scroller, 2)
+	UpdateBaseEquipVisuals(scroller)
 end
 
 -- ============================================================================
@@ -516,6 +588,18 @@ local function setVisible(isOpen)
 		setMovement(true) 
 	end
 end
+
+player:GetAttributeChangedSignal("BaseLevel"):Connect(function()
+	local gui = PlayerGui:FindFirstChild(UI_NAME)
+	local scroller = gui and gui:FindFirstChild(SCROLLER_NAME, true)
+	UpdateBaseEquipVisuals(scroller)
+end)
+
+player:GetAttributeChangedSignal("OwnedBaseLevel"):Connect(function()
+	local gui = PlayerGui:FindFirstChild(UI_NAME)
+	local scroller = gui and gui:FindFirstChild(SCROLLER_NAME, true)
+	UpdateBaseEquipVisuals(scroller)
+end)
 
 OpenEvent.OnClientEvent:Connect(function() setVisible(true) end)
 

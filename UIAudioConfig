@@ -360,7 +360,11 @@ function UIAudioConfig.CreateStateFeedback(container)
 			state.baseText = baseText
 		end
 
-		label.Text = baseText .. " x" .. state.count
+		if state.count >= 2 then
+			label.Text = baseText .. " (x" .. tostring(state.count) .. ")"
+		else
+			label.Text = baseText
+		end
 		label.Visible = true
 
 		labelHideToken[label] = (labelHideToken[label] or 0) + 1

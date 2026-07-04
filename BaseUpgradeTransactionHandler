@@ -12,6 +12,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
 
 local Remotes = ReplicatedStorage:WaitForChild("ShopRemotes")
 local TransactionFunc = Remotes:WaitForChild("BaseUpgradeTransaction")
@@ -28,6 +29,94 @@ end
 
 -- 🛡️ SECURITY: Transaction Locks
 local activeTransactions = {}
+local baseEquipCooldowns = {}
+local BASE_SWITCH_COOLDOWN_SECONDS = 60
+local TycoonFolder = Workspace:WaitForChild("Tycoons")
+
+local function formatBaseSwitchCooldownMessage(remainingSeconds)
+	remainingSeconds = math.max(1, math.ceil(tonumber(remainingSeconds) or 1))
+	local unit = remainingSeconds == 1 and "second" or "seconds"
+	return "Please wait " .. tostring(remainingSeconds) .. " more " .. unit .. " before switching bases."
+end
+
+local function getLevelModel(plot, levelName)
+	local altName = levelName == "Level1" and "Level 1" or (levelName == "Level2" and "Level 2" or levelName)
+	local model = plot:FindFirstChild(levelName) or plot:FindFirstChild(altName)
+	if model then return model end
+
+	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	if dedicatedFolder then
+		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
+		if plotStorage then
+			return plotStorage:FindFirstChild(levelName) or plotStorage:FindFirstChild(altName)
+		end
+	end
+	return nil
+end
+
+local function getMainPart(padObject)
+	if not padObject then return nil end
+	if padObject:IsA("BasePart") then return padObject end
+	if padObject:IsA("Model") then
+		return padObject.PrimaryPart or padObject:FindFirstChildWhichIsA("BasePart")
+	end
+	return nil
+end
+
+local function getPlayerPlot(player)
+	local plotName = player:GetAttribute("OccupiedPlot")
+	local plot = plotName and TycoonFolder:FindFirstChild(plotName)
+	if plot and plot:FindFirstChild("Owner") and plot.Owner.Value == player.Name then
+		return plot
+	end
+	return nil
+end
+
+local function migratePadOccupancy(plot, fromLevel, toLevel)
+	local fromModel = getLevelModel(plot, "Level" .. tostring(fromLevel))
+	local toModel = getLevelModel(plot, "Level" .. tostring(toLevel))
+	local fromPads = fromModel and fromModel:FindFirstChild("Pads")
+	local toPads = toModel and toModel:FindFirstChild("Pads")
+	if not fromPads or not toPads then
+		return false, "Base pads are unavailable. Please try again."
+	end
+
+	for _, fromPadObj in ipairs(fromPads:GetChildren()) do
+		local padNumber = fromPadObj.Name:match("Pad(%d+)")
+		local toPadObj = padNumber and toPads:FindFirstChild("Pad" .. padNumber)
+		if not toPadObj then
+			local fromPart = getMainPart(fromPadObj)
+			local fromOcc = fromPart and fromPart:FindFirstChild("IsOccupied")
+			local fromLink = fromPart and fromPart:FindFirstChild("LinkedCar")
+			if (fromOcc and fromOcc.Value) or (fromLink and fromLink.Value) then
+				return false, "Move cars off Level " .. tostring(fromLevel) .. "-only pads before switching bases."
+			end
+		elseif toPadObj then
+			local fromPart = getMainPart(fromPadObj)
+			local toPart = getMainPart(toPadObj)
+			if fromPart and toPart then
+				local fromOcc = fromPart:FindFirstChild("IsOccupied")
+				local toOcc = toPart:FindFirstChild("IsOccupied")
+				local fromLink = fromPart:FindFirstChild("LinkedCar")
+				local toLink = toPart:FindFirstChild("LinkedCar")
+
+				if fromOcc and toOcc then toOcc.Value = fromOcc.Value end
+				if fromLink and toLink then
+					toLink.Value = fromLink.Value
+					if fromLink.Value and fromLink.Value:IsA("Model") then
+						local verticalOffset = 5
+						fromLink.Value:PivotTo(toPart.CFrame * CFrame.new(0, (toPart.Size.Y / 2) + verticalOffset, 0))
+					end
+				end
+
+				if fromOcc then fromOcc.Value = false end
+				if fromLink then fromLink.Value = nil end
+			end
+		end
+	end
+
+	return true
+end
 
 -- 💰 UNIFIED TRANSACTION & EQUIP FUNCTION
 TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
@@ -40,6 +129,59 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 	-- Use a wrapper to ensure the lock is ALWAYS released, even if the script errors
 	local success, result, msg = pcall(function()
 		local skinData = StatsModule[skinName]
+
+
+		if actionType == "BaseEquip" or actionType == "BaseUnequip" then
+			local requestedLevel = math.floor(tonumber(skinName) or 0)
+			if requestedLevel ~= 1 and requestedLevel ~= 2 then
+				return false, "Invalid base level."
+			end
+
+			local ownedBaseLevel = math.max(1, tonumber(player:GetAttribute("OwnedBaseLevel")) or tonumber(player:GetAttribute("BaseLevel")) or 1)
+			local currentBaseLevel = math.max(1, tonumber(player:GetAttribute("BaseLevel")) or 1)
+			local targetLevel = requestedLevel
+			local successMessage = "Equipped Level " .. tostring(requestedLevel) .. " Base."
+
+			if actionType == "BaseUnequip" then
+				if requestedLevel ~= currentBaseLevel then
+					return false, "Level " .. tostring(requestedLevel) .. " is not currently active."
+				end
+
+				if requestedLevel == 1 then
+					return false, "Level 1 is currently active."
+				end
+
+				targetLevel = 1
+				successMessage = "Switched back to Level 1 Base."
+			elseif requestedLevel == currentBaseLevel then
+				return false, "Level " .. tostring(requestedLevel) .. " is currently active."
+			end
+
+			if targetLevel > ownedBaseLevel then
+				return false, "You haven't unlocked Level " .. tostring(targetLevel) .. " yet."
+			end
+
+			local now = os.time()
+			local nextAllowed = baseEquipCooldowns[player.UserId] or 0
+			if now < nextAllowed then
+				return false, formatBaseSwitchCooldownMessage(nextAllowed - now)
+			end
+
+			local plot = getPlayerPlot(player)
+			if not plot then
+				return false, "Base unavailable. Please try again."
+			end
+
+			local migrated, migrateMessage = migratePadOccupancy(plot, currentBaseLevel, targetLevel)
+			if not migrated then
+				return false, migrateMessage or "Base switch failed."
+			end
+
+			baseEquipCooldowns[player.UserId] = now + BASE_SWITCH_COOLDOWN_SECONDS
+			player:SetAttribute("BaseLevel", targetLevel)
+			return true, successMessage
+
+		end
 
 		-- 1. READ OWNERSHIP
 		local ownedRaw = player:GetAttribute("OwnedBaseSkins") or "[]"
@@ -127,4 +269,5 @@ end
 -- Cleanup locks if a player leaves mid-transaction
 Players.PlayerRemoving:Connect(function(player)
 	activeTransactions[player.UserId] = nil
+	baseEquipCooldowns[player.UserId] = nil
 end)
