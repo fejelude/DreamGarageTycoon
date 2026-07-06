@@ -1,0 +1,829 @@
+-- ============================================================================
+-- TopCashLeaderboardService (Script)
+-- Location: ServerScriptService
+-- Purpose: Publishes each player's current wallet cash to a
+--          global OrderedDataStore and renders the top 50 cash holders on the world
+--          leaderboard stand.
+-- Dependencies: Workspace.LeaderboardFunction.LeaderboardStand.TopCash
+--                   .CashGui.MainFrame.LeaderboardScrollingFrame.Template
+-- DataStores: DreamGarageGlobalWalletCash_V1 (OrderedDataStore),
+--             DreamGarageGlobalCashProfiles_V1 (DataStore)
+-- Notes: The leaderboard is based on leaderstats.Wallet, so spendable cash
+--        increases and decreases are reflected while the player is online.
+-- ============================================================================
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local DataStoreService = game:GetService("DataStoreService")
+local LocalizationService = game:GetService("LocalizationService")
+
+local LEADERBOARD_ROOT_NAME = "LeaderboardFunction"
+local LEADERBOARD_SIZE = 50
+
+local SAVE_INTERVAL_SECONDS = 30
+local SAVE_STAGGER_SECONDS = 0.25
+local GLOBAL_FETCH_INTERVAL_SECONDS = 30
+local RENDER_INTERVAL_SECONDS = 5
+local WALLET_WATCH_INTERVAL_SECONDS = 5
+local PROFILE_CACHE_SECONDS = 300
+
+-- OrderedDataStore values must be integers. This cap stays safely below the
+-- signed 64-bit integer ceiling while still allowing very large cash values.
+local MAX_ORDERED_VALUE = 9000000000000000000
+
+local CASH_STORE_NAME = "DreamGarageGlobalWalletCash_V1"
+local PROFILE_STORE_NAME = "DreamGarageGlobalCashProfiles_V1"
+
+local TOP_THREE_COLORS = {
+	[1] = Color3.fromRGB(0, 255, 255), -- aqua
+	[2] = Color3.fromRGB(255, 215, 0), -- gold
+	[3] = Color3.fromRGB(205, 127, 50), -- bronze
+}
+
+local VACANT_ENTRY = {
+	Username = "Vacant",
+	Cash = "",
+	Flag = "",
+	Image = "",
+}
+
+local SUFFIXES = {
+	"K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc",
+	"Ud", "Dd", "Td", "Qad", "Qid", "Sxd", "Spd", "Ocd", "Nod", "Vg",
+}
+
+local COMPACT_THRESHOLDS = {}
+do
+	local threshold = 1000
+	for _, suffix in ipairs(SUFFIXES) do
+		table.insert(COMPACT_THRESHOLDS, 1, {
+			Value = threshold,
+			Suffix = suffix,
+		})
+		threshold *= 1000
+	end
+end
+
+local cashStore = DataStoreService:GetOrderedDataStore(CASH_STORE_NAME)
+local profileStore = DataStoreService:GetDataStore(PROFILE_STORE_NAME)
+
+local playerStates = {}
+local unboundPlayers = {}
+
+local profileCache = {}
+local thumbnailCache = {}
+local pendingProfileFetches = {}
+
+local defaultColors = nil
+local slots = {}
+local slotRefs = {}
+local templateFrame = nil
+
+local dirtyRender = true
+local forceFullRender = true
+local entriesDirty = true
+local cachedOrderedEntries = {}
+local lastRenderedEntries = {}
+local storedEntriesByUserId = {}
+
+local function markEntriesDirty()
+	entriesDirty = true
+	dirtyRender = true
+end
+
+local function markRenderDirty()
+	dirtyRender = true
+end
+
+local function warnWithPrefix(message)
+	warn("[TopCashLeaderboardService] " .. tostring(message))
+end
+
+-- Roblox country regions are ISO 3166-1 alpha-2 codes. Regional indicator emoji
+-- are built by offsetting each letter from the regional-indicator base codepoint.
+local function countryCodeToFlag(countryCode)
+	countryCode = tostring(countryCode or ""):upper()
+	if #countryCode ~= 2 then
+		return ""
+	end
+
+	local first = countryCode:byte(1)
+	local second = countryCode:byte(2)
+	if first < 65 or first > 90 or second < 65 or second > 90 then
+		return ""
+	end
+
+	local base = 0x1F1E6 - 65
+	return utf8.char(base + first) .. utf8.char(base + second)
+end
+
+local function getCountryFlag(player)
+	local ok, countryCode = pcall(function()
+		return LocalizationService:GetCountryRegionForPlayerAsync(player)
+	end)
+
+	if ok then
+		return countryCodeToFlag(countryCode)
+	end
+
+	return ""
+end
+
+local function trimTrailingZeros(text)
+	text = tostring(text or "")
+	text = text:gsub("(%..-)0+$", "%1")
+	text = text:gsub("%.$", "")
+	return text
+end
+
+local function formatCompactNumber(value)
+	value = tonumber(value) or 0
+	if value < 0 then
+		value = 0
+	end
+
+	if value < 1000 then
+		return tostring(math.floor(value))
+	end
+
+	for _, threshold in ipairs(COMPACT_THRESHOLDS) do
+		if value >= threshold.Value then
+			local compact = value / threshold.Value
+			local decimals = compact >= 100 and 0 or (compact >= 10 and 1 or 2)
+			local formatString = "%0." .. decimals .. "f"
+			return trimTrailingZeros(string.format(formatString, compact)) .. threshold.Suffix
+		end
+	end
+
+	return string.format("%.2e", value)
+end
+
+local function formatCash(value)
+	return "$" .. formatCompactNumber(value)
+end
+
+local function waitForChildWithWarning(parent, childName, context)
+	local child = parent:WaitForChild(childName, 30)
+	if not child then
+		warnWithPrefix(childName .. " not found under " .. context)
+	end
+	return child
+end
+
+local function getLeaderboardContainer()
+	local root = Workspace:WaitForChild(LEADERBOARD_ROOT_NAME, 30)
+	if not root then
+		warnWithPrefix(LEADERBOARD_ROOT_NAME .. " not found in Workspace")
+		return nil
+	end
+
+	local stand = waitForChildWithWarning(root, "LeaderboardStand", LEADERBOARD_ROOT_NAME)
+	if not stand then return nil end
+
+	local board = waitForChildWithWarning(stand, "TopCash", "LeaderboardStand")
+	if not board then return nil end
+
+	local gui = waitForChildWithWarning(board, "CashGui", "TopCash")
+	if not gui then return nil end
+
+	local mainFrame = waitForChildWithWarning(gui, "MainFrame", "CashGui")
+	if not mainFrame then return nil end
+
+	local scrollingFrame = waitForChildWithWarning(mainFrame, "LeaderboardScrollingFrame", "MainFrame")
+	return scrollingFrame
+end
+
+local function setText(label, text)
+	if label and label:IsA("TextLabel") then
+		label.Text = tostring(text or "")
+	end
+end
+
+local function setTextColor(label, color)
+	if label and label:IsA("TextLabel") and color then
+		label.TextColor3 = color
+	end
+end
+
+local function setImage(imageLabel, image)
+	if imageLabel and imageLabel:IsA("ImageLabel") then
+		imageLabel.Image = tostring(image or "")
+	end
+end
+
+local function getTextColor(frame, childName, fallback)
+	local child = frame:FindFirstChild(childName)
+	if child and child:IsA("TextLabel") then
+		return child.TextColor3
+	end
+	return fallback
+end
+
+local function captureDefaultColors(frame)
+	defaultColors = {
+		Rank = getTextColor(frame, "Rank", Color3.fromRGB(255, 255, 255)),
+		Username = getTextColor(frame, "Username", Color3.fromRGB(255, 255, 255)),
+	}
+end
+
+local function buildSlotRefs(frame)
+	return {
+		Rank = frame:FindFirstChild("Rank"),
+		Username = frame:FindFirstChild("Username"),
+		Cash = frame:FindFirstChild("Cash") or frame:FindFirstChild("Earnings") or frame:FindFirstChild("Value"),
+		Flag = frame:FindFirstChild("Flag"),
+		ProfileImage = frame:FindFirstChild("ProfileImage"),
+	}
+end
+
+local function resetSlotState()
+	slots = {}
+	slotRefs = {}
+	lastRenderedEntries = {}
+	forceFullRender = true
+end
+
+local function ensureSlots()
+	if templateFrame and templateFrame.Parent then
+		return true
+	end
+
+	templateFrame = nil
+	resetSlotState()
+
+	local container = getLeaderboardContainer()
+	if not container then
+		warnWithPrefix("Leaderboard scrolling frame was not found.")
+		return false
+	end
+
+	templateFrame = container:WaitForChild("Template", 30)
+	if not templateFrame then
+		warnWithPrefix("Template frame was not found.")
+		return false
+	end
+
+	captureDefaultColors(templateFrame)
+	templateFrame.Visible = true
+	templateFrame.LayoutOrder = 1
+	slots[1] = templateFrame
+	slotRefs[1] = buildSlotRefs(templateFrame)
+
+	for _, child in ipairs(container:GetChildren()) do
+		if child:IsA("Frame") and child.Name:match("^LeaderboardEntry_%d+$") and child ~= templateFrame then
+			child:Destroy()
+		end
+	end
+
+	for rank = 2, LEADERBOARD_SIZE do
+		local clone = templateFrame:Clone()
+		clone.Name = string.format("LeaderboardEntry_%02d", rank)
+		clone.LayoutOrder = rank
+		clone.Parent = container
+		slots[rank] = clone
+		slotRefs[rank] = buildSlotRefs(clone)
+	end
+
+	forceFullRender = true
+	return true
+end
+
+local function getHeadshot(userId)
+	userId = tonumber(userId)
+	if not userId then return "" end
+
+	if thumbnailCache[userId] then
+		return thumbnailCache[userId]
+	end
+
+	local ok, content = pcall(function()
+		return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+	end)
+
+	if ok and content then
+		thumbnailCache[userId] = content
+		return content
+	end
+
+	return ""
+end
+
+local function getUsernameAsync(userId, fallbackUsername)
+	fallbackUsername = tostring(fallbackUsername or "")
+	if fallbackUsername ~= "" then
+		return fallbackUsername
+	end
+
+	local ok, username = pcall(function()
+		return Players:GetNameFromUserIdAsync(userId)
+	end)
+
+	if ok and username then
+		return username
+	end
+
+	return "User " .. tostring(userId)
+end
+
+local function loadProfileAsync(userId)
+	userId = tonumber(userId)
+	if not userId then
+		return nil
+	end
+
+	local data = nil
+	local ok, result = pcall(function()
+		return profileStore:GetAsync(tostring(userId))
+	end)
+
+	if ok and type(result) == "table" then
+		data = result
+	else
+		if not ok then
+			warnWithPrefix("Failed to read profile for user " .. tostring(userId) .. ": " .. tostring(result))
+		end
+		data = {}
+	end
+
+	data.UserId = userId
+	data.Username = getUsernameAsync(userId, data.Username)
+	data.Flag = tostring(data.Flag or "")
+
+	if not data.ProfileImage or data.ProfileImage == "" then
+		data.ProfileImage = getHeadshot(userId)
+	end
+
+	return data
+end
+
+local function requestProfile(userId)
+	userId = tonumber(userId)
+	if not userId then
+		return
+	end
+
+	local cached = profileCache[userId]
+	if cached and (os.clock() - cached.cachedAt) < PROFILE_CACHE_SECONDS then
+		return
+	end
+
+	if pendingProfileFetches[userId] then
+		return
+	end
+
+	pendingProfileFetches[userId] = true
+	task.spawn(function()
+		local ok, result = xpcall(function()
+			return loadProfileAsync(userId)
+		end, debug.traceback)
+
+		pendingProfileFetches[userId] = nil
+
+		if ok and result then
+			profileCache[userId] = {
+				cachedAt = os.clock(),
+				data = result,
+			}
+			forceFullRender = true
+			markRenderDirty()
+		elseif not ok then
+			warnWithPrefix("Profile fetch error for user " .. tostring(userId) .. ": " .. tostring(result))
+		end
+	end)
+end
+
+local function getCachedProfile(userId)
+	userId = tonumber(userId)
+	if not userId then
+		return nil
+	end
+
+	local cached = profileCache[userId]
+	if cached then
+		if (os.clock() - cached.cachedAt) >= PROFILE_CACHE_SECONDS then
+			requestProfile(userId)
+		end
+		return cached.data
+	end
+
+	requestProfile(userId)
+	return nil
+end
+
+local function saveProfileAsync(player, flag)
+	local data = {
+		UserId = player.UserId,
+		Username = player.Name,
+		Flag = flag or "",
+		ProfileImage = getHeadshot(player.UserId),
+		UpdatedAt = os.time(),
+	}
+
+	profileCache[player.UserId] = {
+		cachedAt = os.clock(),
+		data = data,
+	}
+
+	forceFullRender = true
+	markRenderDirty()
+
+	local ok, err = pcall(function()
+		profileStore:SetAsync(tostring(player.UserId), data)
+	end)
+
+	if not ok then
+		warnWithPrefix("Failed to save profile for " .. player.Name .. ": " .. tostring(err))
+	end
+end
+
+local function clampOrderedValue(value)
+	value = math.floor(tonumber(value) or 0)
+	if value < 0 then return 0 end
+	if value > MAX_ORDERED_VALUE then return MAX_ORDERED_VALUE end
+	return value
+end
+
+local function savePlayerCash(player, bypassThrottle)
+	local state = playerStates[player]
+	if not state then return end
+
+	local now = os.clock()
+	if not bypassThrottle and now - state.lastSavedAt < SAVE_INTERVAL_SECONDS then
+		return
+	end
+
+	state.lastSavedAt = now
+	local score = clampOrderedValue(state.cash)
+
+	local ok, err = pcall(function()
+		cashStore:SetAsync(tostring(player.UserId), score)
+	end)
+
+	if ok then
+		markEntriesDirty()
+	else
+		warnWithPrefix("Failed to save cash for " .. player.Name .. ": " .. tostring(err))
+	end
+end
+
+local function getWalletValue(player)
+	local leaderstats = player:FindFirstChild("leaderstats")
+	return leaderstats and leaderstats:FindFirstChild("Wallet") or nil
+end
+
+local function bindWallet(player)
+	local state = playerStates[player]
+	if not state then return false end
+
+	local wallet = getWalletValue(player)
+	if not wallet then
+		unboundPlayers[player] = true
+		return false
+	end
+
+	if state.wallet == wallet and state.walletConnection then
+		return true
+	end
+
+	if state.walletConnection then
+		state.walletConnection:Disconnect()
+		state.walletConnection = nil
+	end
+
+	state.wallet = wallet
+
+	local function updateCash()
+		local currentCash = tonumber(wallet.Value) or 0
+		if state.cash ~= currentCash then
+			state.cash = currentCash
+			player:SetAttribute("LeaderboardWalletCash", state.cash)
+			markEntriesDirty()
+			savePlayerCash(player, false)
+		end
+	end
+
+	state.walletConnection = wallet.Changed:Connect(updateCash)
+	updateCash()
+	unboundPlayers[player] = nil
+	return true
+end
+
+local function bindOrQueuePlayerWallet(player)
+	if not player or not player.Parent then
+		unboundPlayers[player] = nil
+		return
+	end
+
+	if not bindWallet(player) then
+		unboundPlayers[player] = true
+	end
+end
+
+local function watchPlayerWallet(player)
+	local state = playerStates[player]
+	if not state then return end
+
+	if state.leaderstatsConnection then
+		state.leaderstatsConnection:Disconnect()
+		state.leaderstatsConnection = nil
+	end
+
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if leaderstats then
+		state.leaderstatsConnection = leaderstats.ChildAdded:Connect(function(child)
+			if child.Name == "Wallet" then
+				bindOrQueuePlayerWallet(player)
+			end
+		end)
+	else
+		state.leaderstatsConnection = player.ChildAdded:Connect(function(child)
+			if child.Name == "leaderstats" then
+				watchPlayerWallet(player)
+				bindOrQueuePlayerWallet(player)
+			end
+		end)
+	end
+
+	bindOrQueuePlayerWallet(player)
+end
+
+local function refreshStoredEntries()
+	local ok, result = pcall(function()
+		return cashStore:GetSortedAsync(false, LEADERBOARD_SIZE)
+	end)
+
+	if not ok then
+		warnWithPrefix("GetSortedAsync failed: " .. tostring(result))
+		return
+	end
+
+	if not result then
+		warnWithPrefix("GetSortedAsync returned nil")
+		return
+	end
+
+	local refreshedEntries = {}
+	local page = result:GetCurrentPage()
+	for _, item in ipairs(page) do
+		local userId = tonumber(item.key)
+		local score = tonumber(item.value) or 0
+		if userId and score > 0 then
+			refreshedEntries[userId] = score
+			requestProfile(userId)
+		end
+	end
+
+	storedEntriesByUserId = refreshedEntries
+	markEntriesDirty()
+end
+
+local function getOrderedEntries()
+	if not entriesDirty then
+		return cachedOrderedEntries
+	end
+
+	local entriesByUserId = {}
+
+	for userId, score in pairs(storedEntriesByUserId) do
+		if score and score > 0 then
+			entriesByUserId[userId] = score
+		end
+	end
+
+	for player, state in pairs(playerStates) do
+		if player.Parent then
+			local liveScore = tonumber(state.cash) or 0
+
+			-- Online players should reflect their current wallet cash, not a stored
+			-- historical/high-water value from a previous fetch.
+			if liveScore > 0 then
+				entriesByUserId[player.UserId] = liveScore
+			else
+				entriesByUserId[player.UserId] = nil
+			end
+		end
+	end
+
+	local entries = {}
+	for userId, score in pairs(entriesByUserId) do
+		table.insert(entries, {
+			UserId = userId,
+			Score = score,
+		})
+	end
+
+	table.sort(entries, function(a, b)
+		if a.Score == b.Score then
+			return a.UserId < b.UserId
+		end
+		return a.Score > b.Score
+	end)
+
+	while #entries > LEADERBOARD_SIZE do
+		table.remove(entries)
+	end
+
+	cachedOrderedEntries = entries
+	entriesDirty = false
+	return cachedOrderedEntries
+end
+
+local function renderSlot(rank, entry)
+	local slot = slots[rank]
+	local refs = slotRefs[rank]
+	if not slot or not refs then return end
+
+	local color = entry and TOP_THREE_COLORS[rank]
+	local rankColor = color or defaultColors.Rank
+	local usernameColor = color or defaultColors.Username
+
+	setTextColor(refs.Rank, rankColor)
+	setTextColor(refs.Username, usernameColor)
+	setText(refs.Rank, "#" .. tostring(rank))
+
+	if entry then
+		local profile = getCachedProfile(entry.UserId)
+		local username = profile and profile.Username or ("User " .. tostring(entry.UserId))
+		local flag = profile and profile.Flag or ""
+		local image = profile and profile.ProfileImage or ""
+
+		setImage(refs.ProfileImage, image)
+		setText(refs.Cash, formatCash(entry.Score))
+		setText(refs.Flag, flag)
+		setText(refs.Username, username)
+	else
+		setImage(refs.ProfileImage, VACANT_ENTRY.Image)
+		setText(refs.Cash, VACANT_ENTRY.Cash)
+		setText(refs.Flag, VACANT_ENTRY.Flag)
+		setText(refs.Username, VACANT_ENTRY.Username)
+	end
+end
+
+local function entryChanged(rank, entry)
+	if forceFullRender then
+		return true
+	end
+
+	local previous = lastRenderedEntries[rank]
+	if (previous == nil) ~= (entry == nil) then
+		return true
+	end
+
+	if not previous and not entry then
+		return false
+	end
+
+	return previous.UserId ~= entry.UserId or previous.Score ~= entry.Score
+end
+
+local function renderLeaderboard()
+	if not ensureSlots() then
+		return
+	end
+
+	local entries = getOrderedEntries()
+	for rank = 1, LEADERBOARD_SIZE do
+		local entry = entries[rank]
+		if entryChanged(rank, entry) then
+			renderSlot(rank, entry)
+			lastRenderedEntries[rank] = entry and {
+				UserId = entry.UserId,
+				Score = entry.Score,
+			} or nil
+		end
+	end
+
+	forceFullRender = false
+	dirtyRender = false
+end
+
+local function setupPlayer(player)
+	playerStates[player] = {
+		cash = 0,
+		lastSavedAt = -SAVE_INTERVAL_SECONDS,
+		flag = "",
+		wallet = nil,
+		walletConnection = nil,
+		leaderstatsConnection = nil,
+	}
+
+	watchPlayerWallet(player)
+	markEntriesDirty()
+
+	task.spawn(function()
+		local ok, err = xpcall(function()
+			local flag = getCountryFlag(player)
+			local state = playerStates[player]
+			if state then
+				state.flag = flag
+			end
+			saveProfileAsync(player, flag)
+		end, debug.traceback)
+
+		if not ok then
+			warnWithPrefix("Failed to initialise profile for " .. player.Name .. ": " .. tostring(err))
+		end
+	end)
+end
+
+local function cleanupPlayer(player)
+	savePlayerCash(player, true)
+
+	local state = playerStates[player]
+	if state then
+		if state.walletConnection then
+			state.walletConnection:Disconnect()
+		end
+		if state.leaderstatsConnection then
+			state.leaderstatsConnection:Disconnect()
+		end
+	end
+
+	playerStates[player] = nil
+	unboundPlayers[player] = nil
+
+	-- Evict local player cache entries. Offline top-50 entries will be reloaded
+	-- from the profile DataStore if they still appear globally.
+	profileCache[player.UserId] = nil
+	thumbnailCache[player.UserId] = nil
+	pendingProfileFetches[player.UserId] = nil
+
+	markEntriesDirty()
+end
+
+local function saveAllPlayerCashStaggered()
+	local playersToSave = {}
+	for player in pairs(playerStates) do
+		table.insert(playersToSave, player)
+	end
+
+	for index, player in ipairs(playersToSave) do
+		local delaySeconds = (index - 1) * SAVE_STAGGER_SECONDS
+		task.delay(delaySeconds, function()
+			if player.Parent and playerStates[player] then
+				savePlayerCash(player, true)
+			end
+		end)
+	end
+end
+
+local function startWalletWatcher()
+	task.spawn(function()
+		while true do
+			local ok, err = xpcall(function()
+				for player in pairs(unboundPlayers) do
+					bindOrQueuePlayerWallet(player)
+				end
+			end, debug.traceback)
+
+			if not ok then
+				warnWithPrefix("Wallet watcher error: " .. tostring(err))
+			end
+
+			task.wait(WALLET_WATCH_INTERVAL_SECONDS)
+		end
+	end)
+end
+
+local function startMainLoop()
+	task.spawn(function()
+		local lastGlobalFetch = -GLOBAL_FETCH_INTERVAL_SECONDS
+		local lastSave = -SAVE_INTERVAL_SECONDS
+
+		while true do
+			local ok, err = xpcall(function()
+				local now = os.clock()
+
+				if now - lastGlobalFetch >= GLOBAL_FETCH_INTERVAL_SECONDS then
+					lastGlobalFetch = now
+					refreshStoredEntries()
+				end
+
+				if now - lastSave >= SAVE_INTERVAL_SECONDS then
+					lastSave = now
+					saveAllPlayerCashStaggered()
+				end
+
+				if dirtyRender then
+					renderLeaderboard()
+				end
+			end, debug.traceback)
+
+			if not ok then
+				warnWithPrefix("Main loop error: " .. tostring(err))
+			end
+
+			task.wait(RENDER_INTERVAL_SECONDS)
+		end
+	end)
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	setupPlayer(player)
+end
+
+Players.PlayerAdded:Connect(setupPlayer)
+Players.PlayerRemoving:Connect(cleanupPlayer)
+
+startWalletWatcher()
+startMainLoop()
