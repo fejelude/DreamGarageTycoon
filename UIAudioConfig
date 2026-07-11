@@ -232,7 +232,7 @@ function UIAudioConfig.CreateStateFeedback(container)
 	local function resolveLabels()
 		if container then
 			stateLabels = stateLabels or container:FindFirstChild("StateLabels") or container:FindFirstChild("StateLabels", true)
-			successLabel = successLabel or (stateLabels and stateLabels:FindFirstChild("Success"))
+			successLabel = successLabel or (stateLabels and (stateLabels:FindFirstChild("Success") or stateLabels:FindFirstChild("Sucess")))
 			failedLabel = failedLabel or (stateLabels and stateLabels:FindFirstChild("Failed"))
 
 			if not (successLabel and failedLabel) then

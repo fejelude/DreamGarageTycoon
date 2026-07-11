@@ -28,6 +28,8 @@ local BANK_TRANSFER_SKIP_ID = 3591736957
 local OFFLINE_10X_CLAIM_ID = 3598967453
 local STARTER_PACK_PRODUCT_ID = 3599481243
 local STARTER_PACK_CAR_NAME = "Senator"
+local GlobalLuckConfig = require(ReplicatedStorage:WaitForChild("GlobalLuckConfig"))
+local GlobalLuckService = require(script.Parent:WaitForChild("GlobalLuckService"))
 local STARTER_PACK_WALLET_CASH = 800000
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))
@@ -501,6 +503,18 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	if alreadyProcessed then
 		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
+	end
+
+	if pid == GlobalLuckConfig.ProductId and GlobalLuckConfig.ProductId > 0 then
+		local ok, message, alreadyGranted = GlobalLuckService.ProcessReceipt(receiptInfo)
+		GlobalLuckService.NotifyClient(buyerPlayer, ok and not alreadyGranted, message)
+		if ok then
+			if not alreadyGranted and not markPurchaseProcessed(purchaseKey) then
+				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+			end
+			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
+		end
+		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 	end
 
 	local purchaseSuccess = false

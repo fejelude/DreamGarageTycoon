@@ -1,0 +1,26 @@
+-- ModuleScript: ReplicatedStorage > GlobalLuckConfig
+local GlobalLuckConfig = {}
+
+GlobalLuckConfig.ProductId = 0 -- Set to the Global Luck developer product id in Roblox Creator Dashboard.
+GlobalLuckConfig.DurationSeconds = 6 * 60 * 60
+GlobalLuckConfig.BaseMultiplier = 1
+GlobalLuckConfig.MaxReceiptUpdateRetries = 5
+GlobalLuckConfig.TopicName = "GlobalLuckStateV1"
+GlobalLuckConfig.StateStoreName = "GlobalLuckState_V1"
+GlobalLuckConfig.ReceiptStoreName = "GlobalLuckReceiptHistory_V1"
+GlobalLuckConfig.StateKey = "Current"
+
+function GlobalLuckConfig.FormatMultiplier(multiplier)
+	multiplier = tonumber(multiplier) or GlobalLuckConfig.BaseMultiplier
+	if multiplier % 1 == 0 then
+		return tostring(multiplier) .. "x"
+	end
+	return string.format("%.2fx", multiplier)
+end
+
+function GlobalLuckConfig.GetNextMultiplier(currentMultiplier)
+	currentMultiplier = math.max(GlobalLuckConfig.BaseMultiplier, tonumber(currentMultiplier) or GlobalLuckConfig.BaseMultiplier)
+	return currentMultiplier + 1
+end
+
+return GlobalLuckConfig

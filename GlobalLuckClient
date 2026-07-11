@@ -1,0 +1,161 @@
+-- LocalScript: StarterGui > ShopUI > GlobalLuckClient
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local Config = require(ReplicatedStorage:WaitForChild("GlobalLuckConfig"))
+local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+
+local REQUIRED_WAIT_SECONDS = 15
+local function requireChild(parent, childName, className, fullPath)
+	local child = parent:WaitForChild(childName, REQUIRED_WAIT_SECONDS)
+	if not child then
+		error("[GlobalLuckClient] Missing required instance: " .. fullPath .. " (" .. className .. ")", 0)
+	end
+	if className and not child:IsA(className) then
+		error("[GlobalLuckClient] " .. fullPath .. " must be a " .. className .. ", got " .. child.ClassName, 0)
+	end
+	return child
+end
+
+local remotes = requireChild(ReplicatedStorage, "GlobalLuckRemotes", "Folder", "ReplicatedStorage > GlobalLuckRemotes")
+local StateEvent = requireChild(remotes, "State", "RemoteEvent", "ReplicatedStorage > GlobalLuckRemotes > State")
+local GetState = requireChild(remotes, "GetState", "RemoteFunction", "ReplicatedStorage > GlobalLuckRemotes > GetState")
+local PurchaseResult = requireChild(remotes, "PurchaseResult", "RemoteEvent", "ReplicatedStorage > GlobalLuckRemotes > PurchaseResult")
+
+local shopGui = playerGui:WaitForChild("ShopUI")
+local mainFrame = shopGui:WaitForChild("MainFrame")
+local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
+local currentState = nil
+local promptBusy = false
+local inactiveProfileImage = nil
+local inactiveProfileTransparency = nil
+
+local function findPath(root, names)
+	local obj = root
+	for _, name in ipairs(names) do
+		obj = obj and obj:FindFirstChild(name)
+		if not obj then return nil end
+	end
+	return obj
+end
+
+local function formatTime(seconds)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	local hours = math.floor(seconds / 3600)
+	local minutes = math.floor((seconds % 3600) / 60)
+	local secs = seconds % 60
+	return string.format("%d:%02d:%02d", hours, minutes, secs)
+end
+
+local function setButtonEnabled(button, enabled)
+	if not button then return end
+	button.Active = enabled
+	button.Selectable = enabled
+	pcall(function() button.Interactable = enabled end)
+	button.ImageTransparency = enabled and 0 or 0.45
+end
+
+local function updateProfile(profile, state)
+	if not profile then return end
+	if inactiveProfileImage == nil then
+		inactiveProfileImage = profile.Image
+		inactiveProfileTransparency = profile.ImageTransparency
+	end
+	if not state.Active then
+		profile.Image = inactiveProfileImage or ""
+		profile.ImageTransparency = inactiveProfileTransparency or 0.45
+		return
+	end
+	local ok, content = pcall(function()
+		return Players:GetUserThumbnailAsync(state.PurchaserUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+	end)
+	if ok and content then
+		profile.Image = content
+		profile.ImageTransparency = 0
+	else
+		profile.Image = inactiveProfileImage or ""
+		profile.ImageTransparency = inactiveProfileTransparency or 0.45
+	end
+end
+
+local function render()
+	local state = currentState or { Active = false, Multiplier = 1, ExpiresAt = 0, ServerTime = os.time(), PurchaserUsername = "" }
+	local details = findPath(mainFrame, {"ShopUIScrolling", "ShopElements", "Featured", "GlobalLuck", "ImportantDetails"})
+	if details then
+		local currentLuck = details:FindFirstChild("CurrentLuck")
+		local nextLuck = details:FindFirstChild("NextLuck")
+		local username = details:FindFirstChild("UsernameOfTheBooster")
+		local profile = details:FindFirstChild("ProfileofTheBooster")
+		if currentLuck then currentLuck.Text = Config.FormatMultiplier(state.Multiplier) end
+		if nextLuck then nextLuck.Text = Config.FormatMultiplier(Config.GetNextMultiplier(state.Multiplier)) end
+		if username then username.Text = state.Active and (state.PurchaserUsername ~= "" and state.PurchaserUsername or "Unknown") or "Vacant" end
+		updateProfile(profile, state)
+	end
+	local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "DoubleLuckV1"})
+	setButtonEnabled(button, not state.Active and not promptBusy)
+end
+
+local function renderHud()
+	local boosterGui = playerGui:FindFirstChild("BoosterUi")
+	local panel = boosterGui and findPath(boosterGui, {"Elements", "GlobalLuckEnabledV1"})
+	if not panel then return end
+	local state = currentState
+	if not state or not state.Active then panel.Visible = false return end
+	local remaining = (state.ExpiresAt or 0) - (os.time() + ((state.ServerTime or os.time()) - os.time()))
+	remaining = math.max(0, (state.ExpiresAt or 0) - os.time())
+	if remaining <= 0 then panel.Visible = false return end
+	panel.Visible = true
+	local timeLeft = panel:FindFirstChild("TimeLeft")
+	if timeLeft then timeLeft.Text = formatTime(remaining) end
+end
+
+local function applyState(state)
+	currentState = state
+	promptBusy = false
+	render()
+	renderHud()
+end
+
+local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "DoubleLuckV1"})
+if button then
+	Kit.Tween:SetupButton(button, function()
+		if promptBusy then return end
+		if currentState and currentState.Active then
+			shopFeedback:Failed("Global Luck is already active")
+			Kit.Sound:Play("BuyFail")
+			return
+		end
+		if Config.ProductId <= 0 then
+			shopFeedback:Failed("Global Luck is unavailable")
+			return
+		end
+		promptBusy = true
+		render()
+		UIAudioConfig.PlayRobux()
+		UIAudioConfig.ShowPurchaseLoading()
+		MarketplaceService:PromptProductPurchase(player, Config.ProductId)
+	end)
+end
+
+StateEvent.OnClientEvent:Connect(applyState)
+PurchaseResult.OnClientEvent:Connect(function(success, message)
+	UIAudioConfig.HidePurchaseLoading()
+	promptBusy = false
+	if success then shopFeedback:Success(message ~= "" and message or "Global Luck Activated") else shopFeedback:Failed(message ~= "" and message or "Global Luck Failed") end
+	render()
+end)
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, purchased)
+	if userId == player.UserId and productId == Config.ProductId and not purchased then
+		UIAudioConfig.HidePurchaseLoading(); promptBusy = false; shopFeedback:Failed("Purchase Cancelled"); render()
+	end
+end)
+
+task.spawn(function()
+	local ok, state = pcall(function() return GetState:InvokeServer() end)
+	if ok then applyState(state) else render() end
+	while true do task.wait(1); renderHud(); if os.time() % 30 == 0 then pcall(function() applyState(GetState:InvokeServer()) end) end end
+end)
