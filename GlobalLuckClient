@@ -129,9 +129,8 @@ local function applyState(state)
 	renderHud()
 end
 
-local function getActiveBlockedMessage(state)
-	local multiplierText = Config.FormatMultiplier((state and state.Multiplier) or Config.BaseMultiplier)
-	return "Booster Maxed & Active (" .. multiplierText .. ")"
+local function getActiveBlockedMessage(_state)
+	return "Booster Maxed & Active"
 end
 
 local function showBlockedPurchase(state)

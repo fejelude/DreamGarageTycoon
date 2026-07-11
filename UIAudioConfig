@@ -351,9 +351,6 @@ function UIAudioConfig.CreateStateFeedback(container)
 		return nil
 	end
 
-	local function shouldSuppressRepeatCounter(baseText)
-		return type(baseText) == "string" and string.find(baseText, "Booster Maxed & Active", 1, true) ~= nil
-	end
 
 	function feedback:Show(label, baseText, color)
 		if not label then
@@ -390,7 +387,7 @@ function UIAudioConfig.CreateStateFeedback(container)
 			state.baseText = baseText
 		end
 
-		if state.count >= 2 and not shouldSuppressRepeatCounter(baseText) then
+		if state.count >= 2 then
 			label.Text = baseText .. " (x" .. tostring(state.count) .. ")"
 		else
 			label.Text = baseText
