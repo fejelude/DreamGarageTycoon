@@ -33,7 +33,8 @@ pcall(function() CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5
 local CarCPSDisplayUtils = require(ReplicatedStorage:WaitForChild("CarCPSDisplayUtils"))
 
 -- 🛡️ STATE MANAGEMENT
-local processingTracks = {} 
+local processingTracks = {}
+local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 
 -- ============================================================================
 -- 🛠️ HELPER FUNCTIONS
@@ -43,6 +44,22 @@ local processingTracks = {}
 local function getPadNumber(padObject)
 	local num = padObject.Name:match("Pad(%d+)")
 	return tonumber(num) or 1 -- Default to 1 if name format is weird
+end
+
+local function markPlayerDataDirty(player)
+	if not player then return end
+
+	if not TycoonAdminAPI or not TycoonAdminAPI.Parent then
+		TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	end
+
+	if TycoonAdminAPI and TycoonAdminAPI:IsA("BindableFunction") then
+		task.spawn(function()
+			pcall(function()
+				TycoonAdminAPI:Invoke("MarkDirty", player)
+			end)
+		end)
+	end
 end
 
 local function safeFindCarTool(targetName)
@@ -306,6 +323,7 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 					local lookAtCar = CFrame.lookAt(safeSpot.Position, padPart.Position)
 					player.Character:PivotTo(lookAtCar)
 				end
+				markPlayerDataDirty(player)
 				playSound("PlaceSound", padPart)
 			else
 				warn("⚠️ Spawn Failed! Refunding item to " .. player.Name)
@@ -377,6 +395,7 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 		validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
 		CarCPSDisplayUtils.RefreshPlotCPSDisplays(thisPlot, player)
 
+		markPlayerDataDirty(player)
 		playSound("EquipSound", padPart)
 	else
 		warn("❌ CRITICAL: Tool not found for " .. carName)

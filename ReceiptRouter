@@ -185,6 +185,65 @@ local function savePlayerNow(player, timeout)
 	return true
 end
 
+local function hasRecordedPlayerReceipt(player, purchaseId)
+	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not TycoonAdminAPI then
+		return nil, "TycoonAdminAPI missing"
+	end
+
+	local invokeOk, hasReceipt, message = safeInvoke(TycoonAdminAPI, 5, "HasRobuxReceipt", player, purchaseId)
+	if not invokeOk or hasReceipt == nil then
+		return nil, message or hasReceipt or "Receipt check failed"
+	end
+
+	return hasReceipt == true
+end
+
+local function recordPlayerReceipt(player, receiptInfo, source)
+	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not TycoonAdminAPI then
+		return false, "TycoonAdminAPI missing"
+	end
+
+	local invokeOk, recordOk, message = safeInvoke(
+		TycoonAdminAPI,
+		5,
+		"RecordRobuxReceipt",
+		player,
+		receiptInfo.PurchaseId,
+		receiptInfo.ProductId,
+		source
+	)
+
+	if not invokeOk or recordOk ~= true then
+		return false, message or recordOk or "Receipt record failed"
+	end
+
+	return true
+end
+
+local function getReceiptSource(productId, carPostCommit, skinName)
+	if carPostCommit then
+		return carPostCommit.IsGift and "RobuxGift" or "RobuxPurchase"
+	elseif productId == STARTER_PACK_PRODUCT_ID then
+		return "StarterPack"
+	elseif productId == OFFLINE_10X_CLAIM_ID then
+		return "OfflinePremium"
+	elseif productId == BANK_TRANSFER_SKIP_ID then
+		return "BankTransferReset"
+	elseif productId == TABLET_2X_ID then
+		return "Tablet2xClaim"
+	elseif productId == SHOP_REROLL_ID or productId == UNCOMMON_SHOP_REROLL_ID or productId == RARE_SHOP_REROLL_ID or productId == EPIC_SHOP_REROLL_ID then
+		return "ShopReroll"
+	elseif skinName then
+		return "BaseSkinPurchase"
+	elseif AdRewardsConfig.IsConfigured() and productId == AdRewardsConfig.DEV_PRODUCT_ID then
+		return "RewardedAd"
+	end
+
+	return "ReceiptRouter"
+end
+
 local function getPurchaseHistoryStore()
 	if ActivePurchaseHistory then return ActivePurchaseHistory end
 
@@ -503,6 +562,30 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 	end
 
+	if targetPlayer:GetAttribute("TycoonDataLoaded") ~= true then
+		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+	end
+
+	local profileReceiptProcessed, profileReceiptMessage = hasRecordedPlayerReceipt(targetPlayer, receiptInfo.PurchaseId)
+	if profileReceiptProcessed == nil then
+		warn("[ReceiptRouter] Receipt profile check failed for purchase " .. tostring(receiptInfo.PurchaseId) .. ": " .. tostring(profileReceiptMessage))
+		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+	end
+
+	if profileReceiptProcessed then
+		local saveOk, saveMessage = savePlayerNow(targetPlayer, 15)
+		if not saveOk then
+			warn("[ReceiptRouter] Receipt already granted but profile save retry failed for " .. targetPlayer.Name .. ": " .. tostring(saveMessage))
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+
+		if not markPurchaseProcessed(purchaseKey) then
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+
+		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
+	end
+
 	local purchaseSuccess = false
 	local bankResetFeedback = nil
 	local offlinePremiumClientResult = nil
@@ -735,6 +818,22 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	-- ─── FINALIZE ─────────────────────────────────────────────────────────────
 	if purchaseSuccess then
+		local receiptRecordOk, receiptRecordMessage = recordPlayerReceipt(
+			targetPlayer,
+			receiptInfo,
+			getReceiptSource(pid, carPostCommit, skinFound)
+		)
+		if not receiptRecordOk then
+			warn("[ReceiptRouter] Failed to record receipt in main profile for " .. targetPlayer.Name .. ": " .. tostring(receiptRecordMessage))
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+
+		local saveOk, saveMessage = savePlayerNow(targetPlayer, 15)
+		if not saveOk then
+			warn("[ReceiptRouter] Failed to force-save purchase reward for " .. targetPlayer.Name .. ": " .. tostring(saveMessage))
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+
 		if not markPurchaseProcessed(purchaseKey) then
 			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 		end
@@ -783,13 +882,6 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			if (isGift and giftReceiverId) or consumeStaleGiftIntentAfterGrant then
 				_G.GetGiftReceiver(buyerId, true)
 			end
-		end
-
-		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-		if TycoonAdminAPI then
-			task.spawn(function()
-				safeInvoke(TycoonAdminAPI, 2, "MarkDirty", targetPlayer)
-			end)
 		end
 
 		if bankResetFeedback and BankTimerResetFeedback then

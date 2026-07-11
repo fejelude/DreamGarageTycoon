@@ -136,6 +136,8 @@ local MAX_LAYOUT_SIZE = 200
 local SETTINGS_SCHEMA_VERSION = 3
 local STARTER_CAR_NAME = "Delta Item"
 local SETTINGS_REMOTE_NAME = "SettingsPersistenceEvent"
+local HOTBAR_REMOTE_NAME = "HotbarPersistenceEvent"
+local HOTBAR_SLOT_COUNT = 6
 local DAILY_REWARDS_STATE_ATTRIBUTE = "DailyRewardsStateJson"
 local FREE_REWARDS_CLAIMED_ATTRIBUTE = "FreeRewardsClaimed"
 local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
@@ -279,6 +281,14 @@ local TycoonFolder = getRequiredChild(Workspace, "Tycoons", "Folder", "Workspace
 local AdminLogEvent = ServerStorage:FindFirstChild("TycoonAdminLog")
 
 local SettingsPersistenceEvent = getRequiredChild(ReplicatedStorage, SETTINGS_REMOTE_NAME, "RemoteEvent", "ReplicatedStorage > " .. SETTINGS_REMOTE_NAME, REQUIRED_WAIT_SECONDS)
+local HotbarPersistenceEvent = ReplicatedStorage:FindFirstChild(HOTBAR_REMOTE_NAME)
+if not HotbarPersistenceEvent then
+	HotbarPersistenceEvent = Instance.new("RemoteEvent")
+	HotbarPersistenceEvent.Name = HOTBAR_REMOTE_NAME
+	HotbarPersistenceEvent.Parent = ReplicatedStorage
+elseif not HotbarPersistenceEvent:IsA("RemoteEvent") then
+	failSetup("Invalid required instance: ReplicatedStorage > " .. HOTBAR_REMOTE_NAME .. " must be a RemoteEvent, but found " .. HotbarPersistenceEvent.ClassName .. ".")
+end
 local SETTINGS_UPDATE_RATE_LIMIT_SECONDS = 0.15
 local lastSettingsUpdateByUserId = {}
 local pendingSettingsDirtyByUserId = {}
@@ -566,6 +576,136 @@ end
 -- ----------------------------------------------------------------------------
 -- 💰 MONEY MANAGER
 -- ----------------------------------------------------------------------------
+local function normalizeHotbarSlotName(rawValue)
+	if type(rawValue) ~= "string" then
+		return nil
+	end
+
+	local value = rawValue:match("^%s*(.-)%s*$")
+	if not value or value == "" or not CarStats or not CarStats.Cars then
+		return nil
+	end
+
+	if CarStats.Cars[value] then
+		return value
+	end
+
+	local cleanName = value:gsub(" Item$", ""):gsub("Item$", "")
+	if CarStats.Cars[cleanName] then
+		return cleanName
+	end
+
+	local sourceTool = safeFindCarTool(value)
+	if sourceTool then
+		local toolId = sourceTool.Name
+		local toolCleanName = toolId:gsub(" Item$", ""):gsub("Item$", "")
+		if CarStats.Cars[toolCleanName] then
+			return toolCleanName
+		end
+		if CarStats.Cars[toolId] then
+			return toolId
+		end
+	end
+
+	for carKey, stats in pairs(CarStats.Cars) do
+		if type(stats) == "table" and stats.Name == value then
+			return carKey
+		end
+	end
+
+	return nil
+end
+
+local function sanitizeHotbarSlots(rawSlots)
+	local slots = {}
+	if type(rawSlots) ~= "table" then
+		rawSlots = {}
+	end
+
+	for i = 1, HOTBAR_SLOT_COUNT do
+		local normalized = normalizeHotbarSlotName(rawSlots[i] or rawSlots[tostring(i)])
+		slots[i] = normalized or ""
+	end
+
+	return slots
+end
+
+local function getServerInventoryHotbarCounts(player)
+	local counts = {}
+	local seen = {}
+
+	local function scan(container)
+		if not container then return end
+		for _, child in ipairs(container:GetChildren()) do
+			if child:IsA("Tool") and not seen[child] then
+				seen[child] = true
+				local normalized = normalizeHotbarSlotName(child:GetAttribute("ToolId") or child.Name)
+				if normalized then
+					counts[normalized] = (counts[normalized] or 0) + 1
+				end
+			end
+		end
+	end
+
+	scan(player:FindFirstChild("Backpack"))
+	if player.Character then scan(player.Character) end
+
+	return counts
+end
+
+local function normalizeHotbarPayload(player, rawSlots)
+	local submittedSlots = sanitizeHotbarSlots(rawSlots)
+	local ownedCounts = getServerInventoryHotbarCounts(player)
+	local assignedCounts = {}
+	local normalizedSlots = {}
+
+	for i = 1, HOTBAR_SLOT_COUNT do
+		local carName = submittedSlots[i]
+		if carName ~= "" then
+			local assigned = assignedCounts[carName] or 0
+			local owned = ownedCounts[carName] or 0
+			if assigned < owned then
+				normalizedSlots[i] = carName
+				assignedCounts[carName] = assigned + 1
+			else
+				normalizedSlots[i] = ""
+			end
+		else
+			normalizedSlots[i] = ""
+		end
+	end
+
+	return normalizedSlots
+end
+
+local function applyHotbarSlots(player, slots)
+	slots = sanitizeHotbarSlots(slots)
+	for i = 1, HOTBAR_SLOT_COUNT do
+		player:SetAttribute("HotbarSlot" .. i, slots[i] or "")
+	end
+end
+
+HotbarPersistenceEvent.OnServerEvent:Connect(function(player, rawSlots)
+	if not player or player.Parent ~= Players then return end
+	if player:GetAttribute(DATA_READY_ATTRIBUTE) ~= true then return end
+
+	local slots = normalizeHotbarPayload(player, rawSlots)
+	local changed = false
+	for i = 1, HOTBAR_SLOT_COUNT do
+		if player:GetAttribute("HotbarSlot" .. i) ~= (slots[i] or "") then
+			changed = true
+			break
+		end
+	end
+
+	if not changed then
+		return
+	end
+
+	applyHotbarSlots(player, slots)
+	markDirty(player)
+end)
+
 local MoneyManager = {}
 function MoneyManager.GetBalance(player, currencyType)
 	if not player then return 0 end
@@ -924,7 +1064,7 @@ local function getHotbarReservationCount(player, targetToolId)
 	if not player or type(targetToolId) ~= "string" then return 0 end
 
 	local reserved = 0
-	for i = 1, 6 do
+	for i = 1, HOTBAR_SLOT_COUNT do
 		local hotbarToolId = player:GetAttribute("HotbarSlot" .. i)
 		if toolIdMatchesTarget(hotbarToolId, targetToolId) then
 			reserved += 1
@@ -1399,6 +1539,48 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		markDirty(player)
 		return true, removedCount
 
+	elseif action == "HasRobuxReceipt" and player then
+		local purchaseId = ...
+		purchaseId = tostring(purchaseId or "")
+		if purchaseId == "" then
+			return false
+		end
+
+		local session = SessionData[player]
+		if not session or not session.DataLoaded then
+			return nil, "Player data not loaded"
+		end
+
+		session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+		return session.RobuxProductReceipts[purchaseId] ~= nil
+
+	elseif action == "RecordRobuxReceipt" and player then
+		local purchaseId, productId, receiptSource = ...
+		purchaseId = tostring(purchaseId or "")
+		if purchaseId == "" then
+			return false, "Missing purchase id"
+		end
+
+		local session = SessionData[player]
+		if not session or not session.DataLoaded then
+			return false, "Player data not loaded"
+		end
+
+		session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+
+		local entry = type(session.RobuxProductReceipts[purchaseId]) == "table"
+			and session.RobuxProductReceipts[purchaseId]
+			or {}
+		entry.ProductId = tonumber(productId) or entry.ProductId
+		entry.GrantedAt = math.max(tonumber(entry.GrantedAt) or 0, os.time())
+		entry.Source = type(entry.Source) == "string" and entry.Source
+			or (type(receiptSource) == "string" and receiptSource or "ReceiptRouter")
+
+		session.RobuxProductReceipts[purchaseId] = entry
+		session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+		markDirty(player)
+		return true
+
 	elseif action == "MarkDirty" and player then
 		markDirty(player)
 		return true
@@ -1672,7 +1854,7 @@ save = function(player, isClosing, force)
 
 		-- 🎮 HOTBAR: snapshot current slot assignments from client-set attributes
 		local currentHotbar = {}
-		for i = 1, 6 do
+		for i = 1, HOTBAR_SLOT_COUNT do
 			local v = player:GetAttribute("HotbarSlot" .. i)
 			currentHotbar[i] = (v and v ~= "") and v or ""
 		end
@@ -2242,11 +2424,7 @@ local function InitializePlayer(player)
 	end
 
 	-- 🎮 HOTBAR: restore slot assignments so the client can read them
-	local hotbarSlots = data.HotbarSlots or {}
-	for i = 1, 6 do
-		local v = hotbarSlots[i] or (hotbarSlots[tostring(i)] or "")
-		player:SetAttribute("HotbarSlot" .. i, v)
-	end
+	local loadedHotbarSlots = data.HotbarSlots or {}
 
 	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(setDirty)
 	player:GetAttributeChangedSignal("BaseLevel"):Connect(setDirty)
@@ -2274,10 +2452,6 @@ local function InitializePlayer(player)
 			setDirty()
 		end)
 	end
-	for i = 1, 6 do
-		player:GetAttributeChangedSignal("HotbarSlot" .. i):Connect(setDirty)
-	end
-
 	local function ApplyRankVisual()
 		local SetRankAPI = ServerStorage:FindFirstChild("SetRankAPI")
 		if SetRankAPI then
@@ -2316,6 +2490,10 @@ local function InitializePlayer(player)
 	end
 
 	sanitizeInventory(player)
+	applyHotbarSlots(player, normalizeHotbarPayload(player, loadedHotbarSlots))
+	for i = 1, HOTBAR_SLOT_COUNT do
+		player:GetAttributeChangedSignal("HotbarSlot" .. i):Connect(setDirty)
+	end
 
 	local loadedTabletCarry = math.max(0, math.floor(tonumber(data.PendingEarnings) or 0))
 	player:SetAttribute("OfflineTabletCarry", loadedTabletCarry)

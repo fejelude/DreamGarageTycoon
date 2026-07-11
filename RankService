@@ -712,9 +712,9 @@ local function hookPlayer(player)
 end
 
 Players.PlayerAdded:Connect(hookPlayer)
-Players.PlayerRemoving:Connect(function(player)
-	disconnectPlayer(player)
-end)
+-- TycoonDataHandler reads rank state during PlayerRemoving before invoking
+-- RankPersistenceFunction("Close"). Clearing here can race that save and make
+-- RankPersistenceFunction("Get") rebuild a default session.
 
 for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(hookPlayer, player)

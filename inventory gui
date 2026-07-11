@@ -76,6 +76,21 @@ local camera    = Workspace.CurrentCamera
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
+local CarStats = nil
+pcall(function()
+	CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5))
+end)
+
+local RankConfig = nil
+pcall(function()
+	RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig", 5))
+end)
+
+local HotbarPersistenceEvent = ReplicatedStorage:WaitForChild("HotbarPersistenceEvent", 10)
+if HotbarPersistenceEvent and not HotbarPersistenceEvent:IsA("RemoteEvent") then
+	HotbarPersistenceEvent = nil
+end
+
 -- Controls
 local PlayerModule = require(player.PlayerScripts:WaitForChild("PlayerModule"))
 local Controls     = PlayerModule:GetControls()
@@ -149,8 +164,15 @@ local function loadHotbarFromAttributes()
 end
 
 local function saveHotbarToAttributes()
+	local payload = {}
 	for i = 1, SLOT_COUNT do
-		player:SetAttribute("HotbarSlot" .. i, hotbarData[i] or "")
+		local value = hotbarData[i] or ""
+		payload[i] = value
+		player:SetAttribute("HotbarSlot" .. i, value)
+	end
+
+	if HotbarPersistenceEvent then
+		HotbarPersistenceEvent:FireServer(payload)
 	end
 end
 
@@ -189,17 +211,6 @@ local currentTab = "Common"
 local savedFOV   = camera.FieldOfView
 local hiddenGuis = {}
 local isOpen     = false
-
--- CarStats
-local CarStats = nil
-pcall(function()
-	CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5))
-end)
-
-local RankConfig = nil
-pcall(function()
-	RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig", 5))
-end)
 
 -- =========================================================
 -- 📦 DRAG & DROP SYSTEM (v4 — Full Bidirectional)

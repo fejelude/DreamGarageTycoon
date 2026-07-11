@@ -219,17 +219,19 @@ local function Action_Give(player, tool, force)
 		return false, "Already Owns Item" 
 	end
 
-	-- Give to Backpack
-	local bpTool = tool:Clone()
-	tagIssued(bpTool, tool.Name) 
-	bpTool.Parent = backpack
+	if not TycoonAdminAPI or not TycoonAdminAPI:IsA("BindableFunction") then
+		return false, "TycoonAdminAPI missing"
+	end
 
-	-- Give to StarterGear (Persistence)
-	local sg = player:FindFirstChild("StarterGear")
-	if sg then
-		local sgTool = tool:Clone()
-		tagIssued(sgTool, tool.Name)
-		sgTool.Parent = sg
+	local invokeOk, giveOk, giveMessage = pcall(function()
+		return TycoonAdminAPI:Invoke("GiveTool", player, tool.Name, {
+			BypassStorageLimit = true,
+			Source = "AdminCommand",
+		})
+	end)
+
+	if not invokeOk or giveOk ~= true then
+		return false, tostring(giveMessage or giveOk or "GiveTool failed")
 	end
 
 	return true, "Given"
@@ -255,6 +257,32 @@ local function Action_Remove(player, toolName)
 	scanAndDestroy(player:FindFirstChild("Backpack"))
 	scanAndDestroy(player:FindFirstChild("StarterGear"))
 	if player.Character then scanAndDestroy(player.Character) end
+
+	if count > 0 then
+		for i = 1, 6 do
+			local slotValue = player:GetAttribute("HotbarSlot" .. i)
+			local slotID = getCleanID(slotValue)
+			if targetID == "all" or targetID == "*" or slotID == targetID then
+				player:SetAttribute("HotbarSlot" .. i, "")
+			end
+		end
+
+		if TycoonAdminAPI and TycoonAdminAPI:IsA("BindableFunction") then
+			local ok, markOk = pcall(function()
+				return TycoonAdminAPI:Invoke("MarkInventoryCleared", player)
+			end)
+			if not ok or markOk ~= true then
+				warn("Admin remove could not mark inventory dirty for " .. player.Name .. ": " .. tostring(markOk))
+			end
+
+			local saveOk, result = pcall(function()
+				return TycoonAdminAPI:Invoke("SaveNow", player)
+			end)
+			if not saveOk or result ~= true then
+				warn("Admin remove save failed for " .. player.Name .. ": " .. tostring(result))
+			end
+		end
+	end
 
 	return count > 0, count
 end
