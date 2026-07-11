@@ -8,6 +8,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 local Config = require(ReplicatedStorage:WaitForChild("GlobalLuckConfig"))
 local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 
 local REQUIRED_WAIT_SECONDS = 15
 local function requireChild(parent, childName, className, fullPath)
@@ -113,6 +114,15 @@ local function renderHud()
 	if timeLeft then timeLeft.Text = formatTime(remaining) end
 end
 
+local function setupHudInteractions()
+	local boosterGui = playerGui:WaitForChild("BoosterUi", 15)
+	if not boosterGui then return end
+	local panel = findPath(boosterGui, {"Elements", "GlobalLuckEnabledV1"})
+	if not panel then return end
+	local information = panel:FindFirstChild("Information")
+	UIButtonUtils.SetupHoverInfo(panel, information)
+end
+
 local function applyState(state)
 	currentState = state
 	render()
@@ -215,6 +225,8 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 	end
 	render()
 end)
+
+task.spawn(setupHudInteractions)
 
 task.spawn(function()
 	local ok, state = pcall(function() return GetState:InvokeServer() end)

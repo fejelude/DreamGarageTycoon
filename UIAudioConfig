@@ -18,6 +18,7 @@ UIAudioConfig.HOVER_VOLUME  = 1.5
 UIAudioConfig.CLICK_VOLUME  = 1.8
 UIAudioConfig.ROBUX_VOLUME  = 1.5
 UIAudioConfig.RANK_QUEST_COMPLETE_VOLUME = 0.8
+UIAudioConfig.SHOP_OPEN_VOLUME = 0.64
 
 -- Sound asset IDs
 local HOVER_SFX_ID = "rbxassetid://73899820361873"
@@ -153,16 +154,18 @@ end
 local Debris = game:GetService("Debris")
 
 local SHOP_OPEN_VARIANTS = {
-	{ Id = SHOP_OPEN_SFX_ID, Volume = 0.62, Pitch = 0.96, Variance = 0.01, Dedupe = 0.18 },
-	{ Id = SHOP_OPEN_SFX_ID, Volume = 0.64, Pitch = 0.99, Variance = 0.01, Dedupe = 0.18 },
-	{ Id = SHOP_OPEN_SFX_ID, Volume = 0.66, Pitch = 1.02, Variance = 0.01, Dedupe = 0.18 },
-	{ Id = SHOP_OPEN_SFX_ID, Volume = 0.63, Pitch = 1.05, Variance = 0.01, Dedupe = 0.18 },
-	{ Id = SHOP_OPEN_SFX_ID, Volume = 0.65, Pitch = 1.08, Variance = 0.01, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 0.92, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 0.95, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 0.98, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.00, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.02, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.04, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.06, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.08, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.10, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.12, Variance = 0.005, Dedupe = 0.18 },
 }
-local lastShopOpenVariantIndex = nil
-
 local NAMED_SFX = {
-	Open = { Id = SHOP_OPEN_SFX_ID, Volume = 0.64, Pitch = 1.0, Variance = 0.03, Dedupe = 0.18 },
 	BuySuccess = { Id = "rbxassetid://140072726814802", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 0.12 },
 	BuyFail = { Id = "rbxassetid://83517496538471", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 0.12 },
 	PaidReroll = { Id = "rbxassetid://140072726814802", Volume = 1.0, Pitch = 4.0, Variance = 0, Dedupe = 0.3 },
@@ -191,13 +194,8 @@ function UIAudioConfig.PlayShopOpen()
 	if not canPlayDedupe("Open", 0.18) then return end
 
 	local variantIndex = math.random(1, #SHOP_OPEN_VARIANTS)
-	if #SHOP_OPEN_VARIANTS > 1 and variantIndex == lastShopOpenVariantIndex then
-		variantIndex = (variantIndex % #SHOP_OPEN_VARIANTS) + 1
-	end
-	lastShopOpenVariantIndex = variantIndex
-
 	local data = SHOP_OPEN_VARIANTS[variantIndex]
-	playOneShot(data.Id, data.Volume, data.Pitch, data.Variance)
+	playOneShot(data.Id, UIAudioConfig.SHOP_OPEN_VOLUME, data.Pitch, data.Variance)
 end
 
 function UIAudioConfig.PlayNamed(name)
