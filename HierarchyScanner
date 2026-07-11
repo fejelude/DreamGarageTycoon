@@ -1,0 +1,363 @@
+--[[
+	HierarchyScanner
+	Place this Script in ServerScriptService and run the game/server.
+
+	Purpose:
+	- Audits the live Roblox hierarchy for instances required by this experience's scripts.
+	- Reports valid instances, missing instances, wrong class types, full issue paths,
+	  and the system/script that requires each instance.
+	- Does NOT create, rename, move, or repair anything.
+
+	Reviewed systems include player data saving/loading, tycoon plots, pads, vehicles,
+	shops, gifts, rewards, leaderboards, teleporting, ranks, rebirths, remotes,
+	remote functions, bindables, value objects, modules, and DataStore-adjacent APIs.
+]]
+
+local REQUIREMENT_WAIT_SECONDS = 5
+local LOG_VALID_INSTANCES = true
+local MAX_DESCENDANT_PRINT = 5000
+
+local Services = {
+	Workspace = game:GetService("Workspace"),
+	ReplicatedStorage = game:GetService("ReplicatedStorage"),
+	ServerStorage = game:GetService("ServerStorage"),
+	ServerScriptService = game:GetService("ServerScriptService"),
+	StarterGui = game:GetService("StarterGui"),
+	StarterPlayer = game:GetService("StarterPlayer"),
+	ReplicatedFirst = game:GetService("ReplicatedFirst"),
+	SoundService = game:GetService("SoundService"),
+	Lighting = game:GetService("Lighting"),
+}
+
+local results = { valid = 0, missing = 0, wrongClass = 0, notes = 0 }
+local issues = {}
+
+local function joinPath(parts)
+	return table.concat(parts, ".")
+end
+
+local function fullName(instance)
+	if not instance then return "<nil>" end
+	local ok, name = pcall(function() return instance:GetFullName() end)
+	return ok and name or instance.Name
+end
+
+local function formatExpected(expected)
+	if type(expected) == "table" then
+		return table.concat(expected, " or ")
+	end
+	return tostring(expected)
+end
+
+local function classMatches(instance, expected)
+	if not expected or expected == "Instance" then return true end
+	if type(expected) == "table" then
+		for _, className in ipairs(expected) do
+			if instance:IsA(className) then return true end
+		end
+		return false
+	end
+	return instance:IsA(expected)
+end
+
+local function logValid(req, instance)
+	results.valid += 1
+	if LOG_VALID_INSTANCES then
+		print(("✅ [HierarchyScanner] VALID | %s | expected=%s | requiredBy=%s | path=%s"):format(
+			req.label or req.name,
+			formatExpected(req.className),
+			req.requiredBy,
+			fullName(instance)
+		))
+	end
+end
+
+local function logMissing(req, path)
+	results.missing += 1
+	local message = ("❌ MISSING | %s | expected=%s | requiredBy=%s | path=%s | notes=%s"):format(
+		req.label or req.name,
+		formatExpected(req.className),
+		req.requiredBy,
+		path,
+		req.notes or ""
+	)
+	table.insert(issues, message)
+	warn("[HierarchyScanner] " .. message)
+end
+
+local function logWrongClass(req, instance, path)
+	results.wrongClass += 1
+	local message = ("⚠️ WRONG CLASS | %s | expected=%s | actual=%s | requiredBy=%s | path=%s | notes=%s"):format(
+		req.label or req.name,
+		formatExpected(req.className),
+		instance.ClassName,
+		req.requiredBy,
+		path,
+		req.notes or ""
+	)
+	table.insert(issues, message)
+	warn("[HierarchyScanner] " .. message)
+end
+
+local function resolvePath(pathParts)
+	local rootName = pathParts[1]
+	local current = Services[rootName]
+	if not current then return nil, rootName end
+	for index = 2, #pathParts do
+		local childName = pathParts[index]
+		local child = current:FindFirstChild(childName)
+		if not child then
+			return nil, joinPath(pathParts)
+		end
+		current = child
+	end
+	return current, joinPath(pathParts)
+end
+
+local function check(req)
+	local instance, path = resolvePath(req.path)
+	if not instance then
+		logMissing(req, path)
+		return nil
+	end
+	if not classMatches(instance, req.className) then
+		logWrongClass(req, instance, path)
+		return instance
+	end
+	logValid(req, instance)
+	return instance
+end
+
+local function req(path, className, requiredBy, notes, label)
+	return { path = path, className = className, requiredBy = requiredBy, notes = notes, label = label or table.concat(path, ".") }
+end
+
+local requirements = {
+	-- Core data / modules
+	req({"ReplicatedStorage", "CarStats"}, "ModuleScript", "TycoonDataHandler, shop services/controllers, inventory, index, offline earnings", "Core car definitions used for saves, tools, shops, CPS, and UI."),
+	req({"ReplicatedStorage", "CarSellPrices"}, "ModuleScript", "LorraineSellService and sell UI", "Required to price vehicle sales."),
+	req({"ReplicatedStorage", "BaseSkinStats"}, "ModuleScript", "Gift UI / purchase systems", "Base skin metadata."),
+	req({"ReplicatedStorage", "RebirthConfig"}, "ModuleScript", "TycoonDataHandler, RebirthService, RebirthClient", "Rebirth persistence and UI."),
+	req({"ReplicatedStorage", "RankConfig"}, "ModuleScript", "RankService, rank clients, inventory display", "Rank progression data."),
+	req({"ReplicatedStorage", "GlobalLuckConfig"}, "ModuleScript", "GlobalLuckService/Client", "DataStore names and global luck configuration."),
+	req({"ReplicatedStorage", "GlobalLuckUtil"}, "ModuleScript", "Shop services", "Applies global luck to shop rolls."),
+	req({"ReplicatedStorage", "ShopFrontendKit"}, "ModuleScript", "Shop controllers", "Shared shop UI helpers."),
+	req({"ReplicatedStorage", "UIButtonUtils"}, "ModuleScript", "Most UI clients", "Button animation/audio helper."),
+	req({"ReplicatedStorage", "UIAudioConfig"}, "ModuleScript", "Most UI clients", "UI audio and purchase-state helper."),
+
+	-- Server APIs and storage
+	req({"ServerStorage", "TycoonAdminAPI"}, "BindableFunction", "TycoonDataHandler, shop services, TabletVisuals, OfflineEarningsService", "Critical server-authoritative data/layout/tool API."),
+	req({"ServerStorage", "TycoonSaveCompleted"}, "BindableEvent", "TycoonHandler and TycoonDataHandler", "Used to avoid wiping plots before data saves finish."),
+	req({"ServerStorage", "RankProgressAPI"}, "BindableFunction", "RankService and shop services", "Shop/rank progression bridge."),
+	req({"ServerStorage", "RankTags"}, "Folder", "RankService", "Rank overhead/tag templates."),
+	req({"ServerStorage", "CarTools"}, "Folder", "TycoonDataHandler and shop services", "Saved vehicle tools are restored from here."),
+	req({"ServerStorage", "ReceiptGrantedEvent"}, "BindableEvent", "ReceiptRouter, AdRewardsService, purchase systems", "Signals product receipt grants."),
+	req({"ServerStorage", "AdminRestockEvent"}, "BindableEvent", "Shop services/AdminCommands", "Admin restock bridge."),
+	req({"ServerStorage", "EpicShopPersistenceFunction"}, "BindableFunction", "TycoonDataHandler, EpicShopService", "Persists epic shop state in player data."),
+	req({"ServerStorage", "LegendaryShopPersistenceFunction"}, "BindableFunction", "TycoonDataHandler, LegendaryShopService", "Persists legendary shop state in player data."),
+	req({"ServerStorage", "LegendaryCraftingInventoryFunction"}, "BindableFunction", "TycoonDataHandler, LegendaryShopService", "Legendary crafting inventory API."),
+	req({"ServerStorage", "MythicalShopPersistenceFunction"}, "BindableFunction", "TycoonDataHandler, MythicalShopService", "Persists mythical crafting/shop state."),
+	req({"ServerStorage", "MythicalCraftingInventoryFunction"}, "BindableFunction", "TycoonDataHandler, MythicalShopService", "Mythical crafting inventory API."),
+
+	-- Remotes / remote folders
+	req({"ReplicatedStorage", "ShopRemotes"}, "Folder", "All shop services/controllers", "Container for local, uncommon, rare, epic, legendary, and mythical shop networking."),
+	req({"ReplicatedStorage", "ShopRemotes", "OpenLocalShop"}, "RemoteEvent", "LocalShopService/Controller", "Local shop open signal."),
+	req({"ReplicatedStorage", "ShopRemotes", "GetLocalShopState"}, "RemoteFunction", "LocalShopService/Controller", "Local shop state."),
+	req({"ReplicatedStorage", "ShopRemotes", "BuyLocalCar"}, "RemoteFunction", "LocalShopService/Controller", "Local shop purchases."),
+	req({"ReplicatedStorage", "ShopRemotes", "OpenUncommonShop"}, "RemoteEvent", "UncommonShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "UncommonShopUpdate"}, "RemoteEvent", "UncommonShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "GetUncommonShopState"}, "RemoteFunction", "UncommonShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "BuyUncommonCar"}, "RemoteFunction", "UncommonShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "OpenRareShop"}, "RemoteEvent", "RareShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "RareShopUpdate"}, "RemoteEvent", "RareShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "GetRareShopState"}, "RemoteFunction", "RareShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "BuyRareCar"}, "RemoteFunction", "RareShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "OpenEpicShop"}, "RemoteEvent", "EpicShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "EpicShopUpdate"}, "RemoteEvent", "EpicShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "GetEpicShopState"}, "RemoteFunction", "EpicShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "BuyEpicCar"}, "RemoteFunction", "EpicShopService/Controller", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "LegendaryShop"}, "Folder", "LegendaryShopService/Controller/dialogue", nil),
+	req({"ReplicatedStorage", "ShopRemotes", "MythicalShop"}, "Folder", "MythicalShopService/Controller/dialogue", nil),
+	req({"ReplicatedStorage", "GiftRemotes"}, "Folder", "GiftIntentHandler, GiftUIController, gift notification/client systems", nil),
+	req({"ReplicatedStorage", "GiftRemotes", "CreateGiftIntent"}, "RemoteFunction", "GiftIntentHandler/GiftUIController", nil),
+	req({"ReplicatedStorage", "GiftRemotes", "CancelGiftIntent"}, "RemoteEvent", "GiftIntentHandler/GiftUIController/shop controllers", nil),
+	req({"ReplicatedStorage", "GiftRemotes", "GiftPurchaseResult"}, "RemoteEvent", "GiftIntentHandler/GiftUIController", nil),
+	req({"ReplicatedStorage", "GiftRemotes", "NotifyGiftReceived"}, "RemoteEvent", "Gift notification client", nil),
+	req({"ReplicatedStorage", "RankRemotes"}, "Folder", "RankService and rank clients", nil),
+	req({"ReplicatedStorage", "RankRemotes", "GetRankState"}, "RemoteFunction", "RankService/RankQuestNotificationClient", nil),
+	req({"ReplicatedStorage", "RankRemotes", "ClaimRank"}, "RemoteFunction", "RankService", nil),
+	req({"ReplicatedStorage", "RankRemotes", "RankUpdate"}, "RemoteEvent", "RankService/rank clients", nil),
+	req({"ReplicatedStorage", "RankRemotes", "RankAnnouncement"}, "RemoteEvent", "RankService", nil),
+	req({"ReplicatedStorage", "RebirthRemotes"}, "Folder", "RebirthService/RebirthClient", nil),
+	req({"ReplicatedStorage", "RebirthRemotes", "RequestRebirth"}, "RemoteFunction", "RebirthService/RebirthClient", nil),
+	req({"ReplicatedStorage", "RebirthRemotes", "RefreshRebirthUI"}, "RemoteEvent", "RebirthService/RebirthClient", nil),
+	req({"ReplicatedStorage", "IndexRemotes"}, "Folder", "IndexService/IndexClient", nil),
+	req({"ReplicatedStorage", "IndexRemotes", "RefreshIndexUI"}, "RemoteEvent", "IndexService/IndexClient", nil),
+	req({"ReplicatedStorage", "IndexProgressionAPI"}, "BindableFunction", "TycoonDataHandler, IndexService", "Tracks discovered vehicles for the index."),
+	req({"ReplicatedStorage", "OfflineEarningsRemotes"}, "Folder", "OfflineEarningsService/Client", nil),
+	req({"ReplicatedStorage", "OfflineEarningsRemotes", "RequestOfflineEarnings"}, "RemoteFunction", "OfflineEarningsService/Client", nil),
+	req({"ReplicatedStorage", "OfflineEarningsRemotes", "ClaimOfflineEarnings"}, "RemoteFunction", "OfflineEarningsService/Client", nil),
+	req({"ReplicatedStorage", "OfflineEarningsRemotes", "BeginPremiumOfflineClaim"}, "RemoteFunction", "OfflineEarningsService/Client", nil),
+	req({"ReplicatedStorage", "OfflineEarningsRemotes", "OfflinePremiumClaimResult"}, "RemoteEvent", "OfflineEarningsService/Client", nil),
+	req({"ReplicatedStorage", "AdRewardsRemotes"}, "Folder", "AdRewardsService/Client", nil),
+	req({"ReplicatedStorage", "AdRewardsRemotes", "RequestRewardedAd"}, "RemoteEvent", "AdRewardsService/Client", nil),
+	req({"ReplicatedStorage", "AdRewardsRemotes", "AdRewardResult"}, "RemoteEvent", "AdRewardsService/Client", nil),
+	req({"ReplicatedStorage", "SettingsPersistenceEvent"}, "RemoteEvent", "TycoonDataHandler/SettingsClient", "Persists settings with player data."),
+	req({"ReplicatedStorage", "PadUnlockEvent"}, "RemoteEvent", "PadProgressionHandler/PadController", nil),
+	req({"ReplicatedStorage", "TabletEvent"}, "RemoteEvent", "TabletServerHandler/tablet UI", nil),
+	req({"ReplicatedStorage", "TeleportToPlaceFunction"}, "RemoteFunction", "TeleportFunctionService/Client", nil),
+	req({"ReplicatedStorage", "RestockNotificationEvent"}, "RemoteEvent", "Shop services/RestockNotificationClient", nil),
+	req({"ReplicatedStorage", "GlobalLuckEvent"}, "RemoteEvent", "GlobalLuckService/Client", "If named differently in your place, update this requirement."),
+	req({"ReplicatedStorage", "TycoonLevelStorage"}, "Folder", "PadProgressionHandler/TycoonHandler", "Stores Level2 models when locked."),
+	
+	-- Workspace world objects
+	req({"Workspace", "Tycoons"}, "Folder", "TycoonHandler, TycoonDataHandler, plot/pad/tablet/offline systems", "Critical root for all player plots."),
+	req({"Workspace", "TeleportParts"}, "Folder", "TeleportFunctionService", "Expected teleport destination folder."),
+	req({"Workspace", "GlobalLeaderboard"}, {"Model", "Folder"}, "GlobalLeaderboardService", "World earnings leaderboard root."),
+	req({"Workspace", "TopCashLeaderboard"}, {"Model", "Folder"}, "TopCashLeaderboardService", "World cash leaderboard root."),
+	req({"Workspace", "NPCS"}, "Folder", "Shop services and dialogue scripts", "NPC roots for shop interactions."),
+}
+
+local function checkRequirements()
+	for _, requirement in ipairs(requirements) do
+		check(requirement)
+	end
+end
+
+local function checkTycoonPlot(plot)
+	local plotPath = fullName(plot)
+	local plotReqs = {
+		{ name = "Owner", className = "StringValue", requiredBy = "TycoonHandler, TycoonDataHandler, PlotHandler, TeleportFunctionService", notes = "Tracks plot ownership." },
+		{ name = "OwnerId", className = {"IntValue", "NumberValue"}, requiredBy = "GlobalLeaderboardService", notes = "Preferred owner user id value; OwnerUserId alternative is accepted below." },
+		{ name = "PendingEarnings", className = {"NumberValue", "IntValue"}, requiredBy = "TabletServerHandler, TycoonDataHandler", notes = "Unclaimed offline/tablet earnings." },
+		{ name = "PlacedCars", className = "Folder", requiredBy = "TycoonDataHandler, PlacedCarAnimator, OfflineEarningsService", notes = "Saved/restored vehicle placement container." },
+		{ name = "SpawnPoint", className = "BasePart", requiredBy = "TycoonHandler, TeleportFunctionService", notes = "Player spawn/garage teleport destination." },
+		{ name = "ClaimEarnings", className = {"Model", "Folder"}, requiredBy = "TabletServerHandler", notes = "Tablet claim model." },
+		{ name = "Level1", className = {"Model", "Folder"}, requiredBy = "PadProgressionHandler, TycoonDataHandler", notes = "Level 1 tycoon geometry and pads. 'Level 1' alternative is also checked." },
+		{ name = "Level2BuyButton", className = {"Model", "BasePart", "Folder"}, requiredBy = "PadProgressionHandler", notes = "Unlock control. 'Level 2 Buy Button' alternative is also checked." },
+	}
+
+	for _, childReq in ipairs(plotReqs) do
+		local child = plot:FindFirstChild(childReq.name)
+		if not child and childReq.name == "OwnerId" then child = plot:FindFirstChild("OwnerUserId") end
+		if not child and childReq.name == "Level1" then child = plot:FindFirstChild("Level 1") end
+		if not child and childReq.name == "Level2BuyButton" then child = plot:FindFirstChild("Level 2 Buy Button") end
+		local scanReq = {
+			name = childReq.name,
+			label = plotPath .. "." .. childReq.name,
+			className = childReq.className,
+			requiredBy = childReq.requiredBy,
+			notes = childReq.notes,
+		}
+		if not child then
+			logMissing(scanReq, plotPath .. "." .. childReq.name)
+		elseif not classMatches(child, childReq.className) then
+			logWrongClass(scanReq, child, fullName(child))
+		else
+			logValid(scanReq, child)
+		end
+	end
+
+	local claim = plot:FindFirstChild("ClaimEarnings")
+	if claim then
+		for _, claimReq in ipairs({
+			{ "Earnings", "BasePart", "TabletServerHandler" },
+			{ "ClaimPart", "BasePart", "TabletServerHandler" },
+			{ "TotalEarningsPerSecond", "BasePart", "TabletServerHandler" },
+		}) do
+			local child = claim:FindFirstChild(claimReq[1])
+			local scanReq = { label = fullName(claim) .. "." .. claimReq[1], className = claimReq[2], requiredBy = claimReq[3] }
+			if not child then logMissing(scanReq, fullName(claim) .. "." .. claimReq[1])
+			elseif not classMatches(child, claimReq[2]) then logWrongClass(scanReq, child, fullName(child))
+			else logValid(scanReq, child) end
+		end
+	end
+
+	local level1 = plot:FindFirstChild("Level1") or plot:FindFirstChild("Level 1")
+	if level1 then
+		local pads = level1:FindFirstChild("Pads")
+		local scanReq = { label = fullName(level1) .. ".Pads", className = "Folder", requiredBy = "PadProgressionHandler, TycoonDataHandler", notes = "Contains Pad1..PadN placement pads." }
+		if not pads then logMissing(scanReq, fullName(level1) .. ".Pads")
+		elseif not classMatches(pads, "Folder") then logWrongClass(scanReq, pads, fullName(pads))
+		else logValid(scanReq, pads) end
+	end
+end
+
+local function checkTycoons()
+	local tycoons = Services.Workspace:FindFirstChild("Tycoons")
+	if not tycoons then return end
+	for _, plot in ipairs(tycoons:GetChildren()) do
+		if plot:IsA("Model") or plot:IsA("Folder") then
+			checkTycoonPlot(plot)
+		else
+			logWrongClass({ label = fullName(plot), className = {"Model", "Folder"}, requiredBy = "Tycoon systems", notes = "Every child of Workspace.Tycoons should be a plot container." }, plot, fullName(plot))
+		end
+	end
+end
+
+local function checkCarTools()
+	local carTools = Services.ServerStorage:FindFirstChild("CarTools")
+	if not carTools then return end
+	local expectedRarities = { "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Mythical" }
+	for _, rarity in ipairs(expectedRarities) do
+		local folder = carTools:FindFirstChild(rarity)
+		local scanReq = { label = fullName(carTools) .. "." .. rarity, className = "Folder", requiredBy = "TycoonDataHandler and shop services", notes = "Vehicle tool rarity folder." }
+		if not folder then
+			logMissing(scanReq, fullName(carTools) .. "." .. rarity)
+		elseif not folder:IsA("Folder") then
+			logWrongClass(scanReq, folder, fullName(folder))
+		else
+			logValid(scanReq, folder)
+		end
+	end
+end
+
+local function printHierarchySnapshot()
+	local count = 0
+	print("========== [HierarchyScanner] ROOT HIERARCHY SNAPSHOT ==========")
+	for serviceName, service in pairs(Services) do
+		print("📁 " .. serviceName .. " (" .. service.ClassName .. ")")
+		for _, child in ipairs(service:GetChildren()) do
+			count += 1
+			if count <= MAX_DESCENDANT_PRINT then
+				print(("   └─ %s [%s]"):format(child.Name, child.ClassName))
+			end
+		end
+	end
+	if count > MAX_DESCENDANT_PRINT then
+		warn("[HierarchyScanner] Snapshot truncated after " .. tostring(MAX_DESCENDANT_PRINT) .. " entries.")
+	end
+end
+
+local function printSummary(startedAt)
+	print("========== [HierarchyScanner] FINAL SUMMARY ==========")
+	print("✅ Valid instances: " .. tostring(results.valid))
+	warn("❌ Missing instances: " .. tostring(results.missing))
+	warn("⚠️ Incorrect class instances: " .. tostring(results.wrongClass))
+	print("🧾 Total issues: " .. tostring(results.missing + results.wrongClass))
+	print(("⏱️ Scan duration: %.2fs"):format(os.clock() - startedAt))
+
+	if #issues > 0 then
+		warn("========== [HierarchyScanner] ISSUE LIST ==========")
+		for index, issue in ipairs(issues) do
+			warn(("%03d) %s"):format(index, issue))
+		end
+	else
+		print("🎉 [HierarchyScanner] No missing or incorrectly configured required instances were found by this scanner.")
+	end
+end
+
+local function run()
+	local startedAt = os.clock()
+	print("========== [HierarchyScanner] STARTING REQUIRED HIERARCHY AUDIT ==========")
+	print("This scanner only reports. It will not create or repair missing instances.")
+	print("Waiting " .. tostring(REQUIREMENT_WAIT_SECONDS) .. " seconds before scanning so startup-created instances can appear...")
+	task.wait(REQUIREMENT_WAIT_SECONDS)
+	printHierarchySnapshot()
+	checkRequirements()
+	checkTycoons()
+	checkCarTools()
+	printSummary(startedAt)
+end
+
+task.spawn(run)
