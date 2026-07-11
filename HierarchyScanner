@@ -1,0 +1,134 @@
+-- Server Script: ServerScriptService > HierarchyScanner
+-- Purpose: Audits required Global Luck instances, scripts/modules, and UI hierarchy without creating anything.
+-- Safe to leave enabled: it only reads the hierarchy and prints a concise report at server start.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local StarterGui = game:GetService("StarterGui")
+local ServerStorage = game:GetService("ServerStorage")
+local Workspace = game:GetService("Workspace")
+
+local PREFIX = "[HierarchyScanner]"
+
+local REQUIRED = {
+	-- Global Luck modules/scripts
+	{ Path = "ReplicatedStorage > GlobalLuckConfig", Root = ReplicatedStorage, Parts = {"GlobalLuckConfig"}, ClassName = "ModuleScript", Purpose = "Global Luck config, product id, duration, datastore/topic names." },
+	{ Path = "ReplicatedStorage > GlobalLuckUtil", Root = ReplicatedStorage, Parts = {"GlobalLuckUtil"}, ClassName = "ModuleScript", Purpose = "Global Luck weighted-restock utility." },
+	{ Path = "ServerScriptService > GlobalLuckService", Root = ServerScriptService, Parts = {"GlobalLuckService"}, ClassName = "ModuleScript", Purpose = "Server-authoritative Global Luck service required by shops and ReceiptRouter." },
+	{ Path = "StarterGui > ShopUI > GlobalLuckClient", Root = StarterGui, Parts = {"ShopUI", "GlobalLuckClient"}, ClassName = "LocalScript", Purpose = "Global Luck purchase button, details UI, and HUD sync client." },
+
+	-- Global Luck remotes; these must be created manually in Studio.
+	{ Path = "ReplicatedStorage > GlobalLuckRemotes", Root = ReplicatedStorage, Parts = {"GlobalLuckRemotes"}, ClassName = "Folder", Purpose = "Container for Global Luck remotes." },
+	{ Path = "ReplicatedStorage > GlobalLuckRemotes > State", Root = ReplicatedStorage, Parts = {"GlobalLuckRemotes", "State"}, ClassName = "RemoteEvent", Purpose = "Server-to-client Global Luck state broadcasts." },
+	{ Path = "ReplicatedStorage > GlobalLuckRemotes > GetState", Root = ReplicatedStorage, Parts = {"GlobalLuckRemotes", "GetState"}, ClassName = "RemoteFunction", Purpose = "Client-to-server current Global Luck state request." },
+	{ Path = "ReplicatedStorage > GlobalLuckRemotes > PurchaseResult", Root = ReplicatedStorage, Parts = {"GlobalLuckRemotes", "PurchaseResult"}, ClassName = "RemoteEvent", Purpose = "Server-to-client verified purchase result feedback." },
+
+	-- Global Luck shop UI hierarchy.
+	{ Path = "StarterGui > ShopUI", Root = StarterGui, Parts = {"ShopUI"}, ClassName = "ScreenGui", Purpose = "Main shop UI root." },
+	{ Path = "StarterGui > ShopUI > MainFrame", Root = StarterGui, Parts = {"ShopUI", "MainFrame"}, ClassName = "GuiObject", Purpose = "Main shop frame." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling"}, ClassName = "GuiObject", Purpose = "Main shop scrolling area." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ButtonsForBuying"}, ClassName = "GuiObject", Purpose = "Global Luck button section ancestor." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ButtonsForBuying", "Buttons"}, ClassName = "GuiObject", Purpose = "Global Luck button container." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Featured", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured"}, ClassName = "GuiObject", Purpose = "Featured purchase buttons container." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Featured > DoubleLuckV1", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "DoubleLuckV1"}, ClassName = "ImageButton", Purpose = "Global Luck developer-product purchase button." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ShopElements"}, ClassName = "GuiObject", Purpose = "Global Luck details section ancestor." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ShopElements", "Featured"}, ClassName = "GuiObject", Purpose = "Featured shop elements container." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalLuck", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ShopElements", "Featured", "GlobalLuck"}, ClassName = "GuiObject", Purpose = "Global Luck details panel." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalLuck > ImportantDetails", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ShopElements", "Featured", "GlobalLuck", "ImportantDetails"}, ClassName = "GuiObject", Purpose = "Global Luck label/avatar container." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalLuck > ImportantDetails > CurrentLuck", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ShopElements", "Featured", "GlobalLuck", "ImportantDetails", "CurrentLuck"}, ClassName = "TextLabel", Purpose = "Current Global Luck multiplier text." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalLuck > ImportantDetails > NextLuck", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ShopElements", "Featured", "GlobalLuck", "ImportantDetails", "NextLuck"}, ClassName = "TextLabel", Purpose = "Next purchasable Global Luck multiplier text." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalLuck > ImportantDetails > ProfileofTheBooster", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ShopElements", "Featured", "GlobalLuck", "ImportantDetails", "ProfileofTheBooster"}, ClassName = "ImageLabel", Purpose = "Active booster avatar/headshot." },
+	{ Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalLuck > ImportantDetails > UsernameOfTheBooster", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "ShopUIScrolling", "ShopElements", "Featured", "GlobalLuck", "ImportantDetails", "UsernameOfTheBooster"}, ClassName = "TextLabel", Purpose = "Active booster username or Vacant." },
+	{ Path = "StarterGui > ShopUI > MainFrame > StateLabels", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "StateLabels"}, ClassName = "GuiObject", Purpose = "Shop purchase feedback labels container." },
+	{ Path = "StarterGui > ShopUI > MainFrame > StateLabels > Failed", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "StateLabels", "Failed"}, ClassName = "TextLabel", Purpose = "Failure feedback label." },
+	{ Path = "StarterGui > ShopUI > MainFrame > StateLabels > Sucess", Root = StarterGui, Parts = {"ShopUI", "MainFrame", "StateLabels", "Sucess"}, ClassName = "TextLabel", Purpose = "Success feedback label using existing misspelling." },
+
+	-- Global Luck HUD.
+	{ Path = "StarterGui > BoosterUi", Root = StarterGui, Parts = {"BoosterUi"}, ClassName = "ScreenGui", Purpose = "Booster HUD root." },
+	{ Path = "StarterGui > BoosterUi > Elements", Root = StarterGui, Parts = {"BoosterUi", "Elements"}, ClassName = "GuiObject", Purpose = "Booster HUD elements container." },
+	{ Path = "StarterGui > BoosterUi > Elements > GlobalLuckEnabledV1", Root = StarterGui, Parts = {"BoosterUi", "Elements", "GlobalLuckEnabledV1"}, ClassName = "GuiObject", Purpose = "Visible active Global Luck HUD panel." },
+	{ Path = "StarterGui > BoosterUi > Elements > GlobalLuckEnabledV1 > TimeLeft", Root = StarterGui, Parts = {"BoosterUi", "Elements", "GlobalLuckEnabledV1", "TimeLeft"}, ClassName = "TextLabel", Purpose = "Global Luck countdown text." },
+
+	-- Shared dependencies touched by the Global Luck implementation.
+	{ Path = "ReplicatedStorage > ShopFrontendKit", Root = ReplicatedStorage, Parts = {"ShopFrontendKit"}, ClassName = "ModuleScript", Purpose = "Existing button animations/sounds used by GlobalLuckClient." },
+	{ Path = "ReplicatedStorage > UIAudioConfig", Root = ReplicatedStorage, Parts = {"UIAudioConfig"}, ClassName = "ModuleScript", Purpose = "Existing purchase feedback and audio helpers." },
+	{ Path = "ReplicatedStorage > CarStats", Root = ReplicatedStorage, Parts = {"CarStats"}, ClassName = "ModuleScript", Purpose = "Rarity data used by GlobalLuckUtil." },
+
+	-- Shop service dependencies that commonly break restocks if missing.
+	{ Path = "ReplicatedStorage > ShopRemotes", Root = ReplicatedStorage, Parts = {"ShopRemotes"}, ClassName = "Folder", Purpose = "Shop remote container." },
+	{ Path = "ServerStorage > CarTools", Root = ServerStorage, Parts = {"CarTools"}, ClassName = "Folder", Purpose = "Shop purchase tool sources." },
+	{ Path = "ServerStorage > TycoonAdminAPI", Root = ServerStorage, Parts = {"TycoonAdminAPI"}, ClassName = "BindableFunction", Purpose = "Inventory save/grant API used by shop services." },
+	{ Path = "Workspace > NPCS", Root = Workspace, Parts = {"NPCS"}, ClassName = "Folder", Purpose = "Shop NPC container." },
+}
+
+local function resolve(root, parts)
+	local current = root
+	for index, partName in ipairs(parts) do
+		if not current then return nil, index, partName end
+		local child = current:FindFirstChild(partName)
+		if not child then
+			return nil, index, partName
+		end
+		current = child
+	end
+	return current, nil, nil
+end
+
+local function classMatches(instance, expectedClassName)
+	if not expectedClassName or expectedClassName == "" then return true end
+	if expectedClassName == "GuiObject" then return instance:IsA("GuiObject") end
+	return instance:IsA(expectedClassName)
+end
+
+local function scanRequired()
+	local missing = {}
+	local wrongClass = {}
+	local okCount = 0
+
+	print(PREFIX .. " Starting required hierarchy scan...")
+
+	for _, spec in ipairs(REQUIRED) do
+		local found, missingIndex, missingName = resolve(spec.Root, spec.Parts)
+		if not found then
+			table.insert(missing, string.format("MISSING: %s | missing child '%s' at depth %d | Purpose: %s", spec.Path, tostring(missingName), tonumber(missingIndex) or -1, spec.Purpose or ""))
+		elseif not classMatches(found, spec.ClassName) then
+			table.insert(wrongClass, string.format("WRONG TYPE: %s | expected %s, got %s | Purpose: %s", spec.Path, spec.ClassName, found.ClassName, spec.Purpose or ""))
+		else
+			okCount += 1
+		end
+	end
+
+	print(string.format("%s Scan complete. OK=%d Missing=%d WrongType=%d", PREFIX, okCount, #missing, #wrongClass))
+
+	if #missing > 0 then
+		warn(PREFIX .. " Missing required instances:")
+		for _, message in ipairs(missing) do warn(PREFIX .. " " .. message) end
+	end
+
+	if #wrongClass > 0 then
+		warn(PREFIX .. " Instances with wrong class/type:")
+		for _, message in ipairs(wrongClass) do warn(PREFIX .. " " .. message) end
+	end
+
+	if #missing == 0 and #wrongClass == 0 then
+		print(PREFIX .. " ✅ All configured required instances were found with the expected classes.")
+	else
+		warn(PREFIX .. " ❌ Hierarchy issues found. Fix the missing/wrong instances above before testing Global Luck purchases/restocks.")
+	end
+end
+
+local function summarizeGuiTree()
+	local guiCount = 0
+	local scriptCount = 0
+	for _, descendant in ipairs(StarterGui:GetDescendants()) do
+		if descendant:IsA("GuiObject") or descendant:IsA("ScreenGui") then
+			guiCount += 1
+		elseif descendant:IsA("LocalScript") or descendant:IsA("ModuleScript") then
+			scriptCount += 1
+		end
+	end
+	print(string.format("%s StarterGui summary: %d Gui/ScreenGui descendants, %d LocalScript/ModuleScript descendants.", PREFIX, guiCount, scriptCount))
+end
+
+scanRequired()
+summarizeGuiTree()
