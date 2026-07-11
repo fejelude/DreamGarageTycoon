@@ -1645,12 +1645,23 @@ save = function(player, isClosing, force)
 
 	local saveSucceeded = false
 
-	local function safeShopGet(bindable, player)
-		if not bindable then return {} end
-		local result = {}
+	local function safeShopGet(bindableName, bindable, player)
+		if not bindable then
+			warn("⚠️ [TycoonDataHandler] " .. bindableName .. " missing during save for " .. player.Name .. "; preserving previous persisted state.")
+			return false, nil
+		end
+		if not bindable:IsA("BindableFunction") then
+			warn("⚠️ [TycoonDataHandler] " .. bindableName .. " is not a BindableFunction during save for " .. player.Name .. "; preserving previous persisted state.")
+			return false, nil
+		end
+
 		local ok, data = pcall(function() return bindable:Invoke("Get", player) end)
-		if ok and type(data) == "table" then result = data end
-		return result
+		if ok and type(data) == "table" then
+			return true, data
+		end
+
+		warn("⚠️ [TycoonDataHandler] " .. bindableName .. " Get failed during save for " .. player.Name .. ": " .. tostring(data) .. "; preserving previous persisted state.")
+		return false, nil
 	end
 
 	local function executeSave()
@@ -1667,10 +1678,18 @@ save = function(player, isClosing, force)
 		local currentEquippedSkin = player:GetAttribute("EquippedSkin") or "Default"
 		local currentRank = player:GetAttribute("Rank") or "Player"
 		local rankPersistenceBindable = ServerStorage:FindFirstChild("RankPersistenceFunction")
-		local currentRankData = {}
-		if rankPersistenceBindable then
+		local currentRankData = nil
+		local currentRankDataAvailable = false
+		if rankPersistenceBindable and rankPersistenceBindable:IsA("BindableFunction") then
 			local ok, result = pcall(function() return rankPersistenceBindable:Invoke("Get", player) end)
-			if ok and type(result) == "table" then currentRankData = result end
+			if ok and type(result) == "table" then
+				currentRankData = result
+				currentRankDataAvailable = true
+			else
+				warn("⚠️ [TycoonDataHandler] RankPersistenceFunction Get failed during save for " .. player.Name .. ": " .. tostring(result) .. "; preserving previous persisted rank state.")
+			end
+		elseif rankPersistenceBindable then
+			warn("⚠️ [TycoonDataHandler] RankPersistenceFunction is not a BindableFunction during save for " .. player.Name .. "; preserving previous persisted rank state.")
 		end
 
 		-- 🎮 HOTBAR: snapshot current slot assignments from client-set attributes
@@ -1816,37 +1835,27 @@ save = function(player, isClosing, force)
 
 		-- [[ COMMON SHOP SYNC ]]
 		local shopBindable = ServerStorage:FindFirstChild("ShopPersistenceFunction")
-		local currentShopData = {}
-		if shopBindable then currentShopData = safeShopGet(shopBindable, player) end
+		local currentShopDataAvailable, currentShopData = safeShopGet("ShopPersistenceFunction", shopBindable, player)
 
 		-- [[ 🟢 UNCOMMON SHOP SYNC ]]
 		local uncommonShopBindable = ServerStorage:FindFirstChild("UncommonShopPersistenceFunction")
-		local currentUncommonShopData = {}
-		if uncommonShopBindable then currentUncommonShopData = safeShopGet(uncommonShopBindable, player) end
+		local currentUncommonShopDataAvailable, currentUncommonShopData = safeShopGet("UncommonShopPersistenceFunction", uncommonShopBindable, player)
 
 		-- [[ 🟣 RARE SHOP SYNC ]]
 		local rareShopBindable = ServerStorage:FindFirstChild("RareShopPersistenceFunction")
-		local currentRareShopData = {}
-		if rareShopBindable then currentRareShopData = safeShopGet(rareShopBindable, player) end
+		local currentRareShopDataAvailable, currentRareShopData = safeShopGet("RareShopPersistenceFunction", rareShopBindable, player)
 
 		-- [[ 🟠 EPIC SHOP SYNC ]]
 		local epicShopBindable = ServerStorage:FindFirstChild("EpicShopPersistenceFunction")
-		local currentEpicShopData = {}
-		if epicShopBindable then currentEpicShopData = safeShopGet(epicShopBindable, player) end
+		local currentEpicShopDataAvailable, currentEpicShopData = safeShopGet("EpicShopPersistenceFunction", epicShopBindable, player)
 
 		-- [[ 🟡 LEGENDARY SHOP SYNC ]]
 		local legendaryShopBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
-		local currentLegendaryShopData = {}
-		if legendaryShopBindable then
-			currentLegendaryShopData = safeShopGet(legendaryShopBindable, player)
-		end
+		local currentLegendaryShopDataAvailable, currentLegendaryShopData = safeShopGet("LegendaryShopPersistenceFunction", legendaryShopBindable, player)
 
 		-- [[ 🔴 MYTHICAL SHOP SYNC ]]
 		local mythicalShopBindable = ServerStorage:FindFirstChild("MythicalShopPersistenceFunction")
-		local currentMythicalShopData = {}
-		if mythicalShopBindable then
-			currentMythicalShopData = safeShopGet(mythicalShopBindable, player)
-		end
+		local currentMythicalShopDataAvailable, currentMythicalShopData = safeShopGet("MythicalShopPersistenceFunction", mythicalShopBindable, player)
 
 		local sacrificeOccurredThisSession = session.SacrificeOccurred == true
 
@@ -1907,12 +1916,12 @@ save = function(player, isClosing, force)
 					oldData.Layout = finalLayout
 					oldData.PendingEarnings = finalPending
 
-					oldData.ShopPurchases          = currentShopData
-					oldData.UncommonShopPurchases   = currentUncommonShopData
-					oldData.RareShopPurchases       = currentRareShopData
-					oldData.EpicShopPurchases       = currentEpicShopData
-					oldData.LegendaryShopPurchases  = currentLegendaryShopData
-					oldData.MythicalShopPurchases   = currentMythicalShopData
+					if currentShopDataAvailable then oldData.ShopPurchases = currentShopData end
+					if currentUncommonShopDataAvailable then oldData.UncommonShopPurchases = currentUncommonShopData end
+					if currentRareShopDataAvailable then oldData.RareShopPurchases = currentRareShopData end
+					if currentEpicShopDataAvailable then oldData.EpicShopPurchases = currentEpicShopData end
+					if currentLegendaryShopDataAvailable then oldData.LegendaryShopPurchases = currentLegendaryShopData end
+					if currentMythicalShopDataAvailable then oldData.MythicalShopPurchases = currentMythicalShopData end
 
 					oldData.OwnedBaseSkins    = currentOwnedSkins
 					oldData.EquippedSkin      = currentEquippedSkin
@@ -1920,7 +1929,7 @@ save = function(player, isClosing, force)
 					oldData.BaseLevel = currentBaseLevel
 					oldData.OwnedBaseLevel = currentOwnedBaseLevel
 					oldData.Rank = currentRank
-					oldData.RankData = currentRankData
+					if currentRankDataAvailable then oldData.RankData = currentRankData end
 					oldData.HotbarSlots = currentHotbar
 					oldData.BankTransferLimitUsed = currentTransferUsed
 					oldData.BankTransferLimitResetAt = currentTransferResetAt
