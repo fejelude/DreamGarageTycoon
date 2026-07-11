@@ -141,6 +141,7 @@ local SETTINGS_REMOTE_NAME = "SettingsPersistenceEvent"
 local DAILY_REWARDS_STATE_ATTRIBUTE = "DailyRewardsStateJson"
 local FREE_REWARDS_CLAIMED_ATTRIBUTE = "FreeRewardsClaimed"
 local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
+local FINAL_SAVE_COMPLETED_ATTRIBUTE = "TycoonFinalSaveCompleted"
 local DAILY_REWARDS_SECONDS_PER_DAY = 24 * 60 * 60
 
 local function sanitizeRobuxReceiptHistory(raw)
@@ -316,6 +317,10 @@ local function markDirty(player)
 	if session then
 		session.IsDirty = true
 		session.DirtyVersion = (session.DirtyVersion or 0) + 1
+		-- DataSaved is only a snapshot health flag. Any later mutation means
+		-- other systems must not treat a previous autosave as proof that the
+		-- current in-memory/plot state is safely persisted.
+		player:SetAttribute("DataSaved", false)
 	end
 end
 
@@ -2019,6 +2024,9 @@ save = function(player, isClosing, force)
 	if syncEvent then syncEvent:Fire(player.Name) end
 
 	player:SetAttribute("DataSaved", saveSucceeded == true)
+	if isClosing then
+		player:SetAttribute(FINAL_SAVE_COMPLETED_ATTRIBUTE, saveSucceeded == true)
+	end
 	return saveSucceeded
 end
 -- ----------------------------------------------------------------------------
@@ -2050,6 +2058,8 @@ local function InitializePlayer(player)
 	-- Public ready flag used by DailyRewardsService so rewards cannot be claimed
 	-- before this main data profile has finished loading.
 	player:SetAttribute(DATA_READY_ATTRIBUTE, false)
+	player:SetAttribute("DataSaved", false)
+	player:SetAttribute(FINAL_SAVE_COMPLETED_ATTRIBUTE, false)
 
 	-- ✅ FIX (Held Tool Lost on Disconnect):
 	-- CharacterRemoving fires reliably before the character instance is
@@ -2360,6 +2370,8 @@ end
 
 Players.PlayerAdded:Connect(InitializePlayer)
 Players.PlayerRemoving:Connect(function(player)
+	player:SetAttribute("DataSaved", false)
+	player:SetAttribute(FINAL_SAVE_COMPLETED_ATTRIBUTE, false)
 	local pendingSaveTask = PendingCriticalSaveTasks[player.UserId]
 	if pendingSaveTask then
 		task.cancel(pendingSaveTask)
