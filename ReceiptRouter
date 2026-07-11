@@ -29,7 +29,19 @@ local OFFLINE_10X_CLAIM_ID = 3598967453
 local STARTER_PACK_PRODUCT_ID = 3599481243
 local STARTER_PACK_CAR_NAME = "Senator"
 local GlobalLuckConfig = require(ReplicatedStorage:WaitForChild("GlobalLuckConfig"))
-local GlobalLuckService = require(script.Parent:WaitForChild("GlobalLuckService"))
+
+local function requireServerModule(moduleName)
+	local module = script.Parent:WaitForChild(moduleName, 15)
+	if not module then
+		error("[ReceiptRouter] Missing ServerScriptService > " .. moduleName .. " ModuleScript", 0)
+	end
+	if not module:IsA("ModuleScript") then
+		error("[ReceiptRouter] ServerScriptService > " .. moduleName .. " must be a ModuleScript, got " .. module.ClassName, 0)
+	end
+	return require(module)
+end
+
+local GlobalLuckService = requireServerModule("GlobalLuckService")
 local STARTER_PACK_WALLET_CASH = 800000
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))

@@ -1,7 +1,7 @@
 -- ModuleScript: ReplicatedStorage > GlobalLuckConfig
 local GlobalLuckConfig = {}
 
-GlobalLuckConfig.ProductId = 0 -- Set to the Global Luck developer product id in Roblox Creator Dashboard.
+GlobalLuckConfig.ProductId = 3609207871
 GlobalLuckConfig.DurationSeconds = 6 * 60 * 60
 GlobalLuckConfig.BaseMultiplier = 1
 GlobalLuckConfig.MaxReceiptUpdateRetries = 5

@@ -34,7 +34,19 @@ local MAX_STOCK = 1 -- Baseline. Variable restock logic applies below.
 -- =========================
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local GlobalLuckUtil = require(ReplicatedStorage:WaitForChild("GlobalLuckUtil"))
-local GlobalLuckService = require(script.Parent:WaitForChild("GlobalLuckService"))
+
+local function requireServerModule(moduleName)
+	local module = script.Parent:WaitForChild(moduleName, 15)
+	if not module then
+		error("[LocalShopService] Missing ServerScriptService > " .. moduleName .. " ModuleScript", 0)
+	end
+	if not module:IsA("ModuleScript") then
+		error("[LocalShopService] ServerScriptService > " .. moduleName .. " must be a ModuleScript, got " .. module.ClassName, 0)
+	end
+	return require(module)
+end
+
+local GlobalLuckService = requireServerModule("GlobalLuckService")
 
 -- =========================
 -- REMOTES

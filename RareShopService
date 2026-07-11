@@ -33,7 +33,19 @@ local MAX_INTERACTION_DISTANCE = 20
 -- =========================
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local GlobalLuckUtil = require(ReplicatedStorage:WaitForChild("GlobalLuckUtil"))
-local GlobalLuckService = require(script.Parent:WaitForChild("GlobalLuckService"))
+
+local function requireServerModule(moduleName)
+	local module = script.Parent:WaitForChild(moduleName, 15)
+	if not module then
+		error("[RareShopService] Missing ServerScriptService > " .. moduleName .. " ModuleScript", 0)
+	end
+	if not module:IsA("ModuleScript") then
+		error("[RareShopService] ServerScriptService > " .. moduleName .. " must be a ModuleScript, got " .. module.ClassName, 0)
+	end
+	return require(module)
+end
+
+local GlobalLuckService = requireServerModule("GlobalLuckService")
 local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 
 -- =========================
