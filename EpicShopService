@@ -30,6 +30,20 @@ local MAX_INTERACTION_DISTANCE = 20
 -- MODULES
 -- =========================
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local GlobalLuckUtil = require(ReplicatedStorage:WaitForChild("GlobalLuckUtil"))
+
+local function requireServerModule(moduleName)
+	local module = script.Parent:WaitForChild(moduleName, 15)
+	if not module then
+		error("[EpicShopService] Missing ServerScriptService > " .. moduleName .. " ModuleScript", 0)
+	end
+	if not module:IsA("ModuleScript") then
+		error("[EpicShopService] ServerScriptService > " .. moduleName .. " must be a ModuleScript, got " .. module.ClassName, 0)
+	end
+	return require(module)
+end
+
+local GlobalLuckService = requireServerModule("GlobalLuckService")
 local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 
 -- =========================
@@ -155,7 +169,9 @@ local function generateStockConfiguration(seedValue)
 	local poolWeights   = {}
 	local totalWeight   = 0
 
-	for name, weight in pairs(CAR_WEIGHTS) do
+	local luckMultiplier = GlobalLuckService.GetMultiplier()
+	local luckAdjustedWeights = GlobalLuckUtil.ApplyToWeights(CAR_WEIGHTS, luckMultiplier)
+	for name, weight in pairs(luckAdjustedWeights) do
 		table.insert(poolKeys, name)
 		poolWeights[name] = weight
 		totalWeight += weight
@@ -241,11 +257,18 @@ local function getSession(player)
 			LocalSeed   = nil,
 			Purchased   = {},
 			Cache       = nil,
+			LuckGeneration = GlobalLuckService.GetGeneration(),
 		}
 	end
 
 	local session  = PlayerSessions[uid]
 	local didReset = false
+	local luckGeneration = GlobalLuckService.GetGeneration()
+
+	if session.LuckGeneration ~= luckGeneration then
+		session.LuckGeneration = luckGeneration
+		session.Cache = nil
+	end
 
 	if session.SeedVersion ~= currentGlobalID then
 		session.SeedVersion = currentGlobalID

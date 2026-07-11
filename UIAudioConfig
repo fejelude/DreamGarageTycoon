@@ -18,12 +18,14 @@ UIAudioConfig.HOVER_VOLUME  = 1.5
 UIAudioConfig.CLICK_VOLUME  = 1.8
 UIAudioConfig.ROBUX_VOLUME  = 1.5
 UIAudioConfig.RANK_QUEST_COMPLETE_VOLUME = 0.8
+UIAudioConfig.SHOP_OPEN_VOLUME = 0.64
 
 -- Sound asset IDs
 local HOVER_SFX_ID = "rbxassetid://73899820361873"
 local CLICK_SFX_ID = "rbxassetid://126294184545314"
 local ROBUX_SFX_ID = "rbxassetid://117986449113759"   -- 💎 Robux purchase initiation sound
 local RANK_QUEST_COMPLETE_SFX_ID = "rbxassetid://140350065916052"
+local SHOP_OPEN_SFX_ID = "rbxassetid://127488139302452"
 
 -- Hover sounds need to overlap during fast mouse movement across many buttons.
 -- A single shared Sound restarts itself when :Play() is called repeatedly, which
@@ -151,8 +153,19 @@ end
 -- ============================================================================
 local Debris = game:GetService("Debris")
 
+local SHOP_OPEN_VARIANTS = {
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 0.92, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 0.95, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 0.98, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.00, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.02, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.04, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.06, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.08, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.10, Variance = 0.005, Dedupe = 0.18 },
+	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.12, Variance = 0.005, Dedupe = 0.18 },
+}
 local NAMED_SFX = {
-	Open = { Id = "rbxassetid://9083627113", Volume = 0.6, Pitch = 1.0, Variance = 0.03, Dedupe = 0.25 },
 	BuySuccess = { Id = "rbxassetid://140072726814802", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 0.12 },
 	BuyFail = { Id = "rbxassetid://83517496538471", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 0.12 },
 	PaidReroll = { Id = "rbxassetid://140072726814802", Volume = 1.0, Pitch = 4.0, Variance = 0, Dedupe = 0.3 },
@@ -177,7 +190,20 @@ local function playOneShot(id, volume, pitch, variance)
 	Debris:AddItem(sound, 3)
 end
 
+function UIAudioConfig.PlayShopOpen()
+	if not canPlayDedupe("Open", 0.18) then return end
+
+	local variantIndex = math.random(1, #SHOP_OPEN_VARIANTS)
+	local data = SHOP_OPEN_VARIANTS[variantIndex]
+	playOneShot(data.Id, UIAudioConfig.SHOP_OPEN_VOLUME, data.Pitch, data.Variance)
+end
+
 function UIAudioConfig.PlayNamed(name)
+	if name == "Open" then
+		UIAudioConfig.PlayShopOpen()
+		return
+	end
+
 	local data = NAMED_SFX[name]
 	if not data then return end
 
@@ -232,7 +258,7 @@ function UIAudioConfig.CreateStateFeedback(container)
 	local function resolveLabels()
 		if container then
 			stateLabels = stateLabels or container:FindFirstChild("StateLabels") or container:FindFirstChild("StateLabels", true)
-			successLabel = successLabel or (stateLabels and stateLabels:FindFirstChild("Success"))
+			successLabel = successLabel or (stateLabels and (stateLabels:FindFirstChild("Success") or stateLabels:FindFirstChild("Sucess")))
 			failedLabel = failedLabel or (stateLabels and stateLabels:FindFirstChild("Failed"))
 
 			if not (successLabel and failedLabel) then
@@ -324,6 +350,7 @@ function UIAudioConfig.CreateStateFeedback(container)
 		if label == failedLabel then return successLabel end
 		return nil
 	end
+
 
 	function feedback:Show(label, baseText, color)
 		if not label then

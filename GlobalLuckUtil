@@ -1,0 +1,30 @@
+-- ModuleScript: ReplicatedStorage > GlobalLuckUtil
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local Config = require(ReplicatedStorage:WaitForChild("GlobalLuckConfig"))
+
+local GlobalLuckUtil = {}
+local RARITY_POWER = { Common = 0, Uncommon = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
+
+function GlobalLuckUtil.GetRarityPower(carName)
+	local stats = CarStats[carName]
+	return RARITY_POWER[stats and stats.Rarity] or 0
+end
+
+function GlobalLuckUtil.ApplyToWeights(baseWeights, multiplier)
+	multiplier = math.max(Config.BaseMultiplier, tonumber(multiplier) or Config.BaseMultiplier)
+	local adjusted = {}
+	for carName, weight in pairs(baseWeights or {}) do
+		local numericWeight = tonumber(weight) or 0
+		if numericWeight > 0 then
+			local power = GlobalLuckUtil.GetRarityPower(carName)
+			local rarityBoost = 1 + ((multiplier - 1) * (power / 5))
+			adjusted[carName] = math.max(1, math.floor((numericWeight * rarityBoost) + 0.5))
+		else
+			adjusted[carName] = numericWeight
+		end
+	end
+	return adjusted
+end
+
+return GlobalLuckUtil
