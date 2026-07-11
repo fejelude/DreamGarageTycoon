@@ -30,17 +30,69 @@ local MAX_INTERACTION_DISTANCE = 20
 -- MODULES
 -- =========================
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
-local GlobalLuckUtil = require(ReplicatedStorage:WaitForChild("GlobalLuckUtil"))
+local function makeGlobalLuckUtilFallback(reason)
+	warn("⚠️ [EpicShopService] Global Luck util unavailable (" .. tostring(reason) .. "); continuing with base shop weights.")
+	return {
+		ApplyToWeights = function(baseWeights)
+			return baseWeights
+		end,
+	}
+end
+
+local function requireGlobalLuckUtil()
+	local module = ReplicatedStorage:WaitForChild("GlobalLuckUtil", 15)
+	if not module then
+		return makeGlobalLuckUtilFallback("missing ReplicatedStorage > GlobalLuckUtil ModuleScript")
+	end
+	if not module:IsA("ModuleScript") then
+		return makeGlobalLuckUtilFallback("ReplicatedStorage > GlobalLuckUtil is " .. module.ClassName)
+	end
+
+	local ok, result = pcall(require, module)
+	if ok and type(result) == "table" and type(result.ApplyToWeights) == "function" then
+		return result
+	end
+	return makeGlobalLuckUtilFallback(result)
+end
+
+local GlobalLuckUtil = requireGlobalLuckUtil()
+
+local function makeGlobalLuckServiceFallback(reason)
+	warn("⚠️ [EpicShopService] Global Luck service unavailable (" .. tostring(reason) .. "); shop persistence remains enabled with neutral luck.")
+	return {
+		GetMultiplier = function()
+			return 1
+		end,
+		GetGeneration = function()
+			return 0
+		end,
+	}
+end
 
 local function requireServerModule(moduleName)
 	local module = script.Parent:WaitForChild(moduleName, 15)
 	if not module then
-		error("[EpicShopService] Missing ServerScriptService > " .. moduleName .. " ModuleScript", 0)
+		return makeGlobalLuckServiceFallback("missing ServerScriptService > " .. moduleName .. " ModuleScript")
 	end
 	if not module:IsA("ModuleScript") then
-		error("[EpicShopService] ServerScriptService > " .. moduleName .. " must be a ModuleScript, got " .. module.ClassName, 0)
+		return makeGlobalLuckServiceFallback("ServerScriptService > " .. moduleName .. " is " .. module.ClassName)
 	end
-	return require(module)
+
+	local ok, result = pcall(require, module)
+	if ok and type(result) == "table" then
+		if type(result.GetMultiplier) ~= "function" then
+			result.GetMultiplier = function()
+				return 1
+			end
+		end
+		if type(result.GetGeneration) ~= "function" then
+			result.GetGeneration = function()
+				return 0
+			end
+		end
+		return result
+	end
+	return makeGlobalLuckServiceFallback(result)
 end
 
 local GlobalLuckService = requireServerModule("GlobalLuckService")
