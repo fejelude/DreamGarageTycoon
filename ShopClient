@@ -13,6 +13,7 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -101,6 +102,7 @@ local function openShop()
 
 	hideOtherGuis()
 	setMainFrameVisible(true)
+	UIAudioConfig.PlayShopOpen()
 
 	if camera then
 		TweenService:Create(camera, FOV_TWEEN, {

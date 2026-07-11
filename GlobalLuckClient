@@ -121,7 +121,7 @@ end
 
 local function getActiveBlockedMessage(state)
 	local multiplierText = Config.FormatMultiplier((state and state.Multiplier) or Config.BaseMultiplier)
-	return "Booster Maxed and Active ( " .. multiplierText .. " )"
+	return "Booster Maxed & Active (" .. multiplierText .. ")"
 end
 
 local function showBlockedPurchase(state)
