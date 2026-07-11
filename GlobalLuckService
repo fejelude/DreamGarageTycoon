@@ -93,7 +93,10 @@ function Service.ProcessReceipt(receiptInfo)
 	end)
 	if not ok then return false, "Global Luck save failed", false end
 	setLocalState(activatedState, true)
-	if not activated then return false, "Global Luck is already active", false end
+	if not activated then
+		pcall(function() receiptStore:SetAsync(receiptKey, true) end)
+		return true, "Global Luck is already active", true
+	end
 	pcall(function() receiptStore:SetAsync(receiptKey, true) end)
 	return true, "Global Luck activated", false
 end

@@ -31,6 +31,7 @@ local mainFrame = shopGui:WaitForChild("MainFrame")
 local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
 local currentState = nil
 local promptBusy = false
+local promptAttemptId = 0
 local inactiveProfileImage = nil
 local inactiveProfileTransparency = nil
 
@@ -51,12 +52,11 @@ local function formatTime(seconds)
 	return string.format("%d:%02d:%02d", hours, minutes, secs)
 end
 
-local function setButtonEnabled(button, enabled)
+local function setButtonInputLocked(button, locked)
 	if not button then return end
-	button.Active = enabled
-	button.Selectable = enabled
-	pcall(function() button.Interactable = enabled end)
-	button.ImageTransparency = enabled and 0 or 0.45
+	button.Active = not locked
+	button.Selectable = not locked
+	pcall(function() button.Interactable = not locked end)
 end
 
 local function updateProfile(profile, state)
@@ -96,7 +96,7 @@ local function render()
 		updateProfile(profile, state)
 	end
 	local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "DoubleLuckV1"})
-	setButtonEnabled(button, not state.Active and not promptBusy)
+	setButtonInputLocked(button, promptBusy)
 end
 
 local function renderHud()
@@ -115,43 +115,105 @@ end
 
 local function applyState(state)
 	currentState = state
-	promptBusy = false
 	render()
 	renderHud()
+end
+
+local function getActiveBlockedMessage(state)
+	local multiplierText = Config.FormatMultiplier((state and state.Multiplier) or Config.BaseMultiplier)
+	return "Booster Maxed and Active ( " .. multiplierText .. " )"
+end
+
+local function showBlockedPurchase(state)
+	shopFeedback:Failed(getActiveBlockedMessage(state))
+	Kit.Sound:Play("BuyFail")
 end
 
 local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "DoubleLuckV1"})
 if button then
 	Kit.Tween:SetupButton(button, function()
 		if promptBusy then return end
-		if currentState and currentState.Active then
-			shopFeedback:Failed("Global Luck is already active")
-			Kit.Sound:Play("BuyFail")
+
+		local state = currentState
+		if state and state.Active then
+			showBlockedPurchase(state)
 			return
 		end
 		if Config.ProductId <= 0 then
 			shopFeedback:Failed("Global Luck is unavailable")
+			Kit.Sound:Play("BuyFail")
 			return
 		end
+
 		promptBusy = true
+		promptAttemptId += 1
+		local thisAttempt = promptAttemptId
 		render()
 		UIAudioConfig.PlayRobux()
 		UIAudioConfig.ShowPurchaseLoading()
-		MarketplaceService:PromptProductPurchase(player, Config.ProductId)
+
+		local ok, freshState = pcall(function() return GetState:InvokeServer() end)
+		if ok and type(freshState) == "table" then
+			state = freshState
+			currentState = freshState
+			render()
+		end
+
+		if state and state.Active then
+			UIAudioConfig.HidePurchaseLoading()
+			promptBusy = false
+			render()
+			showBlockedPurchase(state)
+			return
+		end
+
+		local promptOk, promptErr = pcall(function()
+			MarketplaceService:PromptProductPurchase(player, Config.ProductId)
+		end)
+
+		if not promptOk then
+			UIAudioConfig.HidePurchaseLoading()
+			promptBusy = false
+			render()
+			shopFeedback:Failed("Purchase Failed")
+			Kit.Sound:Play("BuyFail")
+			warn("[GlobalLuckClient] PromptProductPurchase failed:", promptErr)
+			return
+		end
+
+		task.delay(0.75, function()
+			if promptAttemptId == thisAttempt then
+				UIAudioConfig.HidePurchaseLoading()
+			end
+		end)
+
+		task.delay(30, function()
+			if promptAttemptId == thisAttempt and promptBusy then
+				UIAudioConfig.HidePurchaseLoading()
+				promptBusy = false
+				render()
+			end
+		end)
 	end)
 end
 
 StateEvent.OnClientEvent:Connect(applyState)
 PurchaseResult.OnClientEvent:Connect(function(success, message)
+	promptAttemptId += 1
 	UIAudioConfig.HidePurchaseLoading()
 	promptBusy = false
 	if success then shopFeedback:Success(message ~= "" and message or "Global Luck Activated") else shopFeedback:Failed(message ~= "" and message or "Global Luck Failed") end
 	render()
 end)
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, purchased)
-	if userId == player.UserId and productId == Config.ProductId and not purchased then
-		UIAudioConfig.HidePurchaseLoading(); promptBusy = false; shopFeedback:Failed("Purchase Cancelled"); render()
+	if userId ~= player.UserId or productId ~= Config.ProductId then return end
+	promptAttemptId += 1
+	UIAudioConfig.HidePurchaseLoading()
+	promptBusy = false
+	if not purchased then
+		shopFeedback:Failed("Purchase Cancelled")
 	end
+	render()
 end)
 
 task.spawn(function()
