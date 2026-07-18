@@ -1,0 +1,158 @@
+-- Purpose: Client purchase controller for permanent garage-income Game Pass shop buttons.
+-- Location: StarterGui > ShopUI > GamePassShopClient
+-- Notes: Does not create UI/remotes/instances. Required ShopUI objects must exist in Studio.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local REQUIRED_WAIT_SECONDS = 15
+
+local function requireChild(parent, childName, className, fullPath)
+	local child = parent:WaitForChild(childName, REQUIRED_WAIT_SECONDS)
+	if not child then
+		error("[GamePassShopClient] Missing required instance: " .. fullPath .. " (" .. className .. ")", 0)
+	end
+	if className and not child:IsA(className) then
+		error("[GamePassShopClient] " .. fullPath .. " must be a " .. className .. ", got " .. child.ClassName, 0)
+	end
+	return child
+end
+
+local GamePassConfig = require(requireChild(ReplicatedStorage, "GamePassConfig", "ModuleScript", "ReplicatedStorage > GamePassConfig"))
+local Kit = require(requireChild(ReplicatedStorage, "ShopFrontendKit", "ModuleScript", "ReplicatedStorage > ShopFrontendKit"))
+local UIAudioConfig = require(requireChild(ReplicatedStorage, "UIAudioConfig", "ModuleScript", "ReplicatedStorage > UIAudioConfig"))
+
+local shopGui = requireChild(playerGui, "ShopUI", "ScreenGui", "PlayerGui > ShopUI")
+local mainFrame = requireChild(shopGui, "MainFrame", "GuiObject", "PlayerGui > ShopUI > MainFrame")
+local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
+
+local shopScrolling = requireChild(mainFrame, "ShopUIScrolling", "GuiObject", "PlayerGui > ShopUI > MainFrame > ShopUIScrolling")
+local buttonsForBuying = requireChild(shopScrolling, "ButtonsForBuying", "GuiObject", "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying")
+local buttonsRoot = requireChild(buttonsForBuying, "Buttons", "GuiObject", "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons")
+local gamePassButtons = requireChild(buttonsRoot, "Gamepass", "GuiObject", "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Gamepass")
+local ownedStuff = requireChild(buttonsRoot, "OwnedStuff", "GuiObject", "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > OwnedStuff")
+
+local promptBusy = false
+local promptAttemptId = 0
+local pendingPassKey = nil
+local buttonByPassKey = {}
+local ownedLabelByPassKey = {}
+
+local function setButtonInputLocked(button, locked)
+	if not button then return end
+	button.Active = not locked
+	button.Selectable = not locked
+	pcall(function() button.Interactable = not locked end)
+end
+
+local function renderPass(passKey, passInfo)
+	local button = buttonByPassKey[passKey]
+	local ownedLabel = ownedLabelByPassKey[passKey]
+	local owns = player:GetAttribute(passInfo.Attribute) == true
+	button.Visible = not owns
+	setButtonInputLocked(button, promptBusy and pendingPassKey == passKey)
+	ownedLabel.Visible = owns
+end
+
+local function renderAll()
+	for passKey, passInfo in pairs(GamePassConfig.Passes) do
+		renderPass(passKey, passInfo)
+	end
+end
+
+local function finishPrompt()
+	promptAttemptId += 1
+	UIAudioConfig.HidePurchaseLoading()
+	promptBusy = false
+	pendingPassKey = nil
+	renderAll()
+end
+
+local function beginPurchase(passKey, passInfo)
+	if promptBusy then return end
+	if player:GetAttribute(passInfo.Attribute) == true then
+		renderPass(passKey, passInfo)
+		return
+	end
+
+	promptBusy = true
+	pendingPassKey = passKey
+	promptAttemptId += 1
+	local thisAttempt = promptAttemptId
+	renderAll()
+	UIAudioConfig.PlayRobux()
+	UIAudioConfig.ShowPurchaseLoading()
+
+	local promptOk, promptErr = pcall(function()
+		MarketplaceService:PromptGamePassPurchase(player, passInfo.Id)
+	end)
+
+	if not promptOk then
+		finishPrompt()
+		shopFeedback:Failed(passInfo.FailureMessage or "Purchase Failed")
+		Kit.Sound:Play("BuyFail")
+		warn("[GamePassShopClient] PromptGamePassPurchase failed:", promptErr)
+		return
+	end
+
+	task.delay(0.75, function()
+		if promptAttemptId == thisAttempt then
+			UIAudioConfig.HidePurchaseLoading()
+		end
+	end)
+
+	task.delay(30, function()
+		if promptAttemptId == thisAttempt and promptBusy then
+			finishPrompt()
+		end
+	end)
+end
+
+for passKey, passInfo in pairs(GamePassConfig.Passes) do
+	buttonByPassKey[passKey] = requireChild(
+		gamePassButtons,
+		passInfo.ButtonName,
+		"ImageButton",
+		"PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Gamepass > " .. passInfo.ButtonName
+	)
+	ownedLabelByPassKey[passKey] = requireChild(
+		ownedStuff,
+		passInfo.OwnedLabelName,
+		"ImageLabel",
+		"PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > OwnedStuff > " .. passInfo.OwnedLabelName
+	)
+
+	Kit.Tween:SetupButton(buttonByPassKey[passKey], function()
+		beginPurchase(passKey, passInfo)
+	end)
+
+	player:GetAttributeChangedSignal(passInfo.Attribute):Connect(function()
+		local owns = player:GetAttribute(passInfo.Attribute) == true
+		if owns and pendingPassKey == passKey then
+			finishPrompt()
+			shopFeedback:Success(passInfo.SuccessMessage or "Game Pass Owned")
+		else
+			renderPass(passKey, passInfo)
+		end
+	end)
+end
+
+MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(gamepassPlayer, gamePassId, purchased)
+	if gamepassPlayer ~= player then return end
+	local passKey, passInfo = GamePassConfig.GetPassById(gamePassId)
+	if not passKey then return end
+
+	local alreadyOwns = player:GetAttribute(passInfo.Attribute) == true
+	finishPrompt()
+	if purchased or alreadyOwns then
+		shopFeedback:Success(passInfo.SuccessMessage or "Game Pass Owned")
+	else
+		shopFeedback:Failed("Purchase Cancelled")
+	end
+end)
+
+renderAll()

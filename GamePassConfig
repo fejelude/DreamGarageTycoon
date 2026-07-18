@@ -1,0 +1,55 @@
+-- Purpose: Shared configuration for permanent garage-income Game Passes.
+-- Location: ReplicatedStorage > GamePassConfig
+
+local GamePassConfig = {}
+
+GamePassConfig.Passes = {
+	Exclusive = {
+		Id = 3610477467,
+		Attribute = "OwnsExclusiveGamePass",
+		Multiplier = 1.8,
+		ButtonName = "ExclusiveGamepass",
+		OwnedLabelName = "OwnedLabelExclusive",
+		SuccessMessage = "Exclusive Game Pass Owned",
+		FailureMessage = "Exclusive Purchase Failed",
+	},
+	DoubleMoney = {
+		Id = 3610507493,
+		Attribute = "Owns2xMoneyGamePass",
+		Multiplier = 2,
+		ButtonName = "2xMoney",
+		OwnedLabelName = "OwnedLabel2x",
+		SuccessMessage = "2x Money Game Pass Owned",
+		FailureMessage = "2x Money Purchase Failed",
+	},
+}
+
+function GamePassConfig.GetPassById(gamePassId)
+	gamePassId = tonumber(gamePassId)
+	for passKey, passInfo in pairs(GamePassConfig.Passes) do
+		if passInfo.Id == gamePassId then
+			return passKey, passInfo
+		end
+	end
+	return nil, nil
+end
+
+function GamePassConfig.GetGarageIncomeMultiplier(player)
+	local multiplier = 1
+	for _, passInfo in pairs(GamePassConfig.Passes) do
+		if player and player:GetAttribute(passInfo.Attribute) == true then
+			multiplier *= passInfo.Multiplier
+		end
+	end
+	return multiplier
+end
+
+function GamePassConfig.FormatMultiplier(multiplier)
+	multiplier = tonumber(multiplier) or 1
+	if math.abs(multiplier - math.floor(multiplier)) < 0.001 then
+		return tostring(math.floor(multiplier)) .. "x"
+	end
+	return string.format("%.2fx", multiplier):gsub("0+x$", "x"):gsub("%.x$", "x")
+end
+
+return GamePassConfig

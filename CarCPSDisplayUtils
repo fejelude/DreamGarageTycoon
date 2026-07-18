@@ -385,6 +385,8 @@ function CarCPSDisplayUtils.BindModelCPSDisplay(carModel, player)
 
 	table.insert(connections, player:GetAttributeChangedSignal("ActualEarningsMultiplier"):Connect(safeUpdate))
 	table.insert(connections, player:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(safeUpdate))
+	table.insert(connections, player:GetAttributeChangedSignal("OwnsExclusiveGamePass"):Connect(safeUpdate))
+	table.insert(connections, player:GetAttributeChangedSignal("Owns2xMoneyGamePass"):Connect(safeUpdate))
 end
 
 local function getToolOwner(tool, playersService)
@@ -439,6 +441,14 @@ function CarCPSDisplayUtils.BindToolCPSDisplay(tool, playersService)
 				end),
 
 				player:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(function()
+					CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
+				end),
+
+				player:GetAttributeChangedSignal("OwnsExclusiveGamePass"):Connect(function()
+					CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
+				end),
+
+				player:GetAttributeChangedSignal("Owns2xMoneyGamePass"):Connect(function()
 					CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
 				end),
 			}
