@@ -10,6 +10,7 @@ local Players = game:GetService("Players")
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats")) -- ✅ Added Module
+local GlobalMoneyFrenzyService = require(game:GetService("ServerScriptService"):WaitForChild("GlobalMoneyFrenzyService"))
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
 local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
@@ -160,7 +161,9 @@ local function GetActualEarningsMultiplier(player)
 	totalMultiplier += getPositiveMultiplierContribution(rankMultiplier, 1)
 	totalMultiplier += getRebirthMultiplierContribution(player, rebirthMultiplier)
 
-	return math.max(1, totalMultiplier)
+	local normalMultiplier = math.max(1, totalMultiplier)
+	local globalMoneyFrenzyMultiplier = GlobalMoneyFrenzyService.GetMultiplier()
+	return normalMultiplier * globalMoneyFrenzyMultiplier
 end
 
 local function RefreshActualEarningsMultiplier(player)
@@ -191,10 +194,28 @@ local function watchEarningsMultiplierAttributes(player)
 	end)
 end
 
+local function refreshAllActualEarningsMultipliers()
+	for _, player in ipairs(Players:GetPlayers()) do
+		RefreshActualEarningsMultiplier(player)
+	end
+end
+
 Players.PlayerAdded:Connect(watchEarningsMultiplierAttributes)
 for _, player in ipairs(Players:GetPlayers()) do
 	watchEarningsMultiplierAttributes(player)
 end
+
+task.spawn(function()
+	local lastGeneration = GlobalMoneyFrenzyService.GetGeneration()
+	while true do
+		task.wait(1)
+		local generation = GlobalMoneyFrenzyService.GetGeneration()
+		if generation ~= lastGeneration then
+			lastGeneration = generation
+			refreshAllActualEarningsMultipliers()
+		end
+	end
+end)
 
 -- ============================================================================
 -- 💰 MAIN ECONOMY LOOP
