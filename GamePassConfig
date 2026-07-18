@@ -5,7 +5,7 @@ local GamePassConfig = {}
 
 GamePassConfig.Passes = {
 	Exclusive = {
-		Id = 3610477467,
+		Id = 1919259004,
 		Attribute = "OwnsExclusiveGamePass",
 		Multiplier = 1.8,
 		ButtonName = "ExclusiveGamepass",
@@ -14,7 +14,7 @@ GamePassConfig.Passes = {
 		FailureMessage = "Exclusive Purchase Failed",
 	},
 	DoubleMoney = {
-		Id = 3610507493,
+		Id = 1918448975,
 		Attribute = "Owns2xMoneyGamePass",
 		Multiplier = 2,
 		ButtonName = "2xMoney",
