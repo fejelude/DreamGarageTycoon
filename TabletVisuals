@@ -131,7 +131,7 @@ local function computeBaseOffline(player)
 		return false, 0
 	end
 
-	local cps = tonumber(plot:GetAttribute("CurrentCPS"))
+	local cps = tonumber(player:GetAttribute("OfflineEarningsRate")) or tonumber(plot:GetAttribute("CurrentCPS"))
 
 	if cps == nil then
 		return false, 0
@@ -144,8 +144,8 @@ local function computeBaseOffline(player)
 		return true, 0
 	end
 
-	local multiplier = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
-	local normalRate = cps * multiplier
+	-- CurrentCPS/OfflineEarningsRate already includes normal earnings multipliers.
+	local normalRate = cps
 
 	if cps <= 0 and hasPlacedCars(plot) then
 		return false, 0
