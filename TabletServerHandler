@@ -9,6 +9,7 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Debris = game:GetService("Debris")
+local GlobalMoneyFrenzyService = require(game:GetService("ServerScriptService"):WaitForChild("GlobalMoneyFrenzyService"))
 
 -- ⚙️ CONFIGURATION
 local DEV_PRODUCT_ID = 3509697462
@@ -113,6 +114,26 @@ local function formatNumber(n)
 	return string.format("%.2f%s", n / v, suffix)
 end
 
+local function getAFKDisplayMultiplier()
+	local globalMoneyFrenzyMultiplier = GlobalMoneyFrenzyService.GetMultiplier()
+	if globalMoneyFrenzyMultiplier > 1 then
+		return (globalMoneyFrenzyMultiplier + 0.5) / globalMoneyFrenzyMultiplier, globalMoneyFrenzyMultiplier + 0.5
+	end
+	return 2, 2
+end
+
+local function getTabletMultiplierSuffix(plot)
+	local globalMoneyFrenzyMultiplier = GlobalMoneyFrenzyService.GetMultiplier()
+	if plot:GetAttribute("IsAFK") == true then
+		local payoutMultiplier, totalMultiplier = getAFKDisplayMultiplier()
+		return " (" .. string.format("%.1f", totalMultiplier):gsub("%.0$", "") .. "x)", payoutMultiplier
+	end
+	if globalMoneyFrenzyMultiplier > 1 then
+		return " (" .. string.format("%.1f", globalMoneyFrenzyMultiplier):gsub("%.0$", "") .. "x)", 1
+	end
+	return "", 1
+end
+
 -- 🧹 HELPER: REMOVE CONSTRAINT
 local function nukeConstraints(obj)
 	if not obj then return end
@@ -140,11 +161,8 @@ local function setupTablet(plot)
 					nukeConstraints(cpsLabel)
 					local function updateCPS()
 						local currentCPS = plot:GetAttribute("CurrentCPS") or 0
-						if plot:GetAttribute("IsAFK") == true then
-							cpsLabel.Text = "$ " .. formatNumber(currentCPS * 2) .. "/s (2x)"
-						else
-							cpsLabel.Text = "$ " .. formatNumber(currentCPS) .. "/s"
-						end
+						local suffix, payoutMultiplier = getTabletMultiplierSuffix(plot)
+						cpsLabel.Text = "$ " .. formatNumber(currentCPS * payoutMultiplier) .. "/s" .. suffix
 					end
 					plot:GetAttributeChangedSignal("CurrentCPS"):Connect(updateCPS)
 					plot:GetAttributeChangedSignal("IsAFK"):Connect(updateCPS)
@@ -219,8 +237,7 @@ local function setupTablet(plot)
 		end
 
 		local function updateRevenue()
-			local multiplier = plot:GetAttribute("IsAFK") == true and 2 or 1
-			revenueLabel.Text = formatNumber(pendingVal.Value * multiplier)
+			revenueLabel.Text = formatNumber(pendingVal.Value)
 		end
 
 		ownerVal.Changed:Connect(updateOwnerInfo)
@@ -290,8 +307,7 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 
 		if amount > 0 then
 			pendingVal.Value = 0
-			local multiplier = plot:GetAttribute("IsAFK") == true and 2 or 1
-			local finalAmount = amount * multiplier
+			local finalAmount = amount
 
 			local hs = player:FindFirstChild("HiddenStats")
 			if hs and hs:FindFirstChild("Cash") then

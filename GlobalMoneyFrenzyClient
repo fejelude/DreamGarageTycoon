@@ -109,12 +109,12 @@ local function render()
 		if nextLuck and inactiveNextLuckText == nil then inactiveNextLuckText = nextLuck.Text end
 
 		if currentLuck then currentLuck.Text = state.Active and Config.FormatMultiplier(Config.ActiveMultiplier) or inactiveCurrentLuckText end
-		if nextLuck then nextLuck.Text = state.Active and Config.FormatMultiplier(Config.ActiveMultiplier) or inactiveNextLuckText end
+		if nextLuck then nextLuck.Text = state.Active and Config.FormatMultiplier(Config.ActiveMultiplier + 1) or inactiveNextLuckText end
 		if username then username.Text = state.Active and (state.PurchaserUsername ~= "" and state.PurchaserUsername or "Unknown") or "Vacant" end
 		updateProfile(profile, state)
 	end
 	local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "GlobalMoneyFrenzyV1"})
-	setButtonInputLocked(button, promptBusy or (state and state.Active))
+	setButtonInputLocked(button, promptBusy)
 end
 
 local function renderHud()

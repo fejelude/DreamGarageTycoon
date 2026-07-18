@@ -200,6 +200,14 @@ local function refreshAllActualEarningsMultipliers()
 	end
 end
 
+local function GetAFKPayoutMultiplier()
+	local globalMoneyFrenzyMultiplier = GlobalMoneyFrenzyService.GetMultiplier()
+	if globalMoneyFrenzyMultiplier > 1 then
+		return (globalMoneyFrenzyMultiplier + 0.5) / globalMoneyFrenzyMultiplier
+	end
+	return 2
+end
+
 Players.PlayerAdded:Connect(watchEarningsMultiplierAttributes)
 for _, player in ipairs(Players:GetPlayers()) do
 	watchEarningsMultiplierAttributes(player)
@@ -355,10 +363,11 @@ task.spawn(function()
 				plot:SetAttribute("CurrentCPS", plotTotalCPS)
 
 				-- 3. AFK Bonus & Accumulate
-				-- If AFK, multiply their earnings payout by 2.
+				-- Normal AFK remains 2x. During Global Money Frenzy, AFK adds only +0.5x total
+				-- on top of the global 2x instead of doubling again to 4x.
 				local payoutCPS = plotTotalCPS
 				if plot:GetAttribute("IsAFK") == true then
-					payoutCPS = payoutCPS * 2
+					payoutCPS = payoutCPS * GetAFKPayoutMultiplier()
 				end
 
 				if not profitAccumulator[plot] then profitAccumulator[plot] = 0 end
