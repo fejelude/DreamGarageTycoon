@@ -243,7 +243,8 @@ local requirements = {
 local function splitPath(path)
 	local names = {}
 	for name in string.gmatch(path, "([^>]+)") do
-		table.insert(names, string.gsub(name, "^%s*(.-)%s*$", "%1"))
+		local trimmedName = string.gsub(name, "^%s*(.-)%s*$", "%1")
+		table.insert(names, trimmedName)
 	end
 	return names
 end
