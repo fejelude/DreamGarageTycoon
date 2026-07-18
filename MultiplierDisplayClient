@@ -158,6 +158,8 @@ local function trackPlayerMultiplierChanges(player)
 	table.insert(playerConnections, player:GetAttributeChangedSignal("ActualEarningsMultiplier"):Connect(updateAllTycoonMultiplierDisplays))
 	table.insert(playerConnections, player:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(updateAllTycoonMultiplierDisplays))
 	table.insert(playerConnections, player:GetAttributeChangedSignal("Rank"):Connect(updateAllTycoonMultiplierDisplays))
+	table.insert(playerConnections, player:GetAttributeChangedSignal("OwnsExclusiveGamePass"):Connect(updateAllTycoonMultiplierDisplays))
+	table.insert(playerConnections, player:GetAttributeChangedSignal("Owns2xMoneyGamePass"):Connect(updateAllTycoonMultiplierDisplays))
 end
 
 for _, player in ipairs(Players:GetPlayers()) do

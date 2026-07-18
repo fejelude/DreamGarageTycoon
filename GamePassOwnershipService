@@ -1,0 +1,91 @@
+-- Purpose: Server authority for permanent garage-income Game Pass ownership attributes.
+-- Location: ServerScriptService > GamePassOwnershipService
+
+local MarketplaceService = game:GetService("MarketplaceService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local REQUIRED_WAIT_SECONDS = 15
+local gamePassConfigModule = ReplicatedStorage:WaitForChild("GamePassConfig", REQUIRED_WAIT_SECONDS)
+if not gamePassConfigModule or not gamePassConfigModule:IsA("ModuleScript") then
+	error("[GamePassOwnershipService] Missing required ModuleScript: ReplicatedStorage > GamePassConfig", 0)
+end
+
+local GamePassConfig = require(gamePassConfigModule)
+
+local GamePassOwnershipService = {}
+local ownershipCache = {}
+
+local function getCacheForPlayer(player)
+	local userId = player.UserId
+	ownershipCache[userId] = ownershipCache[userId] or {}
+	return ownershipCache[userId]
+end
+
+function GamePassOwnershipService.SetOwned(player, passKey, owned)
+	local passInfo = GamePassConfig.Passes[passKey]
+	if not player or not passInfo then return end
+	getCacheForPlayer(player)[passKey] = owned == true
+	player:SetAttribute(passInfo.Attribute, owned == true)
+end
+
+function GamePassOwnershipService.RefreshPass(player, passKey)
+	local passInfo = GamePassConfig.Passes[passKey]
+	if not player or not passInfo then return false end
+
+	local ok, owns = pcall(function()
+		return MarketplaceService:UserOwnsGamePassAsync(player.UserId, passInfo.Id)
+	end)
+
+	if not ok then
+		warn("[GamePassOwnershipService] UserOwnsGamePassAsync failed for", player.UserId, passKey, owns)
+		owns = false
+	end
+
+	GamePassOwnershipService.SetOwned(player, passKey, owns == true)
+	return owns == true
+end
+
+function GamePassOwnershipService.RefreshPlayer(player)
+	for passKey in pairs(GamePassConfig.Passes) do
+		GamePassOwnershipService.RefreshPass(player, passKey)
+	end
+end
+
+function GamePassOwnershipService.GetGarageIncomeMultiplier(player)
+	return GamePassConfig.GetGarageIncomeMultiplier(player)
+end
+
+Players.PlayerAdded:Connect(function(player)
+	for _, passInfo in pairs(GamePassConfig.Passes) do
+		player:SetAttribute(passInfo.Attribute, false)
+	end
+	task.spawn(GamePassOwnershipService.RefreshPlayer, player)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	ownershipCache[player.UserId] = nil
+end)
+
+MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gamePassId, wasPurchased)
+	local passKey = GamePassConfig.GetPassById(gamePassId)
+	if not passKey or not player then return end
+
+	if wasPurchased then
+		GamePassOwnershipService.SetOwned(player, passKey, true)
+	else
+		-- Re-check because Roblox can report false if the player already owned it or the prompt state was stale.
+		task.spawn(GamePassOwnershipService.RefreshPass, player, passKey)
+	end
+end)
+
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(function()
+		for _, passInfo in pairs(GamePassConfig.Passes) do
+			player:SetAttribute(passInfo.Attribute, false)
+		end
+		GamePassOwnershipService.RefreshPlayer(player)
+	end)
+end
+
+return GamePassOwnershipService

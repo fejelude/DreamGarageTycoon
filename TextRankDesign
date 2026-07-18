@@ -33,6 +33,15 @@ local RANK_GRADIENTS = {
 	}
 }
 
+local EXCLUSIVE_GRADIENTS = {
+	Player = { from = Color3.fromHex("#9EEBFF"), mid = Color3.fromHex("#FF4F6D"), to = Color3.fromHex("#FF9AD5"), bold = false },
+	VIP = { from = Color3.fromHex("#A8F0FF"), mid = Color3.fromHex("#FF405F"), to = Color3.fromHex("#FFA6DC"), bold = true },
+	["VIP+"] = { from = Color3.fromHex("#8BEAFF"), mid = Color3.fromHex("#FF3658"), to = Color3.fromHex("#FF8BD0"), bold = true },
+	MVP = { from = Color3.fromHex("#6FE4FF"), mid = Color3.fromHex("#FF2D52"), to = Color3.fromHex("#FF74C7"), bold = true },
+	["MVP+"] = { from = Color3.fromHex("#55DFFF"), mid = Color3.fromHex("#FF244C"), to = Color3.fromHex("#FF5CBC"), bold = true },
+	["MVP++"] = { from = Color3.fromHex("#38D9FF"), mid = Color3.fromHex("#FF1744"), to = Color3.fromHex("#FF42B3"), bold = true },
+}
+
 -- Name colors relative to the rank (slightly softer/lighter than rank color)
 local NAME_COLORS = {
 	["Player"] = "#777777",
@@ -62,7 +71,7 @@ local function colorToHex(color)
 end
 
 -- Applies a gradient to a string character by character
-local function applyGradientToText(text, colorFrom, colorTo)
+local function applyGradientToText(text, colorFrom, colorTo, middleColor)
 	local result = ""
 	local length = string.len(text)
 
@@ -74,7 +83,16 @@ local function applyGradientToText(text, colorFrom, colorTo)
 	for i = 1, length do
 		local char = string.sub(text, i, i)
 		local alpha = (i - 1) / (length - 1)
-		local charColor = lerpColor(colorFrom, colorTo, alpha)
+		local charColor
+		if middleColor then
+			if alpha < 0.5 then
+				charColor = lerpColor(colorFrom, middleColor, alpha / 0.5)
+			else
+				charColor = lerpColor(middleColor, colorTo, (alpha - 0.5) / 0.5)
+			end
+		else
+			charColor = lerpColor(colorFrom, colorTo, alpha)
+		end
 		result = result .. string.format('<font color="%s">%s</font>', colorToHex(charColor), char)
 	end
 
@@ -133,8 +151,15 @@ if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 			formattedRankTag = string.format('<b><font color="%s">%s</font></b>', colorHex, rawRankText)
 		end
 
-		-- Format the final prefix: [RANK] DisplayName » 
-		properties.PrefixText = string.format('%s <font color="%s">%s</font> <font color="#AAAAAA">»</font> ', formattedRankTag, nameColor, displayName)
+		local exclusiveTag = ""
+		if player:GetAttribute("OwnsExclusiveGamePass") == true then
+			local exclusiveStyle = EXCLUSIVE_GRADIENTS[rankName] or EXCLUSIVE_GRADIENTS.Player
+			local exclusiveText = applyGradientToText("[Exclusive]", exclusiveStyle.from, exclusiveStyle.to, exclusiveStyle.mid)
+			exclusiveTag = exclusiveStyle.bold and (" <b>" .. exclusiveText .. "</b>") or (" " .. exclusiveText)
+		end
+
+		-- Format the final prefix: [RANK] [Exclusive] DisplayName »
+		properties.PrefixText = string.format('%s%s <font color="%s">%s</font> <font color="#AAAAAA">»</font> ', formattedRankTag, exclusiveTag, nameColor, displayName)
 
 		return properties
 	end

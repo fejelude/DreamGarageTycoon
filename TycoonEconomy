@@ -10,7 +10,9 @@ local Players = game:GetService("Players")
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats")) -- ✅ Added Module
-local GlobalMoneyFrenzyService = require(game:GetService("ServerScriptService"):WaitForChild("GlobalMoneyFrenzyService"))
+local ServerScriptService = game:GetService("ServerScriptService")
+local GlobalMoneyFrenzyService = require(ServerScriptService:WaitForChild("GlobalMoneyFrenzyService"))
+local GamePassOwnershipService = require(ServerScriptService:WaitForChild("GamePassOwnershipService"))
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
 local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
@@ -163,7 +165,8 @@ local function GetActualEarningsMultiplier(player)
 
 	local normalMultiplier = math.max(1, totalMultiplier)
 	local globalMoneyFrenzyMultiplier = GlobalMoneyFrenzyService.GetMultiplier()
-	return normalMultiplier * globalMoneyFrenzyMultiplier
+	local gamePassMultiplier = GamePassOwnershipService.GetGarageIncomeMultiplier(player)
+	return normalMultiplier * gamePassMultiplier * globalMoneyFrenzyMultiplier
 end
 
 local function RefreshActualEarningsMultiplier(player)
@@ -190,6 +193,12 @@ local function watchEarningsMultiplierAttributes(player)
 		RefreshActualEarningsMultiplier(player)
 	end)
 	player:GetPropertyChangedSignal("MembershipType"):Connect(function()
+		RefreshActualEarningsMultiplier(player)
+	end)
+	player:GetAttributeChangedSignal("OwnsExclusiveGamePass"):Connect(function()
+		RefreshActualEarningsMultiplier(player)
+	end)
+	player:GetAttributeChangedSignal("Owns2xMoneyGamePass"):Connect(function()
 		RefreshActualEarningsMultiplier(player)
 	end)
 end

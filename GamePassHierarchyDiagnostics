@@ -1,0 +1,202 @@
+-- Purpose: Read-only hierarchy scanner for the permanent Game Pass system.
+-- Location: ServerScriptService > GamePassHierarchyDiagnostics
+-- Notes: This script never creates, repairs, clones, moves, renames, or replaces instances.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local ServerStorage = game:GetService("ServerStorage")
+local StarterGui = game:GetService("StarterGui")
+local StarterPlayer = game:GetService("StarterPlayer")
+
+local PREFIX = "[GamePass Diagnostics]"
+
+local requiredObjects = {
+	{
+		Root = ReplicatedStorage,
+		Path = { "GamePassConfig" },
+		ClassName = "ModuleScript",
+		Feature = "Shared Game Pass IDs, ownership attributes, button names, owned labels, and multiplier math",
+	},
+	{
+		Root = ServerScriptService,
+		Path = { "GamePassOwnershipService" },
+		ClassName = "ModuleScript",
+		Feature = "Server ownership checks and garage-income multiplier authority",
+	},
+	{
+		Root = StarterGui,
+		Path = { "ShopUI", "GamePassShopClient" },
+		ClassName = "LocalScript",
+		Feature = "Shop purchase prompts, purchase state, StateLabels, and owned-label transitions",
+	},
+	{
+		Root = ServerScriptService,
+		Path = { "TycoonEconomy" },
+		ClassName = "Script",
+		Feature = "Applies permanent Game Pass multipliers to garage income",
+	},
+	{
+		Root = ServerScriptService,
+		Path = { "RankService" },
+		ClassName = "Script",
+		Feature = "Enables ExclusiveRank billboard on current rank tag",
+	},
+	{
+		Root = ReplicatedStorage,
+		Path = { "CarCPSDisplayUtils" },
+		ClassName = "ModuleScript",
+		Feature = "Refreshes car CPS displays after Game Pass ownership changes",
+	},
+	{
+		Root = StarterPlayer,
+		Path = { "StarterPlayerScripts", "MultiplierDisplayClient" },
+		ClassName = "LocalScript",
+		Feature = "Refreshes tycoon multiplier billboard after Game Pass ownership changes",
+	},
+	{
+		Root = StarterPlayer,
+		Path = { "StarterPlayerScripts", "TextRankDesign" },
+		ClassName = "LocalScript",
+		Feature = "Renders Exclusive chat tag beside rank tag",
+	},
+	{
+		Root = StarterGui,
+		Path = { "ShopUI", "MainFrame", "ShopUIScrolling", "ButtonsForBuying", "Buttons", "Gamepass", "ExclusiveGamepass" },
+		ClassName = "ImageButton",
+		Feature = "Exclusive Game Pass purchase button",
+	},
+	{
+		Root = StarterGui,
+		Path = { "ShopUI", "MainFrame", "ShopUIScrolling", "ButtonsForBuying", "Buttons", "Gamepass", "2xMoney" },
+		ClassName = "ImageButton",
+		Feature = "2x Money Game Pass purchase button",
+	},
+	{
+		Root = StarterGui,
+		Path = { "ShopUI", "MainFrame", "ShopUIScrolling", "ButtonsForBuying", "Buttons", "OwnedStuff", "OwnedLabelExclusive" },
+		ClassName = "ImageLabel",
+		Feature = "Exclusive owned indicator",
+	},
+	{
+		Root = StarterGui,
+		Path = { "ShopUI", "MainFrame", "ShopUIScrolling", "ButtonsForBuying", "Buttons", "OwnedStuff", "OwnedLabel2x" },
+		ClassName = "ImageLabel",
+		Feature = "2x Money owned indicator",
+	},
+}
+
+for _, rankName in ipairs({ "Player", "VIP", "VIP+", "MVP", "MVP+", "MVP++" }) do
+	table.insert(requiredObjects, {
+		Root = ServerStorage,
+		Path = { "RankTags", rankName, "ExclusiveRank" },
+		ClassName = "BillboardGui",
+		Feature = "Exclusive rank tag for " .. rankName .. " players",
+	})
+end
+
+local function pathToString(root, pathParts)
+	local parts = { root.Name }
+	for _, name in ipairs(pathParts) do
+		table.insert(parts, name)
+	end
+	return table.concat(parts, " > ")
+end
+
+local function warnProblem(kind, expectedPath, requiredClass, actualClass, feature)
+	local message = string.format(
+		"%s %s: %s | Required class: %s | Feature: %s",
+		PREFIX,
+		kind,
+		expectedPath,
+		requiredClass,
+		feature
+	)
+	if actualClass then
+		message ..= " | Actual class: " .. actualClass
+	end
+	warn(message)
+end
+
+local function scanRequiredObject(spec)
+	local current = spec.Root
+	local expectedPath = pathToString(spec.Root, spec.Path)
+
+	for index, childName in ipairs(spec.Path) do
+		local child = current:FindFirstChild(childName)
+		if not child then
+			warnProblem("MISSING", expectedPath, spec.ClassName, nil, spec.Feature)
+			return 1
+		end
+
+		if child.Name ~= childName then
+			warnProblem("INCORRECT NAME", expectedPath, spec.ClassName, child.ClassName, spec.Feature)
+			return 1
+		end
+
+		if child.Parent ~= current then
+			warnProblem("INCORRECT PARENT", expectedPath, spec.ClassName, child.ClassName, spec.Feature)
+			return 1
+		end
+
+		if index == #spec.Path and not child:IsA(spec.ClassName) then
+			warnProblem("INCORRECT CLASS", expectedPath, spec.ClassName, child.ClassName, spec.Feature)
+			return 1
+		end
+
+		current = child
+	end
+
+	return 0
+end
+
+local function scanOwnershipAttributeNames()
+	local problems = 0
+	local config = ReplicatedStorage:FindFirstChild("GamePassConfig")
+	if not config or not config:IsA("ModuleScript") then
+		return problems
+	end
+
+	local ok, gamePassConfig = pcall(require, config)
+	if not ok or type(gamePassConfig) ~= "table" then
+		warn(string.format(
+			"%s INCORRECT MODULE: ReplicatedStorage > GamePassConfig | Required class: ModuleScript | Feature: Ownership attribute consistency | Actual problem: %s",
+			PREFIX,
+			tostring(gamePassConfig)
+		))
+		return problems + 1
+	end
+
+	local expectedAttributes = {
+		Exclusive = "OwnsExclusiveGamePass",
+		DoubleMoney = "Owns2xMoneyGamePass",
+	}
+
+	for passKey, expectedAttribute in pairs(expectedAttributes) do
+		local passInfo = gamePassConfig.Passes and gamePassConfig.Passes[passKey]
+		local actualAttribute = passInfo and passInfo.Attribute
+		if actualAttribute ~= expectedAttribute then
+			warn(string.format(
+				"%s ATTRIBUTE MISMATCH: ReplicatedStorage > GamePassConfig.Passes.%s.Attribute | Required value: %s | Actual value: %s | Feature: Ownership attribute consistency",
+				PREFIX,
+				passKey,
+				expectedAttribute,
+				tostring(actualAttribute)
+			))
+			problems += 1
+		end
+	end
+
+	return problems
+end
+
+local problems = 0
+for _, spec in ipairs(requiredObjects) do
+	problems += scanRequiredObject(spec)
+end
+problems += scanOwnershipAttributeNames()
+
+if problems == 0 then
+	print(PREFIX .. " Scan complete. All required Game Pass hierarchy elements were found.")
+else
+	warn(string.format("%s Scan complete. %d hierarchy problems found.", PREFIX, problems))
+end

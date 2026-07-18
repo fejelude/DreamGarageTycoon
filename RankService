@@ -364,6 +364,8 @@ local function Action_SetRankVisual(player, rankName)
 				if nameLabel and nameLabel:IsA("TextLabel") then
 					nameLabel.Text = player.DisplayName
 				end
+			elseif newGui.Name == "ExclusiveRank" then
+				newGui.Enabled = player:GetAttribute("OwnsExclusiveGamePass") == true
 			end
 
 			newGui.Parent = head
@@ -731,6 +733,11 @@ local function hookPlayer(player)
 	trackConnection(player, player:GetAttributeChangedSignal("BaseLevel"):Connect(function()
 		if player.Parent and PlayerConnections[player] then
 			pushState(player)
+		end
+	end))
+	trackConnection(player, player:GetAttributeChangedSignal("OwnsExclusiveGamePass"):Connect(function()
+		if player.Parent and player.Character then
+			task.spawn(Action_SetRankVisual, player, player:GetAttribute("Rank") or RankConfig.DefaultRankName)
 		end
 	end))
 end
