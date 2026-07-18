@@ -113,7 +113,7 @@ local function render()
 		if username then username.Text = state.Active and (state.PurchaserUsername ~= "" and state.PurchaserUsername or "Unknown") or "Vacant" end
 		updateProfile(profile, state)
 	end
-	local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "GlobakMoneyFrenzyV1"})
+	local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "GlobalMoneyFrenzyV1"})
 	setButtonInputLocked(button, promptBusy or (state and state.Active))
 end
 
@@ -154,7 +154,7 @@ local function showBlockedPurchase()
 	Kit.Sound:Play("BuyFail")
 end
 
-local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "GlobakMoneyFrenzyV1"})
+local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "GlobalMoneyFrenzyV1"})
 if button then
 	Kit.Tween:SetupButton(button, function()
 		if promptBusy then return end
