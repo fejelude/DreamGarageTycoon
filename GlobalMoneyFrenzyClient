@@ -1,0 +1,264 @@
+-- LocalScript: StarterGui > ShopUI > GlobalMoneyFrenzyClient
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local Config = require(ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyConfig"))
+local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+
+local REQUIRED_WAIT_SECONDS = 15
+local function requireChild(parent, childName, className, fullPath)
+	local child = parent:WaitForChild(childName, REQUIRED_WAIT_SECONDS)
+	if not child then
+		error("[GlobalMoneyFrenzyClient] Missing required instance: " .. fullPath .. " (" .. className .. ")", 0)
+	end
+	if className and not child:IsA(className) then
+		error("[GlobalMoneyFrenzyClient] " .. fullPath .. " must be a " .. className .. ", got " .. child.ClassName, 0)
+	end
+	return child
+end
+
+local remotes = requireChild(ReplicatedStorage, "GlobalMoneyFrenzyRemotes", "Folder", "ReplicatedStorage > GlobalMoneyFrenzyRemotes")
+local StateEvent = requireChild(remotes, "State", "RemoteEvent", "ReplicatedStorage > GlobalMoneyFrenzyRemotes > State")
+local GetState = requireChild(remotes, "GetState", "RemoteFunction", "ReplicatedStorage > GlobalMoneyFrenzyRemotes > GetState")
+local PurchaseResult = requireChild(remotes, "PurchaseResult", "RemoteEvent", "ReplicatedStorage > GlobalMoneyFrenzyRemotes > PurchaseResult")
+
+local shopGui = playerGui:WaitForChild("ShopUI")
+local mainFrame = shopGui:WaitForChild("MainFrame")
+local stateLabels = mainFrame:WaitForChild("StateLabels")
+stateLabels:WaitForChild("Sucess")
+stateLabels:WaitForChild("Failed")
+local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
+local currentState = nil
+local promptBusy = false
+local promptAttemptId = 0
+local inactiveProfileImage = nil
+local inactiveProfileTransparency = nil
+local inactiveCurrentLuckText = nil
+local inactiveNextLuckText = nil
+
+local function findPath(root, names)
+	local obj = root
+	for _, name in ipairs(names) do
+		obj = obj and obj:FindFirstChild(name)
+		if not obj then return nil end
+	end
+	return obj
+end
+
+local function formatTime(seconds)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	local hours = math.floor(seconds / 3600)
+	local minutes = math.floor((seconds % 3600) / 60)
+	local secs = seconds % 60
+	return string.format("%d:%02d:%02d", hours, minutes, secs)
+end
+
+local function getRemaining(state)
+	if not state or not state.Active then return 0 end
+	local serverTime = tonumber(state.ServerTime) or os.time()
+	local localReceivedAt = tonumber(state.LocalReceivedAt) or os.time()
+	local estimatedServerNow = serverTime + math.max(0, os.time() - localReceivedAt)
+	return math.max(0, (tonumber(state.ExpiresAt) or 0) - estimatedServerNow)
+end
+
+local function setButtonInputLocked(button, locked)
+	if not button then return end
+	button.Active = not locked
+	button.Selectable = not locked
+	pcall(function() button.Interactable = not locked end)
+end
+
+local function updateProfile(profile, state)
+	if not profile then return end
+	if inactiveProfileImage == nil then
+		inactiveProfileImage = profile.Image
+		inactiveProfileTransparency = profile.ImageTransparency
+	end
+	if not state.Active then
+		profile.Image = inactiveProfileImage or ""
+		profile.ImageTransparency = inactiveProfileTransparency or 0.45
+		return
+	end
+	local ok, content = pcall(function()
+		return Players:GetUserThumbnailAsync(state.PurchaserUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+	end)
+	if ok and content then
+		profile.Image = content
+		profile.ImageTransparency = 0
+	else
+		profile.Image = inactiveProfileImage or ""
+		profile.ImageTransparency = inactiveProfileTransparency or 0.45
+	end
+end
+
+local function render()
+	local state = currentState or { Active = false, Multiplier = 1, ExpiresAt = 0, ServerTime = os.time(), PurchaserUsername = "" }
+	local details = findPath(mainFrame, {"ShopUIScrolling", "ShopElements", "Featured", "GlobalMoneyFrenzy", "ImportantDetails"})
+	if details then
+		local currentLuck = details:FindFirstChild("CurrentLuck")
+		local nextLuck = details:FindFirstChild("NextLuck")
+		local username = details:FindFirstChild("UsernameOfTheBooster")
+		local profile = details:FindFirstChild("ProfileofTheBooster")
+
+		if currentLuck and inactiveCurrentLuckText == nil then inactiveCurrentLuckText = currentLuck.Text end
+		if nextLuck and inactiveNextLuckText == nil then inactiveNextLuckText = nextLuck.Text end
+
+		if currentLuck then currentLuck.Text = state.Active and Config.FormatMultiplier(Config.ActiveMultiplier) or inactiveCurrentLuckText end
+		if nextLuck then nextLuck.Text = state.Active and Config.FormatMultiplier(Config.ActiveMultiplier + 1) or inactiveNextLuckText end
+		if username then username.Text = state.Active and (state.PurchaserUsername ~= "" and state.PurchaserUsername or "Unknown") or "Vacant" end
+		updateProfile(profile, state)
+	end
+	local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "GlobalMoneyFrenzyV1"})
+	setButtonInputLocked(button, promptBusy)
+end
+
+local function renderHud()
+	local boosterGui = playerGui:FindFirstChild("BoosterUi")
+	local panel = boosterGui and findPath(boosterGui, {"Elements", "Global2xMoneyEnabledV1"})
+	if not panel then return end
+	local state = currentState
+	local remaining = getRemaining(state)
+	if not state or not state.Active or remaining <= 0 then
+		panel.Visible = false
+		return
+	end
+	panel.Visible = true
+	local timeLeft = panel:FindFirstChild("TimeLeft")
+	if timeLeft then timeLeft.Text = formatTime(remaining) end
+end
+
+local function setupHudInteractions()
+	local boosterGui = playerGui:WaitForChild("BoosterUi", 15)
+	if not boosterGui then return end
+	local panel = findPath(boosterGui, {"Elements", "Global2xMoneyEnabledV1"})
+	if not panel then return end
+	local information = panel:FindFirstChild("Information")
+	UIButtonUtils.SetupHoverInfo(panel, information)
+end
+
+local function applyState(state)
+	if type(state) ~= "table" then return end
+	state.LocalReceivedAt = os.time()
+	currentState = state
+	render()
+	renderHud()
+end
+
+local function showBlockedPurchase()
+	shopFeedback:Failed("Booster Maxed & Active")
+	Kit.Sound:Play("BuyFail")
+end
+
+local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "GlobalMoneyFrenzyV1"})
+if button then
+	Kit.Tween:SetupButton(button, function()
+		if promptBusy then return end
+
+		local state = currentState
+		if state and state.Active then
+			showBlockedPurchase()
+			return
+		end
+		if Config.ProductId <= 0 then
+			shopFeedback:Failed("Money Frenzy is unavailable")
+			Kit.Sound:Play("BuyFail")
+			return
+		end
+
+		promptBusy = true
+		promptAttemptId += 1
+		local thisAttempt = promptAttemptId
+		render()
+		UIAudioConfig.PlayRobux()
+		UIAudioConfig.ShowPurchaseLoading()
+
+		local ok, freshState = pcall(function() return GetState:InvokeServer() end)
+		if ok and type(freshState) == "table" then
+			freshState.LocalReceivedAt = os.time()
+			state = freshState
+			currentState = freshState
+			render()
+		end
+
+		if state and state.Active then
+			UIAudioConfig.HidePurchaseLoading()
+			promptBusy = false
+			render()
+			showBlockedPurchase()
+			return
+		end
+
+		local promptOk, promptErr = pcall(function()
+			MarketplaceService:PromptProductPurchase(player, Config.ProductId)
+		end)
+
+		if not promptOk then
+			UIAudioConfig.HidePurchaseLoading()
+			promptBusy = false
+			render()
+			shopFeedback:Failed("Purchase Failed")
+			Kit.Sound:Play("BuyFail")
+			warn("[GlobalMoneyFrenzyClient] PromptProductPurchase failed:", promptErr)
+			return
+		end
+
+		task.delay(0.75, function()
+			if promptAttemptId == thisAttempt then
+				UIAudioConfig.HidePurchaseLoading()
+			end
+		end)
+
+		task.delay(30, function()
+			if promptAttemptId == thisAttempt and promptBusy then
+				UIAudioConfig.HidePurchaseLoading()
+				promptBusy = false
+				render()
+			end
+		end)
+	end)
+end
+
+StateEvent.OnClientEvent:Connect(applyState)
+PurchaseResult.OnClientEvent:Connect(function(success, message)
+	promptAttemptId += 1
+	UIAudioConfig.HidePurchaseLoading()
+	promptBusy = false
+	if success then
+		shopFeedback:Success(message ~= "" and message or "Money Frenzy Activated")
+	else
+		shopFeedback:Failed(message ~= "" and message or "Money Frenzy Failed")
+	end
+	render()
+end)
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, purchased)
+	if userId ~= player.UserId or productId ~= Config.ProductId then return end
+	promptAttemptId += 1
+	UIAudioConfig.HidePurchaseLoading()
+	promptBusy = false
+	if not purchased then
+		shopFeedback:Failed("Purchase Cancelled")
+	end
+	render()
+end)
+
+task.spawn(setupHudInteractions)
+
+task.spawn(function()
+	local ok, state = pcall(function() return GetState:InvokeServer() end)
+	if ok then applyState(state) else render() end
+	while true do
+		task.wait(1)
+		renderHud()
+		if os.time() % 30 == 0 then
+			pcall(function()
+				applyState(GetState:InvokeServer())
+			end)
+		end
+	end
+end)

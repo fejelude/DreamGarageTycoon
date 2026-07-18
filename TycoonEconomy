@@ -10,6 +10,7 @@ local Players = game:GetService("Players")
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats")) -- ✅ Added Module
+local GlobalMoneyFrenzyService = require(game:GetService("ServerScriptService"):WaitForChild("GlobalMoneyFrenzyService"))
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
 local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
@@ -160,7 +161,9 @@ local function GetActualEarningsMultiplier(player)
 	totalMultiplier += getPositiveMultiplierContribution(rankMultiplier, 1)
 	totalMultiplier += getRebirthMultiplierContribution(player, rebirthMultiplier)
 
-	return math.max(1, totalMultiplier)
+	local normalMultiplier = math.max(1, totalMultiplier)
+	local globalMoneyFrenzyMultiplier = GlobalMoneyFrenzyService.GetMultiplier()
+	return normalMultiplier * globalMoneyFrenzyMultiplier
 end
 
 local function RefreshActualEarningsMultiplier(player)
@@ -191,10 +194,36 @@ local function watchEarningsMultiplierAttributes(player)
 	end)
 end
 
+local function refreshAllActualEarningsMultipliers()
+	for _, player in ipairs(Players:GetPlayers()) do
+		RefreshActualEarningsMultiplier(player)
+	end
+end
+
+local function GetAFKPayoutMultiplier()
+	local globalMoneyFrenzyMultiplier = GlobalMoneyFrenzyService.GetMultiplier()
+	if globalMoneyFrenzyMultiplier > 1 then
+		return (globalMoneyFrenzyMultiplier + 0.5) / globalMoneyFrenzyMultiplier
+	end
+	return 2
+end
+
 Players.PlayerAdded:Connect(watchEarningsMultiplierAttributes)
 for _, player in ipairs(Players:GetPlayers()) do
 	watchEarningsMultiplierAttributes(player)
 end
+
+task.spawn(function()
+	local lastGeneration = GlobalMoneyFrenzyService.GetGeneration()
+	while true do
+		task.wait(1)
+		local generation = GlobalMoneyFrenzyService.GetGeneration()
+		if generation ~= lastGeneration then
+			lastGeneration = generation
+			refreshAllActualEarningsMultipliers()
+		end
+	end
+end)
 
 -- ============================================================================
 -- 💰 MAIN ECONOMY LOOP
@@ -334,10 +363,11 @@ task.spawn(function()
 				plot:SetAttribute("CurrentCPS", plotTotalCPS)
 
 				-- 3. AFK Bonus & Accumulate
-				-- If AFK, multiply their earnings payout by 2.
+				-- Normal AFK remains 2x. During Global Money Frenzy, AFK adds only +0.5x total
+				-- on top of the global 2x instead of doubling again to 4x.
 				local payoutCPS = plotTotalCPS
 				if plot:GetAttribute("IsAFK") == true then
-					payoutCPS = payoutCPS * 2
+					payoutCPS = payoutCPS * GetAFKPayoutMultiplier()
 				end
 
 				if not profitAccumulator[plot] then profitAccumulator[plot] = 0 end
