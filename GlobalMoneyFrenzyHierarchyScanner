@@ -111,10 +111,10 @@ local requirements = {
 		RequiredBy = "GlobalMoneyFrenzyClient via UIAudioConfig.CreateStateFeedback",
 	},
 	{
-		Name = "Success",
-		Path = "StarterGui > ShopUI > MainFrame > StateLabels > Success",
+		Name = "Sucess",
+		Path = "StarterGui > ShopUI > MainFrame > StateLabels > Sucess",
 		ClassName = "TextLabel",
-		RequiredBy = "GlobalMoneyFrenzyClient purchase success feedback",
+		RequiredBy = "GlobalMoneyFrenzyClient purchase success feedback; spelling-sensitive exact name",
 	},
 	{
 		Name = "Failed",

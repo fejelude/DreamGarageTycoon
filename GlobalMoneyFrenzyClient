@@ -29,6 +29,9 @@ local PurchaseResult = requireChild(remotes, "PurchaseResult", "RemoteEvent", "R
 
 local shopGui = playerGui:WaitForChild("ShopUI")
 local mainFrame = shopGui:WaitForChild("MainFrame")
+local stateLabels = mainFrame:WaitForChild("StateLabels")
+stateLabels:WaitForChild("Sucess")
+stateLabels:WaitForChild("Failed")
 local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
 local currentState = nil
 local promptBusy = false
