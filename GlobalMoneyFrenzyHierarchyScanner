@@ -1,0 +1,318 @@
+-- Script: ServerScriptService > GlobalMoneyFrenzyHierarchyScanner
+-- Purpose: Non-mutating hierarchy validator for the Global Money Frenzy system.
+-- Notes: This script only scans and warns. It never creates, moves, renames, or edits instances.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local StarterGui = game:GetService("StarterGui")
+
+local PREFIX = "[GlobalMoneyFrenzyHierarchyScanner]"
+
+local serviceRoots = {
+	ReplicatedStorage = ReplicatedStorage,
+	ServerScriptService = ServerScriptService,
+	StarterGui = StarterGui,
+}
+
+local requirements = {
+	-- ReplicatedStorage dependencies used by GlobalMoneyFrenzyConfig, GlobalMoneyFrenzyService, GlobalMoneyFrenzyClient, ReceiptRouter, and TycoonEconomy.
+	{
+		Name = "GlobalMoneyFrenzyConfig",
+		Path = "ReplicatedStorage > GlobalMoneyFrenzyConfig",
+		ClassName = "ModuleScript",
+		RequiredBy = "GlobalMoneyFrenzyService, GlobalMoneyFrenzyClient, ReceiptRouter",
+	},
+	{
+		Name = "GlobalMoneyFrenzyRemotes",
+		Path = "ReplicatedStorage > GlobalMoneyFrenzyRemotes",
+		ClassName = "Folder",
+		RequiredBy = "GlobalMoneyFrenzyService, GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "State",
+		Path = "ReplicatedStorage > GlobalMoneyFrenzyRemotes > State",
+		ClassName = "RemoteEvent",
+		RequiredBy = "GlobalMoneyFrenzyService, GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "GetState",
+		Path = "ReplicatedStorage > GlobalMoneyFrenzyRemotes > GetState",
+		ClassName = "RemoteFunction",
+		RequiredBy = "GlobalMoneyFrenzyService, GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "PurchaseResult",
+		Path = "ReplicatedStorage > GlobalMoneyFrenzyRemotes > PurchaseResult",
+		ClassName = "RemoteEvent",
+		RequiredBy = "GlobalMoneyFrenzyService, GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "ShopFrontendKit",
+		Path = "ReplicatedStorage > ShopFrontendKit",
+		ClassName = "ModuleScript",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "UIAudioConfig",
+		Path = "ReplicatedStorage > UIAudioConfig",
+		ClassName = "ModuleScript",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "UIButtonUtils",
+		Path = "ReplicatedStorage > UIButtonUtils",
+		ClassName = "ModuleScript",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+
+	-- ServerScriptService scripts/modules.
+	{
+		Name = "GlobalMoneyFrenzyService",
+		Path = "ServerScriptService > GlobalMoneyFrenzyService",
+		ClassName = "ModuleScript",
+		RequiredBy = "ReceiptRouter, TycoonEconomy",
+	},
+	{
+		Name = "ReceiptRouter",
+		Path = "ServerScriptService > ReceiptRouter",
+		ClassName = "Script",
+		RequiredBy = "Global Money Frenzy Developer Product receipt routing",
+	},
+	{
+		Name = "TycoonEconomy",
+		Path = "ServerScriptService > TycoonEconomy",
+		ClassName = "Script",
+		RequiredBy = "Global Money Frenzy garage-income multiplier",
+	},
+
+	-- StarterGui > ShopUI hierarchy used by GlobalMoneyFrenzyClient.
+	{
+		Name = "ShopUI",
+		Path = "StarterGui > ShopUI",
+		ClassName = "ScreenGui",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "GlobalMoneyFrenzyClient",
+		Path = "StarterGui > ShopUI > GlobalMoneyFrenzyClient",
+		ClassName = "LocalScript",
+		RequiredBy = "Global Money Frenzy client UI controller",
+	},
+	{
+		Name = "MainFrame",
+		Path = "StarterGui > ShopUI > MainFrame",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "StateLabels",
+		Path = "StarterGui > ShopUI > MainFrame > StateLabels",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient via UIAudioConfig.CreateStateFeedback",
+	},
+	{
+		Name = "Success",
+		Path = "StarterGui > ShopUI > MainFrame > StateLabels > Success",
+		ClassName = "TextLabel",
+		RequiredBy = "GlobalMoneyFrenzyClient purchase success feedback",
+	},
+	{
+		Name = "Failed",
+		Path = "StarterGui > ShopUI > MainFrame > StateLabels > Failed",
+		ClassName = "TextLabel",
+		RequiredBy = "GlobalMoneyFrenzyClient purchase failed/cancelled feedback",
+	},
+	{
+		Name = "ShopUIScrolling",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "ShopElements",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "Featured",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "GlobalMoneyFrenzy",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalMoneyFrenzy",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "ImportantDetails",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalMoneyFrenzy > ImportantDetails",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "CurrentLuck",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalMoneyFrenzy > ImportantDetails > CurrentLuck",
+		ClassName = "TextLabel",
+		RequiredBy = "GlobalMoneyFrenzyClient multiplier display",
+	},
+	{
+		Name = "NextLuck",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalMoneyFrenzy > ImportantDetails > NextLuck",
+		ClassName = "TextLabel",
+		RequiredBy = "GlobalMoneyFrenzyClient next multiplier display",
+	},
+	{
+		Name = "UsernameOfTheBooster",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalMoneyFrenzy > ImportantDetails > UsernameOfTheBooster",
+		ClassName = "TextLabel",
+		RequiredBy = "GlobalMoneyFrenzyClient purchaser username display",
+	},
+	{
+		Name = "ProfileofTheBooster",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ShopElements > Featured > GlobalMoneyFrenzy > ImportantDetails > ProfileofTheBooster",
+		ClassName = "ImageLabel",
+		RequiredBy = "GlobalMoneyFrenzyClient purchaser avatar display",
+	},
+	{
+		Name = "ButtonsForBuying",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "Buttons",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "Featured",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Featured",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient",
+	},
+	{
+		Name = "GlobakMoneyFrenzyV1",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Featured > GlobakMoneyFrenzyV1",
+		ClassName = "ImageButton",
+		RequiredBy = "GlobalMoneyFrenzyClient purchase prompt; spelling-sensitive exact name",
+	},
+	{
+		Name = "DoubleLuckV1",
+		Path = "StarterGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Featured > DoubleLuckV1",
+		ClassName = "ImageButton",
+		RequiredBy = "Sibling reference for GlobakMoneyFrenzyV1 placement",
+	},
+
+	-- StarterGui > BoosterUi hierarchy used by GlobalMoneyFrenzyClient.
+	{
+		Name = "BoosterUi",
+		Path = "StarterGui > BoosterUi",
+		ClassName = "ScreenGui",
+		RequiredBy = "GlobalMoneyFrenzyClient active booster HUD",
+	},
+	{
+		Name = "Elements",
+		Path = "StarterGui > BoosterUi > Elements",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient active booster HUD",
+	},
+	{
+		Name = "Global2xMoneyEnabledV1",
+		Path = "StarterGui > BoosterUi > Elements > Global2xMoneyEnabledV1",
+		ClassName = "ImageButton",
+		RequiredBy = "GlobalMoneyFrenzyClient active booster HUD; spelling-sensitive exact name",
+	},
+	{
+		Name = "TimeLeft",
+		Path = "StarterGui > BoosterUi > Elements > Global2xMoneyEnabledV1 > TimeLeft",
+		ClassName = "TextLabel",
+		RequiredBy = "GlobalMoneyFrenzyClient active booster countdown",
+	},
+	{
+		Name = "Information",
+		Path = "StarterGui > BoosterUi > Elements > Global2xMoneyEnabledV1 > Information",
+		ClassName = "GuiObject",
+		RequiredBy = "GlobalMoneyFrenzyClient hover information panel",
+	},
+}
+
+local function splitPath(path)
+	local names = {}
+	for name in string.gmatch(path, "([^>]+)") do
+		table.insert(names, string.gsub(name, "^%s*(.-)%s*$", "%1"))
+	end
+	return names
+end
+
+local function resolvePath(path)
+	local names = splitPath(path)
+	local root = serviceRoots[names[1]]
+	if not root then
+		return nil, names[1]
+	end
+
+	local current = root
+	for index = 2, #names do
+		local child = current:FindFirstChild(names[index])
+		if not child then
+			return nil, table.concat(names, " > ", 1, index)
+		end
+		current = child
+	end
+
+	return current, nil
+end
+
+local function matchesClass(instance, expectedClassName)
+	if expectedClassName == "GuiObject" then
+		return instance:IsA("GuiObject")
+	end
+	return instance:IsA(expectedClassName)
+end
+
+local function warnRequirement(requirement, reason, foundClassName)
+	local foundText = foundClassName and ("\n  Found Instance Type: " .. foundClassName) or ""
+	warn(string.format(
+		"%s %s\n  Exact Name: %s\n  Expected Path: %s\n  Expected Instance Type: %s%s\n  Required By: %s",
+		PREFIX,
+		reason,
+		requirement.Name,
+		requirement.Path,
+		requirement.ClassName,
+		foundText,
+		requirement.RequiredBy
+	))
+end
+
+local function scan()
+	local missingCount = 0
+	local wrongTypeCount = 0
+
+	for _, requirement in ipairs(requirements) do
+		local instance, missingPath = resolvePath(requirement.Path)
+		if not instance then
+			missingCount += 1
+			warnRequirement(requirement, "Missing required object. Missing at or before: " .. tostring(missingPath))
+		elseif not matchesClass(instance, requirement.ClassName) then
+			wrongTypeCount += 1
+			warnRequirement(requirement, "Required object has the wrong instance type.", instance.ClassName)
+		end
+	end
+
+	if missingCount == 0 and wrongTypeCount == 0 then
+		print(PREFIX .. " Scan complete: all Global Money Frenzy hierarchy requirements are present with valid instance types.")
+	else
+		warn(string.format(
+			"%s Scan complete: %d missing object(s), %d wrong type object(s). Please fix these manually in Roblox Studio; no instances were created or modified.",
+			PREFIX,
+			missingCount,
+			wrongTypeCount
+		))
+	end
+end
+
+scan()
