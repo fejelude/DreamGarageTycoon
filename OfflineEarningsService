@@ -114,15 +114,10 @@ local function getPlayerPlot(player)
 	return tycoons:FindFirstChild(plotName)
 end
 
-local function resolveOfflineCPS(plot)
-	local cps = tonumber(plot:GetAttribute("CurrentCPS"))
-	if cps and cps > 0 then
-		return cps
-	end
-
+local function rebuildBaseCPS(plot)
 	local placedCarsFolder = plot:FindFirstChild("PlacedCars")
 	if not placedCarsFolder then
-		return cps or 0
+		return 0
 	end
 
 	local placedCars = {}
@@ -138,20 +133,32 @@ local function resolveOfflineCPS(plot)
 		end
 	end
 
-	if #placedCars == 0 then
-		return cps or 0
-	end
-
 	local rebuiltCPS = 0
 	for _, stats in ipairs(placedCars) do
 		rebuiltCPS += CarStats.CalculateEffectiveBaseCPS(stats, bestPlacedBaseCPS)
 	end
 
-	if rebuiltCPS > 0 then
-		plot:SetAttribute("CurrentCPS", rebuiltCPS)
+	return rebuiltCPS
+end
+
+local function resolveOfflineIncomeRate(player, plot)
+	local savedRate = tonumber(player:GetAttribute("OfflineEarningsRate"))
+	if savedRate and savedRate > 0 then
+		return savedRate
 	end
 
-	return rebuiltCPS
+	-- CurrentCPS is maintained by TycoonEconomy after normal earnings
+	-- multipliers are already applied. Use it directly; multiplying it again
+	-- by ActualEarningsMultiplier is what caused inflated offline payouts.
+	local currentRate = tonumber(plot:GetAttribute("CurrentCPS"))
+	if currentRate and currentRate > 0 then
+		return currentRate
+	end
+
+	-- Legacy fallback for old saves without a stored leave-time rate. Rebuild
+	-- base CPS from placed cars, then apply the current normal multiplier once.
+	local multiplier = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
+	return rebuildBaseCPS(plot) * multiplier
 end
 
 local function computeBaseOffline(player)
@@ -163,19 +170,12 @@ local function computeBaseOffline(player)
 		return false, 0
 	end
 
-	local cps = resolveOfflineCPS(plot)
+	local normalRate = resolveOfflineIncomeRate(player, plot)
 
 	local nowTimestamp = os.time()
 	local lastOfflineAt = tonumber(player:GetAttribute("LastOfflineAt")) or 0
 
 	if lastOfflineAt <= 0 or nowTimestamp <= lastOfflineAt then
-		return true, 0
-	end
-
-	local multiplier = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
-	local normalRate = cps * multiplier
-
-	if cps <= 0 then
 		return true, 0
 	end
 

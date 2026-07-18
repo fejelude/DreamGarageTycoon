@@ -1792,12 +1792,19 @@ save = function(player, isClosing, force)
 		local layout = {}
 		local plotName = player:GetAttribute("OccupiedPlot")
 		local currentPendingInTycoon = 0
+		local currentGarageIncomeRate = 0
 
 		if plotName and TycoonFolder:FindFirstChild(plotName) then
 			local plot = TycoonFolder[plotName]
 			if plot:FindFirstChild("PendingEarnings") then
 				currentPendingInTycoon = plot.PendingEarnings.Value
 			end
+
+			-- Snapshot the exact income rate the garage was producing while the
+			-- player was online. TycoonEconomy writes CurrentCPS after all normal
+			-- earnings multipliers, so OfflineEarningsService must use this saved
+			-- rate directly instead of rebuilding and multiplying again on next join.
+			currentGarageIncomeRate = math.max(0, tonumber(plot:GetAttribute("CurrentCPS")) or 0)
 			local function savePadsInFolder(padsFolder)
 				if not padsFolder then return end
 				for _, padObject in pairs(padsFolder:GetChildren()) do
@@ -1915,6 +1922,7 @@ save = function(player, isClosing, force)
 					oldData.Inventory = finalInventory
 					oldData.Layout = finalLayout
 					oldData.PendingEarnings = finalPending
+					oldData.OfflineEarningsRate = currentGarageIncomeRate
 
 					if currentShopDataAvailable then oldData.ShopPurchases = currentShopData end
 					if currentUncommonShopDataAvailable then oldData.UncommonShopPurchases = currentUncommonShopData end
@@ -2140,7 +2148,9 @@ local function InitializePlayer(player)
 	data.DailyRewards = sanitizeDailyRewardsData(data.DailyRewards)
 	data.FreeRewardsClaimed = data.FreeRewardsClaimed == true
 	data.LastOfflineAt = math.max(0, math.floor(tonumber(data.LastOfflineAt) or 0))
+	data.OfflineEarningsRate = math.max(0, tonumber(data.OfflineEarningsRate) or 0)
 	player:SetAttribute("LastOfflineAt", data.LastOfflineAt)
+	player:SetAttribute("OfflineEarningsRate", data.OfflineEarningsRate)
 
 	-- Migration: older saves could carry CarAnimationEnabled=false as a historical default
 	-- rather than an explicit player choice. On first settings schema upgrade, normalize
