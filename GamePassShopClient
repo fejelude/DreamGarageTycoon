@@ -30,11 +30,11 @@ local shopGui = requireChild(playerGui, "ShopUI", "ScreenGui", "PlayerGui > Shop
 local mainFrame = requireChild(shopGui, "MainFrame", "GuiObject", "PlayerGui > ShopUI > MainFrame")
 local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
 
-local shopScrolling = requireChild(mainFrame, "ShopUIScrolling", "GuiObject", "PlayerGui > ShopUI > MainFrame > ShopUIScrolling")
-local buttonsForBuying = requireChild(shopScrolling, "ButtonsForBuying", "GuiObject", "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying")
-local buttonsRoot = requireChild(buttonsForBuying, "Buttons", "GuiObject", "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons")
-local gamePassButtons = requireChild(buttonsRoot, "Gamepass", "GuiObject", "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Gamepass")
-local ownedStuff = requireChild(buttonsRoot, "OwnedStuff", "GuiObject", "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > OwnedStuff")
+local shopScrolling = requireChild(mainFrame, "ShopUIScrolling", nil, "PlayerGui > ShopUI > MainFrame > ShopUIScrolling")
+local buttonsForBuying = requireChild(shopScrolling, "ButtonsForBuying", nil, "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying")
+local buttonsRoot = requireChild(buttonsForBuying, "Buttons", nil, "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons")
+local gamePassButtons = requireChild(buttonsRoot, "Gamepass", nil, "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Gamepass")
+local ownedStuff = requireChild(buttonsRoot, "OwnedStuff", nil, "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > OwnedStuff")
 
 local promptBusy = false
 local promptAttemptId = 0
