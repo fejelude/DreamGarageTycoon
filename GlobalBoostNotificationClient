@@ -1,0 +1,209 @@
+-- LocalScript: StarterPlayerScripts > GlobalBoostNotificationClient
+-- Purpose: Displays cross-server purchase notifications for global boost Developer Products.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+
+local player = Players.LocalPlayer
+
+local DISPLAY_TIME = 6
+local TWEEN_IN = TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local TWEEN_OUT = TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+local BOOST_SOURCES = {
+	{
+		State = ReplicatedStorage:WaitForChild("GlobalLuckRemotes"):WaitForChild("State"),
+		GetState = ReplicatedStorage:WaitForChild("GlobalLuckRemotes"):WaitForChild("GetState"),
+	},
+	{
+		State = ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyRemotes"):WaitForChild("State"),
+		GetState = ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyRemotes"):WaitForChild("GetState"),
+	},
+}
+
+local notificationQueue = {}
+local isDisplaying = false
+local seenNotifications = {}
+local originalTransparency = setmetatable({}, { __mode = "k" })
+
+local function getUI()
+	local playerGui = player:FindFirstChild("PlayerGui")
+	if not playerGui then return nil end
+
+	local notificationsGui = playerGui:FindFirstChild("Notifications")
+	if not notificationsGui then return nil end
+
+	notificationsGui.DisplayOrder = 999999
+	notificationsGui.Enabled = true
+
+	local frame = notificationsGui:FindFirstChild("GlobalBoostNotificationFrame")
+	local label = frame and frame:FindFirstChild("GlobalBoostNotification")
+
+	if frame then
+		frame:SetAttribute("ExternallyManaged", true)
+	end
+
+	return notificationsGui, frame, label
+end
+
+local function bringNotificationToFront(frame, label)
+	if not frame or not label then return end
+	local topZIndex = 10000
+	if frame:IsA("GuiObject") then
+		frame.ZIndex = topZIndex
+	end
+	for _, inst in ipairs(frame:GetDescendants()) do
+		if inst:IsA("GuiObject") then
+			inst.ZIndex = topZIndex + 1
+		end
+	end
+end
+
+local function rememberTransparency(inst, property)
+	originalTransparency[inst] = originalTransparency[inst] or {}
+	if originalTransparency[inst][property] == nil then
+		originalTransparency[inst][property] = inst[property]
+	end
+end
+
+local function getOriginalTransparency(inst, property)
+	local values = originalTransparency[inst]
+	return values and values[property] or 0
+end
+
+local function setGroupTransparency(frame, label, value)
+	value = math.clamp(value, 0, 1)
+	if frame:IsA("GuiObject") then
+		rememberTransparency(frame, "BackgroundTransparency")
+		frame.BackgroundTransparency = value
+	end
+	if label:IsA("TextLabel") or label:IsA("TextButton") then
+		rememberTransparency(label, "TextTransparency")
+		label.TextTransparency = value
+	end
+	for _, inst in ipairs(frame:GetDescendants()) do
+		if inst:IsA("TextLabel") or inst:IsA("TextButton") then
+			rememberTransparency(inst, "TextTransparency")
+			inst.TextTransparency = value
+		elseif inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+			rememberTransparency(inst, "ImageTransparency")
+			inst.ImageTransparency = value
+		elseif inst:IsA("UIStroke") then
+			rememberTransparency(inst, "Transparency")
+			inst.Transparency = value
+		end
+	end
+end
+
+local function playBoostSound()
+	UIAudioConfig.PlayNamed("GlobalBoostPurchase")
+end
+
+local function processQueue()
+	if isDisplaying or #notificationQueue == 0 then return end
+
+	local _gui, frame, label = getUI()
+	if not (frame and label) then
+		task.delay(1, processQueue)
+		return
+	end
+
+	isDisplaying = true
+	local message = table.remove(notificationQueue, 1)
+	local originalPosition = frame.Position
+	local hiddenPosition = originalPosition - UDim2.fromOffset(0, 24)
+
+	bringNotificationToFront(frame, label)
+	label.Text = message
+	label.Visible = true
+	frame.Visible = true
+	frame.Position = hiddenPosition
+	setGroupTransparency(frame, label, 1)
+	playBoostSound()
+
+	TweenService:Create(frame, TWEEN_IN, { Position = originalPosition }):Play()
+	TweenService:Create(label, TWEEN_IN, { TextTransparency = getOriginalTransparency(label, "TextTransparency") }):Play()
+	pcall(function()
+		TweenService:Create(frame, TWEEN_IN, { BackgroundTransparency = getOriginalTransparency(frame, "BackgroundTransparency") }):Play()
+	end)
+	for _, inst in ipairs(frame:GetDescendants()) do
+		if inst:IsA("UIStroke") then
+			TweenService:Create(inst, TWEEN_IN, { Transparency = getOriginalTransparency(inst, "Transparency") }):Play()
+		elseif inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+			TweenService:Create(inst, TWEEN_IN, { ImageTransparency = getOriginalTransparency(inst, "ImageTransparency") }):Play()
+		end
+	end
+
+	task.wait(DISPLAY_TIME)
+
+	local outTween = TweenService:Create(frame, TWEEN_OUT, { Position = hiddenPosition })
+	outTween:Play()
+	TweenService:Create(label, TWEEN_OUT, { TextTransparency = 1 }):Play()
+	for _, inst in ipairs(frame:GetDescendants()) do
+		if inst:IsA("UIStroke") then
+			TweenService:Create(inst, TWEEN_OUT, { Transparency = 1 }):Play()
+		elseif inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+			TweenService:Create(inst, TWEEN_OUT, { ImageTransparency = 1 }):Play()
+		end
+	end
+	outTween.Completed:Wait()
+
+	if #notificationQueue == 0 then
+		frame.Visible = false
+		frame.Position = originalPosition
+	end
+
+	isDisplaying = false
+	processQueue()
+end
+
+local function showNotification(message)
+	if not message or message == "" then return end
+	table.insert(notificationQueue, message)
+	task.spawn(processQueue)
+end
+
+local function handleState(remote, state)
+	if type(state) ~= "table" then return end
+	local notification = state.BoostPurchaseNotification
+	if type(notification) ~= "table" then return end
+
+
+	local id = tostring(notification.Id or "")
+	if id == "" or seenNotifications[id] then return end
+	seenNotifications[id] = true
+
+	local username = tostring(notification.Username or "")
+	local boostName = tostring(notification.BoostName or "")
+	if username == "" or boostName == "" then return end
+
+	showNotification(string.format("@%s has bought %s", username, boostName))
+end
+
+local function rememberActiveNotification(state)
+	if type(state) ~= "table" then return end
+	local notification = state.BoostPurchaseNotification
+	if type(notification) ~= "table" then return end
+	local id = tostring(notification.Id or "")
+	if id ~= "" then
+		seenNotifications[id] = true
+	end
+end
+
+for _, source in ipairs(BOOST_SOURCES) do
+	task.spawn(function()
+		local ok, state = pcall(function()
+			return source.GetState:InvokeServer()
+		end)
+		if ok then
+			rememberActiveNotification(state)
+		end
+	end)
+
+	source.State.OnClientEvent:Connect(function(state)
+		handleState(source.State, state)
+	end)
+end
