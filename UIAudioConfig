@@ -172,6 +172,7 @@ local NAMED_SFX = {
 	AutoRestock = { Id = "rbxassetid://134952684776633", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 2.0, Key = "Restock" },
 	Restock = { Id = "rbxassetid://134952684776633", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 2.0, Key = "Restock" },
 	GlobalRestock = { Id = "rbxassetid://81822437427070", Volume = 1.0, Pitch = 1.0, Variance = 0, Dedupe = 2.0, Key = "Restock" },
+	GlobalBoostPurchase = { Id = "rbxassetid://7469511489", Volume = 0.85, Pitch = 1.0, Variance = 0.02, Dedupe = 0.35, Key = "GlobalBoostPurchase" },
 	RankQuestComplete = { Id = RANK_QUEST_COMPLETE_SFX_ID, Volume = UIAudioConfig.RANK_QUEST_COMPLETE_VOLUME, Pitch = 1.0, Variance = 0.03, Dedupe = 0.1 },
 }
 

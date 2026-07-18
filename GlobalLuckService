@@ -40,16 +40,24 @@ local function sanitize(raw)
 	if (tonumber(s.ExpiresAt) or 0) <= now() then return inactiveState() end
 	return { Active = true, Multiplier = math.max(Config.BaseMultiplier, tonumber(s.Multiplier) or 2), ActivatedAt = tonumber(s.ActivatedAt) or now(), ExpiresAt = tonumber(s.ExpiresAt), PurchaserUserId = tonumber(s.PurchaserUserId) or 0, PurchaserUsername = tostring(s.PurchaserUsername or ""), ReceiptKey = tostring(s.ReceiptKey or "") }
 end
-local function publicState()
-	local s = sanitize(currentState)
-	return { Active = s.Active, Multiplier = s.Multiplier, CurrentLuck = Config.FormatMultiplier(s.Multiplier), NextLuck = Config.FormatMultiplier(Config.GetNextMultiplier(s.Multiplier)), ActivatedAt = s.ActivatedAt, ExpiresAt = s.ExpiresAt, PurchaserUserId = s.PurchaserUserId, PurchaserUsername = s.PurchaserUsername, ServerTime = now() }
+local function buildPurchaseNotification(s)
+	if not s.Active then return nil end
+	return {
+		Id = "GlobalLuck_" .. tostring(s.PurchaserUserId) .. "_" .. tostring(s.ActivatedAt),
+		Username = s.PurchaserUsername,
+		BoostName = "Global " .. Config.FormatMultiplier(s.Multiplier) .. " Luck",
+	}
 end
-local function setLocalState(newState, shouldPublish)
+local function publicState(notification)
+	local s = sanitize(currentState)
+	return { Active = s.Active, Multiplier = s.Multiplier, CurrentLuck = Config.FormatMultiplier(s.Multiplier), NextLuck = Config.FormatMultiplier(Config.GetNextMultiplier(s.Multiplier)), ActivatedAt = s.ActivatedAt, ExpiresAt = s.ExpiresAt, PurchaserUserId = s.PurchaserUserId, PurchaserUsername = s.PurchaserUsername, ServerTime = now(), BoostPurchaseNotification = notification }
+end
+local function setLocalState(newState, shouldPublish, notification)
 	local oldActive = currentState and currentState.Active
 	local oldExpires = currentState and currentState.ExpiresAt
 	currentState = sanitize(newState)
 	if oldActive ~= currentState.Active or oldExpires ~= currentState.ExpiresAt then generation += 1 end
-	StateEvent:FireAllClients(publicState())
+	StateEvent:FireAllClients(publicState(notification))
 	expireToken += 1
 	local token = expireToken
 	if currentState.Active then
@@ -57,7 +65,7 @@ local function setLocalState(newState, shouldPublish)
 			if token == expireToken then Service.RefreshFromStore(true) end
 		end)
 	end
-	if shouldPublish then pcall(function() MessagingService:PublishAsync(Config.TopicName, publicState()) end) end
+	if shouldPublish then pcall(function() MessagingService:PublishAsync(Config.TopicName, publicState(notification)) end) end
 end
 function Service.RefreshFromStore(shouldPublish)
 	local ok, data = pcall(function() return stateStore:GetAsync(Config.StateKey) end)
@@ -92,7 +100,7 @@ function Service.ProcessReceipt(receiptInfo)
 		end)
 	end)
 	if not ok then return false, "Global Luck save failed", false end
-	setLocalState(activatedState, true)
+	setLocalState(activatedState, true, activated and buildPurchaseNotification(activatedState) or nil)
 	if not activated then
 		pcall(function() receiptStore:SetAsync(receiptKey, true) end)
 		return true, "Global Luck is already active", true
@@ -103,6 +111,6 @@ end
 
 GetStateFunction.OnServerInvoke = function() return Service.GetState() end
 Players.PlayerAdded:Connect(function(player) StateEvent:FireClient(player, Service.GetState()) end)
-pcall(function() MessagingService:SubscribeAsync(Config.TopicName, function(message) if type(message.Data) == "table" then setLocalState(message.Data, false) end end) end)
+pcall(function() MessagingService:SubscribeAsync(Config.TopicName, function(message) if type(message.Data) == "table" then setLocalState(message.Data, false, message.Data.BoostPurchaseNotification) end end) end)
 Service.RefreshFromStore(false)
 return Service

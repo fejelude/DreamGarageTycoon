@@ -64,7 +64,16 @@ local function sanitize(raw)
 	}
 end
 
-local function publicState()
+local function buildPurchaseNotification(s)
+	if not s.Active then return nil end
+	return {
+		Id = "GlobalMoneyFrenzy_" .. tostring(s.PurchaserUserId) .. "_" .. tostring(s.ActivatedAt),
+		Username = s.PurchaserUsername,
+		BoostName = "Global " .. Config.FormatMultiplier(Config.ActiveMultiplier) .. " Money Frenzy",
+	}
+end
+
+local function publicState(notification)
 	local s = sanitize(currentState)
 	return {
 		Active = s.Active,
@@ -76,10 +85,11 @@ local function publicState()
 		PurchaserUserId = s.PurchaserUserId,
 		PurchaserUsername = s.PurchaserUsername,
 		ServerTime = now(),
+		BoostPurchaseNotification = notification,
 	}
 end
 
-local function setLocalState(newState, shouldPublish)
+local function setLocalState(newState, shouldPublish, notification)
 	local oldActive = currentState and currentState.Active
 	local oldExpires = currentState and currentState.ExpiresAt
 	currentState = sanitize(newState)
@@ -88,7 +98,7 @@ local function setLocalState(newState, shouldPublish)
 		generation += 1
 	end
 
-	StateEvent:FireAllClients(publicState())
+	StateEvent:FireAllClients(publicState(notification))
 
 	expireToken += 1
 	local token = expireToken
@@ -102,7 +112,7 @@ local function setLocalState(newState, shouldPublish)
 
 	if shouldPublish then
 		pcall(function()
-			MessagingService:PublishAsync(Config.TopicName, publicState())
+			MessagingService:PublishAsync(Config.TopicName, publicState(notification))
 		end)
 	end
 end
@@ -189,7 +199,7 @@ function Service.ProcessReceipt(receiptInfo)
 		return false, "Money Frenzy save failed", false
 	end
 
-	setLocalState(activatedState, true)
+	setLocalState(activatedState, true, activated and buildPurchaseNotification(activatedState) or nil)
 	pcall(function()
 		receiptStore:SetAsync(receiptKey, true)
 	end)
@@ -212,7 +222,7 @@ end)
 pcall(function()
 	MessagingService:SubscribeAsync(Config.TopicName, function(message)
 		if type(message.Data) == "table" then
-			setLocalState(message.Data, false)
+			setLocalState(message.Data, false, message.Data.BoostPurchaseNotification)
 		end
 	end)
 end)
