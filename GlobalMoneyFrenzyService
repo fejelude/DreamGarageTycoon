@@ -6,6 +6,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyConfig"))
 
 local REQUIRED_WAIT_SECONDS = 15
+local PUBLISH_RETRY_DELAYS = { 0, 1, 3, 7 }
+local SUBSCRIBE_RETRY_DELAYS = { 0, 2, 5, 10, 20 }
 
 local function requireChild(parent, childName, className, fullPath)
 	local child = parent:WaitForChild(childName, REQUIRED_WAIT_SECONDS)
@@ -89,6 +91,26 @@ local function publicState(notification)
 	}
 end
 
+local function publishStateWithRetries(payload)
+	task.spawn(function()
+		for attempt, delaySeconds in ipairs(PUBLISH_RETRY_DELAYS) do
+			if delaySeconds > 0 then
+				task.wait(delaySeconds)
+			end
+
+			local ok, err = pcall(function()
+				MessagingService:PublishAsync(Config.TopicName, payload)
+			end)
+
+			if ok then
+				return
+			end
+
+			warn(string.format("[%s] Failed to publish global boost state (attempt %d/%d): %s", script.Name, attempt, #PUBLISH_RETRY_DELAYS, tostring(err)))
+		end
+	end)
+end
+
 local function setLocalState(newState, shouldPublish, notification)
 	local oldActive = currentState and currentState.Active
 	local oldExpires = currentState and currentState.ExpiresAt
@@ -111,9 +133,7 @@ local function setLocalState(newState, shouldPublish, notification)
 	end
 
 	if shouldPublish then
-		pcall(function()
-			MessagingService:PublishAsync(Config.TopicName, publicState(notification))
-		end)
+		publishStateWithRetries(publicState(notification))
 	end
 end
 
@@ -219,12 +239,26 @@ Players.PlayerAdded:Connect(function(player)
 	StateEvent:FireClient(player, Service.GetState())
 end)
 
-pcall(function()
-	MessagingService:SubscribeAsync(Config.TopicName, function(message)
-		if type(message.Data) == "table" then
-			setLocalState(message.Data, false, message.Data.BoostPurchaseNotification)
+task.spawn(function()
+	for attempt, delaySeconds in ipairs(SUBSCRIBE_RETRY_DELAYS) do
+		if delaySeconds > 0 then
+			task.wait(delaySeconds)
 		end
-	end)
+
+		local ok, err = pcall(function()
+			MessagingService:SubscribeAsync(Config.TopicName, function(message)
+				if type(message.Data) == "table" then
+					setLocalState(message.Data, false, message.Data.BoostPurchaseNotification)
+				end
+			end)
+		end)
+
+		if ok then
+			return
+		end
+
+		warn(string.format("[%s] Failed to subscribe for global boost state (attempt %d/%d): %s", script.Name, attempt, #SUBSCRIBE_RETRY_DELAYS, tostring(err)))
+	end
 end)
 
 Service.RefreshFromStore(false)
