@@ -1239,6 +1239,64 @@ end
 -- ----------------------------------------------------------------------------
 -- 🔄 ADMIN API (BindableFunction)
 -- ----------------------------------------------------------------------------
+local function grantWalletCashProduct(player, purchaseId, productId, walletCash)
+	if not save then
+		return false, "Save system unavailable"
+	end
+
+	purchaseId = tostring(purchaseId or "")
+	productId = tonumber(productId)
+	walletCash = math.max(0, math.floor(tonumber(walletCash) or 0))
+
+	if purchaseId == "" then
+		return false, "Missing purchase id"
+	end
+	if not productId or productId <= 0 or walletCash <= 0 then
+		return false, "Invalid Cash Pack configuration"
+	end
+
+	local session = SessionData[player]
+	if not session or not session.DataLoaded then
+		return false, "Player data not loaded"
+	end
+
+	session.WalletCashProductGrantInProgress = session.WalletCashProductGrantInProgress or {}
+	if session.WalletCashProductGrantInProgress[purchaseId] then
+		return false, "Cash Pack grant already running"
+	end
+	session.WalletCashProductGrantInProgress[purchaseId] = true
+
+	local function finish(ok, message)
+		session.WalletCashProductGrantInProgress[purchaseId] = nil
+		return ok, message
+	end
+
+	session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+	if not session.RobuxProductReceipts[purchaseId] then
+		local wallet = getWalletValue(player)
+		if not wallet then
+			return finish(false, "Wallet not loaded")
+		end
+
+		wallet.Value += walletCash
+		session.RobuxProductReceipts[purchaseId] = {
+			ProductId = productId,
+			GrantedAt = os.time(),
+			Source = "CashPack",
+		}
+		markDirty(player)
+	end
+
+	local saveOk = save(player, false, true)
+	if not saveOk then
+		return finish(false, "Cash Pack save failed")
+	end
+
+	return finish(true)
+end
+
+-- 🔄 ADMIN API (BindableFunction)
+-- ----------------------------------------------------------------------------
 local AdminAPI = getRequiredChild(ServerStorage, "TycoonAdminAPI", "BindableFunction", "ServerStorage > TycoonAdminAPI", REQUIRED_WAIT_SECONDS)
 
 AdminAPI.OnInvoke = function(action, player, ...)
@@ -1266,6 +1324,10 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	elseif action == "ClaimFreeReward" and player then
 		local carName, walletCash = ...
 		return claimFreeReward(player, carName, walletCash)
+
+	elseif action == "GrantWalletCashProduct" and player then
+		local purchaseId, productId, walletCash = ...
+		return grantWalletCashProduct(player, purchaseId, productId, walletCash)
 
 	elseif action == "GrantStarterPack" and player then
 		if not save then
@@ -2062,6 +2124,7 @@ local function InitializePlayer(player)
 		StarterPackGrantInProgress = false,
 		StarterPackSaveConfirmed = false,
 		StarterPackClearRequested = false,
+		WalletCashProductGrantInProgress = {},
 	}
 
 	-- Public ready flag used by DailyRewardsService so rewards cannot be claimed

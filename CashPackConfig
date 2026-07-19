@@ -1,0 +1,26 @@
+-- Purpose: Shared configuration for repeatable ShopUI Cash Pack developer products.
+-- Location: ReplicatedStorage > CashPackConfig
+-- Notes: Rewards are Wallet cash only. Server receipt processing is authoritative.
+
+local CashPackConfig = {}
+
+CashPackConfig.Packs = {
+	Pack1 = { ProductId = 3610477467, WalletReward = 50000, RobuxPrice = 19, ButtonName = "Pack1" },
+	Pack2 = { ProductId = 3610507493, WalletReward = 185000, RobuxPrice = 67, ButtonName = "Pack2" },
+	Pack3 = { ProductId = 3610628303, WalletReward = 500000, RobuxPrice = 109, ButtonName = "Pack3" },
+	Pack4 = { ProductId = 3610628405, WalletReward = 1500000, RobuxPrice = 249, ButtonName = "Pack4" },
+	Pack5 = { ProductId = 3610628673, WalletReward = 10000000, RobuxPrice = 1099, ButtonName = "Pack5" },
+	Pack6 = { ProductId = 3610628796, WalletReward = 100000000, RobuxPrice = 2699, ButtonName = "Pack6" },
+}
+
+local packByProductId = {}
+for packName, packInfo in pairs(CashPackConfig.Packs) do
+	packInfo.PackName = packName
+	packByProductId[packInfo.ProductId] = packInfo
+end
+
+function CashPackConfig.GetPackByProductId(productId)
+	return packByProductId[tonumber(productId)]
+end
+
+return CashPackConfig
