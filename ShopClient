@@ -37,6 +37,8 @@ local isOpen = false
 local hiddenGuis = {}
 local savedFOV = 70
 
+local BALANCE_INDICATOR_GUI_NAME = "Balance Indicator"
+
 if shopScreenGui then
 	shopScreenGui.ResetOnSpawn = false
 end
@@ -72,7 +74,10 @@ local function hideOtherGuis()
 	hiddenGuis = {}
 
 	for _, gui in ipairs(playerGui:GetDescendants()) do
-		if gui:IsA("ScreenGui") and gui ~= shopScreenGui and gui.Enabled == true then
+		if gui:IsA("ScreenGui")
+			and gui ~= shopScreenGui
+			and gui.Name ~= BALANCE_INDICATOR_GUI_NAME
+			and gui.Enabled == true then
 			gui.Enabled = false
 			table.insert(hiddenGuis, gui)
 		end
