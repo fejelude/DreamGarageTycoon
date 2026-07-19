@@ -1,0 +1,130 @@
+-- Purpose: Client purchase controller for repeatable Wallet Cash Pack developer products.
+-- Location: StarterGui > ShopUI > CashPackShopClient
+-- Notes: Does not grant currency. Server receipt processing is authoritative.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local REQUIRED_WAIT_SECONDS = 15
+local CASH_PACK_RECEIPT_SERIAL_ATTRIBUTE = "CashPackReceiptSerial"
+local CASH_PACK_LAST_AMOUNT_ATTRIBUTE = "CashPackLastWalletReward"
+
+local function requireChild(parent, childName, className, fullPath)
+	local child = parent:WaitForChild(childName, REQUIRED_WAIT_SECONDS)
+	if not child then
+		error("[CashPackShopClient] Missing required instance: " .. fullPath .. " (" .. tostring(className or "Instance") .. ")", 0)
+	end
+	if className and not child:IsA(className) then
+		error("[CashPackShopClient] " .. fullPath .. " must be a " .. className .. ", got " .. child.ClassName, 0)
+	end
+	return child
+end
+
+local CashPackConfig = require(requireChild(ReplicatedStorage, "CashPackConfig", "ModuleScript", "ReplicatedStorage > CashPackConfig"))
+local Kit = require(requireChild(ReplicatedStorage, "ShopFrontendKit", "ModuleScript", "ReplicatedStorage > ShopFrontendKit"))
+local UIAudioConfig = require(requireChild(ReplicatedStorage, "UIAudioConfig", "ModuleScript", "ReplicatedStorage > UIAudioConfig"))
+
+local shopGui = requireChild(playerGui, "ShopUI", "ScreenGui", "PlayerGui > ShopUI")
+local mainFrame = requireChild(shopGui, "MainFrame", "GuiObject", "PlayerGui > ShopUI > MainFrame")
+local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
+
+local shopScrolling = requireChild(mainFrame, "ShopUIScrolling", nil, "PlayerGui > ShopUI > MainFrame > ShopUIScrolling")
+local buttonsForBuying = requireChild(shopScrolling, "ButtonsForBuying", nil, "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying")
+local buttonsRoot = requireChild(buttonsForBuying, "Buttons", nil, "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons")
+local cashButtons = requireChild(buttonsRoot, "Cash", nil, "PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Cash")
+
+local promptBusy = false
+local promptAttemptId = 0
+local pendingProductId = nil
+local buttonByProductId = {}
+
+local function setButtonInputLocked(button, locked)
+	if not button then return end
+	button.Active = not locked
+	button.Selectable = not locked
+	pcall(function() button.Interactable = not locked end)
+end
+
+local function renderAll()
+	for productId, button in pairs(buttonByProductId) do
+		setButtonInputLocked(button, promptBusy and pendingProductId == productId)
+	end
+end
+
+local function finishPrompt()
+	promptAttemptId += 1
+	UIAudioConfig.HidePurchaseLoading()
+	promptBusy = false
+	pendingProductId = nil
+	renderAll()
+end
+
+local function beginPurchase(packInfo)
+	if promptBusy then return end
+	if not packInfo or not packInfo.ProductId or packInfo.ProductId <= 0 then
+		shopFeedback:Failed("Cash Pack unavailable")
+		Kit.Sound:Play("BuyFail")
+		return
+	end
+
+	promptBusy = true
+	pendingProductId = packInfo.ProductId
+	promptAttemptId += 1
+	local thisAttempt = promptAttemptId
+	renderAll()
+	UIAudioConfig.PlayRobux()
+	UIAudioConfig.ShowPurchaseLoading()
+
+	local promptOk, promptErr = pcall(function()
+		MarketplaceService:PromptProductPurchase(player, packInfo.ProductId)
+	end)
+
+	if not promptOk then
+		finishPrompt()
+		shopFeedback:Failed("Purchase Failed")
+		Kit.Sound:Play("BuyFail")
+		warn("[CashPackShopClient] PromptProductPurchase failed:", promptErr)
+		return
+	end
+
+	task.delay(30, function()
+		if promptAttemptId == thisAttempt and promptBusy then
+			finishPrompt()
+		end
+	end)
+end
+
+for _, packInfo in pairs(CashPackConfig.Packs) do
+	local button = requireChild(
+		cashButtons,
+		packInfo.ButtonName,
+		"ImageButton",
+		"PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Cash > " .. packInfo.ButtonName
+	)
+	buttonByProductId[packInfo.ProductId] = button
+	Kit.Tween:SetupButton(button, function()
+		beginPurchase(packInfo)
+	end)
+end
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, _wasPurchased)
+	if userId ~= player.UserId or productId ~= pendingProductId then return end
+	finishPrompt()
+	-- Cancellation is a normal user choice; confirmed success is shown only after
+	-- the server receipt router grants Wallet cash and updates player attributes.
+end)
+
+player:GetAttributeChangedSignal(CASH_PACK_RECEIPT_SERIAL_ATTRIBUTE):Connect(function()
+	local amount = math.max(0, math.floor(tonumber(player:GetAttribute(CASH_PACK_LAST_AMOUNT_ATTRIBUTE)) or 0))
+	finishPrompt()
+	if amount > 0 then
+		shopFeedback:Success("Cash Pack Purchased")
+		Kit.Sound:Play("BuySuccess")
+	end
+end)
+
+renderAll()

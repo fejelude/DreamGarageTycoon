@@ -30,6 +30,7 @@ local STARTER_PACK_PRODUCT_ID = 3599481243
 local STARTER_PACK_CAR_NAME = "Senator"
 local GlobalLuckConfig = require(ReplicatedStorage:WaitForChild("GlobalLuckConfig"))
 local GlobalMoneyFrenzyConfig = require(ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyConfig"))
+local CashPackConfig = require(ReplicatedStorage:WaitForChild("CashPackConfig"))
 
 local function requireServerModule(moduleName)
 	local module = script.Parent:WaitForChild(moduleName, 15)
@@ -302,6 +303,35 @@ local function giveCarTool(targetPlayer, carName, receiptInfo, isGift, buyerPlay
 	return true, giveMessage == "Already granted" and "Already granted" or nil
 end
 
+local function grantCashPackWalletReward(player, receiptInfo, packInfo)
+	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not TycoonAdminAPI then
+		warn("⚠️ Cash Pack grant failed: TycoonAdminAPI missing!")
+		return false
+	end
+
+	local invokeOk, grantOk, grantMsg = safeInvoke(
+		TycoonAdminAPI,
+		20,
+		"GrantWalletCashProduct",
+		player,
+		receiptInfo.PurchaseId,
+		receiptInfo.ProductId,
+		packInfo.WalletReward
+	)
+
+	if not invokeOk or grantOk ~= true then
+		warn("⚠️ Cash Pack grant failed for " .. player.Name .. ": " .. tostring(grantMsg or grantOk))
+		return false
+	end
+
+	local serial = (tonumber(player:GetAttribute("CashPackReceiptSerial")) or 0) + 1
+	player:SetAttribute("CashPackLastProductId", receiptInfo.ProductId)
+	player:SetAttribute("CashPackLastWalletReward", packInfo.WalletReward)
+	player:SetAttribute("CashPackReceiptSerial", serial)
+	return true
+end
+
 local function grantStarterPackRewards(player, purchaseId)
 	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 	if not TycoonAdminAPI then
@@ -544,13 +574,23 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	end
 
 	local purchaseSuccess = false
+	local cashPackInfo = CashPackConfig.GetPackByProductId(pid)
 	local bankResetFeedback = nil
 	local offlinePremiumClientResult = nil
 	local adRewardClientResult = nil
 	local carPostCommit = nil
 
 	-- ─── REWARDED VIDEO AD ────────────────────────────────────────────────────
-	if AdRewardsConfig.IsConfigured() and pid == AdRewardsConfig.DEV_PRODUCT_ID then
+	if cashPackInfo then
+		-- Cash Packs are repeatable developer products that grant Wallet cash only.
+		-- They are never giftable and never modify HiddenStats.Cash/Bank.
+		isGift = false
+		targetPlayer = buyerPlayer
+		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+
+		purchaseSuccess = grantCashPackWalletReward(buyerPlayer, receiptInfo, cashPackInfo)
+
+	elseif AdRewardsConfig.IsConfigured() and pid == AdRewardsConfig.DEV_PRODUCT_ID then
 		-- Rewarded ads are never giftable. Roblox requires the disclosed ad reward
 		-- to be a non-random developer product, so this grants fixed Wallet Cash.
 		isGift = false
