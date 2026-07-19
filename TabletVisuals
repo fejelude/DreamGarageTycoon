@@ -1,11 +1,333 @@
--- Purpose: Legacy placeholder for the offline earnings tablet visuals script.
--- Runs on: Client
---
--- Offline earnings RemoteFunction callbacks are owned exclusively by
--- ServerScriptService > OfflineEarningsService. This client-side script used to
--- contain a stale copy of that server implementation, which attempted to assign
--- OnServerInvoke from the client and broke tablet claiming with:
--- "OnServerInvoke can only be implemented on the server".
---
--- Keep this file as a harmless shim so any existing place reference named
--- TabletVisuals no longer interferes with the authoritative server claim flow.
+-- [[ LOCAL SCRIPT: TabletVisuals (Mobile Click Fix) ]]
+-- -- Indicating what the script is for: Handles Interactions, Separate Visibility/Click Ranges, and Floating Feedback.
+-- -- UPDATE: Switched action logic to MouseButton1Click for reliable mobile support.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local Debris = game:GetService("Debris")
+local UserInputService = game:GetService("UserInputService") -- Service for Mobile Detection
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local TabletEvent = ReplicatedStorage:WaitForChild("TabletEvent")
+local TycoonFolder = Workspace:WaitForChild("Tycoons")
+
+-- ⚙️ CONFIGURATION
+local DEV_PRODUCT_ID = 3509697462
+local HOVER_SCALE = 1.1          
+local CLICK_SCALE = 0.9          
+local ANIM_SPEED = 0.1           
+
+-- 📏 DISTANCE SETTINGS (Separated for better feel)
+local VISIBILITY_DISTANCE = 150  -- How far away you can SEE the button (Camera based)
+local CLICK_DISTANCE = 45        -- How close you must be to CLICK (Character based)
+
+-- 💬 FLOATING TEXT SETTINGS
+local FLOAT_HEIGHT = 4           
+local STANDARD_DURATION = 1      
+local DOUBLE_CASH_DURATION = 3   
+local START_OFFSET = Vector3.new(0, 2, 0) 
+
+-- 🔊 SOUNDS
+local HOVER_SOUND_ID = "rbxassetid://6895079853" 
+local CLICK_SOUND_ID = "rbxassetid://9083627113"       
+local FAIL_SOUND_ID = "rbxassetid://3779045779"        
+local SUCCESS_SOUND_ID = "rbxassetid://140072726814802" 
+local HOVER_VOLUME = 0.5
+
+-- 🛡️ STATE
+local isClaiming = false
+local isHoveringMap = {} 
+local lastProjectedAmount = 0 
+local claimRequestId = 0
+local pendingClaimByPlot = {}
+
+-- 🛠️ HELPER: The "Z-Offset" Fix & Visibility Logic
+local function enableClicking(gui, part)
+	if not gui then return end
+	if gui.Parent ~= playerGui then
+		gui.Adornee = part 
+		gui.Parent = playerGui 
+	end
+	gui.Active = true;
+	gui.Enabled = true; gui.ResetOnSpawn = false
+	gui.AlwaysOnTop = false; gui.ZOffset = 100;
+	gui.LightInfluence = 0.5 
+
+	-- ✅ VISIBILITY FIX: Set this high so it doesn't vanish in 3rd person
+	if gui:IsA("SurfaceGui") or gui:IsA("BillboardGui") then
+		gui.MaxDistance = VISIBILITY_DISTANCE
+	end
+end
+
+-- ============================================================================
+-- ☁️ FLOATING TEXT FUNCTION
+-- ============================================================================
+local function spawnFloatingText(targetPart, text, color, duration)
+	if not targetPart then return end
+	local timeToFloat = duration or STANDARD_DURATION
+
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "FloatingFeedback"
+	billboard.Adornee = targetPart
+	billboard.Size = UDim2.new(0, 300, 0, 50) 
+	billboard.StudsOffset = START_OFFSET
+	billboard.AlwaysOnTop = true
+	billboard.Parent = playerGui 
+	-- Also apply visibility limit to floating text so it doesn't clutter map
+	billboard.MaxDistance = VISIBILITY_DISTANCE 
+
+	local label = Instance.new("TextLabel")
+	label.Parent = billboard
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = color
+	label.Font = Enum.Font.FredokaOne 
+	label.TextScaled = true
+	label.TextStrokeTransparency = 0 
+	label.TextStrokeColor3 = Color3.new(0,0,0)
+
+	local tweenInfo = TweenInfo.new(timeToFloat, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+	local goalOffset = START_OFFSET + Vector3.new(0, FLOAT_HEIGHT, 0)
+	TweenService:Create(billboard, tweenInfo, {StudsOffset = goalOffset}):Play()
+
+	local tweenFade = TweenService:Create(label, tweenInfo, {TextTransparency = 1, TextStrokeTransparency = 1})
+	tweenFade:Play()
+
+	Debris:AddItem(billboard, timeToFloat)
+end
+
+-- ============================================================================
+-- 🎨 ROBUST ANIMATION & CLICK HANDLER
+-- ============================================================================
+local function setupAnimatedButton(button, clickFunction)
+	if not button:IsA("GuiButton") then return end
+	local originalSize = button.Size
+	local hoverSize = UDim2.new(originalSize.X.Scale * HOVER_SCALE, originalSize.X.Offset * HOVER_SCALE, originalSize.Y.Scale * HOVER_SCALE, originalSize.Y.Offset * HOVER_SCALE)
+	local clickSize = UDim2.new(originalSize.X.Scale * CLICK_SCALE, originalSize.X.Offset * CLICK_SCALE, originalSize.Y.Scale * CLICK_SCALE, originalSize.Y.Offset * CLICK_SCALE)
+
+	-- 1. HOVER LOGIC (PC Only - to prevent Mobile Double Tap)
+	if not UserInputService.TouchEnabled then
+		button.MouseEnter:Connect(function()
+			isHoveringMap[button] = true
+			TweenService:Create(button, TweenInfo.new(ANIM_SPEED), {Size = hoverSize}):Play()
+			local s = Instance.new("Sound");
+			s.SoundId = HOVER_SOUND_ID; s.Volume = HOVER_VOLUME; s.Parent = SoundService; s:Play();
+			game.Debris:AddItem(s,1)
+		end)
+
+		button.MouseLeave:Connect(function()
+			isHoveringMap[button] = false
+			TweenService:Create(button, TweenInfo.new(ANIM_SPEED), {Size = originalSize}):Play()
+		end)
+	end
+
+	-- 2. PRESS ANIMATION (Visual Feedback Only)
+	button.MouseButton1Down:Connect(function()
+		TweenService:Create(button, TweenInfo.new(0.05), {Size = clickSize}):Play() 
+	end)
+
+	-- 3. RELEASE ANIMATION (Visual Feedback Only)
+	button.MouseButton1Up:Connect(function()
+		local target = (isHoveringMap[button] and not UserInputService.TouchEnabled) and hoverSize or originalSize
+		TweenService:Create(button, TweenInfo.new(ANIM_SPEED, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = target}):Play()
+	end)
+
+	-- 4. ACTION LOGIC (THE FIX: Uses Click instead of Up)
+	-- MouseButton1Click fires reliably on mobile even if the finger wiggles slightly.
+	button.MouseButton1Click:Connect(function()
+		if clickFunction then clickFunction() end
+	end)
+end
+
+-- ============================================================================
+-- 📏 DISTANCE CHECK HELPER (Character Based)
+-- ============================================================================
+local function isCloseEnough(targetPart)
+	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return false end
+	local dist = (player.Character.HumanoidRootPart.Position - targetPart.Position).Magnitude
+	return dist <= CLICK_DISTANCE
+end
+
+local function getClaimPartFromPlotName(plotName)
+	local plot = TycoonFolder:FindFirstChild(plotName)
+	local model = plot and plot:FindFirstChild("ClaimEarnings")
+	return model and (model:FindFirstChild("ClaimPart") or model:FindFirstChild("Earnings"))
+end
+
+local function showClaimFailure(part, reason)
+	local labels = {
+		TooFar = "Too Far!",
+		Cooldown = "Slow Down!",
+		NoEarnings = "No Earnings!",
+		NotOwner = "Access Denied!",
+		InvalidPlot = "Plot Missing!",
+		NoCharacter = "Character Missing!",
+		MissingState = "Tablet Not Ready!",
+		Unknown = "Claim Failed!",
+	}
+	local msg = labels[reason] or labels.Unknown
+	local sfx = Instance.new("Sound")
+	sfx.SoundId = FAIL_SOUND_ID
+	sfx.Parent = SoundService
+	sfx:Play()
+	game.Debris:AddItem(sfx, 1)
+	if part then
+		spawnFloatingText(part, msg, Color3.fromRGB(255, 80, 80))
+	end
+end
+
+-- ============================================================================
+-- 🕵️ LOGIC CONNECTIONS
+-- ============================================================================
+local function setupClientTablet(plot)
+	local model = plot:WaitForChild("ClaimEarnings", 30)
+	if not model then return end
+
+	local claimPart = model:WaitForChild("ClaimPart", 10)
+	if not claimPart then claimPart = model:WaitForChild("Earnings", 1) end
+	if not claimPart then return end
+
+	local claimGui = claimPart:WaitForChild("ClaimGUI", 10)
+	if not claimGui then return end
+
+	local pendingVal = plot:WaitForChild("PendingEarnings", 10)
+	local ownerVal = plot:WaitForChild("Owner", 10) 
+
+	enableClicking(claimGui, claimPart)
+
+	local btnNormal = claimGui:WaitForChild("ClaimButton", 10)
+	local btn2X = claimGui:WaitForChild("ClaimButton2X", 10)
+
+	-- 🟢 1. NORMAL CLAIM BUTTON
+	if btnNormal then
+		setupAnimatedButton(btnNormal, function()
+			-- 📏 STRICT CHECK: Must be close to CLICK
+			if not isCloseEnough(claimPart) then return end 
+
+			if isClaiming then 
+				spawnFloatingText(claimPart, "Slow Down!", Color3.fromRGB(255, 170, 0))
+				return 
+			end
+
+			-- 🛡️ SECURITY FIX: Check if we own this plot
+			if ownerVal.Value ~= player.Name then
+				local s = Instance.new("Sound"); s.SoundId = FAIL_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
+				spawnFloatingText(claimPart, "Access Denied!", Color3.fromRGB(255, 80, 80))
+				return
+			end
+
+			if pendingVal.Value <= 0 then
+				local s = Instance.new("Sound");
+				s.SoundId = FAIL_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
+				spawnFloatingText(claimPart, "No Earnings!", Color3.fromRGB(255, 80, 80))
+				return
+			end
+
+			isClaiming = true
+			local s = Instance.new("Sound");
+			s.SoundId = CLICK_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
+
+			claimRequestId += 1
+			local requestId = claimRequestId
+			pendingClaimByPlot[plot.Name] = requestId
+			TabletEvent:FireServer("Claim", plot.Name, requestId)
+
+			task.delay(2.5, function()
+				if pendingClaimByPlot[plot.Name] == requestId then
+					pendingClaimByPlot[plot.Name] = nil
+					isClaiming = false
+					showClaimFailure(claimPart, "Unknown")
+				end
+			end)
+		end)
+	end
+
+	-- 💎 2. DEV PRODUCT BUTTON (2X)
+	if btn2X then
+		setupAnimatedButton(btn2X, function()
+			-- 📏 STRICT CHECK: Must be close to CLICK
+			if not isCloseEnough(claimPart) then return end 
+
+			-- 🛡️ SECURITY FIX: Check if we own this plot
+			if ownerVal.Value ~= player.Name then
+				local s = Instance.new("Sound"); s.SoundId = FAIL_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
+				spawnFloatingText(claimPart, "Access Denied!", Color3.fromRGB(255, 80, 80))
+				return
+			end
+
+			if pendingVal and pendingVal.Value <= 0 then
+				local s = Instance.new("Sound"); s.SoundId = FAIL_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
+				spawnFloatingText(claimPart, "No Earnings!", Color3.fromRGB(255, 80, 80))
+				return
+			end
+
+			lastProjectedAmount = pendingVal.Value * 2
+			TabletEvent:FireServer("Prompt2X", plot.Name)
+		end)
+	end
+end
+
+TabletEvent.OnClientEvent:Connect(function(action, plotName, wasSuccessful, payload, requestId)
+	if action ~= "ClaimResult" then return end
+
+	if pendingClaimByPlot[plotName] ~= requestId then
+		return
+	end
+
+	pendingClaimByPlot[plotName] = nil
+	isClaiming = false
+
+	local part = getClaimPartFromPlotName(plotName)
+	if wasSuccessful then
+		local amount = tonumber(payload) or 0
+		local sfx = Instance.new("Sound")
+		sfx.SoundId = SUCCESS_SOUND_ID
+		sfx.Parent = SoundService
+		sfx:Play()
+		game.Debris:AddItem(sfx, 1)
+		if part then
+			spawnFloatingText(part, "+$" .. amount, Color3.fromRGB(85, 255, 127))
+		end
+	else
+		showClaimFailure(part, payload)
+	end
+end)
+
+-- ============================================================================
+-- 💰 PURCHASE SUCCESS LISTENER
+-- ============================================================================
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, isPurchased)
+	if userId == player.UserId and productId == DEV_PRODUCT_ID and isPurchased then
+		local s = Instance.new("Sound");
+		s.SoundId = SUCCESS_SOUND_ID; s.Volume = 1; s.Parent = SoundService; s:Play();
+		game.Debris:AddItem(s, 2)
+
+		local myPlotName = player:GetAttribute("OccupiedPlot")
+		if myPlotName then
+			local plot = TycoonFolder:FindFirstChild(myPlotName)
+			local model = plot and plot:FindFirstChild("ClaimEarnings")
+			local part = model and (model:FindFirstChild("ClaimPart") or model:FindFirstChild("Earnings"))
+
+			if part then
+				local msg = "DOUBLE CASH! ( +$" .. lastProjectedAmount .. " )"
+				spawnFloatingText(part, msg, Color3.fromRGB(255, 255, 0), DOUBLE_CASH_DURATION)
+			end
+		end
+	end
+end)
+
+-- Initialize
+task.wait(2) 
+for _, plot in pairs(TycoonFolder:GetChildren()) do
+	task.spawn(function() setupClientTablet(plot) end)
+end
+TycoonFolder.ChildAdded:Connect(function(plot)
+	task.spawn(function() setupClientTablet(plot) end)
+end)
