@@ -194,16 +194,20 @@ local function rememberActiveNotification(state)
 end
 
 for _, source in ipairs(BOOST_SOURCES) do
+	source.State.OnClientEvent:Connect(function(state)
+		handleState(source.State, state)
+	end)
+
 	task.spawn(function()
 		local ok, state = pcall(function()
 			return source.GetState:InvokeServer()
 		end)
 		if ok then
+			-- Initial state fetches do not carry purchase notifications today, but
+			-- keep this guard after the live listener is connected in case a future
+			-- server version includes replay metadata. This avoids marking a live
+			-- purchase as seen before OnClientEvent can display it.
 			rememberActiveNotification(state)
 		end
-	end)
-
-	source.State.OnClientEvent:Connect(function(state)
-		handleState(source.State, state)
 	end)
 end
