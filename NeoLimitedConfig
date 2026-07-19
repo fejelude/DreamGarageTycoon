@@ -1,0 +1,40 @@
+-- Purpose: Shared configuration for the globally limited Neo Performante ShopUI Developer Product.
+-- Location: ReplicatedStorage > NeoLimitedConfig
+-- Notes: Roblox Creator Dashboard price must be configured to 3,199 Robux; server receipt processing is authoritative.
+
+local NeoLimitedConfig = {}
+
+NeoLimitedConfig.ProductId = 3610688469
+NeoLimitedConfig.RobuxPrice = 3199
+NeoLimitedConfig.CarId = "Neo-Performante"
+NeoLimitedConfig.DisplayName = "Neo Performante"
+NeoLimitedConfig.MaxGlobalStock = 67
+
+NeoLimitedConfig.StateStoreName = "NeoPerformanteLimitedState_V1"
+NeoLimitedConfig.StateKey = "Current"
+NeoLimitedConfig.TopicName = "NeoPerformanteLimitedStock_V1"
+NeoLimitedConfig.ReservationSeconds = 15 * 60
+NeoLimitedConfig.MaxUpdateRetries = 5
+
+NeoLimitedConfig.AnnouncementTemplates = {
+	"@%s just bought the Neo Performante from the shop. Damn... bro is wealthy. 💸",
+	"@%s just purchased the Neo Performante. Bro is absolutely loaded. 💰",
+	"@%s just unlocked the Neo Performante. Sheesh... bro's rich. 🔥",
+	"@%s just drove away with the Neo Performante. That's some serious cash. 💸",
+	"@%s just added the Neo Performante to their garage. Bro is built different. 😭",
+	"@%s just bought the Neo Performante. Someone's wallet is taking a hit. 💀",
+	"@%s just picked up the Neo Performante from the shop. Big spender alert. 🚨",
+	"@%s just flexed by buying the Neo Performante. Bro isn't playing around. 😮‍💨",
+	"@%s just secured the Neo Performante. That's a crazy purchase. 👀",
+	"@%s just became the proud owner of the Neo Performante. Bro must be swimming in Robux. 💸",
+}
+
+function NeoLimitedConfig.FormatStock(remaining)
+	remaining = math.max(0, math.floor(tonumber(remaining) or 0))
+	if remaining <= 0 then
+		return "Out Of Stock!"
+	end
+	return string.format("Remaining: %d/%d", remaining, NeoLimitedConfig.MaxGlobalStock)
+end
+
+return NeoLimitedConfig
