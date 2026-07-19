@@ -209,6 +209,7 @@ local function ensureSession(player)
 		premiumPending = false,
 		premiumPurchaseId = nil,
 		lastPremiumGrantedPurchaseId = nil,
+		claimInProgress = false,
 	}
 
 	sessions[player] = session
@@ -260,56 +261,79 @@ requestData.OnServerInvoke = function(player)
 	}
 end
 
-claimNormal.OnServerInvoke = function(player)
-	local session = ensureSession(player)
-
-	if not session.prepared then
-		local ready, amount = computeBaseOffline(player)
-
-		if not ready then
-			return false, "Offline earnings still loading. Please try again.", 0
-		end
-
-		session.baseAmount = amount
-		session.prepared = true
+local function prepareSession(player, session)
+	if session.prepared then
+		return true
 	end
+
+	local ready, amount = computeBaseOffline(player)
+
+	if not ready then
+		return false
+	end
+
+	session.baseAmount = amount
+	session.prepared = true
+
+	return true
+end
+
+local function claimPreparedSession(player, session)
+	if session.claimInProgress then
+		return false, "Claim already in progress.", 0
+	end
+
+	session.claimInProgress = true
+
+	local success, message, amount = false, "Claim failed. Please try again.", 0
 
 	if session.claimed then
-		return false, "You have already claimed your offline earnings.", 0
+		message = "You have already claimed your offline earnings."
+	elseif session.premiumPending then
+		message = "Premium purchase is currently processing."
+	elseif session.baseAmount <= 0 then
+		message = "No offline earnings available."
+	else
+		amount = session.baseAmount
+		success, message = grant(player, amount)
+
+		if success then
+			session.claimed = true
+			clearTabletCarry(player)
+			message = "Claimed"
+		else
+			amount = 0
+		end
 	end
 
-	if session.premiumPending then
-		return false, "Premium purchase is currently processing.", 0
+	session.claimInProgress = false
+
+	return success, message, amount
+end
+
+local function claimOfflineEarnings(player)
+	local session = ensureSession(player)
+
+	if not prepareSession(player, session) then
+		return false, "Offline earnings still loading. Please try again.", 0
 	end
 
-	if session.baseAmount <= 0 then
-		return false, "No offline earnings available.", 0
-	end
+	return claimPreparedSession(player, session)
+end
 
-	local success, message = grant(player, session.baseAmount)
+claimNormal.OnServerInvoke = function(player)
+	return claimOfflineEarnings(player)
+end
 
-	if not success then
-		return false, message, 0
-	end
-
-	session.claimed = true
-	clearTabletCarry(player)
-
-	return true, "Claimed", session.baseAmount
+function _G.OfflineEarningsService.TryClaim(player)
+	return claimOfflineEarnings(player)
 end
 
 beginPremium.OnServerInvoke = function(player)
 	local session = ensureSession(player)
 
-	if not session.prepared then
-		local ready, amount = computeBaseOffline(player)
-
-		if not ready then
-			return false, "Offline earnings still loading. Please wait."
-		end
-
-		session.baseAmount = amount
-		session.prepared = true
+	if not prepareSession(player, session) then
+		return false, "Offline earnings still loading. Please wait."
 	end
 
 	if session.claimed then

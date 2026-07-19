@@ -134,6 +134,128 @@ local function getTabletMultiplierSuffix(plot)
 	return "", 1
 end
 
+local function getHiddenCash(player)
+	local hiddenStats = player:FindFirstChild("HiddenStats")
+	return hiddenStats and hiddenStats:FindFirstChild("Cash")
+end
+
+local function claimOfflineEarningsForTablet(player)
+	local offlineService = _G.OfflineEarningsService
+	if offlineService and type(offlineService.TryClaim) == "function" then
+		local ok, success, message, amount = pcall(function()
+			return offlineService.TryClaim(player)
+		end)
+
+		if ok then
+			if success then
+				return amount or 0, nil
+			end
+
+			if message == "No offline earnings available." or message == "You have already claimed your offline earnings." then
+				return 0, nil
+			end
+
+			return 0, message or "Offline earnings unavailable."
+		end
+
+		warn("⚠️ [TabletServerHandler] Offline earnings service claim failed: " .. tostring(success))
+	end
+
+	-- Startup fallback: if the offline service has not registered yet, still allow
+	-- the saved tablet carry to be claimed from the tablet and clear it to prevent
+	-- a later duplicate offline popup claim.
+	local carry = math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
+	if carry <= 0 then
+		return 0, nil
+	end
+
+	local cash = getHiddenCash(player)
+	if not cash then
+		return 0, "Bank account not found."
+	end
+
+	cash.Value += carry
+	player:SetAttribute("OfflineTabletCarry", 0)
+
+	return carry, nil
+end
+
+local function getPlayerFromTouchedPart(hit)
+	local character = hit and hit.Parent
+	if not character then
+		return nil
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return nil
+	end
+
+	return Players:GetPlayerFromCharacter(character)
+end
+
+local function claimTabletEarnings(player, plot, claimPart)
+	if not player or not plot or not claimPart then
+		return false, "MissingState"
+	end
+
+	local ownerVal = plot:FindFirstChild("Owner")
+	if not ownerVal or ownerVal.Value ~= player.Name then
+		return false, "NotOwner"
+	end
+
+	local pendingVal = plot:FindFirstChild("PendingEarnings")
+	if not pendingVal then
+		return false, "MissingState"
+	end
+
+	local character = player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then
+		return false, "NoCharacter"
+	end
+
+	local distance = (rootPart.Position - claimPart.Position).Magnitude
+	if distance > MAX_CLAIM_DISTANCE then
+		return false, "TooFar"
+	end
+
+	local nowClock = os.clock()
+	local lastClaim = playerCooldowns[player.UserId] or 0
+	if (nowClock - lastClaim) < CLAIM_COOLDOWN then
+		return false, "Cooldown"
+	end
+
+	playerCooldowns[player.UserId] = nowClock
+
+	local pendingAmount = math.max(0, math.floor(tonumber(pendingVal.Value) or 0))
+	if pendingAmount > 0 then
+		pendingVal.Value = 0
+	end
+
+	local cash = getHiddenCash(player)
+	if pendingAmount > 0 then
+		if not cash then
+			pendingVal.Value += pendingAmount
+			return false, "BankMissing"
+		end
+
+		cash.Value += pendingAmount
+	end
+
+	local offlineAmount, offlineError = claimOfflineEarningsForTablet(player)
+	if offlineError and pendingAmount <= 0 then
+		return false, offlineError
+	end
+
+	local totalAmount = pendingAmount + offlineAmount
+	if totalAmount <= 0 then
+		return false, "NoEarnings"
+	end
+
+	return true, totalAmount
+end
+
 -- 🧹 HELPER: REMOVE CONSTRAINT
 local function nukeConstraints(obj)
 	if not obj then return end
@@ -177,6 +299,13 @@ local function setupTablet(plot)
 
 		mainPart.Anchored  = true; mainPart.CanCollide  = true; mainPart.Velocity  = Vector3.zero
 		claimPart.Anchored = true; claimPart.CanCollide = true; claimPart.Velocity = Vector3.zero
+
+		claimPart.Touched:Connect(function(hit)
+			local touchingPlayer = getPlayerFromTouchedPart(hit)
+			if touchingPlayer then
+				claimTabletEarnings(touchingPlayer, plot, claimPart)
+			end
+		end)
 
 		local avatarGui   = mainPart:WaitForChild("AvatarGUI", 10)
 		local usernameGui = mainPart:WaitForChild("UsernameGUI", 10)
@@ -236,13 +365,28 @@ local function setupTablet(plot)
 			end
 		end
 
-		local function updateRevenue()
-			revenueLabel.Text = formatNumber(pendingVal.Value)
+		local function getOwnerOfflineCarry()
+			local ownerPlayer = ownerVal.Value ~= "" and Players:FindFirstChild(ownerVal.Value)
+			return ownerPlayer and math.max(0, math.floor(tonumber(ownerPlayer:GetAttribute("OfflineTabletCarry")) or 0)) or 0
 		end
 
-		ownerVal.Changed:Connect(updateOwnerInfo)
+		local function updateRevenue()
+			revenueLabel.Text = formatNumber((tonumber(pendingVal.Value) or 0) + getOwnerOfflineCarry())
+		end
+
+		ownerVal.Changed:Connect(function()
+			updateOwnerInfo()
+			updateRevenue()
+		end)
 		pendingVal.Changed:Connect(updateRevenue)
 		plot:GetAttributeChangedSignal("IsAFK"):Connect(updateRevenue)
+
+		task.spawn(function()
+			while plot.Parent and revenueLabel.Parent do
+				updateRevenue()
+				task.wait(1)
+			end
+		end)
 
 		updateOwnerInfo()
 		updateRevenue()
@@ -270,63 +414,25 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 		return
 	end
 
-	if plot.Owner.Value ~= player.Name then
-		if action == "Claim" then respondClaim(false, "NotOwner") end
-		return
-	end
-
-	local pendingVal = plot:FindFirstChild("PendingEarnings")
-	local model      = plot:FindFirstChild("ClaimEarnings")
-	local claimPart  = nil
-	if model then claimPart = model:FindFirstChild("ClaimPart") end
-
-	if not pendingVal or not claimPart then
-		if action == "Claim" then respondClaim(false, "MissingState") end
-		return
-	end
-
-	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
-		if action == "Claim" then respondClaim(false, "NoCharacter") end
-		return
-	end
-
-	local distance = (player.Character.HumanoidRootPart.Position - claimPart.Position).Magnitude
-	if distance > MAX_CLAIM_DISTANCE then
-		if action == "Claim" then respondClaim(false, "TooFar") end
-		return
-	end
+	local model = plot:FindFirstChild("ClaimEarnings")
+	local claimPart = model and model:FindFirstChild("ClaimPart")
 
 	if action == "Claim" then
-		local lastClaim = playerCooldowns[player.UserId] or 0
-		if (os.clock() - lastClaim) < CLAIM_COOLDOWN then
-			respondClaim(false, "Cooldown")
-			return
-		end
+		local success, payload = claimTabletEarnings(player, plot, claimPart)
+		respondClaim(success, payload)
+		return
+	end
 
-		local amount = pendingVal.Value
+	if action == "Prompt2X" then
+		local ownerVal = plot:FindFirstChild("Owner")
+		if not ownerVal or ownerVal.Value ~= player.Name then return end
 
-		if amount > 0 then
-			pendingVal.Value = 0
-			local finalAmount = amount
-
-			local hs = player:FindFirstChild("HiddenStats")
-			if hs and hs:FindFirstChild("Cash") then
-				hs.Cash.Value += finalAmount
-			end
-
-			playerCooldowns[player.UserId] = os.clock()
-			respondClaim(true, finalAmount)
-		else
-			playerCooldowns[player.UserId] = os.clock()
-			respondClaim(false, "NoEarnings")
-		end
-
-	elseif action == "Prompt2X" then
 		local lastPrompt = promptCooldowns[player.UserId] or 0
 		if (os.clock() - lastPrompt) < PROMPT_COOLDOWN_TIME then return end
 		promptCooldowns[player.UserId] = os.clock()
 
-		local amount = pendingVal.Value
+		local pendingVal = plot:FindFirstChild("PendingEarnings")
+		local amount = pendingVal and pendingVal.Value or 0
 		if amount <= 0 then return end
 
 		pcall(function()
