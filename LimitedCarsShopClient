@@ -1,4 +1,4 @@
--- LocalScript: StarterGui > ShopUI > NeoLimitedShopClient
+-- LocalScript: StarterGui > ShopUI > LimitedCarsShopClient
 -- Purpose: Native ShopUI client binding for the globally limited Neo Performante Developer Product.
 -- Security: Reserves stock through the server before prompting. Only ProcessReceipt grants the car.
 
@@ -9,11 +9,12 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local Config = require(ReplicatedStorage:WaitForChild("NeoLimitedConfig"))
+local Config = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
+local Product = Config.GetDefaultProduct()
 local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
-local remotes = ReplicatedStorage:WaitForChild("NeoLimitedRemotes")
+local remotes = ReplicatedStorage:WaitForChild("LimitedCarsRemotes")
 local StateEvent = remotes:WaitForChild("State")
 local GetState = remotes:WaitForChild("GetState")
 local Reserve = remotes:WaitForChild("Reserve")
@@ -49,8 +50,8 @@ local function setButtonInputLocked(button, locked)
 end
 
 local function render()
-	local remaining = currentState and tonumber(currentState.Remaining) or Config.MaxGlobalStock
-	if stockLabel then stockLabel.Text = Config.FormatStock(remaining) end
+	local remaining = currentState and tonumber(currentState.Remaining) or Product.MaxGlobalStock
+	if stockLabel then stockLabel.Text = Config.FormatStock(Product, remaining) end
 	setButtonInputLocked(buyButton, promptBusy or remaining <= 0)
 end
 
@@ -89,14 +90,14 @@ local function beginPurchase()
 
 	pendingPrompt = true
 	local promptOk, promptErr = pcall(function()
-		MarketplaceService:PromptProductPurchase(player, Config.ProductId)
+		MarketplaceService:PromptProductPurchase(player, Product.ProductId)
 	end)
 	if not promptOk then
 		pcall(function() PromptClosed:FireServer() end)
 		finishPrompt()
 		shopFeedback:Failed("Purchase Failed")
 		Kit.Sound:Play("BuyFail")
-		warn("[NeoLimitedShopClient] PromptProductPurchase failed:", promptErr)
+		warn("[LimitedCarsShopClient] PromptProductPurchase failed:", promptErr)
 		return
 	end
 
@@ -129,7 +130,7 @@ PurchaseResult.OnClientEvent:Connect(function(success, message)
 end)
 
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
-	if userId ~= player.UserId or productId ~= Config.ProductId then return end
+	if userId ~= player.UserId or productId ~= Product.ProductId then return end
 	UIAudioConfig.HidePurchaseLoading()
 	if not wasPurchased and pendingPrompt then
 		pcall(function() PromptClosed:FireServer() end)

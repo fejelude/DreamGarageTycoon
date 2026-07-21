@@ -1,4 +1,4 @@
--- Server ModuleScript: ServerScriptService > NeoLimitedService
+-- Server ModuleScript: ServerScriptService > LimitedCarsService
 -- Purpose: Server-authoritative reservations, stock, receipt finalization, and purchase announcements for Neo Performante.
 
 local DataStoreService = game:GetService("DataStoreService")
@@ -7,9 +7,10 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 
-local Config = require(ReplicatedStorage:WaitForChild("NeoLimitedConfig"))
+local Config = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
+local Product = Config.GetDefaultProduct()
 
-local remotes = ReplicatedStorage:WaitForChild("NeoLimitedRemotes")
+local remotes = ReplicatedStorage:WaitForChild("LimitedCarsRemotes")
 local StateEvent = remotes:WaitForChild("State")
 local GetStateFunction = remotes:WaitForChild("GetState")
 local ReserveFunction = remotes:WaitForChild("Reserve")
@@ -19,7 +20,7 @@ local PurchaseResultEvent = remotes:WaitForChild("PurchaseResult")
 local GiftRemotes = ReplicatedStorage:WaitForChild("GiftRemotes")
 local GlobalChatBroadcast = GiftRemotes:WaitForChild("GlobalChatBroadcast")
 
-local stateStore = DataStoreService:GetDataStore(Config.StateStoreName)
+local stateStore = DataStoreService:GetDataStore(Product.StateStoreName)
 local currentState = nil
 local localReservations = {}
 local seenAnnouncements = {}
@@ -29,17 +30,17 @@ local Service = {}
 
 local function now() return os.time() end
 local function receiptKey(receiptInfo) return tostring(receiptInfo.PlayerId) .. "_" .. tostring(receiptInfo.PurchaseId) end
-local function reserveKey(player) return tostring(player.UserId) .. "_" .. tostring(Config.ProductId) end
+local function reserveKey(player) return tostring(player.UserId) .. "_" .. tostring(Product.ProductId) end
 
 local function sanitize(raw)
 	local state = type(raw) == "table" and raw or {}
-	state.Sold = math.clamp(math.floor(tonumber(state.Sold) or 0), 0, Config.MaxGlobalStock)
+	state.Sold = math.clamp(math.floor(tonumber(state.Sold) or 0), 0, Product.MaxGlobalStock)
 	state.Reservations = type(state.Reservations) == "table" and state.Reservations or {}
 	state.Receipts = type(state.Receipts) == "table" and state.Receipts or {}
 	state.AnnouncedReceipts = type(state.AnnouncedReceipts) == "table" and state.AnnouncedReceipts or {}
 	state.UpdatedAt = tonumber(state.UpdatedAt) or now()
 	for key, res in pairs(state.Reservations) do
-		if type(res) ~= "table" or res.ProductId ~= Config.ProductId or res.State ~= "Reserved" or (tonumber(res.ExpiresAt) or 0) <= now() then
+		if type(res) ~= "table" or res.ProductId ~= Product.ProductId or res.State ~= "Reserved" or (tonumber(res.ExpiresAt) or 0) <= now() then
 			state.Reservations[key] = nil
 		end
 	end
@@ -50,12 +51,12 @@ local function remainingFromState(state)
 	state = sanitize(state)
 	local reserved = 0
 	for _ in pairs(state.Reservations) do reserved += 1 end
-	return math.max(0, Config.MaxGlobalStock - state.Sold - reserved)
+	return math.max(0, Product.MaxGlobalStock - state.Sold - reserved)
 end
 
 local function publicState(state)
 	state = sanitize(state or currentState)
-	return { Remaining = remainingFromState(state), MaxStock = Config.MaxGlobalStock, ProductId = Config.ProductId, CarId = Config.CarId, ServerTime = now() }
+	return { Remaining = remainingFromState(state), MaxStock = Product.MaxGlobalStock, ProductId = Product.ProductId, CarId = Product.CarId, ServerTime = now() }
 end
 
 local function publishState(payload)
@@ -63,7 +64,7 @@ local function publishState(payload)
 	task.spawn(function()
 		for _, delaySeconds in ipairs(PUBLISH_RETRY_DELAYS) do
 			if delaySeconds > 0 then task.wait(delaySeconds) end
-			local ok = pcall(function() MessagingService:PublishAsync(Config.TopicName, payload) end)
+			local ok = pcall(function() MessagingService:PublishAsync(Product.TopicName, payload) end)
 			if ok then return end
 		end
 	end)
@@ -108,7 +109,7 @@ function Service.Reserve(player)
 	local ok = updateState(function(state)
 		if state.Reservations[key] then reserved = true; state.Reservations[key].ExpiresAt = now() + Config.ReservationSeconds; return state end
 		if remainingFromState(state) <= 0 then reserved = false; return state end
-		state.Reservations[key] = { State = "Reserved", UserId = player.UserId, Username = player.Name, ProductId = Config.ProductId, ReservedAt = now(), ExpiresAt = now() + Config.ReservationSeconds }
+		state.Reservations[key] = { State = "Reserved", UserId = player.UserId, Username = player.Name, ProductId = Product.ProductId, ReservedAt = now(), ExpiresAt = now() + Config.ReservationSeconds }
 		reserved = true
 		return state
 	end)
@@ -117,7 +118,7 @@ function Service.Reserve(player)
 end
 
 function Service.ReleaseReservation(userId)
-	local key = tostring(userId) .. "_" .. tostring(Config.ProductId)
+	local key = tostring(userId) .. "_" .. tostring(Product.ProductId)
 	localReservations[userId] = nil
 	updateState(function(state)
 		local res = state.Reservations[key]
@@ -129,8 +130,8 @@ end
 local function grantCar(player, receiptInfo)
 	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
 	if not api then return false, "TycoonAdminAPI missing" end
-	local attrs = { IssuedByServer = true, IssuedAt = now(), BypassStorageLimit = true, Source = "NeoLimitedShop", ReceiptPurchaseId = receiptInfo.PurchaseId, ReceiptProductId = receiptInfo.ProductId }
-	local ok, giveOk, msg = pcall(function() return api:Invoke("GiveTool", player, Config.CarId, attrs) end)
+	local attrs = { IssuedByServer = true, IssuedAt = now(), BypassStorageLimit = true, Source = "LimitedCarsShop", ReceiptPurchaseId = receiptInfo.PurchaseId, ReceiptProductId = receiptInfo.ProductId }
+	local ok, giveOk, msg = pcall(function() return api:Invoke("GiveTool", player, Product.CarId, attrs) end)
 	if not ok or giveOk ~= true then return false, msg or giveOk or "GiveTool failed" end
 	local saveOk, saved = pcall(function() return api:Invoke("SaveNow", player) end)
 	if not saveOk or saved ~= true then return false, "Save failed" end
@@ -150,12 +151,12 @@ function Service.ProcessReceipt(receiptInfo)
 	local ok = updateState(function(state)
 		if state.Receipts[key] and state.Receipts[key].State == "Granted" then already = true; finalized = true; return state end
 		if state.Receipts[key] and state.Receipts[key].State == "Processing" then finalized = true; return state end
-		local rKey = tostring(receiptInfo.PlayerId) .. "_" .. tostring(Config.ProductId)
+		local rKey = tostring(receiptInfo.PlayerId) .. "_" .. tostring(Product.ProductId)
 		local res = state.Reservations[rKey]
-		if not res or res.UserId ~= receiptInfo.PlayerId or res.ProductId ~= Config.ProductId or res.State ~= "Reserved" then return state end
+		if not res or res.UserId ~= receiptInfo.PlayerId or res.ProductId ~= Product.ProductId or res.State ~= "Reserved" then return state end
 		state.Reservations[rKey] = nil
-		state.Sold = math.min(Config.MaxGlobalStock, state.Sold + 1)
-		state.Receipts[key] = { State = "Processing", UserId = receiptInfo.PlayerId, Username = player.Name, ProductId = Config.ProductId, CarId = Config.CarId, FinalizedAt = now() }
+		state.Sold = math.min(Product.MaxGlobalStock, state.Sold + 1)
+		state.Receipts[key] = { State = "Processing", UserId = receiptInfo.PlayerId, Username = player.Name, ProductId = Product.ProductId, CarId = Product.CarId, FinalizedAt = now() }
 		finalized = true
 		return state
 	end)
@@ -171,7 +172,7 @@ function Service.ProcessReceipt(receiptInfo)
 			rec.GrantedAt = now()
 		end
 		if rec and not state.AnnouncedReceipts[key] then
-			local templates = Config.AnnouncementTemplates
+			local templates = Product.AnnouncementTemplates
 			announceText = string.format(templates[math.random(1, #templates)], player.Name)
 			state.AnnouncedReceipts[key] = true
 		end
@@ -191,7 +192,7 @@ task.spawn(function()
 	for _, delaySeconds in ipairs({ 0, 2, 5, 10, 20 }) do
 		if delaySeconds > 0 then task.wait(delaySeconds) end
 		local ok = pcall(function()
-			MessagingService:SubscribeAsync(Config.TopicName, function(message)
+			MessagingService:SubscribeAsync(Product.TopicName, function(message)
 				if type(message.Data) ~= "table" then return end
 				if type(message.Data.Announcement) == "table" then
 					local announcement = message.Data.Announcement
