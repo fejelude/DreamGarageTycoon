@@ -65,7 +65,7 @@ end
 
 local function beginPurchase()
 	if promptBusy then return end
-	local remaining = currentState and tonumber(currentState.Remaining) or 0
+	local remaining = currentState and tonumber(currentState.Remaining) or Product.MaxGlobalStock
 	if remaining <= 0 then
 		shopFeedback:Failed("Out Of Stock")
 		Kit.Sound:Play("BuyFail")

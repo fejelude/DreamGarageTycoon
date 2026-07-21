@@ -35,6 +35,7 @@ local function reserveKey(player) return tostring(player.UserId) .. "_" .. tostr
 local function sanitize(raw)
 	local state = type(raw) == "table" and raw or {}
 	state.Sold = math.clamp(math.floor(tonumber(state.Sold) or 0), 0, Product.MaxGlobalStock)
+	state.Initialized = true
 	state.Reservations = type(state.Reservations) == "table" and state.Reservations or {}
 	state.Receipts = type(state.Receipts) == "table" and state.Receipts or {}
 	state.AnnouncedReceipts = type(state.AnnouncedReceipts) == "table" and state.AnnouncedReceipts or {}
@@ -81,7 +82,7 @@ local function updateState(mutator)
 	local out, ok = nil, false
 	for attempt = 1, Config.MaxUpdateRetries do
 		ok = pcall(function()
-			out = stateStore:UpdateAsync(Config.StateKey, function(old)
+			out = stateStore:UpdateAsync(Product.StateKey, function(old)
 				local state = sanitize(old)
 				local nextState = mutator(state)
 				if nextState == nil then return nil end
@@ -96,7 +97,7 @@ local function updateState(mutator)
 end
 
 function Service.GetState()
-	local ok, data = pcall(function() return stateStore:GetAsync(Config.StateKey) end)
+	local ok, data = pcall(function() return stateStore:GetAsync(Product.StateKey) end)
 	if ok then currentState = sanitize(data) end
 	currentState = currentState or sanitize(nil)
 	return publicState(currentState)
