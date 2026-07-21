@@ -82,6 +82,11 @@ end
 local function handleGlobalBroadcast(data)
 	if type(data) ~= "table" or not data.Type then return end
 
+	if data.Type == "System" and type(data.Message) == "string" and data.Message ~= "" then
+		displaySystemMessage(string.format("<font color='#FFD700'><b>[EVENT]</b></font> %s", data.Message))
+		return
+	end
+
 	if data.Type == "CarGift" then
 		local senderName = data.SenderName or "Someone"
 		local receiverName = data.ReceiverName or "Someone"
