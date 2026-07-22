@@ -15,6 +15,7 @@ local GamePassConfig = require(gamePassConfigModule)
 
 local GamePassOwnershipService = {}
 local ownershipCache = {}
+local OWNERSHIP_READY_ATTRIBUTE = "GamePassOwnershipReady"
 
 local function getCacheForPlayer(player)
 	local userId = player.UserId
@@ -47,9 +48,12 @@ function GamePassOwnershipService.RefreshPass(player, passKey)
 end
 
 function GamePassOwnershipService.RefreshPlayer(player)
+	if not player then return end
+	player:SetAttribute(OWNERSHIP_READY_ATTRIBUTE, false)
 	for passKey in pairs(GamePassConfig.Passes) do
 		GamePassOwnershipService.RefreshPass(player, passKey)
 	end
+	player:SetAttribute(OWNERSHIP_READY_ATTRIBUTE, true)
 end
 
 function GamePassOwnershipService.GetGarageIncomeMultiplier(player)
@@ -57,9 +61,7 @@ function GamePassOwnershipService.GetGarageIncomeMultiplier(player)
 end
 
 Players.PlayerAdded:Connect(function(player)
-	for _, passInfo in pairs(GamePassConfig.Passes) do
-		player:SetAttribute(passInfo.Attribute, false)
-	end
+	player:SetAttribute(OWNERSHIP_READY_ATTRIBUTE, false)
 	task.spawn(GamePassOwnershipService.RefreshPlayer, player)
 end)
 
@@ -80,12 +82,8 @@ MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, gameP
 end)
 
 for _, player in ipairs(Players:GetPlayers()) do
-	task.spawn(function()
-		for _, passInfo in pairs(GamePassConfig.Passes) do
-			player:SetAttribute(passInfo.Attribute, false)
-		end
-		GamePassOwnershipService.RefreshPlayer(player)
-	end)
+	player:SetAttribute(OWNERSHIP_READY_ATTRIBUTE, false)
+	task.spawn(GamePassOwnershipService.RefreshPlayer, player)
 end
 
 return GamePassOwnershipService
