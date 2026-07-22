@@ -40,7 +40,7 @@ end
 local function sanitize(raw)
 	local s = type(raw) == "table" and raw or inactiveState()
 	if (tonumber(s.ExpiresAt) or 0) <= now() then return inactiveState() end
-	return { Active = true, Multiplier = math.max(Config.BaseMultiplier, tonumber(s.Multiplier) or 2), ActivatedAt = tonumber(s.ActivatedAt) or now(), ExpiresAt = tonumber(s.ExpiresAt), PurchaserUserId = tonumber(s.PurchaserUserId) or 0, PurchaserUsername = tostring(s.PurchaserUsername or ""), ReceiptKey = tostring(s.ReceiptKey or "") }
+	return { Active = true, Multiplier = math.max(Config.BaseMultiplier, tonumber(s.Multiplier) or 2), ActivatedAt = tonumber(s.ActivatedAt) or now(), ExpiresAt = tonumber(s.ExpiresAt), PurchaserUserId = tonumber(s.PurchaserUserId) or 0, PurchaserUsername = tostring(s.PurchaserUsername or ""), ReceiptKey = tostring(s.ReceiptKey or ""), BoostPurchaseNotification = type(s.BoostPurchaseNotification) == "table" and s.BoostPurchaseNotification or nil }
 end
 local function buildPurchaseNotification(s)
 	if not s.Active then return nil end
@@ -52,7 +52,7 @@ local function buildPurchaseNotification(s)
 end
 local function publicState(notification)
 	local s = sanitize(currentState)
-	return { Active = s.Active, Multiplier = s.Multiplier, CurrentLuck = Config.FormatMultiplier(s.Multiplier), NextLuck = Config.FormatMultiplier(Config.GetNextMultiplier(s.Multiplier)), ActivatedAt = s.ActivatedAt, ExpiresAt = s.ExpiresAt, PurchaserUserId = s.PurchaserUserId, PurchaserUsername = s.PurchaserUsername, ServerTime = now(), BoostPurchaseNotification = notification }
+	return { Active = s.Active, Multiplier = s.Multiplier, CurrentLuck = Config.FormatMultiplier(s.Multiplier), NextLuck = Config.FormatMultiplier(Config.GetNextMultiplier(s.Multiplier)), ActivatedAt = s.ActivatedAt, ExpiresAt = s.ExpiresAt, PurchaserUserId = s.PurchaserUserId, PurchaserUsername = s.PurchaserUsername, ServerTime = now(), BoostPurchaseNotification = notification or s.BoostPurchaseNotification }
 end
 local function publishStateWithRetries(payload)
 	task.spawn(function()
@@ -118,11 +118,12 @@ function Service.ProcessReceipt(receiptInfo)
 			end
 			activated = true
 			activatedState = { Active = true, Multiplier = Config.GetNextMultiplier(Config.BaseMultiplier), ActivatedAt = now(), ExpiresAt = now() + Config.DurationSeconds, PurchaserUserId = player.UserId, PurchaserUsername = player.Name, ReceiptKey = receiptKey }
+			activatedState.BoostPurchaseNotification = buildPurchaseNotification(activatedState)
 			return activatedState
 		end)
 	end)
 	if not ok then return false, "Global Luck save failed", false end
-	setLocalState(activatedState, true, activated and buildPurchaseNotification(activatedState) or nil)
+	setLocalState(activatedState, activated, activated and activatedState.BoostPurchaseNotification or nil)
 	if not activated then
 		pcall(function() receiptStore:SetAsync(receiptKey, true) end)
 		return true, "Global Luck is already active", true

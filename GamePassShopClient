@@ -41,6 +41,7 @@ local promptAttemptId = 0
 local pendingPassKey = nil
 local buttonByPassKey = {}
 local ownedLabelByPassKey = {}
+local OWNERSHIP_READY_ATTRIBUTE = "GamePassOwnershipReady"
 
 local function setButtonInputLocked(button, locked)
 	if not button then return end
@@ -52,7 +53,16 @@ end
 local function renderPass(passKey, passInfo)
 	local button = buttonByPassKey[passKey]
 	local ownedLabel = ownedLabelByPassKey[passKey]
+	local ownershipReady = player:GetAttribute(OWNERSHIP_READY_ATTRIBUTE) == true
 	local owns = player:GetAttribute(passInfo.Attribute) == true
+
+	if not ownershipReady then
+		button.Visible = false
+		ownedLabel.Visible = false
+		setButtonInputLocked(button, true)
+		return
+	end
+
 	button.Visible = not owns
 	setButtonInputLocked(button, promptBusy and pendingPassKey == passKey)
 	ownedLabel.Visible = owns
@@ -73,7 +83,7 @@ local function finishPrompt()
 end
 
 local function beginPurchase(passKey, passInfo)
-	if promptBusy then return end
+	if promptBusy or player:GetAttribute(OWNERSHIP_READY_ATTRIBUTE) ~= true then return end
 	if player:GetAttribute(passInfo.Attribute) == true then
 		renderPass(passKey, passInfo)
 		return
@@ -140,6 +150,8 @@ for passKey, passInfo in pairs(GamePassConfig.Passes) do
 		end
 	end)
 end
+
+player:GetAttributeChangedSignal(OWNERSHIP_READY_ATTRIBUTE):Connect(renderAll)
 
 MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(gamepassPlayer, gamePassId, purchased)
 	if gamepassPlayer ~= player then return end

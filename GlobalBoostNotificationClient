@@ -10,6 +10,8 @@ local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 local player = Players.LocalPlayer
 
 local DISPLAY_TIME = 6
+local STATE_RECONCILE_INTERVAL = 15
+local NOTIFICATION_REPLAY_WINDOW = 180
 local TWEEN_IN = TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 local TWEEN_OUT = TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 
@@ -171,6 +173,9 @@ local function handleState(remote, state)
 	local notification = state.BoostPurchaseNotification
 	if type(notification) ~= "table" then return end
 
+	local serverTime = tonumber(state.ServerTime) or os.time()
+	local activatedAt = tonumber(state.ActivatedAt) or serverTime
+	if math.abs(serverTime - activatedAt) > NOTIFICATION_REPLAY_WINDOW then return end
 
 	local id = tostring(notification.Id or "")
 	if id == "" or seenNotifications[id] then return end
@@ -183,13 +188,12 @@ local function handleState(remote, state)
 	showNotification(string.format("@%s has bought %s", username, boostName))
 end
 
-local function rememberActiveNotification(state)
-	if type(state) ~= "table" then return end
-	local notification = state.BoostPurchaseNotification
-	if type(notification) ~= "table" then return end
-	local id = tostring(notification.Id or "")
-	if id ~= "" then
-		seenNotifications[id] = true
+local function reconcileSource(source)
+	local ok, state = pcall(function()
+		return source.GetState:InvokeServer()
+	end)
+	if ok then
+		handleState(source.State, state)
 	end
 end
 
@@ -199,15 +203,10 @@ for _, source in ipairs(BOOST_SOURCES) do
 	end)
 
 	task.spawn(function()
-		local ok, state = pcall(function()
-			return source.GetState:InvokeServer()
-		end)
-		if ok then
-			-- Initial state fetches do not carry purchase notifications today, but
-			-- keep this guard after the live listener is connected in case a future
-			-- server version includes replay metadata. This avoids marking a live
-			-- purchase as seen before OnClientEvent can display it.
-			rememberActiveNotification(state)
+		reconcileSource(source)
+		while true do
+			task.wait(STATE_RECONCILE_INTERVAL)
+			reconcileSource(source)
 		end
 	end)
 end

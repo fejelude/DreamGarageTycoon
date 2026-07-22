@@ -63,6 +63,7 @@ local function sanitize(raw)
 		PurchaserUserId = tonumber(s.PurchaserUserId) or 0,
 		PurchaserUsername = tostring(s.PurchaserUsername or ""),
 		ReceiptKey = tostring(s.ReceiptKey or ""),
+		BoostPurchaseNotification = type(s.BoostPurchaseNotification) == "table" and s.BoostPurchaseNotification or nil,
 	}
 end
 
@@ -87,7 +88,7 @@ local function publicState(notification)
 		PurchaserUserId = s.PurchaserUserId,
 		PurchaserUsername = s.PurchaserUsername,
 		ServerTime = now(),
-		BoostPurchaseNotification = notification,
+		BoostPurchaseNotification = notification or s.BoostPurchaseNotification,
 	}
 end
 
@@ -212,6 +213,7 @@ function Service.ProcessReceipt(receiptInfo)
 				PurchaserUsername = player.Name,
 				ReceiptKey = receiptKey,
 			}
+			activatedState.BoostPurchaseNotification = buildPurchaseNotification(activatedState)
 			return activatedState
 		end)
 	end)
@@ -219,7 +221,7 @@ function Service.ProcessReceipt(receiptInfo)
 		return false, "Money Frenzy save failed", false
 	end
 
-	setLocalState(activatedState, true, activated and buildPurchaseNotification(activatedState) or nil)
+	setLocalState(activatedState, activated, activated and activatedState.BoostPurchaseNotification or nil)
 	pcall(function()
 		receiptStore:SetAsync(receiptKey, true)
 	end)
