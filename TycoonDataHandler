@@ -140,6 +140,7 @@ local STARTER_CAR_NAME = "Delta Item"
 local SETTINGS_REMOTE_NAME = "SettingsPersistenceEvent"
 local DAILY_REWARDS_STATE_ATTRIBUTE = "DailyRewardsStateJson"
 local FREE_REWARDS_CLAIMED_ATTRIBUTE = "FreeRewardsClaimed"
+local PROMO_CODE_REDEEMED_ATTRIBUTE = "PromoCodesRedeemedJson"
 local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
 local DAILY_REWARDS_SECONDS_PER_DAY = 24 * 60 * 60
 
@@ -1165,6 +1166,29 @@ local function getWalletValue(player)
 	return leaderstats and leaderstats:FindFirstChild("Wallet") or nil
 end
 
+local function sanitizePromoCodeHistory(value)
+	local sanitized = {}
+	if type(value) ~= "table" then
+		return sanitized
+	end
+
+	for code, data in pairs(value) do
+		if type(code) == "string" and code ~= "" then
+			if type(data) == "table" then
+				sanitized[code] = {
+					RedeemedAt = math.max(0, math.floor(tonumber(data.RedeemedAt) or 0)),
+					RewardType = type(data.RewardType) == "string" and data.RewardType or nil,
+					RewardAmount = math.max(0, math.floor(tonumber(data.RewardAmount) or 0)),
+				}
+			elseif data == true then
+				sanitized[code] = { RedeemedAt = 0 }
+			end
+		end
+	end
+
+	return sanitized
+end
+
 local function claimFreeReward(player, carName, walletCash)
 	if not player or not player.Parent then
 		return false, "Player missing"
@@ -1239,6 +1263,101 @@ end
 -- ----------------------------------------------------------------------------
 -- 🔄 ADMIN API (BindableFunction)
 -- ----------------------------------------------------------------------------
+local function redeemPromoCode(player, code, codeInfo)
+	if not save then
+		return false, "Unable to redeem the code. Please try again."
+	end
+
+	code = tostring(code or "")
+	if code == "" or type(codeInfo) ~= "table" then
+		return false, "Invalid code!"
+	end
+	if codeInfo.OncePerPlayer ~= false and codeInfo.Enabled ~= true then
+		return false, "Code is currently unavailable!"
+	end
+	if codeInfo.RewardType ~= "WalletCash" then
+		return false, "Unable to redeem the code. Please try again."
+	end
+
+	local amount = math.max(0, math.floor(tonumber(codeInfo.RewardAmount) or 0))
+	if amount <= 0 then
+		return false, "Unable to redeem the code. Please try again."
+	end
+
+	local session = SessionData[player]
+	if not session or not session.DataLoaded then
+		return false, "Unable to redeem the code. Please try again."
+	end
+
+	session.PromoCodeRedemptionInProgress = session.PromoCodeRedemptionInProgress or {}
+	if session.PromoCodeRedemptionInProgress[code] then
+		return false, "Unable to redeem the code. Please try again."
+	end
+	session.PromoCodeRedemptionInProgress[code] = true
+
+	local function finish(ok, message)
+		session.PromoCodeRedemptionInProgress[code] = nil
+		return ok, message
+	end
+
+	session.PromoCodesRedeemed = sanitizePromoCodeHistory(session.PromoCodesRedeemed)
+	if codeInfo.OncePerPlayer ~= false and session.PromoCodesRedeemed[code] then
+		return finish(false, "Code already claimed!")
+	end
+
+	local wallet = getWalletValue(player)
+	if not wallet then
+		return finish(false, "Unable to redeem the code. Please try again.")
+	end
+
+	local key = "User_V27_" .. player.UserId
+	local redeemedByStore = false
+	local newWalletValue = nil
+	local updateOk, updateErr = pcall(function()
+		PlayerDataStore:UpdateAsync(key, function(oldData)
+			oldData = oldData or {}
+			oldData.PromoCodesRedeemed = sanitizePromoCodeHistory(oldData.PromoCodesRedeemed)
+			if codeInfo.OncePerPlayer ~= false and oldData.PromoCodesRedeemed[code] then
+				redeemedByStore = true
+				return oldData
+			end
+
+			local baseWallet = math.max(math.floor(tonumber(oldData.Wallet) or 0), math.floor(tonumber(wallet.Value) or 0))
+			newWalletValue = baseWallet + amount
+			oldData.Wallet = newWalletValue
+			oldData.PromoCodesRedeemed[code] = {
+				RedeemedAt = os.time(),
+				RewardType = codeInfo.RewardType,
+				RewardAmount = amount,
+			}
+			oldData.LastUpdated = os.time()
+			oldData.LastOfflineAt = os.time()
+			return oldData
+		end)
+	end)
+
+	if not updateOk then
+		warn("[TycoonDataHandler] Promo code UpdateAsync failed for " .. player.Name .. ": " .. tostring(updateErr))
+		return finish(false, "Unable to redeem the code. Please try again.")
+	end
+
+	if redeemedByStore then
+		session.PromoCodesRedeemed[code] = session.PromoCodesRedeemed[code] or { RedeemedAt = os.time(), RewardType = codeInfo.RewardType, RewardAmount = amount }
+		return finish(false, "Code already claimed!")
+	end
+
+	if not newWalletValue then
+		return finish(false, "Unable to redeem the code. Please try again.")
+	end
+
+	wallet.Value = newWalletValue
+	session.PromoCodesRedeemed[code] = { RedeemedAt = os.time(), RewardType = codeInfo.RewardType, RewardAmount = amount }
+	player:SetAttribute(PROMO_CODE_REDEEMED_ATTRIBUTE, HttpService:JSONEncode(session.PromoCodesRedeemed))
+	markDirty(player)
+
+	return finish(true, codeInfo.SuccessMessage or "Code successfully redeemed!")
+end
+
 local function grantWalletCashProduct(player, purchaseId, productId, walletCash)
 	if not save then
 		return false, "Save system unavailable"
@@ -1324,6 +1443,10 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	elseif action == "ClaimFreeReward" and player then
 		local carName, walletCash = ...
 		return claimFreeReward(player, carName, walletCash)
+
+	elseif action == "RedeemPromoCode" and player then
+		local code, codeInfo = ...
+		return redeemPromoCode(player, code, codeInfo)
 
 	elseif action == "GrantWalletCashProduct" and player then
 		local purchaseId, productId, walletCash = ...
@@ -1779,6 +1902,7 @@ save = function(player, isClosing, force)
 			end
 		end
 		local robuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+		local promoCodesRedeemed = sanitizePromoCodeHistory(session.PromoCodesRedeemed)
 		do
 			local raw = player:GetAttribute("IndexDiscoveredJson")
 			if type(raw) == "string" and raw ~= "" then
@@ -2030,6 +2154,10 @@ save = function(player, isClosing, force)
 						mergedRobuxProductReceipts[receiptId] = receiptData
 					end
 					oldData.RobuxProductReceipts = compactRobuxReceiptHistory(mergedRobuxProductReceipts)
+					oldData.PromoCodesRedeemed = sanitizePromoCodeHistory(oldData.PromoCodesRedeemed)
+					for promoCode, promoData in pairs(promoCodesRedeemed) do
+						oldData.PromoCodesRedeemed[promoCode] = oldData.PromoCodesRedeemed[promoCode] or promoData
+					end
 					oldData.Settings = currentSettings
 					oldData.SettingsVersion = SETTINGS_SCHEMA_VERSION
 
@@ -2125,6 +2253,8 @@ local function InitializePlayer(player)
 		StarterPackSaveConfirmed = false,
 		StarterPackClearRequested = false,
 		WalletCashProductGrantInProgress = {},
+		PromoCodesRedeemed = {},
+		PromoCodeRedemptionInProgress = {},
 	}
 
 	-- Public ready flag used by DailyRewardsService so rewards cannot be claimed
@@ -2181,6 +2311,7 @@ local function InitializePlayer(player)
 		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {},
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
 		RobuxProductReceipts = {},
+		PromoCodesRedeemed = {},
 		DailyRewards = sanitizeDailyRewardsData(nil), FreeRewardsClaimed = false
 	}
 
@@ -2208,6 +2339,7 @@ local function InitializePlayer(player)
 	data.StarterPackPurchaseId = type(data.StarterPackPurchaseId) == "string" and data.StarterPackPurchaseId or nil
 	data.StarterPackReceipts = type(data.StarterPackReceipts) == "table" and data.StarterPackReceipts or {}
 	data.RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
+	data.PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
 	data.DailyRewards = sanitizeDailyRewardsData(data.DailyRewards)
 	data.FreeRewardsClaimed = data.FreeRewardsClaimed == true
 	data.LastOfflineAt = math.max(0, math.floor(tonumber(data.LastOfflineAt) or 0))
@@ -2239,6 +2371,7 @@ local function InitializePlayer(player)
 	SessionData[player].StarterPackSaveConfirmed = data.StarterPackPurchased == true
 	SessionData[player].StarterPackReceipts = {}
 	SessionData[player].RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
+	SessionData[player].PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
 	for receiptId, purchased in pairs(data.StarterPackReceipts) do
 		if type(receiptId) == "string" and purchased == true then
 			SessionData[player].StarterPackReceipts[receiptId] = true
@@ -2305,6 +2438,7 @@ local function InitializePlayer(player)
 	player:SetAttribute("IndexDiscoveredJson", HttpService:JSONEncode(discoveredList))
 	player:SetAttribute(DAILY_REWARDS_STATE_ATTRIBUTE, HttpService:JSONEncode(data.DailyRewards))
 	player:SetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE, data.FreeRewardsClaimed == true)
+	player:SetAttribute(PROMO_CODE_REDEEMED_ATTRIBUTE, HttpService:JSONEncode(SessionData[player].PromoCodesRedeemed))
 
 	local transferUsed = math.max(0, math.floor(tonumber(data.BankTransferLimitUsed) or 0))
 	local transferResetAt = math.max(0, math.floor(tonumber(data.BankTransferLimitResetAt) or 0))

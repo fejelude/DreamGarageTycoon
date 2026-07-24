@@ -1,0 +1,49 @@
+-- Purpose: Centralized configuration for Shop promotional redemption codes.
+-- Location: ReplicatedStorage > PromoCodeConfig
+-- Notes: Codes are normalized to uppercase and trimmed before lookup.
+
+local PromoCodeConfig = {}
+
+PromoCodeConfig.ResultMessages = {
+	Success = "Code successfully redeemed!",
+	AlreadyClaimed = "Code already claimed!",
+	Invalid = "Invalid code!",
+	Expired = "Code expired!",
+	Unavailable = "Code is currently unavailable!",
+	Empty = "Please enter a code!",
+	Failed = "Unable to redeem the code. Please try again.",
+}
+
+PromoCodeConfig.Codes = {
+	RELEASE = {
+		Code = "RELEASE",
+		Enabled = true,
+		ExpiresAt = nil,
+		RewardType = "WalletCash",
+		RewardAmount = 25000,
+		RewardId = nil,
+		OncePerPlayer = true,
+		SuccessMessage = PromoCodeConfig.ResultMessages.Success,
+		DisplayName = "Release",
+		Description = "$25,000 Wallet cash",
+	},
+}
+
+function PromoCodeConfig.NormalizeCode(code)
+	if type(code) ~= "string" then
+		return ""
+	end
+
+	return string.upper((code:gsub("^%s+", ""):gsub("%s+$", "")))
+end
+
+function PromoCodeConfig.GetCode(code)
+	return PromoCodeConfig.Codes[PromoCodeConfig.NormalizeCode(code)]
+end
+
+function PromoCodeConfig.IsExpired(codeInfo, now)
+	local expiresAt = codeInfo and tonumber(codeInfo.ExpiresAt)
+	return expiresAt ~= nil and expiresAt > 0 and (now or os.time()) >= expiresAt
+end
+
+return PromoCodeConfig
