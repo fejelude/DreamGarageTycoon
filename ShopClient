@@ -6,6 +6,7 @@
 --   StarterGui > MainButtons > Shop             (opens the shop)
 --   StarterGui > ShopUI > MainFrame             (shop UI)
 --   StarterGui > ShopUI > MainFrame > CloseButton (closes the shop)
+--   ReplicatedStorage > ShopCodeRedemptionFunction (RemoteFunction; pre-created in Studio)
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -25,6 +26,17 @@ local shopScreenGui = shopGui:IsA("ScreenGui")
 
 local mainFrame = shopGui:WaitForChild("MainFrame")
 local closeButton = mainFrame:WaitForChild("CloseButton")
+local featuredButton = mainFrame:WaitForChild("Featured")
+local shopScrolling = mainFrame:WaitForChild("ShopUIScrolling")
+local shopElements = shopScrolling:WaitForChild("ShopElements")
+local codeBox = shopElements:WaitForChild("Codes"):WaitForChild("Elements"):WaitForChild("CodeBox")
+local verifyButton = codeBox:WaitForChild("Verify")
+local carsHitRegister = shopElements:WaitForChild("Cars"):WaitForChild("HitRegister")
+local redeemCodeFunction = ReplicatedStorage:WaitForChild("ShopCodeRedemptionFunction")
+if not redeemCodeFunction:IsA("RemoteFunction") then
+	error("[ShopClient] ReplicatedStorage > ShopCodeRedemptionFunction must be a RemoteFunction, got " .. redeemCodeFunction.ClassName, 0)
+end
+local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
 
 local mainButtonsGui = playerGui:WaitForChild("MainButtons")
 local buttonsContainer = mainButtonsGui:FindFirstChild("Buttons") or mainButtonsGui
@@ -32,10 +44,13 @@ local openButton = buttonsContainer:WaitForChild("Shop")
 
 local OPEN_FOV = 50
 local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+local NAVIGATION_TWEEN = TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 local isOpen = false
 local hiddenGuis = {}
 local savedFOV = 70
+local navigationTween = nil
+local redeemBusy = false
 
 local BALANCE_INDICATOR_GUI_NAME = "Balance Indicator"
 
@@ -135,8 +150,89 @@ end
 
 setMainFrameVisible(false)
 
+local function getCanvasMaxY()
+	local canvasHeight = shopScrolling.AbsoluteCanvasSize.Y
+	if canvasHeight <= 0 then
+		canvasHeight = shopScrolling.CanvasSize.Y.Offset + (shopScrolling.CanvasSize.Y.Scale * shopScrolling.AbsoluteSize.Y)
+	end
+	return math.max(0, canvasHeight - shopScrolling.AbsoluteSize.Y)
+end
+
+local function scrollToFeaturedCars()
+	if navigationTween then
+		navigationTween:Cancel()
+		navigationTween = nil
+	end
+
+	local relativeY = carsHitRegister.AbsolutePosition.Y - shopScrolling.AbsolutePosition.Y
+	local targetY = shopScrolling.CanvasPosition.Y + relativeY
+	local padding = 0
+	local listLayout = shopElements:FindFirstChildOfClass("UIListLayout")
+	if listLayout then
+		padding = listLayout.Padding.Offset
+	end
+	targetY = math.clamp(targetY - padding, 0, getCanvasMaxY())
+
+	navigationTween = TweenService:Create(shopScrolling, NAVIGATION_TWEEN, {
+		CanvasPosition = Vector2.new(shopScrolling.CanvasPosition.X, targetY),
+	})
+	navigationTween.Completed:Connect(function()
+		navigationTween = nil
+	end)
+	navigationTween:Play()
+end
+
+local function setVerifyLocked(locked)
+	verifyButton.Active = not locked
+	verifyButton.Selectable = not locked
+	pcall(function() verifyButton.Interactable = not locked end)
+end
+
+local function submitCode()
+	if redeemBusy then return end
+	local normalizedInput = tostring(codeBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if normalizedInput == "" then
+		shopFeedback:Failed("Please enter a code!")
+		UIAudioConfig.PlayNamed("BuyFail")
+		return
+	end
+
+	redeemBusy = true
+	setVerifyLocked(true)
+
+	local ok, result = pcall(function()
+		return redeemCodeFunction:InvokeServer(normalizedInput)
+	end)
+
+	redeemBusy = false
+	setVerifyLocked(false)
+
+	if ok and type(result) == "table" then
+		local message = tostring(result.Message or "Unable to redeem the code. Please try again.")
+		if result.Success == true then
+			codeBox.Text = ""
+			shopFeedback:Success(message)
+			UIAudioConfig.PlayNamed("BuySuccess")
+		else
+			shopFeedback:Failed(message)
+			UIAudioConfig.PlayNamed("BuyFail")
+		end
+	else
+		shopFeedback:Failed("Unable to redeem the code. Please try again.")
+		UIAudioConfig.PlayNamed("BuyFail")
+	end
+end
+
 UIButtonUtils.SetupButton(openButton, openShop)
 UIButtonUtils.SetupButton(closeButton, closeShop)
+UIButtonUtils.SetupButton(featuredButton, scrollToFeaturedCars)
+UIButtonUtils.SetupButton(verifyButton, submitCode)
+
+codeBox.FocusLost:Connect(function(enterPressed)
+	if enterPressed then
+		submitCode()
+	end
+end)
 
 if shopScreenGui then
 	shopScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()

@@ -1,0 +1,90 @@
+-- Purpose: Server-authoritative Shop promotional code redemption.
+-- Location: ServerScriptService > ShopCodeRedemptionService
+-- Networking: ReplicatedStorage > ShopCodeRedemptionFunction (RemoteFunction)
+-- Studio setup: this script intentionally does not create remotes/bindables.
+-- Required new instance: ReplicatedStorage > ShopCodeRedemptionFunction (RemoteFunction).
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local PromoCodeConfig = require(ReplicatedStorage:WaitForChild("PromoCodeConfig"))
+
+local redeemFunction = ReplicatedStorage:WaitForChild("ShopCodeRedemptionFunction", 15)
+if not redeemFunction then
+	error("[ShopCodeRedemptionService] Missing required RemoteFunction: ReplicatedStorage > ShopCodeRedemptionFunction", 0)
+end
+if not redeemFunction:IsA("RemoteFunction") then
+	error("[ShopCodeRedemptionService] ReplicatedStorage > ShopCodeRedemptionFunction must be a RemoteFunction, got " .. redeemFunction.ClassName, 0)
+end
+
+local adminApi = ServerStorage:WaitForChild("TycoonAdminAPI", 15)
+if not adminApi then
+	error("[ShopCodeRedemptionService] Missing required BindableFunction: ServerStorage > TycoonAdminAPI", 0)
+end
+if not adminApi:IsA("BindableFunction") then
+	error("[ShopCodeRedemptionService] ServerStorage > TycoonAdminAPI must be a BindableFunction, got " .. adminApi.ClassName, 0)
+end
+
+local requestLocks = {}
+
+local function response(ok, message, code)
+	return {
+		Success = ok == true,
+		Message = message or PromoCodeConfig.ResultMessages.Failed,
+		Code = code,
+	}
+end
+
+local function redeem(player, rawCode)
+	local normalizedCode = PromoCodeConfig.NormalizeCode(rawCode)
+	if normalizedCode == "" then
+		return response(false, PromoCodeConfig.ResultMessages.Empty)
+	end
+
+	local lockKey = tostring(player.UserId) .. ":" .. normalizedCode
+	if requestLocks[lockKey] then
+		return response(false, PromoCodeConfig.ResultMessages.Failed, normalizedCode)
+	end
+
+	requestLocks[lockKey] = true
+	local function finish(result)
+		requestLocks[lockKey] = nil
+		return result
+	end
+
+	local codeInfo = PromoCodeConfig.GetCode(normalizedCode)
+	if not codeInfo then
+		return finish(response(false, PromoCodeConfig.ResultMessages.Invalid, normalizedCode))
+	end
+
+	if codeInfo.Enabled ~= true then
+		return finish(response(false, PromoCodeConfig.ResultMessages.Unavailable, normalizedCode))
+	end
+
+	if PromoCodeConfig.IsExpired(codeInfo) then
+		return finish(response(false, PromoCodeConfig.ResultMessages.Expired, normalizedCode))
+	end
+
+	local ok, grantOk, grantMessage = pcall(function()
+		return adminApi:Invoke("RedeemPromoCode", player, normalizedCode, codeInfo)
+	end)
+
+	if not ok then
+		warn("[ShopCodeRedemptionService] RedeemPromoCode failed: " .. tostring(grantOk))
+		return finish(response(false, PromoCodeConfig.ResultMessages.Failed, normalizedCode))
+	end
+
+	if grantOk == true then
+		return finish(response(true, grantMessage or codeInfo.SuccessMessage or PromoCodeConfig.ResultMessages.Success, normalizedCode))
+	end
+
+	return finish(response(false, grantMessage or PromoCodeConfig.ResultMessages.Failed, normalizedCode))
+end
+
+redeemFunction.OnServerInvoke = function(player, rawCode)
+	if not player or not player.Parent then
+		return response(false, PromoCodeConfig.ResultMessages.Failed)
+	end
+
+	return redeem(player, rawCode)
+end
