@@ -1,9 +1,9 @@
--- Purpose: Handles server-side validation and execution for selling cars to Lorraine.
+-- Purpose: Handles server-side validation and execution for selling cars to Sofhia.
 -- Runs on: Server
--- Location: ServerScriptService > LorraineSellService
+-- Location: ServerScriptService > SofhiaSellService
 -- Dependencies: ReplicatedStorage, ServerStorage, Players
 -- Public API: None
--- Networking: Listens to LorraineSellFunction (RemoteFunction)
+-- Networking: Listens to SofhiaSellFunction (RemoteFunction)
 -- Security: Server-authoritative inventory checks, debounces, distance checks, and economy limits.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -11,7 +11,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local Players = game:GetService("Players")
 
 local CarSellPrices = require(ReplicatedStorage:WaitForChild("CarSellPrices"))
-local SellFunction = ReplicatedStorage:WaitForChild("LorraineSellFunction")
+local SellFunction = ReplicatedStorage:WaitForChild("SofhiaSellFunction")
 local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
 
 local MAX_DISTANCE = 30 -- Max interaction distance
@@ -31,7 +31,7 @@ local function getServerEquippedCar(player)
 	return nil, nil
 end
 
-local function validatePlayerNearLorraine(player)
+local function validatePlayerNearSofhia(player)
 	local character = player.Character
 	if not character then
 		return false, "Character not found."
@@ -44,15 +44,15 @@ local function validatePlayerNearLorraine(player)
 		return false, "Security Check Failed: Distance could not be verified."
 	end
 
-	local lorraineNpc = npcFolder:FindFirstChild("Lorraine")
-	if not pRoot or not lorraineNpc then
-		if not lorraineNpc then
-			warn("⚠️ Lorraine NPC not found in NPCS folder!")
+	local sofhiaNpc = npcFolder:FindFirstChild("Sofhia")
+	if not pRoot or not sofhiaNpc then
+		if not sofhiaNpc then
+			warn("⚠️ Sofhia NPC not found in NPCS folder!")
 		end
 		return false, "Security Check Failed: Distance could not be verified."
 	end
 
-	local npcRoot = lorraineNpc:FindFirstChild("HumanoidRootPart") or lorraineNpc.PrimaryPart
+	local npcRoot = sofhiaNpc:FindFirstChild("HumanoidRootPart") or sofhiaNpc.PrimaryPart
 	if not npcRoot then
 		return false, "NPC not found."
 	end
@@ -149,7 +149,7 @@ local function sellAllInventoryCars(player)
 	wallet.Value += sellAmount
 	TycoonAdminAPI:Invoke("MarkInventoryCleared", player)
 
-	print("💰 Lorraine Sell All: " .. player.Name .. " sold " .. tostring(#toolsToSell) .. " inventory cars for $" .. tostring(sellAmount))
+	print("💰 Sofhia Sell All: " .. player.Name .. " sold " .. tostring(#toolsToSell) .. " inventory cars for $" .. tostring(sellAmount))
 	return true, "Success", sellAmount, #toolsToSell
 end
 
@@ -231,7 +231,7 @@ local function sellEquippedCar(player, requestedCarId)
 	end
 
 	wallet.Value += sellAmount
-	print("💰 Lorraine Sell: " .. player.Name .. " sold " .. cleanActualId .. " for $" .. sellAmount)
+	print("💰 Sofhia Sell: " .. player.Name .. " sold " .. cleanActualId .. " for $" .. sellAmount)
 
 	return true, "Success"
 end
@@ -249,8 +249,8 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 	activeTransactions[player.UserId] = true
 
 	local success, result, msg, sellAmount, soldCount = pcall(function()
-		-- 3. Validation: Verify character and distance to Lorraine
-		local isNear, distanceMessage = validatePlayerNearLorraine(player)
+		-- 3. Validation: Verify character and distance to Sofhia
+		local isNear, distanceMessage = validatePlayerNearSofhia(player)
 		if not isNear then
 			return false, distanceMessage
 		end
@@ -266,7 +266,7 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 	-- anti-spam cooldown. The old 5-second fixed delay conflicted with the
 	-- immediate release in the error path, and blocked legitimate retries too long.
 	if not success then
-		warn("⚠️ Lorraine Transaction Error for " .. player.Name .. ": " .. tostring(result))
+		warn("⚠️ Sofhia Transaction Error for " .. player.Name .. ": " .. tostring(result))
 		activeTransactions[player.UserId] = nil
 		return false, "System Error"
 	end
