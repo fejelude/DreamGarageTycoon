@@ -1,9 +1,9 @@
--- Purpose: Handles Client UI and NPC Dialogue for Lorraine (Car Sell System).
+-- Purpose: Handles Client UI and NPC Dialogue for Sofhia (Car Sell System).
 -- Runs on: Client
--- Location: StarterPlayerScripts.LorraineDialogueLogic
+-- Location: StarterPlayerScripts.SofhiaDialogueLogic
 -- Dependencies: TweenService, Players, Workspace, SoundService, UserInputService, ReplicatedStorage
 -- Public API: None
--- Networking: Invokes LorraineSellFunction (Client -> Server)
+-- Networking: Invokes SofhiaSellFunction (Client -> Server)
 -- Security: Client visual and prompt only. Server authorizes all transaction details.
 
 local TweenService = game:GetService("TweenService")
@@ -20,22 +20,22 @@ local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 local playerGui = player:WaitForChild("PlayerGui")
 
-print("🌸 [LorraineDebug] Script Initializing...")
+print("🌸 [SofhiaDebug] Script Initializing...")
 
 -- ============================================================================
 -- 🎨 COLOR CONFIGURATION
 -- ============================================================================
 local USER_COLOR = "#55AAFF"
-local LORRAINE_COLOR = "#FF69B4"
+local SOFHIA_COLOR = "#FF69B4"
 local SUCCESS_COLOR = "#50C878"
 local PRICE_COLOR = "#FFD700"
 
 -- ============================================================================
 -- 🆔 UNIQUE IDENTIFIERS
 -- ============================================================================
-local GUI_ID = "UI_NPC_Lorraine"
-local CONTAINER_ID = "UI_NPC_Lorraine_Frame_Container"
-local TEXT_ID = "Text_Lorraine_Dialogue"
+local GUI_ID = "UI_NPC_Sofhia"
+local CONTAINER_ID = "UI_NPC_Sofhia_Frame_Container"
+local TEXT_ID = "Text_Sofhia_Dialogue"
 local BUTTONS_FOLDER = "Buttons"
 
 local BTN_SELL_EVERYTHING_ID = "Btn_SellEverything"
@@ -43,7 +43,7 @@ local BTN_SELL_ID = "Btn_Sell"
 local BTN_LEAVE_ID = "Btn_Leave"
 local ALL_BUTTON_IDS = {BTN_SELL_EVERYTHING_ID, BTN_SELL_ID, BTN_LEAVE_ID}
 
-local TARGET_NPC = "Lorraine"
+local TARGET_NPC = "Sofhia"
 local CAMERA_PART = "CameraAimPart"
 local PROMPT_NAME = "TalkPrompt"
 
@@ -73,7 +73,61 @@ local hiddenGuis = {}
 local hiddenObjects = {}
 local controls = require(player.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
 
-local SellFunction = ReplicatedStorage:WaitForChild("LorraineSellFunction")
+local SellFunction = ReplicatedStorage:WaitForChild("SofhiaSellFunction")
+
+-- Keep Sofhia's responses fresh without changing any transaction behavior.
+-- The last response in each category is remembered so back-to-back interactions
+-- do not select the same line when another variation is available.
+local DIALOGUES = {
+	Greeting = {
+		"Hiya! ✨ I'm Sofhia. I can buy the car you're holding, or every sellable car in your inventory—whichever you like! ♡",
+		"Oh, hello there! 🌸 Got a car you'd like to sell? I can buy one from your hands or gather up all your sellable inventory cars!",
+		"Welcome, friend! ♡ Sofhia's car counter is open~ Show me one car, or choose them all, and I'll take care of the rest! ✨",
+	},
+	NoCars = {
+		"Nice! Looks like I already bought every car you have! Come back when you find more cars, okay? ♡",
+		"Your inventory is all cleared out—I've already bought every available car! Bring me another one whenever you're ready. 🌸",
+		"Aww, there aren't any eligible cars left for me to buy right now. Your placed garage cars are safe, so come visit again when you find more! ✨",
+		"No sellable cars this time! It looks like we've finished the whole collection for now. I'll be right here when you get more~ ♡",
+	},
+	NoEquippedCar = {
+		"I don't see a car in your hands yet~ Equip an eligible car and bring it over, okay? 🌸",
+		"Oopsie, your hands are empty! Hold the car you'd like to sell, then come talk to me again. ♡",
+		"I'd be happy to buy one, but you'll need to equip a sellable car first. I'll wait right here! ✨",
+	},
+	UnknownItem = {
+		"Hmm, I can't find a sell price for that item. Could you bring me an eligible car instead? 🌸",
+		"Oh! That doesn't look like a car I can buy. Try equipping one with a listed sell value, okay? ♡",
+		"My little price book doesn't recognize that item yet~ Let's try another car! ✨",
+	},
+	SellOneSuccess = {
+		"Yay, sold! 🌟 The payment is in your wallet. Thanks for bringing me such a neat car! ♡",
+		"All done! ✨ I bought your car and added the payment to your wallet. Come back anytime!",
+		"Perfect—our deal is complete! 🌸 Your wallet has been updated, and your car is safely off to its new home.",
+	},
+	SellAllSuccess = {
+		"All done! I bought %d inventory %s for <b><font color='%s'>$%s</font></b>. Your placed garage cars stayed safe and untouched. ✨",
+		"Yay! %d inventory %s sold for <b><font color='%s'>$%s</font></b>! Your garage display is exactly as you left it. ♡",
+		"What a lovely haul~ I bought %d inventory %s and added <b><font color='%s'>$%s</font></b> to your wallet. Your placed cars are still safe! 🌸",
+	},
+	Failure = {
+		"Oh no, I couldn't complete that sale just yet. %s Please try again in a moment! 🌸",
+		"Oopsie—the transaction didn't go through. %s Nothing extra was sold or paid, so it's safe to try again. ♡",
+		"Aww, the sale had to stop. %s Check your car and come chat with me again, okay? ✨",
+	},
+}
+
+local lastDialogueIndexes = {}
+local function chooseDialogue(category)
+	local choices = DIALOGUES[category]
+	if not choices or #choices == 0 then return "" end
+	local index = math.random(1, #choices)
+	if #choices > 1 and index == lastDialogueIndexes[category] then
+		index = (index % #choices) + 1
+	end
+	lastDialogueIndexes[category] = index
+	return choices[index]
+end
 
 -- ============================================================================
 -- 🔒 FORCE HIDE UI ON LOAD
@@ -543,7 +597,7 @@ local function handleSellEverything(dialogueLabel)
 
 	local totalValue, carCount = getInventorySellTotal()
 	if carCount <= 0 or totalValue <= 0 then
-		typewrite(dialogueLabel, "Oh sweetheart~ I don't see any cars in your inventory to buy right now. Your placed garage cars will stay safe and untouched. 🌸", function()
+		typewrite(dialogueLabel, chooseDialogue("NoCars"), function()
 			isProcessingSell = false
 			task.wait(2)
 			stopInteraction()
@@ -590,7 +644,7 @@ local function handleSellEverything(dialogueLabel)
 
 			if not invokeCompleted then
 				pcall(task.cancel, invokeThread)
-				warn("⚠️ LorraineSellFunction InvokeServer timed out.")
+				warn("⚠️ SofhiaSellFunction InvokeServer timed out.")
 				success = false
 				msg = "The server is taking too long to respond."
 			end
@@ -602,13 +656,14 @@ local function handleSellEverything(dialogueLabel)
 				local soldCount = tonumber(serverCarCount) or carCount
 				local soldAmount = tonumber(serverSellAmount) or totalValue
 				local soldWord = soldCount == 1 and "car" or "cars"
-				typewrite(dialogueLabel, "All done, darling~ I bought " .. soldCount .. " inventory " .. soldWord .. " for <b><font color='" .. PRICE_COLOR .. "'>$" .. FormatCommas(soldAmount) .. "</font></b>. Your garage cars were left just as they were. ✨", function()
+				local successText = string.format(chooseDialogue("SellAllSuccess"), soldCount, soldWord, PRICE_COLOR, FormatCommas(soldAmount))
+				typewrite(dialogueLabel, successText, function()
 					isProcessingSell = false
 					task.wait(1.5)
 					stopInteraction()
 				end)
 			else
-				typewrite(dialogueLabel, "Oh dear... I couldn't finish that sale. " .. (msg or "Try again later.") .. " 💔", function()
+				typewrite(dialogueLabel, string.format(chooseDialogue("Failure"), msg or "Please try again later."), function()
 					isProcessingSell = false
 					task.wait(2)
 					stopInteraction()
@@ -624,7 +679,7 @@ local function handleSell(dialogueLabel)
 	local equippedCarId = getEquippedCar()
 	if not equippedCarId then
 		-- No car equipped
-		typewrite(dialogueLabel, "Hmm~ I'd love to help, but darling, you aren't holding anything~ Equip a car first and come back to me! 🌸", function()
+		typewrite(dialogueLabel, chooseDialogue("NoEquippedCar"), function()
 			task.wait(2)
 			stopInteraction()
 		end)
@@ -634,7 +689,7 @@ local function handleSell(dialogueLabel)
 	local details = CarSellPrices.GetDetails(equippedCarId)
 	if not details then
 		-- Unknown item
-		typewrite(dialogueLabel, "Oh my~ I'm afraid I don't know the value of that item, darling. Are you sure it's a car? ✨", function()
+		typewrite(dialogueLabel, chooseDialogue("UnknownItem"), function()
 			task.wait(2)
 			stopInteraction()
 		end)
@@ -693,7 +748,7 @@ local function handleSell(dialogueLabel)
 
 			if not invokeCompleted then
 				pcall(task.cancel, invokeThread)
-				warn("⚠️ LorraineSellFunction InvokeServer timed out.")
+				warn("⚠️ SofhiaSellFunction InvokeServer timed out.")
 				success = false
 				msg = "The server is taking too long to respond."
 			end
@@ -702,13 +757,13 @@ local function handleSell(dialogueLabel)
 
 			if success then
 				UIAudioConfig.PlayClick()
-				typewrite(dialogueLabel, "Wonderful~ 🌟 It was a pleasure doing business with you, darling! Your wallet is looking quite fabulous now~ ✨", function()
+				typewrite(dialogueLabel, chooseDialogue("SellOneSuccess"), function()
 					isProcessingSell = false
 					task.wait(1.5)
 					stopInteraction()
 				end)
 			else
-				typewrite(dialogueLabel, "Oh dear... Something went wrong. " .. (msg or "Try again later.") .. " 💔", function()
+				typewrite(dialogueLabel, string.format(chooseDialogue("Failure"), msg or "Please try again later."), function()
 					isProcessingSell = false
 					task.wait(2)
 					stopInteraction()
@@ -733,7 +788,7 @@ local function startInteraction(npcModel)
 
 	local camPart = npcModel:FindFirstChild(CAMERA_PART)
 	if not camPart then
-		warn("❌ [LorraineDebug] Error: Missing '" .. CAMERA_PART .. "'")
+		warn("❌ [SofhiaDebug] Error: Missing '" .. CAMERA_PART .. "'")
 		isInteracting = false
 		return
 	end
@@ -749,18 +804,18 @@ local function startInteraction(npcModel)
 	TweenService:Create(camera, TWEEN_INFO, {CFrame = camPart.CFrame}):Play()
 
 	local myGui = playerGui:WaitForChild(GUI_ID, 5)
-	if not myGui then warn("❌ [LorraineDebug] Missing GUI") stopInteraction() return end
+	if not myGui then warn("❌ [SofhiaDebug] Missing GUI") stopInteraction() return end
 
 	myGui.Enabled = true
 	local container = myGui:FindFirstChild(CONTAINER_ID, true)
-	if not container then warn("❌ [LorraineDebug] Missing Frame") stopInteraction() return end
+	if not container then warn("❌ [SofhiaDebug] Missing Frame") stopInteraction() return end
 
 	container.Visible = true
 	setButtonsState(false)
 
 	local dialogueLabel = container:FindFirstChild(TEXT_ID, true)
 	if dialogueLabel then
-		local greeting = "Oh my~ Welcome, darling! ✨ I can buy one special car you are holding, or all the cars in your inventory if you prefer~"
+		local greeting = chooseDialogue("Greeting")
 
 		typewrite(dialogueLabel, greeting, function()
 			setButtonsState(true)
@@ -787,7 +842,7 @@ local function startInteraction(npcModel)
 
 				table.insert(buttonConnections, conn)
 			else
-				warn("⚠️ [LorraineDebug] Warning: Could not find button '" .. btnName .. "' in UI.")
+				warn("⚠️ [SofhiaDebug] Warning: Could not find button '" .. btnName .. "' in UI.")
 			end
 		end
 
@@ -814,7 +869,7 @@ local function startInteraction(npcModel)
 			handleSell(dialogueLabel)
 		end)
 	else
-		warn("❌ [LorraineDebug] ERROR: Could not find TextLabel named '" .. TEXT_ID .. "' inside Container!")
+		warn("❌ [SofhiaDebug] ERROR: Could not find TextLabel named '" .. TEXT_ID .. "' inside Container!")
 		setButtonsState(true)
 	end
 end

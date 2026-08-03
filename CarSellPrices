@@ -1,4 +1,4 @@
--- Purpose: Defines the sell prices for all cars, used by Lorraine NPC system.
+-- Purpose: Defines the sell prices for all cars, used by Sofhia NPC system.
 -- Runs on: Shared
 -- Location: ReplicatedStorage > CarSellPrices
 -- Dependencies: CarStats
