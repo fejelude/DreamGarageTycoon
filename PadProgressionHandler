@@ -68,15 +68,16 @@ local function toggleVisual(obj, isVisible, canTouch)
 end
 
 local function getLevelModel(plot, levelName)
-	local altName = levelName == "Level1" and "Level 1" or (levelName == "Level2" and "Level 2" or levelName)
-	local model = plot:FindFirstChild(levelName) or plot:FindFirstChild(altName)
+	local canonicalName = levelName == "Level1" and "NormalLevel1"
+		or (levelName == "Level2" and "NormalLevel2" or levelName)
+	local model = plot:FindFirstChild(canonicalName)
 	if model then return model end
 
 	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 	if dedicatedFolder then
 		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
 		if plotStorage then
-			return plotStorage:FindFirstChild(levelName) or plotStorage:FindFirstChild(altName)
+			return plotStorage:FindFirstChild(canonicalName)
 		end
 	end
 	return nil
@@ -97,13 +98,21 @@ local function setLevelVisibility(plot, level1Model, level2Model, baseLevel)
 		plotStorage.Parent = storageFolder
 	end
 
-	if baseLevel == 1 then
-		if level1Model and level1Model.Parent ~= plot then level1Model.Parent = plot end
-		if level2Model and level2Model.Parent ~= plotStorage then level2Model.Parent = plotStorage end
-	elseif baseLevel == 2 then
-		if level1Model and level1Model.Parent ~= plotStorage then level1Model.Parent = plotStorage end
-		if level2Model and level2Model.Parent ~= plot then level2Model.Parent = plot end
-	end
+	local activeModel = baseLevel == 1 and level1Model or level2Model
+	local inactiveModel = baseLevel == 1 and level2Model or level1Model
+	if not activeModel or not inactiveModel or activeModel.Parent == plot then return end
+
+	-- Pads are siblings of their level model. Detach the incoming folder briefly so
+	-- both containers can exchange their identically named Pads children safely.
+	local activePads = activeModel.Parent:FindFirstChild("Pads")
+	local inactivePads = inactiveModel.Parent:FindFirstChild("Pads")
+	if not activePads or not inactivePads then return end
+
+	activePads.Parent = nil
+	inactivePads.Parent = plotStorage
+	activePads.Parent = plot
+	inactiveModel.Parent = plotStorage
+	activeModel.Parent = plot
 end
 
 local function updatePadVisuals(plot, unlockedLevel, baseLevel)
@@ -118,13 +127,15 @@ local function updatePadVisuals(plot, unlockedLevel, baseLevel)
 	for i = 1, 22 do
 		local padName = "Pad" .. i
 
-		-- Gather all copies of this pad (might exist in both Level1 and Level2)
+		-- Gather all copies of this pad (the Level 1 pads are direct children of the tycoon).
 		local padModels = {}
-		if level1Model and level1Model:FindFirstChild("Pads") and level1Model.Pads:FindFirstChild(padName) then
-			table.insert(padModels, level1Model.Pads:FindFirstChild(padName))
+		local level1Pads = level1Model and level1Model.Parent:FindFirstChild("Pads")
+		if level1Pads and level1Pads:FindFirstChild(padName) then
+			table.insert(padModels, level1Pads:FindFirstChild(padName))
 		end
-		if level2Model and level2Model:FindFirstChild("Pads") and level2Model.Pads:FindFirstChild(padName) then
-			table.insert(padModels, level2Model.Pads:FindFirstChild(padName))
+		local level2Pads = level2Model and level2Model.Parent:FindFirstChild("Pads")
+		if level2Pads and level2Pads:FindFirstChild(padName) then
+			table.insert(padModels, level2Pads:FindFirstChild(padName))
 		end
 
 		for _, padModel in ipairs(padModels) do
@@ -292,8 +303,8 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 				local level1 = getLevelModel(plot, "Level1")
 				local level2 = getLevelModel(plot, "Level2")
 				if level1 and level2 then
-					local l1Pads = level1:FindFirstChild("Pads")
-					local l2Pads = level2:FindFirstChild("Pads")
+					local l1Pads = level1.Parent:FindFirstChild("Pads")
+					local l2Pads = level2.Parent:FindFirstChild("Pads")
 					if l1Pads and l2Pads then
 						for _, l1PadObj in pairs(l1Pads:GetChildren()) do
 							local padNum = l1PadObj.Name:match("Pad(%d+)")
@@ -474,20 +485,24 @@ local function setupPlot(plot)
 			end
 		end
 
-		local level1 = plot:WaitForChild("Level1", 10)
-		setupPadsInFolder(level1)
+		local level1 = getLevelModel(plot, "Level1")
+		local level1Pads = level1 and level1.Parent:WaitForChild("Pads", 10)
+		if level1Pads then
+			for i = 2, 22 do
+				local pad = level1Pads:FindFirstChild("Pad" .. i)
+				if pad then setupBuyButton(plot, pad, i) end
+			end
+		end
 
-		local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 		local level2 = getLevelModel(plot, "Level2")
-
-		setupPadsInFolder(level2)
+		setupPadsInFolder(level2 and level2.Parent)
 
 		local level2BuyButton = plot:WaitForChild("Level2BuyButton", 5)
 		if not level2BuyButton then
 			level2BuyButton = plot:FindFirstChild("Level 2 Buy Button")
 		end
 		
-		-- FIX: If the button is inside Level1 (map builder error), find it
+		-- FIX: If the button is inside NormalLevel1 (map builder error), find it
 		if not level2BuyButton then
 			local l1 = getLevelModel(plot, "Level1")
 			if l1 then

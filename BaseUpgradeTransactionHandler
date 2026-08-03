@@ -40,15 +40,16 @@ local function formatBaseSwitchCooldownMessage(remainingSeconds)
 end
 
 local function getLevelModel(plot, levelName)
-	local altName = levelName == "Level1" and "Level 1" or (levelName == "Level2" and "Level 2" or levelName)
-	local model = plot:FindFirstChild(levelName) or plot:FindFirstChild(altName)
+	local canonicalName = levelName == "Level1" and "NormalLevel1"
+		or (levelName == "Level2" and "NormalLevel2" or levelName)
+	local model = plot:FindFirstChild(canonicalName)
 	if model then return model end
 
 	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 	if dedicatedFolder then
 		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
 		if plotStorage then
-			return plotStorage:FindFirstChild(levelName) or plotStorage:FindFirstChild(altName)
+			return plotStorage:FindFirstChild(canonicalName)
 		end
 	end
 	return nil
@@ -75,8 +76,8 @@ end
 local function migratePadOccupancy(plot, fromLevel, toLevel)
 	local fromModel = getLevelModel(plot, "Level" .. tostring(fromLevel))
 	local toModel = getLevelModel(plot, "Level" .. tostring(toLevel))
-	local fromPads = fromModel and fromModel:FindFirstChild("Pads")
-	local toPads = toModel and toModel:FindFirstChild("Pads")
+	local fromPads = fromModel and fromModel.Parent:FindFirstChild("Pads")
+	local toPads = toModel and toModel.Parent:FindFirstChild("Pads")
 	if not fromPads or not toPads then
 		return false, "Base pads are unavailable. Please try again."
 	end

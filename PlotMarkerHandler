@@ -164,8 +164,8 @@ end
 local function getLevelFolders(plot)
 	local folders = {}
 
-	local level1 = plot:FindFirstChild("Level1")
-	local level2 = plot:FindFirstChild("Level2")
+	local level1 = plot:FindFirstChild("NormalLevel1")
+	local level2 = plot:FindFirstChild("NormalLevel2")
 
 	if level1 then
 		table.insert(folders, level1)

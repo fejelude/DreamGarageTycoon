@@ -298,13 +298,12 @@ end
 local function getActiveLevelFolder(plot, player)
 	if not plot or not player then return nil end
 	local playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
-	local levelName = "Level" .. tostring(playerBaseLevel)
-	local spacedLevelName = "Level " .. tostring(playerBaseLevel)
-	local activeLevelFolder = plot:FindFirstChild(levelName) or plot:FindFirstChild(spacedLevelName)
+	local levelName = playerBaseLevel == 1 and "NormalLevel1" or "NormalLevel2"
+	local activeLevelFolder = plot:FindFirstChild(levelName)
 
 	if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
 		local storedPlot = dedicatedFolder[plot.Name]
-		activeLevelFolder = storedPlot:FindFirstChild(levelName) or storedPlot:FindFirstChild(spacedLevelName)
+		activeLevelFolder = storedPlot:FindFirstChild(levelName)
 	end
 
 	return activeLevelFolder
@@ -313,7 +312,7 @@ end
 function CarCPSDisplayUtils.GetBestPlacedBaseCPSForModel(carModel, player)
 	local plot = findPlotFromCarModel(carModel)
 	local activeLevelFolder = getActiveLevelFolder(plot, player)
-	local padsFolder = activeLevelFolder and activeLevelFolder:FindFirstChild("Pads")
+	local padsFolder = activeLevelFolder and activeLevelFolder.Parent:FindFirstChild("Pads")
 	if not padsFolder then return 0 end
 
 	local bestBaseCPS = 0

@@ -448,17 +448,11 @@ local function initPadsFolder(padsFolder)
 end
 
 local function setupPlot(plot)
-	local level1 = plot:WaitForChild("Level1", 10)
-	if level1 then initPadsFolder(level1:FindFirstChild("Pads")) end
+	initPadsFolder(plot:WaitForChild("Pads", 10))
 
 	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-	local level2 = nil
-	if dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-		level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
-	end
-	if not level2 then level2 = plot:FindFirstChild("Level2") end
-
-	if level2 then initPadsFolder(level2:FindFirstChild("Pads")) end
+	local storedPlot = dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name)
+	if storedPlot then initPadsFolder(storedPlot:FindFirstChild("Pads")) end
 end
 
 for _, plot in pairs(TycoonFolder:GetChildren()) do
@@ -492,18 +486,9 @@ task.spawn(function()
 		for _, plot in pairs(TycoonFolder:GetChildren()) do
 			local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 
-			local level1 = plot:FindFirstChild("Level1")
-			if not level1 and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-				level1 = dedicatedFolder[plot.Name]:FindFirstChild("Level1")
-			end
-
-			local level2 = plot:FindFirstChild("Level2")
-			if not level2 and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-				level2 = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
-			end
-
-			if level1 then checkPadsInFolder(level1:FindFirstChild("Pads")) end
-			if level2 then checkPadsInFolder(level2:FindFirstChild("Pads")) end
+			checkPadsInFolder(plot:FindFirstChild("Pads"))
+			local storedPlot = dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name)
+			if storedPlot then checkPadsInFolder(storedPlot:FindFirstChild("Pads")) end
 		end
 	end
 end)

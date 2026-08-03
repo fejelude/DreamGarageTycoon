@@ -776,18 +776,24 @@ end
 -- 🏗️ LAYOUT RESTORATION
 -- ----------------------------------------------------------------------------
 local function getLevelModel(plot, levelName)
-	local altName = levelName == "Level1" and "Level 1" or (levelName == "Level2" and "Level 2" or levelName)
-	local model = plot:FindFirstChild(levelName) or plot:FindFirstChild(altName)
+	local canonicalName = levelName == "Level1" and "NormalLevel1"
+		or (levelName == "Level2" and "NormalLevel2" or levelName)
+	local model = plot:FindFirstChild(canonicalName)
 	if model then return model end
 
 	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 	if dedicatedFolder then
 		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
 		if plotStorage then
-			return plotStorage:FindFirstChild(levelName) or plotStorage:FindFirstChild(altName)
+			return plotStorage:FindFirstChild(canonicalName)
 		end
 	end
 	return nil
+end
+
+local function getPadsFolder(plot, baseLevel, activeLevelFolder)
+	local levelContainer = activeLevelFolder and activeLevelFolder.Parent
+	return levelContainer and levelContainer:FindFirstChild("Pads")
 end
 
 local function acquirePadLock(lockId)
@@ -815,13 +821,13 @@ local function RestoreLayout(player, plot, layoutData)
 	local activeLevelFolder = nil
 	if playerBaseLevel == 1 then
 		activeLevelFolder = getLevelModel(plot, "Level1")
-		if not activeLevelFolder then activeLevelFolder = plot:WaitForChild("Level1", 10) end
+		if not activeLevelFolder then activeLevelFolder = plot:WaitForChild("NormalLevel1", 10) end
 	elseif playerBaseLevel == 2 then
 		activeLevelFolder = getLevelModel(plot, "Level2")
 	end
 
 	if activeLevelFolder then
-		local padsFolder = activeLevelFolder:FindFirstChild("Pads")
+		local padsFolder = getPadsFolder(plot, playerBaseLevel, activeLevelFolder)
 		if padsFolder then
 			for _, p in ipairs(padsFolder:GetChildren()) do validPads[p.Name] = true end
 		end
@@ -841,8 +847,9 @@ local function RestoreLayout(player, plot, layoutData)
 		-- Fix 6: TycoonDataHandler Anti-wipe layout detection unreliable
 		-- It should only restore on pads that exist in the active level folder.
 		local padObject = nil
-		if activeLevelFolder and activeLevelFolder:FindFirstChild("Pads") and activeLevelFolder.Pads:FindFirstChild(padName) then
-			padObject = activeLevelFolder.Pads[padName]
+		local activePadsFolder = getPadsFolder(plot, playerBaseLevel, activeLevelFolder)
+		if activePadsFolder and activePadsFolder:FindFirstChild(padName) then
+			padObject = activePadsFolder[padName]
 		end
 
 		if not padObject then continue end
@@ -2018,12 +2025,12 @@ save = function(player, isClosing, force)
 
 			if playerBaseLevel == 1 then
 				activeLevelFolder = getLevelModel(plot, "Level1")
-				if not activeLevelFolder then activeLevelFolder = plot:WaitForChild("Level1", 10) end
+				if not activeLevelFolder then activeLevelFolder = plot:WaitForChild("NormalLevel1", 10) end
 			elseif playerBaseLevel == 2 then
 				activeLevelFolder = getLevelModel(plot, "Level2")
 			end
 
-			if activeLevelFolder then savePadsInFolder(activeLevelFolder:FindFirstChild("Pads")) end
+			if activeLevelFolder then savePadsInFolder(getPadsFolder(plot, playerBaseLevel, activeLevelFolder)) end
 		end
 
 		-- [[ COMMON SHOP SYNC ]]
