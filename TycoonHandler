@@ -24,8 +24,9 @@ end
 
 -- 🧹 HELPER: Completely reset a plot
 local function getLevelModel(plot, levelName)
-	local altName = levelName == "Level1" and "Level 1" or (levelName == "Level2" and "Level 2" or levelName)
-	local model = plot:FindFirstChild(levelName) or plot:FindFirstChild(altName)
+	local canonicalName = levelName == "Level1" and "NormalLevel1"
+		or (levelName == "Level2" and "NormalLevel2" or levelName)
+	local model = plot:FindFirstChild(canonicalName)
 	if model then return model end
 
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -33,7 +34,7 @@ local function getLevelModel(plot, levelName)
 	if dedicatedFolder then
 		local plotStorage = dedicatedFolder:FindFirstChild(plot.Name)
 		if plotStorage then
-			return plotStorage:FindFirstChild(levelName) or plotStorage:FindFirstChild(altName)
+			return plotStorage:FindFirstChild(canonicalName)
 		end
 	end
 	return nil
@@ -73,11 +74,10 @@ local function wipePlot(plot)
 	end
 
 	local level1 = getLevelModel(plot, "Level1")
-	if level1 then resetPadsInFolder(level1:FindFirstChild("Pads")) end
-
 	local level2 = getLevelModel(plot, "Level2")
+	if level1 then resetPadsInFolder(level1.Parent:FindFirstChild("Pads")) end
 	if level2 then
-		resetPadsInFolder(level2:FindFirstChild("Pads"))
+		resetPadsInFolder(level2.Parent:FindFirstChild("Pads"))
 
 		-- Also ensure level 2 gets moved back to storage safely if not there
 		local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -93,6 +93,20 @@ local function wipePlot(plot)
 			plotStorage = Instance.new("Folder")
 			plotStorage.Name = plot.Name
 			plotStorage.Parent = storageFolder
+		end
+
+		-- Restore the default Level 1 pair to the live tycoon. Models and their
+		-- sibling Pads folders are swapped together because both levels use the
+		-- same direct-child folder name.
+		if level1 and level1.Parent ~= plot then
+			local level1Pads = level1.Parent:FindFirstChild("Pads")
+			local level2Pads = level2.Parent:FindFirstChild("Pads")
+			if level1Pads and level2Pads then
+				level1Pads.Parent = nil
+				level2Pads.Parent = plotStorage
+				level1Pads.Parent = plot
+			end
+			level1.Parent = plot
 		end
 
 		if level2.Parent ~= plotStorage then

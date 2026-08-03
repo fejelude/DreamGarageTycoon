@@ -337,21 +337,22 @@ task.spawn(function()
 				local activeLevelFolder = nil
 
 				if playerBaseLevel == 1 then
-					activeLevelFolder = plot:FindFirstChild("Level1") or plot:FindFirstChild("Level 1")
+					activeLevelFolder = plot:FindFirstChild("NormalLevel1")
 					if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level1") or dedicatedFolder[plot.Name]:FindFirstChild("Level 1")
+						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("NormalLevel1")
 					end
 				elseif playerBaseLevel == 2 then
-					activeLevelFolder = plot:FindFirstChild("Level2") or plot:FindFirstChild("Level 2")
+					activeLevelFolder = plot:FindFirstChild("NormalLevel2")
 					if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level2") or dedicatedFolder[plot.Name]:FindFirstChild("Level 2")
+						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("NormalLevel2")
 					end
 				else
 					warn("⚠️ TycoonEconomy: Unhandled BaseLevel " .. tostring(playerBaseLevel) .. " for plot " .. plot.Name)
 				end
 
-				if activeLevelFolder then 
-					plotTotalCPS = plotTotalCPS + processPadsInFolder(activeLevelFolder:FindFirstChild("Pads")) 
+				if activeLevelFolder then
+					local activePadsFolder = activeLevelFolder.Parent:FindFirstChild("Pads")
+					plotTotalCPS = plotTotalCPS + processPadsInFolder(activePadsFolder)
 				end
 
 				-- 2. Apply the player's actual earnings multiplier.

@@ -179,18 +179,19 @@ local function PaintPlot(plot, skinName)
 	local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 
 	if playerBaseLevel == 1 then
-		activeLevelFolder = plot:FindFirstChild("Level1")
+		activeLevelFolder = plot:FindFirstChild("NormalLevel1")
 		if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-			activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level1")
+			activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("NormalLevel1")
 		end
 	elseif playerBaseLevel == 2 then
-		activeLevelFolder = plot:FindFirstChild("Level2")
+		activeLevelFolder = plot:FindFirstChild("NormalLevel2")
 		if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-			activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("Level2")
+			activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("NormalLevel2")
 		end
 	end
 
-	if activeLevelFolder then paintPadsInFolder(activeLevelFolder:FindFirstChild("Pads")) end
+	local activePadsFolder = activeLevelFolder and activeLevelFolder.Parent:FindFirstChild("Pads")
+	if activePadsFolder then paintPadsInFolder(activePadsFolder) end
 end
 
 -- 🔄 PLAYER MONITOR

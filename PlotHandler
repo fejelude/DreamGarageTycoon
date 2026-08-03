@@ -63,7 +63,7 @@ local function setupPlot(plot)
 
 			-- Helper to find the GUI cleanly without spamming errors
 			local function findGui()
-				-- 1. Try if GarageInformation is a direct child of Level1/Level2
+				-- 1. Try if GarageInformation is a direct child of NormalLevel1/NormalLevel2
 				local directInfo = levelFolder:FindFirstChild("GarageInformation")
 				if directInfo then
 					local gui = directInfo:FindFirstChild(GUI_NAME)
@@ -107,7 +107,7 @@ local function setupPlot(plot)
 			end)
 		end
 
-		local level1 = plot:WaitForChild("Level1", 60)
+		local level1 = plot:WaitForChild("NormalLevel1", 60)
 		if level1 then setupLabelsForLevel(level1) end
 
 		local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -115,7 +115,7 @@ local function setupPlot(plot)
 		if dedicatedFolder then
 			local plotStorage = dedicatedFolder:WaitForChild(plot.Name, 10)
 			if plotStorage then
-				local level2 = plotStorage:WaitForChild("Level2", 10)
+				local level2 = plotStorage:WaitForChild("NormalLevel2", 10)
 				if level2 then setupLabelsForLevel(level2) end
 			end
 		end
