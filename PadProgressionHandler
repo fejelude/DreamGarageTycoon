@@ -12,8 +12,27 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
+local ServerStorage = game:GetService("ServerStorage")
 
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
+
+local function forceSave(player)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not api or not api:IsA("BindableFunction") then
+		return false
+	end
+
+	local ok, result = pcall(function()
+		return api:Invoke("SaveNow", player)
+	end)
+
+	if ok and result == true then
+		return true
+	end
+
+	pcall(function() api:Invoke("QueueSaveSoon", player, 3) end)
+	return false
+end
 -- ============================================================================
 -- 📡 REMOTE EVENT SETUP (Communication to Client)
 -- ============================================================================
@@ -297,6 +316,7 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 
 		if wallet then
 			if wallet.Value >= cost then
+				local originalWallet = wallet.Value
 				wallet.Value -= cost
 
 				-- MIGRATE CAR STATES FROM LEVEL 1 TO LEVEL 2 PADS
@@ -343,8 +363,19 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 					end
 				end
 
-				player:SetAttribute("OwnedBaseLevel", math.max(2, tonumber(player:GetAttribute("OwnedBaseLevel")) or baseLevel or 1))
+				local originalOwnedBaseLevel = tonumber(player:GetAttribute("OwnedBaseLevel")) or baseLevel or 1
+				local originalBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or baseLevel or 1
+				player:SetAttribute("OwnedBaseLevel", math.max(2, originalOwnedBaseLevel))
 				player:SetAttribute("BaseLevel", 2)
+				local saveOk = forceSave(player)
+				if not saveOk then
+					wallet.Value = originalWallet
+					player:SetAttribute("OwnedBaseLevel", originalOwnedBaseLevel)
+					player:SetAttribute("BaseLevel", originalBaseLevel)
+					forceSave(player)
+					warn("⚠️ [PadProgressionHandler] Level 2 base purchase save failed for " .. player.Name .. "; restored previous base attributes.")
+					return
+				end
 				updatePadVisuals(plot, currentLevel, 2)
 
 				if buyButtonModel then
