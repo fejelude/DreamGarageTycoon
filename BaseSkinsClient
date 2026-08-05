@@ -1,5 +1,6 @@
 -- Client controller for StarterGui.BaseSkinUI.
 -- Location: StarterPlayerScripts > BaseSkinsClient
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
@@ -8,9 +9,19 @@ local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local Config = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
-local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
-local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+
+local Config = require(
+	ReplicatedStorage:WaitForChild("BaseAppearanceConfig")
+)
+
+local UIAudioConfig = require(
+	ReplicatedStorage:WaitForChild("UIAudioConfig")
+)
+
+local UIButtonUtils = require(
+	ReplicatedStorage:WaitForChild("UIButtonUtils")
+)
+
 local remotes = ReplicatedStorage:WaitForChild("ShopRemotes")
 local openEvent = remotes:WaitForChild("OpenBaseSkins")
 local changedEvent = remotes:WaitForChild("BaseSkinsChanged")
@@ -18,83 +29,392 @@ local transaction = remotes:WaitForChild("BaseSkinsTransaction")
 
 local gui = playerGui:WaitForChild("BaseSkinUI")
 local main = gui:WaitForChild("MainFrame")
-local elements = main:WaitForChild("UpgradeScroller"):WaitForChild("Elements")
+
+local elements = main
+	:WaitForChild("UpgradeScroller")
+	:WaitForChild("Elements")
+
 local feedback = UIAudioConfig.CreateStateFeedback(main)
-local state, busy, isOpen = nil, false, false
+
 local blur = Lighting:WaitForChild("BaseSkinsBlur")
-assert(blur:IsA("BlurEffect"), "Lighting.BaseSkinsBlur must be a BlurEffect")
+
+assert(
+	blur:IsA("BlurEffect"),
+	"Lighting.BaseSkinsBlur must be a BlurEffect"
+)
+
+local state = nil
+local busy = false
+local isOpen = false
+local hidden = {}
+
+-- Returns the Buttons folder inside a skin card.
+local function getButtonsFolder(card)
+	if not card then
+		return nil
+	end
+
+	local buttons = card:FindFirstChild("Buttons")
+
+	if not buttons then
+		warn(
+			("[BaseSkinsClient] Missing Buttons folder inside %s")
+				:format(card:GetFullName())
+		)
+	end
+
+	return buttons
+end
+
+-- Returns a specific button from:
+-- SkinBase > Buttons > ButtonName
+local function getButton(card, buttonName)
+	local buttons = getButtonsFolder(card)
+
+	if not buttons then
+		return nil
+	end
+
+	return buttons:FindFirstChild(buttonName)
+end
 
 local function owns(level, skinId)
-	local list = state and state.Owned and state.Owned[tostring(level)]
-	return type(list) == "table" and table.find(list, skinId) ~= nil
+	local ownedList =
+		state
+		and state.Owned
+		and state.Owned[tostring(level)]
+
+	return type(ownedList) == "table"
+		and table.find(ownedList, skinId) ~= nil
 end
+
 local function update()
-	if not state then return end
-	-- Skin cards are Studio-created Folders that contain the actual ImageButtons.
+	if not state then
+		return
+	end
+
 	for level in pairs(Config.Levels) do
-		local levelContainer = elements:FindFirstChild("Level" .. level .. "Skins")
+		local levelContainer = elements:FindFirstChild(
+			"Level" .. level .. "Skins"
+		)
+
 		if levelContainer then
 			for _, skinId in ipairs(Config.GetSkinIds()) do
-				local card = levelContainer:FindFirstChild(skinId .. "Base")
+				local card = levelContainer:FindFirstChild(
+					skinId .. "Base"
+				)
+
 				if card then
 					local owned = owns(level, skinId)
-					local equipped = state.Equipped and state.Equipped[tostring(level)] == skinId
-					local allowed = state.OwnedBaseLevel >= level and state.BaseLevel == level
-					local cash, robux, equip, unequip = card:FindFirstChild("BuyCash"), card:FindFirstChild("BuyForRobux"), card:FindFirstChild("Equip"), card:FindFirstChild("Unequip")
-					if cash then cash.Visible = not owned end; if robux then robux.Visible = not owned end
-					if equip then equip.Visible = owned and not equipped; equip:SetAttribute("BaseLevelLocked", owned and not allowed) end
-					if unequip then unequip.Visible = owned and equipped end
+
+					local equipped =
+						state.Equipped
+						and state.Equipped[tostring(level)] == skinId
+
+					local allowed =
+						state.OwnedBaseLevel >= level
+						and state.BaseLevel == level
+
+					local cash = getButton(card, "BuyCash")
+					local robux = getButton(card, "BuyForRobux")
+					local equip = getButton(card, "Equip")
+					local unequip = getButton(card, "Unequip")
+
+					if cash and cash:IsA("GuiObject") then
+						cash.Visible = not owned
+					end
+
+					if robux and robux:IsA("GuiObject") then
+						robux.Visible = not owned
+					end
+
+					if equip and equip:IsA("GuiObject") then
+						equip.Visible = owned and not equipped
+
+						equip:SetAttribute(
+							"BaseLevelLocked",
+							owned and not allowed
+						)
+					end
+
+					if unequip and unequip:IsA("GuiObject") then
+						unequip.Visible = owned and equipped
+					end
 				end
 			end
 		end
 	end
 end
+
 local function showResult(success, message)
-	if not message or message == "" then return end
-	if success then UIAudioConfig.PlayNamed("BuySuccess"); feedback:Success(message) else UIAudioConfig.PlayNamed("BuyFail"); feedback:Failed(message) end
-end
-local function request(action, level, skinId)
-	if busy then return end; busy = true
-	local ok, success, message, newState = pcall(function() return transaction:InvokeServer(action, level, skinId) end)
-	busy = false
-	if not ok then showResult(false, "An unexpected error occurred. Please try again."); return end
-	if newState then state = newState; update() end; showResult(success, message)
-end
-local hidden = {}
-local function setOpen(value)
-	if isOpen == value then return end; isOpen = value
-	if value then
-		for _, other in ipairs(playerGui:GetChildren()) do if other:IsA("ScreenGui") and other ~= gui and other.Enabled and other.Name ~= "TouchGui" and other.Name ~= "Chat" and other.Name ~= "Notifications" then hidden[other] = true; other.Enabled = false end end
-		gui.Enabled = true; main.Visible = true; player:SetAttribute("MovementLock", true)
-		blur.Enabled = true; TweenService:Create(blur, TweenInfo.new(.25), {Size = 24}):Play(); UIAudioConfig.PlayShopOpen()
+	if not message or message == "" then
+		return
+	end
+
+	if success then
+		UIAudioConfig.PlayNamed("BuySuccess")
+		feedback:Success(message)
 	else
-		main.Visible = false; gui.Enabled = false; player:SetAttribute("MovementLock", false)
-		for other in pairs(hidden) do if other.Parent then other.Enabled = true end end; hidden = {}
-		local tween = TweenService:Create(blur, TweenInfo.new(.2), {Size = 0}); tween:Play(); tween.Completed:Connect(function() if not isOpen then blur.Enabled = false end end)
+		UIAudioConfig.PlayNamed("BuyFail")
+		feedback:Failed(message)
 	end
 end
 
-for level in pairs(Config.Levels) do
-	local levelContainer = elements:FindFirstChild("Level" .. level .. "Skins")
-	if levelContainer then for _, skinId in ipairs(Config.GetSkinIds()) do
-		local card = levelContainer:FindFirstChild(skinId .. "Base")
-		local entry = Config.Get(level, skinId)
-		if card and entry then
-			local handlers = {
-				BuyCash = function() request("BuyCash", level, skinId) end,
-				BuyForRobux = function() UIAudioConfig.PlayRobux(); UIAudioConfig.ShowPurchaseLoading(); local gifts = ReplicatedStorage:FindFirstChild("GiftRemotes"); local cancel = gifts and gifts:FindFirstChild("CancelGiftIntent"); if cancel then cancel:FireServer(entry.ProductId) end; MarketplaceService:PromptProductPurchase(player, entry.ProductId) end,
-				Equip = function() request("Equip", level, skinId) end,
-				Unequip = function() request("Unequip", level, skinId) end,
-				GiftMe = function() if _G.OpenGiftMenu then setOpen(false); _G.OpenGiftMenu(entry.ProductId) else showResult(false, "Gifting menu is not ready. Please try again.") end end,
-			}
-			for name, callback in pairs(handlers) do local button = card:FindFirstChild(name); if button and button:IsA("GuiButton") then UIButtonUtils.SetupButton(button, callback) end end
-		end
-	end end
+local function request(action, level, skinId)
+	if busy then
+		return
+	end
+
+	busy = true
+
+	local ok, success, message, newState = pcall(function()
+		return transaction:InvokeServer(
+			action,
+			level,
+			skinId
+		)
+	end)
+
+	busy = false
+
+	if not ok then
+		showResult(
+			false,
+			"An unexpected error occurred. Please try again."
+		)
+
+		return
+	end
+
+	if newState then
+		state = newState
+		update()
+	end
+
+	showResult(success, message)
 end
-local exit = main:WaitForChild("ExitButton"); UIButtonUtils.SetupButton(exit, function() setOpen(false) end)
-openEvent.OnClientEvent:Connect(function(newState) state = newState; update(); setOpen(true) end)
-changedEvent.OnClientEvent:Connect(function(newState, success, message) state = newState; update(); if message then showResult(success, message) end end)
-MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, purchased)
-	if userId == player.UserId and Config.GetByProductId(productId) then UIAudioConfig.HidePurchaseLoading(); if not purchased then showResult(false, "Purchase cancelled.") end end
+
+local function setOpen(value)
+	if isOpen == value then
+		return
+	end
+
+	isOpen = value
+
+	if value then
+		for _, other in ipairs(playerGui:GetChildren()) do
+			local shouldHide =
+				other:IsA("ScreenGui")
+				and other ~= gui
+				and other.Enabled
+				and other.Name ~= "TouchGui"
+				and other.Name ~= "Chat"
+				and other.Name ~= "Notifications"
+
+			if shouldHide then
+				hidden[other] = true
+				other.Enabled = false
+			end
+		end
+
+		gui.Enabled = true
+		main.Visible = true
+
+		player:SetAttribute("MovementLock", true)
+
+		blur.Enabled = true
+
+		TweenService:Create(
+			blur,
+			TweenInfo.new(0.25),
+			{ Size = 24 }
+		):Play()
+
+		UIAudioConfig.PlayShopOpen()
+	else
+		main.Visible = false
+		gui.Enabled = false
+
+		player:SetAttribute("MovementLock", false)
+
+		for other in pairs(hidden) do
+			if other.Parent then
+				other.Enabled = true
+			end
+		end
+
+		hidden = {}
+
+		local tween = TweenService:Create(
+			blur,
+			TweenInfo.new(0.2),
+			{ Size = 0 }
+		)
+
+		tween:Play()
+
+		tween.Completed:Connect(function()
+			if not isOpen then
+				blur.Enabled = false
+			end
+		end)
+	end
+end
+
+local function connectSkinButtons()
+	for level in pairs(Config.Levels) do
+		local levelContainer = elements:FindFirstChild(
+			"Level" .. level .. "Skins"
+		)
+
+		if levelContainer then
+			for _, skinId in ipairs(Config.GetSkinIds()) do
+				local card = levelContainer:FindFirstChild(
+					skinId .. "Base"
+				)
+
+				local entry = Config.Get(level, skinId)
+
+				if card and entry then
+					local handlers = {
+						BuyCash = function()
+							request(
+								"BuyCash",
+								level,
+								skinId
+							)
+						end,
+
+						BuyForRobux = function()
+							UIAudioConfig.PlayRobux()
+							UIAudioConfig.ShowPurchaseLoading()
+
+							local giftRemotes =
+								ReplicatedStorage:FindFirstChild(
+									"GiftRemotes"
+								)
+
+							local cancelGiftIntent =
+								giftRemotes
+								and giftRemotes:FindFirstChild(
+									"CancelGiftIntent"
+								)
+
+							if cancelGiftIntent then
+								cancelGiftIntent:FireServer(
+									entry.ProductId
+								)
+							end
+
+							MarketplaceService:PromptProductPurchase(
+								player,
+								entry.ProductId
+							)
+						end,
+
+						Equip = function()
+							request(
+								"Equip",
+								level,
+								skinId
+							)
+						end,
+
+						Unequip = function()
+							request(
+								"Unequip",
+								level,
+								skinId
+							)
+						end,
+
+						GiftMe = function()
+							if _G.OpenGiftMenu then
+								setOpen(false)
+
+								_G.OpenGiftMenu(
+									entry.ProductId
+								)
+							else
+								showResult(
+									false,
+									"Gifting menu is not ready. Please try again."
+								)
+							end
+						end,
+					}
+
+					for buttonName, callback in pairs(handlers) do
+						local button = getButton(
+							card,
+							buttonName
+						)
+
+						if button and button:IsA("GuiButton") then
+							UIButtonUtils.SetupButton(
+								button,
+								callback
+							)
+						elseif button then
+							warn(
+								("[BaseSkinsClient] %s must be an ImageButton or TextButton")
+									:format(button:GetFullName())
+							)
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+connectSkinButtons()
+
+local exit = main:WaitForChild("ExitButton")
+
+UIButtonUtils.SetupButton(exit, function()
+	setOpen(false)
 end)
-gui.Enabled = false; main.Visible = false; blur.Size = 0; blur.Enabled = false
+
+openEvent.OnClientEvent:Connect(function(newState)
+	state = newState
+
+	update()
+	setOpen(true)
+end)
+
+changedEvent.OnClientEvent:Connect(
+	function(newState, success, message)
+		state = newState
+
+		update()
+
+		if message then
+			showResult(success, message)
+		end
+	end
+)
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(
+	function(userId, productId, purchased)
+		if userId ~= player.UserId then
+			return
+		end
+
+		if not Config.GetByProductId(productId) then
+			return
+		end
+
+		UIAudioConfig.HidePurchaseLoading()
+
+		if not purchased then
+			showResult(false, "Purchase cancelled.")
+		end
+	end
+)
+
+gui.Enabled = false
+main.Visible = false
+
+blur.Size = 0
+blur.Enabled = false
