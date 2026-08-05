@@ -1,0 +1,184 @@
+-- Server-authoritative cosmetic base skin purchasing, equipping and rendering.
+-- Location: ServerScriptService > BaseSkinsService
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+
+local Config = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
+local tycoons = Workspace:WaitForChild("Tycoons")
+local shopRemotes = ReplicatedStorage:WaitForChild("ShopRemotes")
+local openEvent = shopRemotes:WaitForChild("OpenBaseSkins")
+local changedEvent = shopRemotes:WaitForChild("BaseSkinsChanged")
+local transaction = shopRemotes:WaitForChild("BaseSkinsTransaction")
+
+assert(openEvent:IsA("RemoteEvent"), "ReplicatedStorage.ShopRemotes.OpenBaseSkins must be a RemoteEvent")
+assert(changedEvent:IsA("RemoteEvent"), "ReplicatedStorage.ShopRemotes.BaseSkinsChanged must be a RemoteEvent")
+assert(transaction:IsA("RemoteFunction"), "ReplicatedStorage.ShopRemotes.BaseSkinsTransaction must be a RemoteFunction")
+
+local locks, cooldowns, connections = {}, {}, {}
+local function decodeOwned(player)
+	local result = {}
+	local ok, decoded = pcall(HttpService.JSONDecode, HttpService, player:GetAttribute("OwnedAppearanceSkins") or "{}")
+	if ok and type(decoded) == "table" then result = decoded end
+	return result
+end
+local function owns(player, level, skinId)
+	local list = decodeOwned(player)[tostring(level)]
+	return type(list) == "table" and table.find(list, skinId) ~= nil
+end
+local function setOwned(player, owned)
+	player:SetAttribute("OwnedAppearanceSkins", HttpService:JSONEncode(owned))
+end
+local function markDirty(player)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if api then task.spawn(function() pcall(function() api:Invoke("MarkDirty", player) end) end) end
+end
+local function plotFor(player)
+	local name = player:GetAttribute("OccupiedPlot")
+	local plot = name and tycoons:FindFirstChild(name)
+	local owner = plot and plot:FindFirstChild("Owner")
+	if owner and owner.Value == player.Name then return plot end
+end
+local function containers(plot)
+	local result = { plot }
+	local root = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+	local stored = root and root:FindFirstChild(plot.Name)
+	if stored then table.insert(result, stored) end
+	return result
+end
+local function restoreDefaults(plot)
+	for _, container in ipairs(containers(plot)) do
+		for _, descendant in ipairs(container:GetDescendants()) do
+			if descendant:IsA("BasePart") and descendant:GetAttribute("BaseSkinOriginalTransparency") ~= nil then
+				descendant.Transparency = descendant:GetAttribute("BaseSkinOriginalTransparency")
+				descendant:SetAttribute("BaseSkinOriginalTransparency", nil)
+			end
+		end
+		for _, child in ipairs(container:GetChildren()) do
+			if child:GetAttribute("BaseSkinVisual") then child:Destroy() end
+		end
+	end
+end
+local function updateOwnerText(model, playerName)
+	for _, item in ipairs(model:GetDescendants()) do
+		if item:IsA("TextLabel") and item.Name == "Owner" then
+			item.Text = playerName .. "'s Garage"; item.TextScaled = true
+		end
+	end
+end
+local function apply(player)
+	local plot = plotFor(player); if not plot then return false, "You do not own an active tycoon." end
+	restoreDefaults(plot)
+	local level = math.floor(tonumber(player:GetAttribute("BaseLevel")) or 1)
+	local skinId = player:GetAttribute("EquippedLevel" .. level .. "Skin") or Config.DEFAULT_SKIN
+	if skinId == Config.DEFAULT_SKIN then return true end
+	local entry = Config.Get(level, skinId); if not entry or not owns(player, level, skinId) then return false, "Saved skin is invalid." end
+	local activeContainer, defaultModel
+	for _, container in ipairs(containers(plot)) do
+		local found = container:FindFirstChild(entry.DefaultModelName)
+		if found then activeContainer, defaultModel = container, found; break end
+	end
+	if not defaultModel then return false, "Default base model is unavailable." end
+	local sourceRoot = ReplicatedStorage:FindFirstChild("BaseSkins")
+	local sourcePlot = sourceRoot and sourceRoot:FindFirstChild(plot.Name)
+	local sourceLevel = sourcePlot and sourcePlot:FindFirstChild("Level" .. level)
+	local source = sourceLevel and sourceLevel:FindFirstChild(entry.ModelName)
+	if not source or not source:IsA("Model") then return false, "This skin model is unavailable for " .. plot.Name .. "." end
+	for _, part in ipairs(defaultModel:GetDescendants()) do
+		if part:IsA("BasePart") then
+			part:SetAttribute("BaseSkinOriginalTransparency", part.Transparency)
+			part.Transparency = 1
+		end
+	end
+	local visual = source:Clone(); visual.Name = "BaseSkinVisual_Level" .. level; visual:SetAttribute("BaseSkinVisual", true)
+	for _, item in ipairs(visual:GetDescendants()) do
+		if item:IsA("BasePart") then item.CanCollide = false; item.CanTouch = false; item.CanQuery = false
+		elseif item:IsA("Script") or item:IsA("LocalScript") or item:IsA("ProximityPrompt") then item:Destroy() end
+	end
+	updateOwnerText(visual, player.Name); visual.Parent = activeContainer
+	return true
+end
+local function state(player)
+	local owned = decodeOwned(player)
+	return { Owned = owned, BaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1,
+		OwnedBaseLevel = tonumber(player:GetAttribute("OwnedBaseLevel")) or 1,
+		Equipped = { ["1"] = player:GetAttribute("EquippedLevel1Skin") or Config.DEFAULT_SKIN, ["2"] = player:GetAttribute("EquippedLevel2Skin") or Config.DEFAULT_SKIN },
+		CooldownRemaining = math.max(0, (cooldowns[player.UserId] or 0) - os.time()) }
+end
+local function notify(player, success, message)
+	changedEvent:FireClient(player, state(player), success, message)
+end
+local function grant(player, entry)
+	if owns(player, entry.Level, entry.SkinId) then return true, false end
+	local owned = decodeOwned(player); local key = tostring(entry.Level)
+	owned[key] = type(owned[key]) == "table" and owned[key] or {}; table.insert(owned[key], entry.SkinId)
+	setOwned(player, owned); markDirty(player)
+	return true, true
+end
+
+local api = ServerStorage:WaitForChild("BaseSkinsAPI")
+assert(api:IsA("BindableFunction"), "ServerStorage.BaseSkinsAPI must be a BindableFunction")
+api.OnInvoke = function(action, player, level, skinId)
+	local entry = Config.Get(level, skinId)
+	if action == "Grant" and player and entry then
+		local success, wasNew = grant(player, entry)
+		local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
+		local saveOk = false
+		if success and admin then
+			local invoked, result = pcall(function() return admin:Invoke("SaveNow", player) end)
+			saveOk = invoked and result ~= false
+		end
+		if not saveOk then return false, wasNew end
+		notify(player, true, wasNew and (entry.DisplayName .. " Level " .. entry.Level .. " skin unlocked!") or nil)
+		return true, wasNew
+	end
+	if action == "Apply" and player then return apply(player) end
+	return false, "Invalid request"
+end
+
+transaction.OnServerInvoke = function(player, action, level, skinId)
+	if locks[player.UserId] then return false, "Another skin request is in progress.", state(player) end
+	locks[player.UserId] = true
+	local ok, success, message = pcall(function()
+		if action == "GetState" then return true, "Ready" end
+		local entry = Config.Get(level, skinId); if not entry then return false, "Invalid base skin." end
+		if action == "BuyCash" then
+			if owns(player, entry.Level, entry.SkinId) then return false, "You already own this skin." end
+			local wallet = player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Wallet")
+			if not wallet or wallet.Value < entry.WalletPrice then return false, "Insufficient Wallet money." end
+			wallet.Value -= entry.WalletPrice; grant(player, entry); return true, "Skin purchased successfully."
+		elseif action == "Equip" or action == "Unequip" then
+			if not owns(player, entry.Level, entry.SkinId) then return false, "You do not own this skin." end
+			local currentLevel = math.floor(tonumber(player:GetAttribute("BaseLevel")) or 1)
+			local ownedLevel = math.floor(tonumber(player:GetAttribute("OwnedBaseLevel")) or 1)
+			if entry.Level > ownedLevel or currentLevel ~= entry.Level then return false, "Level " .. entry.Level .. " must be unlocked and equipped." end
+			local attribute = "EquippedLevel" .. entry.Level .. "Skin"; local current = player:GetAttribute(attribute) or Config.DEFAULT_SKIN
+			if action == "Equip" and current == entry.SkinId then return false, "This skin is already equipped." end
+			if action == "Unequip" and current ~= entry.SkinId then return false, "This skin is not equipped." end
+			local remaining = (cooldowns[player.UserId] or 0) - os.time()
+			if remaining > 0 then return false, ("Please wait %d seconds before switching skins."):format(remaining) end
+			player:SetAttribute(attribute, action == "Equip" and entry.SkinId or Config.DEFAULT_SKIN)
+			local applied, applyMessage = apply(player); if not applied then player:SetAttribute(attribute, current); apply(player); return false, applyMessage end
+			cooldowns[player.UserId] = os.time() + Config.SKIN_SWITCH_COOLDOWN; markDirty(player)
+			return true, action == "Equip" and "Skin equipped successfully." or "Default base restored successfully."
+		end
+		return false, "Invalid action."
+	end)
+	locks[player.UserId] = nil
+	if not ok then warn("[BaseSkinsService] " .. tostring(success)); success, message = false, "An unexpected error occurred. Please try again." end
+	local snapshot = state(player); notify(player, success, message); return success, message, snapshot
+end
+
+local function setup(player)
+	local function refresh() task.defer(function() if player.Parent then apply(player); notify(player, true, nil) end end) end
+	connections[player] = { player:GetAttributeChangedSignal("OccupiedPlot"):Connect(refresh), player:GetAttributeChangedSignal("BaseLevel"):Connect(refresh) }
+	refresh()
+end
+Players.PlayerAdded:Connect(setup); for _, player in ipairs(Players:GetPlayers()) do setup(player) end
+Players.PlayerRemoving:Connect(function(player) locks[player.UserId] = nil; cooldowns[player.UserId] = nil; if connections[player] then for _, c in ipairs(connections[player]) do c:Disconnect() end end; connections[player] = nil end)
+
+local npc = Workspace:WaitForChild("NPCS"):WaitForChild("JakeSaron")
+local prompt = npc:WaitForChild("HumanoidRootPart"):WaitForChild("TalkPrompt")
+prompt.Triggered:Connect(function(player) openEvent:FireClient(player, state(player)) end)

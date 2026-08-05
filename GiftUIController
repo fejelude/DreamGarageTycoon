@@ -16,6 +16,7 @@ local PlayerGui = player:WaitForChild("PlayerGui")
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- 📚 MODULES
+local BaseAppearanceConfig = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
 local BaseSkinStats
 pcall(function()
 	BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats", 5))
@@ -119,6 +120,8 @@ local savedJumpPower = nil
 -- 🔍 OWNERSHIP CHECK LOGIC
 -- ============================================================================
 local function GetSkinNameFromProductId(productId)
+	local appearance = BaseAppearanceConfig.GetByProductId(productId)
+	if appearance then return appearance.OwnershipKey end
 	if not BaseSkinStats or not productId then return nil end
 	for skinName, data in pairs(BaseSkinStats) do
 		if data.ProductId == productId then
@@ -130,6 +133,12 @@ end
 
 local function DoesPlayerOwnSkin(targetPlayer, skinName)
 	if not skinName then return false end
+	local level, appearanceId = skinName:match("^Level(%d+):(.+)$")
+	if level then
+		local ok, owned = pcall(HttpService.JSONDecode, HttpService, targetPlayer:GetAttribute("OwnedAppearanceSkins") or "{}")
+		local list = ok and owned[tostring(tonumber(level))]
+		return type(list) == "table" and table.find(list, appearanceId) ~= nil
+	end
 	local ownedRaw = targetPlayer:GetAttribute("OwnedBaseSkins")
 	if not ownedRaw then return false end
 
