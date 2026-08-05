@@ -227,7 +227,9 @@ end
 -- ============================================================================
 -- 🏷️ REUSABLE STATE LABEL FEEDBACK (Bank Transfer style)
 -- ============================================================================
-function UIAudioConfig.CreateStateFeedback(container)
+function UIAudioConfig.CreateStateFeedback(container, options)
+	options = options or {}
+	local showRepeatCount = options.ShowRepeatCount ~= false
 	local stateLabels = nil
 	local successLabel = nil
 	local failedLabel = nil
@@ -388,7 +390,7 @@ function UIAudioConfig.CreateStateFeedback(container)
 			state.baseText = baseText
 		end
 
-		if state.count >= 2 then
+		if showRepeatCount and state.count >= 2 then
 			label.Text = baseText .. " (x" .. tostring(state.count) .. ")"
 		else
 			label.Text = baseText

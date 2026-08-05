@@ -13,6 +13,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local ServerStorage = game:GetService("ServerStorage")
 
 local Remotes = ReplicatedStorage:WaitForChild("ShopRemotes")
 local TransactionFunc = Remotes:WaitForChild("BaseUpgradeTransaction")
@@ -32,6 +33,31 @@ local activeTransactions = {}
 local baseEquipCooldowns = {}
 local BASE_SWITCH_COOLDOWN_SECONDS = 60
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
+local MAX_FORCE_SAVE_ATTEMPTS = 3
+
+local function forceSave(player)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not api or not api:IsA("BindableFunction") then
+		return false, "Save system unavailable."
+	end
+
+	local lastMessage = nil
+	for attempt = 1, MAX_FORCE_SAVE_ATTEMPTS do
+		local ok, result, message = pcall(function()
+			return api:Invoke("SaveNow", player)
+		end)
+
+		if ok and result == true then
+			return true
+		end
+
+		lastMessage = ok and message or result
+		task.wait(0.35 * attempt)
+	end
+
+	pcall(function() api:Invoke("QueueSaveSoon", player, 3) end)
+	return false, lastMessage or "Save failed."
+end
 
 local function formatBaseSwitchCooldownMessage(remainingSeconds)
 	remainingSeconds = math.max(1, math.ceil(tonumber(remainingSeconds) or 1))
@@ -180,6 +206,13 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 
 			baseEquipCooldowns[player.UserId] = now + BASE_SWITCH_COOLDOWN_SECONDS
 			player:SetAttribute("BaseLevel", targetLevel)
+			local saveOk = forceSave(player)
+			if not saveOk then
+				migratePadOccupancy(plot, targetLevel, currentBaseLevel)
+				player:SetAttribute("BaseLevel", currentBaseLevel)
+				forceSave(player)
+				return false, "Base switch could not be saved. Please try again."
+			end
 			return true, successMessage
 
 		end
@@ -195,7 +228,14 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 		-- ========================================================================
 		if actionType == "Equip" then
 			if ownsSkin then
+				local originalEquipped = player:GetAttribute("EquippedSkin") or "Default"
 				player:SetAttribute("EquippedSkin", skinName)
+				local saveOk = forceSave(player)
+				if not saveOk then
+					player:SetAttribute("EquippedSkin", originalEquipped)
+					forceSave(player)
+					return false, "Equip could not be saved. Please try again."
+				end
 				print("✅ " .. player.Name .. " equipped " .. skinName)
 				return true, "Equipped"
 			else
@@ -203,7 +243,14 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 			end
 
 		elseif actionType == "Unequip" then
+			local originalEquipped = player:GetAttribute("EquippedSkin") or "Default"
 			player:SetAttribute("EquippedSkin", "Default")
+			local saveOk = forceSave(player)
+			if not saveOk then
+				player:SetAttribute("EquippedSkin", originalEquipped)
+				forceSave(player)
+				return false, "Unequip could not be saved. Please try again."
+			end
 			print("🚫 " .. player.Name .. " unequipped " .. skinName)
 			return true, "Unequipped"
 
@@ -218,6 +265,10 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 			local wallet = leaderstats and leaderstats:FindFirstChild("Wallet") 
 
 			if wallet and wallet.Value >= skinData.PriceCash then
+				local originalWallet = wallet.Value
+				local originalOwned = ownedRaw
+				local originalEquipped = player:GetAttribute("EquippedSkin") or "Default"
+
 				-- A. Deduct Money
 				wallet.Value = wallet.Value - skinData.PriceCash
 
@@ -227,6 +278,14 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 				-- C. Update Attributes (Client sees this instantly)
 				player:SetAttribute("OwnedBaseSkins", HttpService:JSONEncode(ownedTable))
 				player:SetAttribute("EquippedSkin", skinName) -- Auto-Equip on buy
+				local saveOk = forceSave(player)
+				if not saveOk then
+					wallet.Value = originalWallet
+					player:SetAttribute("OwnedBaseSkins", originalOwned)
+					player:SetAttribute("EquippedSkin", originalEquipped)
+					forceSave(player)
+					return false, "Skin purchase could not be saved. Your Wallet was not charged; please try again."
+				end
 
 				print("✅ " .. player.Name .. " bought " .. skinName .. " with Wallet Cash")
 

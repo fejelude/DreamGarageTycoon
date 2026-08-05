@@ -81,6 +81,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
+local BaseAppearanceConfig = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
 
 local function getIndexProgressionAPI(waitSeconds)
 	local existing = ReplicatedStorage:FindFirstChild("IndexProgressionAPI")
@@ -143,6 +144,58 @@ local FREE_REWARDS_CLAIMED_ATTRIBUTE = "FreeRewardsClaimed"
 local PROMO_CODE_REDEEMED_ATTRIBUTE = "PromoCodesRedeemedJson"
 local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
 local DAILY_REWARDS_SECONDS_PER_DAY = 24 * 60 * 60
+
+
+local function normalizeBaseLevel(value)
+	local level = math.floor(tonumber(value) or 1)
+	if level < 1 then return 1 end
+	if level > 2 then return 2 end
+	return level
+end
+
+local function isValidAppearanceSkin(skinId)
+	return type(skinId) == "string" and BaseAppearanceConfig.Skins[skinId] ~= nil
+end
+
+local function sanitizeOwnedAppearanceSkins(raw)
+	local sanitized = {}
+	for level = 1, 2 do
+		local key = tostring(level)
+		sanitized[key] = {}
+		local seen = {}
+		local source = type(raw) == "table" and raw[key] or nil
+		if type(source) == "table" then
+			for _, skinId in ipairs(source) do
+				if isValidAppearanceSkin(skinId) and not seen[skinId] then
+					seen[skinId] = true
+					table.insert(sanitized[key], skinId)
+				end
+			end
+		end
+	end
+	return sanitized
+end
+
+local function ownsAppearanceSkin(owned, level, skinId)
+	if skinId == BaseAppearanceConfig.DEFAULT_SKIN then
+		return true
+	end
+
+	local list = type(owned) == "table" and owned[tostring(level)] or nil
+	return type(list) == "table" and table.find(list, skinId) ~= nil
+end
+
+local function sanitizeEquippedAppearanceSkin(rawSkinId, owned, level)
+	if rawSkinId == nil or rawSkinId == "" or rawSkinId == "Default" then
+		return BaseAppearanceConfig.DEFAULT_SKIN
+	end
+
+	if type(rawSkinId) == "string" and ownsAppearanceSkin(owned, level, rawSkinId) then
+		return rawSkinId
+	end
+
+	return BaseAppearanceConfig.DEFAULT_SKIN
+end
 
 local function sanitizeRobuxReceiptHistory(raw)
 	local history = {}
@@ -1860,18 +1913,17 @@ save = function(player, isClosing, force)
 		print("💾 Saving data for " .. player.Name .. "...")
 
 		local currentUnlockedPad = player:GetAttribute("HighestUnlockedPad") or 1
-		local currentBaseLevel = player:GetAttribute("BaseLevel") or 1
-		local currentOwnedBaseLevel = math.max(tonumber(player:GetAttribute("OwnedBaseLevel")) or 1, tonumber(currentBaseLevel) or 1)
+		local currentBaseLevel = normalizeBaseLevel(player:GetAttribute("BaseLevel"))
+		local currentOwnedBaseLevel = math.max(normalizeBaseLevel(player:GetAttribute("OwnedBaseLevel")), currentBaseLevel)
 		local currentOwnedRaw = player:GetAttribute("OwnedBaseSkins") or "[]"
 		local currentOwnedSkins = decodeJsonOrDefault(currentOwnedRaw, { "Default" }, player.Name .. ".OwnedBaseSkins")
 		if type(currentOwnedSkins) ~= "table" then
 			currentOwnedSkins = { "Default" }
 		end
 		local currentEquippedSkin = player:GetAttribute("EquippedSkin") or "Default"
-		local currentOwnedAppearanceSkins = decodeJsonOrDefault(player:GetAttribute("OwnedAppearanceSkins") or "{}", {}, player.Name .. ".OwnedAppearanceSkins")
-		if type(currentOwnedAppearanceSkins) ~= "table" then currentOwnedAppearanceSkins = {} end
-		local currentEquippedLevel1Skin = player:GetAttribute("EquippedLevel1Skin") or "None"
-		local currentEquippedLevel2Skin = player:GetAttribute("EquippedLevel2Skin") or "None"
+		local currentOwnedAppearanceSkins = sanitizeOwnedAppearanceSkins(decodeJsonOrDefault(player:GetAttribute("OwnedAppearanceSkins") or "{}", {}, player.Name .. ".OwnedAppearanceSkins"))
+		local currentEquippedLevel1Skin = sanitizeEquippedAppearanceSkin(player:GetAttribute("EquippedLevel1Skin"), currentOwnedAppearanceSkins, 1)
+		local currentEquippedLevel2Skin = sanitizeEquippedAppearanceSkin(player:GetAttribute("EquippedLevel2Skin"), currentOwnedAppearanceSkins, 2)
 		local currentRank = player:GetAttribute("Rank") or "Player"
 		local rankPersistenceBindable = ServerStorage:FindFirstChild("RankPersistenceFunction")
 		local currentRankData = nil
@@ -2313,7 +2365,20 @@ local function InitializePlayer(player)
 
 	local key = "User_V27_" .. player.UserId
 	local data
-	local loadSuccess, loadErr = pcall(function() data = PlayerDataStore:GetAsync(key) end)
+	local loadSuccess = false
+	local loadErr = nil
+	for attempt = 1, MAX_RETRIES do
+		loadSuccess, loadErr = pcall(function()
+			data = PlayerDataStore:GetAsync(key)
+		end)
+
+		if loadSuccess then
+			break
+		end
+
+		warn("⚠️ [TycoonDataHandler] Data load attempt " .. tostring(attempt) .. " failed for " .. player.Name .. ": " .. tostring(loadErr))
+		task.wait(0.5 * attempt)
+	end
 
 	if not loadSuccess then player:Kick("Data Load Error. Rejoin.") return end
 
@@ -2321,7 +2386,7 @@ local function InitializePlayer(player)
 		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1, BaseLevel = 1, OwnedBaseLevel = 1,
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
-		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", OwnedAppearanceSkins = {}, EquippedLevel1Skin = "None", EquippedLevel2Skin = "None", Rank = "Player", RankData = {},
+		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", OwnedAppearanceSkins = { ["1"] = {}, ["2"] = {} }, EquippedLevel1Skin = BaseAppearanceConfig.DEFAULT_SKIN, EquippedLevel2Skin = BaseAppearanceConfig.DEFAULT_SKIN, Rank = "Player", RankData = {},
 		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {},
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
 		RobuxProductReceipts = {},
@@ -2339,11 +2404,11 @@ local function InitializePlayer(player)
 	data.MythicalShopPurchases  = data.MythicalShopPurchases  or {}
 	data.OwnedBaseSkins         = data.OwnedBaseSkins         or { "Default" }
 	data.EquippedSkin           = data.EquippedSkin           or "Default"
-	data.OwnedAppearanceSkins  = type(data.OwnedAppearanceSkins) == "table" and data.OwnedAppearanceSkins or {}
-	data.EquippedLevel1Skin    = type(data.EquippedLevel1Skin) == "string" and data.EquippedLevel1Skin or "None"
-	data.EquippedLevel2Skin    = type(data.EquippedLevel2Skin) == "string" and data.EquippedLevel2Skin or "None"
-	data.BaseLevel              = data.BaseLevel              or 1
-	data.OwnedBaseLevel         = math.max(tonumber(data.OwnedBaseLevel) or 1, tonumber(data.BaseLevel) or 1)
+	data.OwnedAppearanceSkins  = sanitizeOwnedAppearanceSkins(data.OwnedAppearanceSkins)
+	data.EquippedLevel1Skin    = sanitizeEquippedAppearanceSkin(data.EquippedLevel1Skin, data.OwnedAppearanceSkins, 1)
+	data.EquippedLevel2Skin    = sanitizeEquippedAppearanceSkin(data.EquippedLevel2Skin, data.OwnedAppearanceSkins, 2)
+	data.BaseLevel              = normalizeBaseLevel(data.BaseLevel)
+	data.OwnedBaseLevel         = math.max(normalizeBaseLevel(data.OwnedBaseLevel), data.BaseLevel)
 	data.Rank                   = data.Rank                   or "Player"
 	data.RankData               = data.RankData               or {}
 	data.BankTransferLimitUsed  = data.BankTransferLimitUsed  or 0

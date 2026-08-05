@@ -34,7 +34,7 @@ local elements = main
 	:WaitForChild("UpgradeScroller")
 	:WaitForChild("Elements")
 
-local feedback = UIAudioConfig.CreateStateFeedback(main)
+local feedback = UIAudioConfig.CreateStateFeedback(main, { ShowRepeatCount = false })
 
 local blur = Lighting:WaitForChild("BaseSkinsBlur")
 
@@ -47,6 +47,104 @@ local state = nil
 local busy = false
 local isOpen = false
 local hidden = {}
+local hiddenObjects = {}
+
+local BALANCE_INDICATOR_GUI_NAME = "Balance Indicator"
+local FOCUS_GUI_OBJECTS_TO_HIDE = {
+	"Bonuses",
+	"DailyRewards",
+	"Updates",
+	"Ads",
+	"FriendBoost",
+	"FriendsBoost",
+	"FriendBonus",
+	"FriendsBonus",
+	"PremiumBoost",
+	"PremiumBonus",
+	"Premium",
+}
+
+local FOCUS_SCRIPT_NAMES_TO_HIDE = {
+	PremiumBonusClient = true,
+	FriendBonusClient = true,
+}
+
+
+local function rememberAndHideGuiObject(obj)
+	if not obj or not obj.Parent or hiddenObjects[obj] ~= nil then
+		return
+	end
+
+	if obj:IsA("GuiObject") and obj.Visible then
+		hiddenObjects[obj] = true
+		obj.Visible = false
+	end
+end
+
+local function restoreHiddenGuiObjects()
+	for obj in pairs(hiddenObjects) do
+		if obj and obj.Parent and obj:IsA("GuiObject") then
+			obj.Visible = true
+		end
+	end
+
+	hiddenObjects = {}
+end
+
+local function getFocusScriptContainer(scriptInstance)
+	if not scriptInstance then
+		return nil
+	end
+
+	local current = scriptInstance.Parent
+	local firstGuiObject = nil
+
+	while current and current ~= playerGui do
+		if current:IsA("GuiObject") then
+			firstGuiObject = current
+		elseif current:IsA("ScreenGui") then
+			return firstGuiObject
+		end
+
+		current = current.Parent
+	end
+
+	return firstGuiObject
+end
+
+local function isFocusBonusWidget(obj)
+	if not obj:IsA("GuiObject") or not obj.Visible or obj:IsDescendantOf(gui) then
+		return false
+	end
+
+	local lowerName = string.lower(obj.Name)
+	if string.find(lowerName, "premium", 1, true) then
+		return true
+	end
+
+	if string.find(lowerName, "friend", 1, true)
+		and (string.find(lowerName, "boost", 1, true) or string.find(lowerName, "bonus", 1, true)) then
+		return true
+	end
+
+	return obj:FindFirstChild("PremiumBonusClient", true) ~= nil
+		or obj:FindFirstChild("FriendBonusClient", true) ~= nil
+end
+
+local function hideFocusGuiObjects()
+	for _, obj in ipairs(playerGui:GetDescendants()) do
+		if obj:IsA("GuiObject") then
+			if table.find(FOCUS_GUI_OBJECTS_TO_HIDE, obj.Name) or isFocusBonusWidget(obj) then
+				rememberAndHideGuiObject(obj)
+			end
+		end
+	end
+
+	for scriptName in pairs(FOCUS_SCRIPT_NAMES_TO_HIDE) do
+		local scriptInstance = playerGui:FindFirstChild(scriptName, true)
+		rememberAndHideGuiObject(getFocusScriptContainer(scriptInstance))
+	end
+end
 
 -- Returns the Buttons folder inside a skin card.
 local function getButtonsFolder(card)
@@ -207,6 +305,7 @@ local function setOpen(value)
 				other:IsA("ScreenGui")
 				and other ~= gui
 				and other.Enabled
+				and other.Name ~= BALANCE_INDICATOR_GUI_NAME
 				and other.Name ~= "TouchGui"
 				and other.Name ~= "Chat"
 				and other.Name ~= "Notifications"
@@ -216,6 +315,8 @@ local function setOpen(value)
 				other.Enabled = false
 			end
 		end
+
+		hideFocusGuiObjects()
 
 		gui.Enabled = true
 		main.Visible = true
@@ -244,6 +345,8 @@ local function setOpen(value)
 		end
 
 		hidden = {}
+		restoreHiddenGuiObjects()
+		feedback:Clear()
 
 		local tween = TweenService:Create(
 			blur,
