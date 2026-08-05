@@ -5,12 +5,12 @@
 local CashPackConfig = {}
 
 CashPackConfig.Packs = {
-	Pack1 = { ProductId = 3610477467, WalletReward = 50000, RobuxPrice = 19, ButtonName = "Pack1" },
-	Pack2 = { ProductId = 3610507493, WalletReward = 185000, RobuxPrice = 67, ButtonName = "Pack2" },
-	Pack3 = { ProductId = 3610628303, WalletReward = 500000, RobuxPrice = 109, ButtonName = "Pack3" },
-	Pack4 = { ProductId = 3610628405, WalletReward = 1500000, RobuxPrice = 249, ButtonName = "Pack4" },
-	Pack5 = { ProductId = 3610628673, WalletReward = 10000000, RobuxPrice = 1099, ButtonName = "Pack5" },
-	Pack6 = { ProductId = 3610628796, WalletReward = 100000000, RobuxPrice = 2699, ButtonName = "Pack6" },
+	Pack1 = { ProductId = 3610477467, WalletReward = 50000, RobuxPrice = 19, ButtonName = "Pack1", DisplayName = "$50,000 Wallet Cash", AllowGifting = true },
+	Pack2 = { ProductId = 3610507493, WalletReward = 185000, RobuxPrice = 67, ButtonName = "Pack2", DisplayName = "$185,000 Wallet Cash", AllowGifting = true },
+	Pack3 = { ProductId = 3610628303, WalletReward = 500000, RobuxPrice = 109, ButtonName = "Pack3", DisplayName = "$500,000 Wallet Cash", AllowGifting = true },
+	Pack4 = { ProductId = 3610628405, WalletReward = 1500000, RobuxPrice = 249, ButtonName = "Pack4", DisplayName = "$1,500,000 Wallet Cash", AllowGifting = true },
+	Pack5 = { ProductId = 3610628673, WalletReward = 10000000, RobuxPrice = 1099, ButtonName = "Pack5", DisplayName = "$10,000,000 Wallet Cash", AllowGifting = true },
+	Pack6 = { ProductId = 3610628796, WalletReward = 100000000, RobuxPrice = 2699, ButtonName = "Pack6", DisplayName = "$100,000,000 Wallet Cash", AllowGifting = true },
 }
 
 local packByProductId = {}

@@ -17,6 +17,7 @@ local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 -- 📚 MODULES
 local BaseAppearanceConfig = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
+local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
 local BaseSkinStats
 pcall(function()
 	BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats", 5))
@@ -130,20 +131,7 @@ local function escapeRichText(value)
 end
 
 local function GetProductDisplayName(productId)
-	local appearance = BaseAppearanceConfig.GetByProductId(productId)
-	if appearance then
-		return ("%s Level %d Base Skin"):format(appearance.DisplayName or appearance.SkinId or "Base", appearance.Level or 0)
-	end
-
-	if BaseSkinStats and productId then
-		for skinName, data in pairs(BaseSkinStats) do
-			if data.ProductId == productId then
-				return tostring(data.Name or skinName)
-			end
-		end
-	end
-
-	return "Selected Product"
+	return GiftProductRegistry.GetDisplayName(productId)
 end
 
 local function clearGiftProductLabel()

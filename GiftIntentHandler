@@ -5,6 +5,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
 
 local function getOrCreate(parent, className, name)
 	local existing = parent:FindFirstChild(name)
@@ -60,6 +61,10 @@ local function validateIntentRequest(buyer, productId, receiverUserId)
 
 	if typeof(productId) ~= "number" or productId <= 0 or productId ~= productId then
 		return false, "Invalid gift product"
+	end
+
+	if not GiftProductRegistry.IsGiftable(productId) then
+		return false, "This product cannot be gifted"
 	end
 
 	if typeof(receiverUserId) ~= "number" then
