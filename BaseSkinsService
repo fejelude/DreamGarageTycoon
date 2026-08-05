@@ -54,10 +54,25 @@ local function restoreDefaults(plot)
 			if descendant:IsA("BasePart") and descendant:GetAttribute("BaseSkinOriginalTransparency") ~= nil then
 				descendant.Transparency = descendant:GetAttribute("BaseSkinOriginalTransparency")
 				descendant:SetAttribute("BaseSkinOriginalTransparency", nil)
+			elseif (descendant:IsA("BillboardGui") or descendant:IsA("SurfaceGui"))
+				and descendant:GetAttribute("BaseSkinOriginalEnabled") ~= nil then
+				descendant.Enabled = descendant:GetAttribute("BaseSkinOriginalEnabled")
+				descendant:SetAttribute("BaseSkinOriginalEnabled", nil)
 			end
 		end
 		for _, child in ipairs(container:GetChildren()) do
 			if child:GetAttribute("BaseSkinVisual") then child:Destroy() end
+		end
+	end
+end
+local function hideDefaultModel(model)
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant:SetAttribute("BaseSkinOriginalTransparency", descendant.Transparency)
+			descendant.Transparency = 1
+		elseif descendant:IsA("BillboardGui") or descendant:IsA("SurfaceGui") then
+			descendant:SetAttribute("BaseSkinOriginalEnabled", descendant.Enabled)
+			descendant.Enabled = false
 		end
 	end
 end
@@ -86,12 +101,7 @@ local function apply(player)
 	local sourceLevel = sourcePlot and sourcePlot:FindFirstChild("Level" .. level)
 	local source = sourceLevel and sourceLevel:FindFirstChild(entry.ModelName)
 	if not source or not source:IsA("Model") then return false, "This skin model is unavailable for " .. plot.Name .. "." end
-	for _, part in ipairs(defaultModel:GetDescendants()) do
-		if part:IsA("BasePart") then
-			part:SetAttribute("BaseSkinOriginalTransparency", part.Transparency)
-			part.Transparency = 1
-		end
-	end
+	hideDefaultModel(defaultModel)
 	local visual = source:Clone(); visual.Name = "BaseSkinVisual_Level" .. level; visual:SetAttribute("BaseSkinVisual", true)
 	for _, item in ipairs(visual:GetDescendants()) do
 		if item:IsA("BasePart") then item.CanCollide = false; item.CanTouch = false; item.CanQuery = false
