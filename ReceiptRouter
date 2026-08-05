@@ -32,6 +32,7 @@ local GlobalLuckConfig = require(ReplicatedStorage:WaitForChild("GlobalLuckConfi
 local GlobalMoneyFrenzyConfig = require(ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyConfig"))
 local CashPackConfig = require(ReplicatedStorage:WaitForChild("CashPackConfig"))
 local LimitedCarsConfig = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
+local BaseAppearanceConfig = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
 
 local function requireServerModule(moduleName)
 	local module = script.Parent:WaitForChild(moduleName, 15)
@@ -491,6 +492,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	local pid = receiptInfo.ProductId
 	local carProductInfo = CAR_PRODUCT_INFO[pid]
+	local appearanceFound = BaseAppearanceConfig.GetByProductId(pid)
 	local skinFound = nil
 	if BaseSkinStats then
 		for name, data in pairs(BaseSkinStats) do
@@ -501,7 +503,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 	end
 
-	local isGiftableProduct = carProductInfo ~= nil or skinFound ~= nil
+	local isGiftableProduct = carProductInfo ~= nil or skinFound ~= nil or appearanceFound ~= nil
 	local targetPlayer = buyerPlayer
 	local isGift = false
 	local giftReceiverId = nil
@@ -800,6 +802,24 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			purchaseSuccess = true
 		else
 			warn("⚠️ Mythical Craft Skip failed or no active craft: " .. tostring(msg))
+		end
+
+		-- ─── 🏠 COSMETIC BASE APPEARANCE ─────────────────────────────────────────
+	elseif appearanceFound then
+		local baseSkinsAPI = ServerStorage:FindFirstChild("BaseSkinsAPI")
+		if baseSkinsAPI then
+			local ok, granted, wasNew = pcall(function()
+				return baseSkinsAPI:Invoke("Grant", targetPlayer, appearanceFound.Level, appearanceFound.SkinId)
+			end)
+			purchaseSuccess = ok and granted == true
+			if purchaseSuccess and isGift then
+				if wasNew then
+					NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, ("Level %d %s Base Skin"):format(appearanceFound.Level, appearanceFound.DisplayName))
+					if GlobalChatBroadcast then GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> the <b><font color='#FFD700'>Level %d %s Base Skin</font></b>! 💎 Generous friends build dream garages together!"):format(buyerPlayer.Name, targetPlayer.Name, appearanceFound.Level, appearanceFound.DisplayName) }) end
+				else
+					fireGiftPurchaseResult(buyerPlayer, { Success = false, ProductId = pid, Message = targetPlayer.Name .. " already owns this Base Skin." })
+				end
+			end
 		end
 
 		-- ─── 🎨 BASE SKIN ────────────────────────────────────────────────────────

@@ -1868,6 +1868,10 @@ save = function(player, isClosing, force)
 			currentOwnedSkins = { "Default" }
 		end
 		local currentEquippedSkin = player:GetAttribute("EquippedSkin") or "Default"
+		local currentOwnedAppearanceSkins = decodeJsonOrDefault(player:GetAttribute("OwnedAppearanceSkins") or "{}", {}, player.Name .. ".OwnedAppearanceSkins")
+		if type(currentOwnedAppearanceSkins) ~= "table" then currentOwnedAppearanceSkins = {} end
+		local currentEquippedLevel1Skin = player:GetAttribute("EquippedLevel1Skin") or "None"
+		local currentEquippedLevel2Skin = player:GetAttribute("EquippedLevel2Skin") or "None"
 		local currentRank = player:GetAttribute("Rank") or "Player"
 		local rankPersistenceBindable = ServerStorage:FindFirstChild("RankPersistenceFunction")
 		local currentRankData = nil
@@ -2126,6 +2130,9 @@ save = function(player, isClosing, force)
 
 					oldData.OwnedBaseSkins    = currentOwnedSkins
 					oldData.EquippedSkin      = currentEquippedSkin
+					oldData.OwnedAppearanceSkins = currentOwnedAppearanceSkins
+					oldData.EquippedLevel1Skin = currentEquippedLevel1Skin
+					oldData.EquippedLevel2Skin = currentEquippedLevel2Skin
 					oldData.HighestUnlockedPad = currentUnlockedPad
 					oldData.BaseLevel = currentBaseLevel
 					oldData.OwnedBaseLevel = currentOwnedBaseLevel
@@ -2314,7 +2321,7 @@ local function InitializePlayer(player)
 		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1, BaseLevel = 1, OwnedBaseLevel = 1,
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
-		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", Rank = "Player", RankData = {},
+		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", OwnedAppearanceSkins = {}, EquippedLevel1Skin = "None", EquippedLevel2Skin = "None", Rank = "Player", RankData = {},
 		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {},
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
 		RobuxProductReceipts = {},
@@ -2332,6 +2339,9 @@ local function InitializePlayer(player)
 	data.MythicalShopPurchases  = data.MythicalShopPurchases  or {}
 	data.OwnedBaseSkins         = data.OwnedBaseSkins         or { "Default" }
 	data.EquippedSkin           = data.EquippedSkin           or "Default"
+	data.OwnedAppearanceSkins  = type(data.OwnedAppearanceSkins) == "table" and data.OwnedAppearanceSkins or {}
+	data.EquippedLevel1Skin    = type(data.EquippedLevel1Skin) == "string" and data.EquippedLevel1Skin or "None"
+	data.EquippedLevel2Skin    = type(data.EquippedLevel2Skin) == "string" and data.EquippedLevel2Skin or "None"
 	data.BaseLevel              = data.BaseLevel              or 1
 	data.OwnedBaseLevel         = math.max(tonumber(data.OwnedBaseLevel) or 1, tonumber(data.BaseLevel) or 1)
 	data.Rank                   = data.Rank                   or "Player"
@@ -2419,6 +2429,9 @@ local function InitializePlayer(player)
 	local ownedJson = HttpService:JSONEncode(data.OwnedBaseSkins)
 	player:SetAttribute("OwnedBaseSkins", ownedJson)
 	player:SetAttribute("EquippedSkin", data.EquippedSkin)
+	player:SetAttribute("OwnedAppearanceSkins", HttpService:JSONEncode(data.OwnedAppearanceSkins))
+	player:SetAttribute("EquippedLevel1Skin", data.EquippedLevel1Skin)
+	player:SetAttribute("EquippedLevel2Skin", data.EquippedLevel2Skin)
 	player:SetAttribute("Rank", data.Rank)
 	player:SetAttribute("Rebirth", data.Rebirth)
 	player:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(data.Rebirth))
@@ -2479,6 +2492,9 @@ local function InitializePlayer(player)
 
 	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(setDirty)
 	player:GetAttributeChangedSignal("BaseLevel"):Connect(setDirty)
+	player:GetAttributeChangedSignal("OwnedAppearanceSkins"):Connect(setDirty)
+	player:GetAttributeChangedSignal("EquippedLevel1Skin"):Connect(setDirty)
+	player:GetAttributeChangedSignal("EquippedLevel2Skin"):Connect(setDirty)
 	player:GetAttributeChangedSignal("OwnedBaseLevel"):Connect(setDirty)
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
 	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)

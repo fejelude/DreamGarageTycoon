@@ -1,0 +1,54 @@
+-- Data-driven configuration for cosmetic tycoon base appearances.
+-- Location: ReplicatedStorage > BaseAppearanceConfig (ModuleScript)
+local Config = {}
+
+Config.SKIN_SWITCH_COOLDOWN = 30
+Config.DEFAULT_SKIN = "None"
+
+Config.Levels = {
+	[1] = { WalletPrice = 6_700_000_000, DefaultModelName = "NormalLevel1" },
+	[2] = { WalletPrice = 67_700_000_000, DefaultModelName = "NormalLevel2" },
+}
+
+Config.Skins = {
+	Black = { DisplayName = "Black", Products = { [1] = 3613206235, [2] = 3613207311 } },
+	Blue = { DisplayName = "Blue", Products = { [1] = 3613206551, [2] = 3613207037 } },
+	Pink = { DisplayName = "Pink", Products = { [1] = 3613206381, [2] = 3613207166 } },
+	Yellow = { DisplayName = "Yellow", Products = { [1] = 3613205879, [2] = 3613206929 } },
+}
+
+function Config.Get(level, skinId)
+	level = math.floor(tonumber(level) or 0)
+	local levelData = Config.Levels[level]
+	local skinData = type(skinId) == "string" and Config.Skins[skinId] or nil
+	if not levelData or not skinData or not skinData.Products[level] then return nil end
+	return {
+		Level = level,
+		SkinId = skinId,
+		DisplayName = skinData.DisplayName or skinId,
+		WalletPrice = levelData.WalletPrice,
+		ProductId = skinData.Products[level],
+		DefaultModelName = levelData.DefaultModelName,
+		ModelName = ("Level%dBase%s"):format(level, skinId),
+		OwnershipKey = ("Level%d:%s"):format(level, skinId),
+	}
+end
+
+function Config.GetByProductId(productId)
+	productId = math.floor(tonumber(productId) or 0)
+	for skinId, skinData in pairs(Config.Skins) do
+		for level, configuredId in pairs(skinData.Products) do
+			if configuredId == productId then return Config.Get(level, skinId) end
+		end
+	end
+	return nil
+end
+
+function Config.GetSkinIds()
+	local result = {}
+	for skinId in pairs(Config.Skins) do table.insert(result, skinId) end
+	table.sort(result)
+	return result
+end
+
+return Config
