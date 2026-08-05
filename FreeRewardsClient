@@ -29,6 +29,10 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local REQUIRED_WAIT_SECONDS = 8
+local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
+local CLAIMED_ATTRIBUTE = "FreeRewardsClaimed"
+local LIKE_ACKNOWLEDGED_ATTRIBUTE = "FreeRewardsLikeAcknowledged"
+local READINESS_TIMEOUT_SECONDS = 30
 
 local function failSetup(message)
 	error("[FreeRewardsClient] " .. message, 0)
@@ -126,6 +130,8 @@ local savedFOV = 70
 local latestClientState = nil
 local refreshToken = 0
 local refreshQueued = false
+local initialReady = false
+local readinessWaitStarted = false
 
 local lastTriggerScanAt = 0
 local wasInsideTrigger = false
@@ -138,6 +144,47 @@ local lastLikeAckAt = 0
 local labelHideToken = {}
 local labelTweens = {}
 local messageState = {}
+
+
+local function waitForAttributeTrue(instance, attributeName, timeoutSeconds)
+	if instance:GetAttribute(attributeName) == true then
+		return true
+	end
+
+	local started = os.clock()
+	local connection
+	local done = false
+	connection = instance:GetAttributeChangedSignal(attributeName):Connect(function()
+		if instance:GetAttribute(attributeName) == true then
+			done = true
+		end
+	end)
+
+	while instance.Parent and not done and os.clock() - started < timeoutSeconds do
+		task.wait(0.05)
+	end
+
+	if connection then
+		connection:Disconnect()
+	end
+
+	return instance:GetAttribute(attributeName) == true
+end
+
+local function waitForRewardReadiness()
+	if initialReady then
+		return true
+	end
+
+	local ready = waitForAttributeTrue(player, DATA_READY_ATTRIBUTE, READINESS_TIMEOUT_SECONDS)
+	if not ready then
+		warn("⚠️ [FreeRewardsClient] Timed out waiting for " .. DATA_READY_ATTRIBUTE .. "; Rewards UI will keep retrying when data changes.")
+		return false
+	end
+
+	initialReady = true
+	return true
+end
 
 local function safePlayNamed(name)
 	if UIAudioConfig and type(UIAudioConfig.PlayNamed) == "function" then
@@ -462,7 +509,13 @@ local function applyState(clientState, instant)
 	return true
 end
 
+local queueRefreshState
+
 local function refreshState()
+	if not waitForRewardReadiness() then
+		return
+	end
+
 	refreshToken += 1
 	local thisToken = refreshToken
 
@@ -476,12 +529,15 @@ local function refreshState()
 
 	if ok then
 		applyState(clientState, false)
+		if type(clientState) == "table" and clientState.Loading == true then
+			queueRefreshState()
+		end
 	else
 		warn("⚠️ [FreeRewardsClient] Failed to refresh state: " .. tostring(clientState))
 	end
 end
 
-local function queueRefreshState()
+queueRefreshState = function()
 	if refreshQueued then
 		return
 	end
@@ -757,9 +813,9 @@ stateChangedEvent.OnClientEvent:Connect(function(clientState)
 	applyState(clientState, false)
 end)
 
-player:GetAttributeChangedSignal("FreeRewardsClaimed"):Connect(queueRefreshState)
-player:GetAttributeChangedSignal("FreeRewardsLikeAcknowledged"):Connect(queueRefreshState)
-player:GetAttributeChangedSignal("TycoonDataLoaded"):Connect(queueRefreshState)
+player:GetAttributeChangedSignal(CLAIMED_ATTRIBUTE):Connect(queueRefreshState)
+player:GetAttributeChangedSignal(LIKE_ACKNOWLEDGED_ATTRIBUTE):Connect(queueRefreshState)
+player:GetAttributeChangedSignal(DATA_READY_ATTRIBUTE):Connect(queueRefreshState)
 
 player.CharacterAdded:Connect(function()
 	wasInsideTrigger = false
@@ -773,4 +829,12 @@ player.CharacterRemoving:Connect(function()
 	closeRewards(false)
 end)
 
-task.spawn(refreshState)
+task.spawn(function()
+	if readinessWaitStarted then
+		return
+	end
+
+	readinessWaitStarted = true
+	waitForRewardReadiness()
+	refreshState()
+end)

@@ -74,7 +74,9 @@ local isInitializing = false
 local screenGui = nil
 local mainFrame = nil
 local detector = nil
-local emptyIndicator = nil 
+local emptyIndicator = nil
+local whatYouAreGiftingLabel = nil
+local currentProductDisplayName = ""
 
 local hiddenGuis = {}
 local hiddenObjects = {}
@@ -115,6 +117,51 @@ local openFov = nil
 
 local savedWalkSpeed = nil
 local savedJumpPower = nil
+
+
+local function escapeRichText(value)
+	value = tostring(value or "")
+	value = string.gsub(value, "&", "&amp;")
+	value = string.gsub(value, "<", "&lt;")
+	value = string.gsub(value, ">", "&gt;")
+	value = string.gsub(value, "\"", "&quot;")
+	value = string.gsub(value, "'", "&apos;")
+	return value
+end
+
+local function GetProductDisplayName(productId)
+	local appearance = BaseAppearanceConfig.GetByProductId(productId)
+	if appearance then
+		return ("%s Level %d Base Skin"):format(appearance.DisplayName or appearance.SkinId or "Base", appearance.Level or 0)
+	end
+
+	if BaseSkinStats and productId then
+		for skinName, data in pairs(BaseSkinStats) do
+			if data.ProductId == productId then
+				return tostring(data.Name or skinName)
+			end
+		end
+	end
+
+	return "Selected Product"
+end
+
+local function clearGiftProductLabel()
+	currentProductDisplayName = ""
+	if whatYouAreGiftingLabel then
+		whatYouAreGiftingLabel.Text = ""
+		whatYouAreGiftingLabel.Visible = false
+	end
+end
+
+local function setGiftProductLabel(productId)
+	currentProductDisplayName = GetProductDisplayName(productId)
+	if whatYouAreGiftingLabel then
+		whatYouAreGiftingLabel.RichText = true
+		whatYouAreGiftingLabel.Text = ('You\'re Gifting: <font color="#FFD54A"><b>%s</b></font>'):format(escapeRichText(currentProductDisplayName))
+		whatYouAreGiftingLabel.Visible = true
+	end
+end
 
 -- ============================================================================
 -- 🔍 OWNERSHIP CHECK LOGIC
@@ -528,6 +575,8 @@ local function setFocusMode(isFocused)
 		setMovementLocked(true)
 		tweenFov(openFov)
 	else
+		clearGiftProductLabel()
+		currentProductId = nil
 		mainFrame.Visible = false
 		screenGui.Enabled = false
 		toggleOtherGuis(false)
@@ -681,6 +730,8 @@ local function closeAfterCommittedGift()
 		end
 
 		isMenuOpen = false
+		clearGiftProductLabel()
+		currentProductId = nil
 		clearFocusConnections()
 		toggleOtherGuis(false)
 		toggleGiftFocusGuiObjects(false)
@@ -747,6 +798,14 @@ local function Init()
 
 	if mainFrame then
 		emptyIndicator = mainFrame:FindFirstChild("EmptyServerIndicator")
+		whatYouAreGiftingLabel = mainFrame:FindFirstChild("WhatYouAreGifting")
+		if whatYouAreGiftingLabel and whatYouAreGiftingLabel:IsA("TextLabel") then
+			whatYouAreGiftingLabel.RichText = true
+			clearGiftProductLabel()
+		else
+			whatYouAreGiftingLabel = nil
+			warn("⚠️ GiftUIController: MainFrame.WhatYouAreGifting TextLabel is missing; product name cannot be displayed.")
+		end
 	end
 
 	screenGui.Enabled = false
@@ -802,6 +861,7 @@ _G.OpenGiftMenu = function(productId)
 	end
 
 	currentProductId = productId
+	setGiftProductLabel(productId)
 	SetIndicator("Select a player to gift", Color3.fromRGB(255, 255, 255))
 	UpdateSlots()
 
