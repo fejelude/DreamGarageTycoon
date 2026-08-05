@@ -140,7 +140,7 @@ for level = 1, 2 do
 	local levelUiPath = string.format("StarterGui.BaseSkinUI.MainFrame.UpgradeScroller.Elements.Level%dSkins", level)
 	for _, skinId in ipairs(skinIds) do
 		local skinUiPath = string.format("%s.%s", levelUiPath, uiSkinFolders[skinId])
-		table.insert(requiredInstances, { skinUiPath, "Frame" })
+		table.insert(requiredInstances, { skinUiPath, "Folder" })
 		for _, buttonName in ipairs(skinButtons) do
 			table.insert(requiredInstances, { string.format("%s.%s", skinUiPath, buttonName), "ImageButton" })
 		end
