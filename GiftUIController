@@ -187,6 +187,14 @@ local function DoesPlayerOwnSkin(targetPlayer, skinName)
 	return false
 end
 
+local function DoesPlayerOwnProduct(targetPlayer, productId)
+	local product = GiftProductRegistry.GetByProductId(productId)
+	if product and product.OwnershipAttribute then
+		return targetPlayer:GetAttribute(product.OwnershipAttribute) == true
+	end
+	return DoesPlayerOwnSkin(targetPlayer, GetSkinNameFromProductId(productId))
+end
+
 -- ============================================================================
 -- 👁️ GUI HIDING
 -- ============================================================================
@@ -601,8 +609,6 @@ local function UpdateSlots()
 		if standardIndicator then standardIndicator.Visible = true end
 	end
 
-	local targetSkinName = GetSkinNameFromProductId(currentProductId)
-
 	for i = 1, 5 do
 		local slotFrame = mainFrame:FindFirstChild("Player" .. i)
 		if slotFrame then
@@ -620,7 +626,7 @@ local function UpdateSlots()
 					avatarImg.Image = "rbxthumb://type=AvatarHeadShot&id=" .. target.UserId .. "&w=150&h=150"
 				end
 
-				local alreadyOwnsIt = DoesPlayerOwnSkin(target, targetSkinName)
+				local alreadyOwnsIt = DoesPlayerOwnProduct(target, currentProductId)
 
 				if alreadyOwnedBtn then alreadyOwnedBtn.Visible = alreadyOwnsIt end
 				if giftBtn then giftBtn.Visible = not alreadyOwnsIt end

@@ -12,6 +12,7 @@ if not gamePassConfigModule or not gamePassConfigModule:IsA("ModuleScript") then
 end
 
 local GamePassConfig = require(gamePassConfigModule)
+local GiftEntitlementService = require(script.Parent:WaitForChild("GiftEntitlementService"))
 
 local GamePassOwnershipService = {}
 local ownershipCache = {}
@@ -43,8 +44,15 @@ function GamePassOwnershipService.RefreshPass(player, passKey)
 		owns = false
 	end
 
-	GamePassOwnershipService.SetOwned(player, passKey, owns == true)
-	return owns == true
+	local gifted, giftErr = GiftEntitlementService.GetOwned(player.UserId, passKey)
+	if gifted == nil then
+		warn("[GamePassOwnershipService] Gift entitlement lookup failed for", player.UserId, passKey, giftErr)
+		-- Do not erase a previously loaded true value during a transient outage.
+		gifted = player:GetAttribute("Gifted" .. passKey) == true
+	end
+	player:SetAttribute("Gifted" .. passKey, gifted == true)
+	GamePassOwnershipService.SetOwned(player, passKey, owns == true or gifted == true)
+	return owns == true or gifted == true
 end
 
 function GamePassOwnershipService.RefreshPlayer(player)

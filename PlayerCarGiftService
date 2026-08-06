@@ -14,19 +14,13 @@ local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
 local RECEIVE_GIFTS_ATTRIBUTE = "Setting_ReceiveGiftsEnabled"
 -- ================================
 
--- Create Remote if it doesn't exist
-local RemotesFolder = ReplicatedStorage:FindFirstChild("PlayerCarGiftingRemotes")
-if not RemotesFolder then
-	RemotesFolder = Instance.new("Folder")
-	RemotesFolder.Name = "PlayerCarGiftingRemotes"
-	RemotesFolder.Parent = ReplicatedStorage
+local RemotesFolder = ReplicatedStorage:WaitForChild("PlayerCarGiftingRemotes", 15)
+if not RemotesFolder or not RemotesFolder:IsA("Folder") then
+	error("[PlayerCarGiftService] ReplicatedStorage > PlayerCarGiftingRemotes must be a pre-created Folder", 0)
 end
-
-local ActionRemote = RemotesFolder:FindFirstChild("ActionRemote")
-if not ActionRemote then
-	ActionRemote = Instance.new("RemoteEvent")
-	ActionRemote.Name = "ActionRemote"
-	ActionRemote.Parent = RemotesFolder
+local ActionRemote = RemotesFolder:WaitForChild("ActionRemote", 15)
+if not ActionRemote or not ActionRemote:IsA("RemoteEvent") then
+	error("[PlayerCarGiftService] ReplicatedStorage > PlayerCarGiftingRemotes > ActionRemote must be a pre-created RemoteEvent", 0)
 end
 
 -- ============================================================================

@@ -5,50 +5,68 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+local StarterGui = game:GetService("StarterGui")
 local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
+local GamePassConfig = require(ReplicatedStorage:WaitForChild("GamePassConfig"))
 
-local function getOrCreate(parent, className, name)
-	local existing = parent:FindFirstChild(name)
-	if existing and existing:IsA(className) then
-		return existing
+-- Studio may keep the two gift Developer Product ids as attributes on their
+-- buttons. Register those server-side; clients never get to nominate an id.
+local shopGui = StarterGui:FindFirstChild("ShopUI")
+local giftButtons = shopGui and shopGui:FindFirstChild("GiftButtons", true)
+if not giftButtons then
+	warn("[GiftIntentHandler] StarterGui > ShopUI > ... > GiftButtons was not found; button-attribute Game Pass gift IDs cannot be registered")
+end
+for buttonName, passKey in pairs({ GiftExclusive = "Exclusive", Gift2xMoney = "DoubleMoney" }) do
+	local button = giftButtons and giftButtons:FindFirstChild(buttonName)
+	local passInfo = GamePassConfig.Passes[passKey]
+	local productId = passInfo and tonumber(passInfo.GiftProductId)
+	if (not productId or productId <= 0) and button then
+		productId = tonumber(button:GetAttribute("DeveloperProductId") or button:GetAttribute("ProductId"))
 	end
-
-	if existing then
-		warn("[GiftIntentHandler] Replacing invalid " .. name .. " (" .. existing.ClassName .. ") with " .. className)
-		existing:Destroy()
+	if productId and productId > 0 then
+		GiftProductRegistry.RegisterGamePassGift(productId, passKey, passInfo)
 	end
-
-	local created = Instance.new(className)
-	created.Name = name
-	created.Parent = parent
-	return created
 end
 
-local Remotes = ReplicatedStorage:FindFirstChild("GiftRemotes")
-if not Remotes then
-	Remotes = Instance.new("Folder")
-	Remotes.Name = "GiftRemotes"
-	Remotes.Parent = ReplicatedStorage
+local function requireInstance(parent, name, className, fullPath)
+	local instance = parent:WaitForChild(name, 15)
+	if not instance then error("[GiftIntentHandler] Missing required " .. className .. ": " .. fullPath, 0) end
+	if not instance:IsA(className) then
+		error(("[GiftIntentHandler] %s must be a %s, got %s"):format(fullPath, className, instance.ClassName), 0)
+	end
+	return instance
 end
 
-local SetIntentEvent = getOrCreate(Remotes, "RemoteEvent", "SetGiftIntent")
-local CreateIntentFunction = getOrCreate(Remotes, "RemoteFunction", "CreateGiftIntent")
-local CancelIntentEvent = getOrCreate(Remotes, "RemoteEvent", "CancelGiftIntent")
-getOrCreate(Remotes, "RemoteEvent", "NotifyGiftReceived")
-getOrCreate(Remotes, "RemoteEvent", "GlobalChatBroadcast")
-getOrCreate(Remotes, "RemoteEvent", "GiftPurchaseResult")
+local Remotes = requireInstance(ReplicatedStorage, "GiftRemotes", "Folder", "ReplicatedStorage > GiftRemotes")
+local SetIntentEvent = requireInstance(Remotes, "SetGiftIntent", "RemoteEvent", "ReplicatedStorage > GiftRemotes > SetGiftIntent")
+local CreateIntentFunction = requireInstance(Remotes, "CreateGiftIntent", "RemoteFunction", "ReplicatedStorage > GiftRemotes > CreateGiftIntent")
+local CancelIntentEvent = requireInstance(Remotes, "CancelGiftIntent", "RemoteEvent", "ReplicatedStorage > GiftRemotes > CancelGiftIntent")
+requireInstance(Remotes, "NotifyGiftReceived", "RemoteEvent", "ReplicatedStorage > GiftRemotes > NotifyGiftReceived")
+requireInstance(Remotes, "GlobalChatBroadcast", "RemoteEvent", "ReplicatedStorage > GiftRemotes > GlobalChatBroadcast")
+requireInstance(Remotes, "GiftPurchaseResult", "RemoteEvent", "ReplicatedStorage > GiftRemotes > GiftPurchaseResult")
 
 -- { [buyerUserId] = { ReceiverUserId, ProductId, CreatedAt, ExpiresAt } }
 local pendingGifts = {}
 local lastIntentTime = {}
+local intentStore = DataStoreService:GetDataStore("PendingRobuxGiftIntents_V1")
 
 local INTENT_COOLDOWN = 0.75
-local INTENT_TTL = 600
+local INTENT_TTL = 30 * 60
+local function intentKey(userId) return "Buyer_" .. tostring(userId) end
+
+local function loadIntent(buyerUserId)
+	if pendingGifts[buyerUserId] then return pendingGifts[buyerUserId] end
+	local ok, stored = pcall(function() return intentStore:GetAsync(intentKey(buyerUserId)) end)
+	if ok and type(stored) == "table" then pendingGifts[buyerUserId] = stored end
+	return pendingGifts[buyerUserId]
+end
 
 local function pruneExpiredIntent(buyerUserId)
-	local intent = pendingGifts[buyerUserId]
-	if intent and intent.ExpiresAt <= os.clock() then
+	local intent = loadIntent(buyerUserId)
+	if intent and (tonumber(intent.ExpiresAt) or 0) <= os.time() then
 		pendingGifts[buyerUserId] = nil
+		pcall(function() intentStore:RemoveAsync(intentKey(buyerUserId)) end)
 		return nil
 	end
 	return intent
@@ -85,6 +103,10 @@ local function validateIntentRequest(buyer, productId, receiverUserId)
 	if not receiverPlayer then
 		return false, "Player left the server"
 	end
+	local product = GiftProductRegistry.GetByProductId(productId)
+	if product and product.OwnershipAttribute and receiverPlayer:GetAttribute(product.OwnershipAttribute) == true then
+		return false, receiverPlayer.Name .. " already owns this perk"
+	end
 
 	return true
 end
@@ -95,13 +117,28 @@ local function setIntent(buyer, productId, receiverUserId)
 		return false, message
 	end
 
-	local now = os.clock()
+	local existing = pruneExpiredIntent(buyer.UserId)
+	if existing then
+		if existing.ProductId == math.floor(productId) and existing.ReceiverUserId == receiverUserId then
+			return true, "Gift ready"
+		end
+		return false, "Another gift purchase is already pending"
+	end
+
+	local now = os.time()
 	pendingGifts[buyer.UserId] = {
 		ReceiverUserId = receiverUserId,
 		ProductId = math.floor(productId),
 		CreatedAt = now,
 		ExpiresAt = now + INTENT_TTL,
 	}
+	local saved, saveErr = pcall(function()
+		intentStore:SetAsync(intentKey(buyer.UserId), pendingGifts[buyer.UserId])
+	end)
+	if not saved then
+		pendingGifts[buyer.UserId] = nil
+		return false, "Unable to securely save gift intent: " .. tostring(saveErr)
+	end
 
 	return true, "Gift ready"
 end
@@ -130,10 +167,12 @@ CancelIntentEvent.OnServerEvent:Connect(function(buyer, productId)
 	end
 
 	pendingGifts[buyer.UserId] = nil
+	pcall(function() intentStore:RemoveAsync(intentKey(buyer.UserId)) end)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-	pendingGifts[player.UserId] = nil
+	-- Do not discard an accepted intent here. Roblox may deliver the receipt after
+	-- the purchaser disconnects; keeping it prevents a retry from changing target.
 	lastIntentTime[player.UserId] = nil
 end)
 
@@ -165,6 +204,7 @@ _G.ClearGiftIntent = function(buyerUserId, productId)
 	end
 
 	pendingGifts[buyerUserId] = nil
+	pcall(function() intentStore:RemoveAsync(intentKey(buyerUserId)) end)
 	return true
 end
 

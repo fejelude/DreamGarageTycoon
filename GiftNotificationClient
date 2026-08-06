@@ -30,7 +30,7 @@ local NotifyGiftReceived = Remotes:WaitForChild("NotifyGiftReceived", 10)
 local UI_NAME = "Notifications"
 local NOTIFICATION_NAME = "GiftReceived"
 local DISPLAY_TIME = 5.0
-local TADA_SFX_ID = "rbxassetid://73743814975286" 
+local TADA_SFX_ID = "rbxassetid://73743814975286"
 
 -- 🎨 COLOR CODING
 local DEFAULT_COLOR_HEX = "#A3A2A5" -- Silver/Default Gray for unknown pads
@@ -88,7 +88,7 @@ local function SpawnConfetti(parentUI)
 		local burstDistance = math.random(150, 450)
 
 		local targetXOffset = math.cos(angle) * burstDistance
-		local targetYOffset = (math.sin(angle) * burstDistance) + 250 
+		local targetYOffset = (math.sin(angle) * burstDistance) + 250
 
 		local tInfo = TweenInfo.new(math.random(15, 25) / 10, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out)
 		local tween = TweenService:Create(p, tInfo, {
@@ -120,10 +120,10 @@ local function ShowNotification(buyerName, skinName)
 
 	-- 🎨 NEW FORMAT: Emojis + Bright Green Player Name + Colored Pad Name + Bold Tags
 	notificationLbl.Text = string.format(
-		"🎁 <b><font color='%s'>%s</font></b> gifted you the <b><font color='%s'>%s Pad</font></b>! 🎁", 
-		PLAYER_COLOR_HEX, 
-		buyerName, 
-		padHexColor, 
+		"🎁 <b><font color='%s'>%s</font></b> gifted you the <b><font color='%s'>%s Pad</font></b>! 🎁",
+		PLAYER_COLOR_HEX,
+		buyerName,
+		padHexColor,
 		skinName
 	)
 
