@@ -1,0 +1,196 @@
+-- Purpose: Shared, data-driven registry for Developer Products that may use UniversalGiftUI.
+-- Location: ReplicatedStorage > GiftProductRegistry (ModuleScript)
+-- Notes:
+--   Add future giftable products here (or from config modules required below) so
+--   GiftUIController, GiftIntentHandler, and ReceiptRouter share one source of truth.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Registry = {}
+local productsById = {}
+
+local function normalizeProductId(productId)
+	productId = math.floor(tonumber(productId) or 0)
+	if productId <= 0 then
+		return nil
+	end
+	return productId
+end
+
+local function register(productId, info)
+	productId = normalizeProductId(productId)
+	if not productId or type(info) ~= "table" then
+		return
+	end
+
+	local entry = table.clone(info)
+	entry.ProductId = productId
+	entry.DisplayName = tostring(entry.DisplayName or entry.Name or ("Product " .. tostring(productId)))
+	entry.Kind = tostring(entry.Kind or "DeveloperProduct")
+	entry.Giftable = entry.Giftable == true
+	productsById[productId] = entry
+end
+
+local function requireOptionalConfig(moduleName)
+	local moduleScript = ReplicatedStorage:FindFirstChild(moduleName)
+	if not moduleScript or not moduleScript:IsA("ModuleScript") then
+		return nil
+	end
+
+	local ok, result = pcall(function()
+		return require(moduleScript)
+	end)
+
+	if ok then
+		return result
+	end
+
+	warn("⚠️ [GiftProductRegistry] Failed to require " .. moduleName .. ": " .. tostring(result))
+	return nil
+end
+
+local function registerCarProducts(productMap, rarity, feedbackRemoteName)
+	for productId, carName in pairs(productMap) do
+		register(productId, {
+			Kind = "Car",
+			Giftable = true,
+			DisplayName = tostring(carName),
+			CarName = tostring(carName),
+			Rarity = rarity,
+			FeedbackRemoteName = feedbackRemoteName,
+		})
+	end
+end
+
+registerCarProducts({
+	[3524326648] = "Delta",
+	[3524327150] = "Iva",
+	[3524327478] = "Atom",
+	[3524327780] = "Windsor",
+	[3524328208] = "Senator",
+	[3524328713] = "Riva",
+	[3569674363] = "Clunker",
+	[3569675190] = "Rustix",
+	[3569675919] = "Breako",
+	[3569677174] = "Diva",
+	[3569678091] = "Hiva",
+}, "Common", nil)
+
+registerCarProducts({
+	[3555929015] = "Raiju",
+	[3555929595] = "Ironclad",
+	[3555930076] = "Vapid",
+	[3555930681] = "Galadriel",
+	[3555931766] = "Kingston",
+	[3569681463] = "Vioz",
+	[3569682549] = "Yora",
+	[3569683032] = "Ricky",
+	[3569683706] = "Uber",
+	[3569699394] = "Blackhead",
+	[3569699739] = "Mia",
+}, "Uncommon", "DarrelPurchaseFeedback")
+
+registerCarProducts({
+	[3556129501] = "Maverick",
+	[3556127982] = "Javelin",
+	[3556128765] = "Stuttgart",
+	[3556130011] = "Velocity",
+	[3556536171] = "Sadie",
+	[3569702085] = "Vipera",
+	[3569702417] = "Camara",
+	[3569702782] = "Corvo",
+}, "Rare", "JacobPurchaseFeedback")
+
+registerCarProducts({
+	[3556537696] = "Sirene",
+	[3556538294] = "Vortex",
+	[3569704442] = "Razor",
+	[3569705950] = "Apollo",
+	[3569706897] = "Sovereign",
+	[3569707752] = "Classy",
+	[3569708179] = "Shaguar",
+}, "Epic", "RayWPurchaseFeedback")
+
+local BaseAppearanceConfig = requireOptionalConfig("BaseAppearanceConfig")
+if BaseAppearanceConfig and type(BaseAppearanceConfig.GetSkinIds) == "function" and type(BaseAppearanceConfig.Get) == "function" then
+	for _, skinId in ipairs(BaseAppearanceConfig.GetSkinIds()) do
+		for level in pairs(BaseAppearanceConfig.Levels or {}) do
+			local appearance = BaseAppearanceConfig.Get(level, skinId)
+			if appearance and appearance.ProductId then
+				register(appearance.ProductId, {
+					Kind = "BaseAppearance",
+					Giftable = true,
+					DisplayName = ("%s Level %d Base Skin"):format(appearance.DisplayName or appearance.SkinId, appearance.Level),
+					Level = appearance.Level,
+					SkinId = appearance.SkinId,
+					OwnershipKey = appearance.OwnershipKey,
+				})
+			end
+		end
+	end
+end
+
+local BaseSkinStats = requireOptionalConfig("BaseSkinStats")
+if type(BaseSkinStats) == "table" then
+	for skinName, data in pairs(BaseSkinStats) do
+		if type(data) == "table" and data.ProductId then
+			register(data.ProductId, {
+				Kind = "BaseSkin",
+				Giftable = true,
+				DisplayName = tostring(data.Name or skinName),
+				SkinName = tostring(skinName),
+			})
+		end
+	end
+end
+
+local CashPackConfig = requireOptionalConfig("CashPackConfig")
+if CashPackConfig and type(CashPackConfig.Packs) == "table" then
+	for packName, packInfo in pairs(CashPackConfig.Packs) do
+		register(packInfo.ProductId, {
+			Kind = "CashPack",
+			Giftable = packInfo.AllowGifting == true,
+			DisplayName = packInfo.DisplayName or (("$%s Wallet Cash"):format(tostring(packInfo.WalletReward or 0))),
+			PackName = packName,
+			WalletReward = packInfo.WalletReward,
+		})
+	end
+end
+
+local LimitedCarsConfig = requireOptionalConfig("LimitedCarsConfig")
+if LimitedCarsConfig and type(LimitedCarsConfig.Products) == "table" then
+	for productKey, productInfo in pairs(LimitedCarsConfig.Products) do
+		register(productInfo.ProductId, {
+			Kind = "LimitedCar",
+			Giftable = productInfo.AllowGifting == true,
+			DisplayName = productInfo.DisplayName or productInfo.CarId or productKey,
+			ProductKey = productKey,
+			CarName = productInfo.CarId,
+		})
+	end
+end
+
+function Registry.GetByProductId(productId)
+	productId = normalizeProductId(productId)
+	return productId and productsById[productId] or nil
+end
+
+function Registry.IsGiftable(productId)
+	local entry = Registry.GetByProductId(productId)
+	return entry ~= nil and entry.Giftable == true
+end
+
+function Registry.GetDisplayName(productId)
+	local entry = Registry.GetByProductId(productId)
+	return entry and entry.DisplayName or "Selected Product"
+end
+
+function Registry.GetAllProducts()
+	local copy = {}
+	for productId, entry in pairs(productsById) do
+		copy[productId] = table.clone(entry)
+	end
+	return copy
+end
+
+return Registry

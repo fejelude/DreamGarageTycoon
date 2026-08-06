@@ -41,6 +41,7 @@ local promptBusy = false
 local promptAttemptId = 0
 local pendingProductId = nil
 local buttonByProductId = {}
+local giftButtonByProductId = {}
 
 local function setButtonInputLocked(button, locked)
 	if not button then return end
@@ -53,6 +54,9 @@ local function renderAll()
 	for productId, button in pairs(buttonByProductId) do
 		setButtonInputLocked(button, promptBusy and pendingProductId == productId)
 	end
+	for productId, button in pairs(giftButtonByProductId) do
+		setButtonInputLocked(button, promptBusy and pendingProductId == productId)
+	end
 end
 
 local function finishPrompt()
@@ -61,6 +65,24 @@ local function finishPrompt()
 	promptBusy = false
 	pendingProductId = nil
 	renderAll()
+end
+
+
+local function beginGift(packInfo)
+	if promptBusy then return end
+	if not packInfo or packInfo.AllowGifting ~= true or not packInfo.ProductId or packInfo.ProductId <= 0 then
+		shopFeedback:Failed("Gift unavailable")
+		Kit.Sound:Play("BuyFail")
+		return
+	end
+
+	if not _G.OpenGiftMenu then
+		shopFeedback:Failed("Gifting menu is not ready")
+		Kit.Sound:Play("BuyFail")
+		return
+	end
+
+	_G.OpenGiftMenu(packInfo.ProductId)
 end
 
 local function beginPurchase(packInfo)
@@ -109,6 +131,14 @@ for _, packInfo in pairs(CashPackConfig.Packs) do
 	Kit.Tween:SetupButton(button, function()
 		beginPurchase(packInfo)
 	end)
+
+	local giftButton = button:FindFirstChild("GiftButton", true)
+	if giftButton and giftButton:IsA("GuiButton") then
+		giftButtonByProductId[packInfo.ProductId] = giftButton
+		Kit.Tween:SetupButton(giftButton, function()
+			beginGift(packInfo)
+		end)
+	end
 end
 
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, _wasPurchased)

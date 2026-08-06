@@ -33,6 +33,7 @@ local GlobalMoneyFrenzyConfig = require(ReplicatedStorage:WaitForChild("GlobalMo
 local CashPackConfig = require(ReplicatedStorage:WaitForChild("CashPackConfig"))
 local LimitedCarsConfig = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
 local BaseAppearanceConfig = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
+local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
 
 local function requireServerModule(moduleName)
 	local module = script.Parent:WaitForChild(moduleName, 15)
@@ -115,17 +116,14 @@ local EPIC_CAR_PRODUCT_IDS = {
 
 -- 🔴 SKIP CRAFT TIME PRODUCT IDS
 local CAR_PRODUCT_INFO = {}
-for productId, carName in pairs(CAR_PRODUCT_IDS) do
-	CAR_PRODUCT_INFO[productId] = { CarName = carName, Rarity = "Common", FeedbackRemoteName = nil }
-end
-for productId, carName in pairs(UNCOMMON_CAR_PRODUCT_IDS) do
-	CAR_PRODUCT_INFO[productId] = { CarName = carName, Rarity = "Uncommon", FeedbackRemoteName = "DarrelPurchaseFeedback" }
-end
-for productId, carName in pairs(RARE_CAR_PRODUCT_IDS) do
-	CAR_PRODUCT_INFO[productId] = { CarName = carName, Rarity = "Rare", FeedbackRemoteName = "JacobPurchaseFeedback" }
-end
-for productId, carName in pairs(EPIC_CAR_PRODUCT_IDS) do
-	CAR_PRODUCT_INFO[productId] = { CarName = carName, Rarity = "Epic", FeedbackRemoteName = "RayWPurchaseFeedback" }
+for productId, productInfo in pairs(GiftProductRegistry.GetAllProducts()) do
+	if productInfo.Kind == "Car" then
+		CAR_PRODUCT_INFO[productId] = {
+			CarName = productInfo.CarName,
+			Rarity = productInfo.Rarity,
+			FeedbackRemoteName = productInfo.FeedbackRemoteName,
+		}
+	end
 end
 
 local LEGENDARY_SKIP_CRAFT_ID = 3573930334
@@ -503,7 +501,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		end
 	end
 
-	local isGiftableProduct = carProductInfo ~= nil or skinFound ~= nil or appearanceFound ~= nil
+	local registeredGiftProduct = GiftProductRegistry.GetByProductId(pid)
+	local isGiftableProduct = registeredGiftProduct ~= nil and registeredGiftProduct.Giftable == true
 	local targetPlayer = buyerPlayer
 	local isGift = false
 	local giftReceiverId = nil
@@ -600,12 +599,22 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	-- ─── REWARDED VIDEO AD ────────────────────────────────────────────────────
 	if cashPackInfo then
 		-- Cash Packs are repeatable developer products that grant Wallet cash only.
-		-- They are never giftable and never modify HiddenStats.Cash/Bank.
-		isGift = false
-		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+		-- They use the universal gift target only when explicitly registered as giftable.
+		if not isGift then
+			targetPlayer = buyerPlayer
+			consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+		end
 
-		purchaseSuccess = grantCashPackWalletReward(buyerPlayer, receiptInfo, cashPackInfo)
+		purchaseSuccess = grantCashPackWalletReward(targetPlayer, receiptInfo, cashPackInfo)
+		if purchaseSuccess and isGift then
+			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, registeredGiftProduct.DisplayName or "Wallet Cash")
+			fireGiftPurchaseResult(buyerPlayer, {
+				Success = true,
+				ProductId = pid,
+				ReceiverName = targetPlayer.Name,
+				ReceiverUserId = targetPlayer.UserId,
+			})
+		end
 
 	elseif AdRewardsConfig.IsConfigured() and pid == AdRewardsConfig.DEV_PRODUCT_ID then
 		-- Rewarded ads are never giftable. Roblox requires the disclosed ad reward
@@ -814,8 +823,10 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			purchaseSuccess = ok and granted == true
 			if purchaseSuccess and isGift then
 				if wasNew then
-					NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, ("Level %d %s Base Skin"):format(appearanceFound.Level, appearanceFound.DisplayName))
-					if GlobalChatBroadcast then GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> the <b><font color='#FFD700'>Level %d %s Base Skin</font></b>! 💎 Generous friends build dream garages together!"):format(buyerPlayer.Name, targetPlayer.Name, appearanceFound.Level, appearanceFound.DisplayName) }) end
+					local giftName = registeredGiftProduct and registeredGiftProduct.DisplayName or ("Level %d %s Base Skin"):format(appearanceFound.Level, appearanceFound.DisplayName)
+					NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, giftName)
+					fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
+					if GlobalChatBroadcast then GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> the <b><font color='#FFD700'>%s</font></b>! 💎 Generous friends build dream garages together!"):format(buyerPlayer.Name, targetPlayer.Name, giftName) }) end
 				else
 					fireGiftPurchaseResult(buyerPlayer, { Success = false, ProductId = pid, Message = targetPlayer.Name .. " already owns this Base Skin." })
 				end
@@ -857,7 +868,9 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 			end
 
 			if isGift then
-				NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, skinFound)
+				local giftName = registeredGiftProduct and registeredGiftProduct.DisplayName or skinFound
+				NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, giftName)
+				fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
 			end
 		end
 	end
