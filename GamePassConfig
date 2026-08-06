@@ -8,7 +8,7 @@ GamePassConfig.Passes = {
 		Id = 1919259004,
 		-- Set to the corresponding Developer Product id from Creator Dashboard.
 		-- This is intentionally distinct from Id (which is a game-pass asset id).
-		GiftProductId = 0,
+		GiftProductId = 3628333262,
 		GiftDisplayName = "Exclusive Perk",
 		Attribute = "OwnsExclusiveGamePass",
 		Multiplier = 1.8,
@@ -19,7 +19,7 @@ GamePassConfig.Passes = {
 	},
 	DoubleMoney = {
 		Id = 1918448975,
-		GiftProductId = 0,
+		GiftProductId = 3628339938,
 		GiftDisplayName = "2x Money Perk",
 		Attribute = "Owns2xMoneyGamePass",
 		Multiplier = 2,
