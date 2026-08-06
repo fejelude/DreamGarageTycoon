@@ -91,6 +91,20 @@ local function restoreHiddenGuiObjects()
 	hiddenObjects = {}
 end
 
+local function hideBonusesFolder()
+	local bonuses = playerGui:FindFirstChild("Bonuses")
+
+	if not bonuses then
+		return
+	end
+
+	rememberAndHideGuiObject(bonuses)
+
+	for _, descendant in ipairs(bonuses:GetDescendants()) do
+		rememberAndHideGuiObject(descendant)
+	end
+end
+
 local function getFocusScriptContainer(scriptInstance)
 	if not scriptInstance then
 		return nil
@@ -132,6 +146,8 @@ local function isFocusBonusWidget(obj)
 end
 
 local function hideFocusGuiObjects()
+	hideBonusesFolder()
+
 	for _, obj in ipairs(playerGui:GetDescendants()) do
 		if obj:IsA("GuiObject") then
 			if table.find(FOCUS_GUI_OBJECTS_TO_HIDE, obj.Name) or isFocusBonusWidget(obj) then
