@@ -49,6 +49,7 @@ end
 local GlobalLuckService = requireServerModule("GlobalLuckService")
 local GlobalMoneyFrenzyService = requireServerModule("GlobalMoneyFrenzyService")
 local LimitedCarsService = requireServerModule("LimitedCarsService")
+local GiftEntitlementService = requireServerModule("GiftEntitlementService")
 local STARTER_PACK_WALLET_CASH = 800000
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))
@@ -520,8 +521,9 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 				targetPlayer = receiver
 				isGift = true
 			else
-				giftFallbackMessage = "Gift target unavailable. The car was delivered to you instead."
-				consumeStaleGiftIntentAfterGrant = true
+				-- Never redirect a paid gift to the purchaser. Holding the receipt lets
+				-- Roblox retry safely when the original recipient rejoins.
+				return Enum.ProductPurchaseDecision.NotProcessedYet
 			end
 		elseif giftIntentStatus == "ProductMismatch" then
 			consumeStaleGiftIntentAfterGrant = true
@@ -554,11 +556,16 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	local limitedCarProductInfo = LimitedCarsConfig.GetProductByProductId(pid)
 	if limitedCarProductInfo and limitedCarProductInfo.ProductId > 0 then
-		local ok, message, alreadyGranted = LimitedCarsService.ProcessReceipt(receiptInfo)
+		local ok, message, alreadyGranted = LimitedCarsService.ProcessReceipt(receiptInfo, isGift and targetPlayer or nil)
 		LimitedCarsService.NotifyClient(buyerPlayer, ok and not alreadyGranted, message)
 		if ok then
 			if not markPurchaseProcessed(purchaseKey) then
 				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+			end
+			if isGift then
+				NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, limitedCarProductInfo.DisplayName)
+				fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
+				if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid) end
 			end
 			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 		end
@@ -614,6 +621,27 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 				ReceiverName = targetPlayer.Name,
 				ReceiverUserId = targetPlayer.UserId,
 			})
+			if GlobalChatBroadcast then
+				GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> <b><font color='#FFD700'>%s</font></b>! 💸"):format(buyerPlayer.Name, targetPlayer.Name, registeredGiftProduct.DisplayName) })
+			end
+		end
+
+	elseif registeredGiftProduct and registeredGiftProduct.Kind == "GamePassGift" then
+		if not isGift then
+			-- Gift-only developer products are never awarded to their purchaser.
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+		local grantOk, grantMessage, wasNew = GiftEntitlementService.Grant(targetPlayer, registeredGiftProduct.PassKey, receiptInfo)
+		purchaseSuccess = grantOk
+		if grantOk then
+			local displayName = registeredGiftProduct.DisplayName
+			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, displayName)
+			fireGiftPurchaseResult(buyerPlayer, { Success = wasNew, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId, Message = wasNew and nil or (targetPlayer.Name .. " already owns this perk.") })
+			if wasNew and GlobalChatBroadcast then
+				GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> the <b><font color='#FFD700'>%s</font></b>! ✨"):format(buyerPlayer.Name, targetPlayer.Name, displayName) })
+			end
+		else
+			warn("[ReceiptRouter] Perk gift grant failed:", grantMessage)
 		end
 
 	elseif AdRewardsConfig.IsConfigured() and pid == AdRewardsConfig.DEV_PRODUCT_ID then

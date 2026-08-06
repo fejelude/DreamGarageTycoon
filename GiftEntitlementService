@@ -1,0 +1,39 @@
+-- Purpose: Persistent ownership for perks received through Developer Product gifts.
+-- Location: ServerScriptService > GiftEntitlementService (ModuleScript)
+
+local DataStoreService = game:GetService("DataStoreService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local GamePassConfig = require(ReplicatedStorage:WaitForChild("GamePassConfig"))
+local store = DataStoreService:GetDataStore("GiftedGamePassEntitlements_V1")
+local Service = {}
+
+local function key(userId) return "User_" .. tostring(userId) end
+
+function Service.GetOwned(userId, passKey)
+	local ok, data = pcall(function() return store:GetAsync(key(userId)) end)
+	if not ok then return nil, data end
+	return type(data) == "table" and data[passKey] == true or false
+end
+
+function Service.Grant(player, passKey, receiptInfo)
+	local passInfo = GamePassConfig.Passes[passKey]
+	if not player or not passInfo then return false, "Invalid perk" end
+	local wasNew = false
+	local ok, err = pcall(function()
+		store:UpdateAsync(key(player.UserId), function(old)
+			old = type(old) == "table" and old or {}
+			if old[passKey] ~= true then wasNew = true end
+			old[passKey] = true
+			old[passKey .. "Receipt"] = tostring(receiptInfo.PurchaseId)
+			old.UpdatedAt = os.time()
+			return old
+		end)
+	end)
+	if not ok then return false, tostring(err) end
+	player:SetAttribute(passInfo.Attribute, true)
+	player:SetAttribute("Gifted" .. passKey, true)
+	return true, nil, wasNew
+end
+
+return Service

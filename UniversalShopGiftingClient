@@ -1,0 +1,57 @@
+-- Purpose: Binds ShopUI's top-level Universal Gifting buttons to UniversalGiftUI.
+-- Location: StarterGui > ShopUI > UniversalShopGiftingClient (LocalScript)
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+local CashPackConfig = require(ReplicatedStorage:WaitForChild("CashPackConfig"))
+local GamePassConfig = require(ReplicatedStorage:WaitForChild("GamePassConfig"))
+local LimitedCarsConfig = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
+local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
+
+local shop = playerGui:WaitForChild("ShopUI")
+local buttons = shop:WaitForChild("MainFrame"):WaitForChild("ShopUIScrolling")
+	:WaitForChild("ButtonsForBuying"):WaitForChild("Buttons")
+local giftButtons = buttons:WaitForChild("GiftButtons")
+
+local function bind(buttonName, getProductId)
+	local button = giftButtons:WaitForChild(buttonName)
+	Kit.Tween:SetupButton(button, function()
+		local productId = tonumber(getProductId())
+		if not productId or productId <= 0 then
+			warn(("[UniversalShopGiftingClient] %s has no configured Developer Product id"):format(buttonName))
+			Kit.Sound:Play("BuyFail")
+			return
+		end
+		if type(_G.OpenGiftMenu) ~= "function" then
+			warn("[UniversalShopGiftingClient] UniversalGiftUI is not ready")
+			Kit.Sound:Play("BuyFail")
+			return
+		end
+		_G.OpenGiftMenu(productId)
+	end)
+end
+
+for index = 1, 6 do
+	local pack = CashPackConfig.Packs["Pack" .. index]
+	bind("GiftPackMoney" .. index, function() return pack and pack.ProductId end)
+end
+
+local function configuredPassGiftId(buttonName, passInfo)
+	local button = giftButtons:FindFirstChild(buttonName)
+	return tonumber(passInfo.GiftProductId) > 0 and passInfo.GiftProductId
+		or (button and (button:GetAttribute("DeveloperProductId") or button:GetAttribute("ProductId")))
+end
+bind("GiftExclusive", function() return configuredPassGiftId("GiftExclusive", GamePassConfig.Passes.Exclusive) end)
+bind("Gift2xMoney", function() return configuredPassGiftId("Gift2xMoney", GamePassConfig.Passes.DoubleMoney) end)
+bind("GiftFeaturedCar", function()
+	local featured = LimitedCarsConfig.GetDefaultProduct()
+	local remotes = ReplicatedStorage:FindFirstChild("LimitedCarsRemotes")
+	local reserve = remotes and remotes:FindFirstChild("Reserve")
+	if featured and reserve then
+		local ok, reserved = pcall(function() return reserve:InvokeServer() end)
+		if not ok or reserved ~= true then return nil end
+	end
+	return featured and featured.ProductId
+end)

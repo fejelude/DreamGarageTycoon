@@ -128,10 +128,15 @@ function Service.ReleaseReservation(userId)
 	end)
 end
 
-local function grantCar(player, receiptInfo)
+local function grantCar(player, receiptInfo, buyerPlayer)
 	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
 	if not api then return false, "TycoonAdminAPI missing" end
-	local attrs = { IssuedByServer = true, IssuedAt = now(), BypassStorageLimit = true, Source = "LimitedCarsShop", ReceiptPurchaseId = receiptInfo.PurchaseId, ReceiptProductId = receiptInfo.ProductId }
+	local isGift = buyerPlayer and buyerPlayer ~= player
+	local attrs = { IssuedByServer = true, IssuedAt = now(), BypassStorageLimit = true, Source = isGift and "RobuxGift" or "LimitedCarsShop", ReceiptPurchaseId = receiptInfo.PurchaseId, ReceiptProductId = receiptInfo.ProductId }
+	if isGift then
+		attrs.GiftSenderUserId = buyerPlayer.UserId
+		attrs.GiftReceiverUserId = player.UserId
+	end
 	local ok, giveOk, msg = pcall(function() return api:Invoke("GiveTool", player, Product.CarId, attrs) end)
 	if not ok or giveOk ~= true then return false, msg or giveOk or "GiveTool failed" end
 	local saveOk, saved = pcall(function() return api:Invoke("SaveNow", player) end)
@@ -143,10 +148,11 @@ function Service.NotifyClient(player, success, message)
 	if player then PurchaseResultEvent:FireClient(player, success == true, message or "") end
 end
 
-function Service.ProcessReceipt(receiptInfo)
+function Service.ProcessReceipt(receiptInfo, giftTarget)
 	local key = receiptKey(receiptInfo)
-	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
-	if not player then return false, "Player unavailable", false end
+	local buyer = Players:GetPlayerByUserId(receiptInfo.PlayerId)
+	local player = giftTarget or buyer
+	if not buyer or not player then return false, "Player unavailable", false end
 	local already = false
 	local finalized = false
 	local ok = updateState(function(state)
@@ -163,7 +169,7 @@ function Service.ProcessReceipt(receiptInfo)
 	end)
 	if not ok or not finalized then return false, "Reservation unavailable", false end
 	if already then return true, "Already granted", true end
-	local grantOk, grantMsg = grantCar(player, receiptInfo)
+	local grantOk, grantMsg = grantCar(player, receiptInfo, buyer)
 	if not grantOk then return false, grantMsg, false end
 	local announceText = nil
 	local markOk = updateState(function(state)
@@ -174,7 +180,11 @@ function Service.ProcessReceipt(receiptInfo)
 		end
 		if rec and not state.AnnouncedReceipts[key] then
 			local templates = Product.AnnouncementTemplates
-			announceText = string.format(templates[math.random(1, #templates)], player.Name)
+			if player ~= buyer then
+				announceText = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> the <b><font color='#FFD700'>%s</font></b>! 🏎️"):format(buyer.Name, player.Name, Product.DisplayName)
+			else
+				announceText = string.format(templates[math.random(1, #templates)], player.Name)
+			end
 			state.AnnouncedReceipts[key] = true
 		end
 		return state

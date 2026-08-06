@@ -157,6 +157,23 @@ if CashPackConfig and type(CashPackConfig.Packs) == "table" then
 	end
 end
 
+local GamePassConfig = requireOptionalConfig("GamePassConfig")
+if GamePassConfig and type(GamePassConfig.Passes) == "table" then
+	for passKey, passInfo in pairs(GamePassConfig.Passes) do
+		-- Gifts must be developer products.  A game-pass id must never be passed to
+		-- PromptProductPurchase; configure GiftProductId in GamePassConfig instead.
+		if tonumber(passInfo.GiftProductId) and passInfo.GiftProductId > 0 then
+			register(passInfo.GiftProductId, {
+				Kind = "GamePassGift",
+				Giftable = true,
+				DisplayName = passInfo.GiftDisplayName or passKey,
+				PassKey = passKey,
+				OwnershipAttribute = passInfo.Attribute,
+			})
+		end
+	end
+end
+
 local LimitedCarsConfig = requireOptionalConfig("LimitedCarsConfig")
 if LimitedCarsConfig and type(LimitedCarsConfig.Products) == "table" then
 	for productKey, productInfo in pairs(LimitedCarsConfig.Products) do
@@ -191,6 +208,18 @@ function Registry.GetAllProducts()
 		copy[productId] = table.clone(entry)
 	end
 	return copy
+end
+
+function Registry.RegisterGamePassGift(productId, passKey, passInfo)
+	if type(passInfo) ~= "table" then return false end
+	register(productId, {
+		Kind = "GamePassGift",
+		Giftable = true,
+		DisplayName = passInfo.GiftDisplayName or passKey,
+		PassKey = passKey,
+		OwnershipAttribute = passInfo.Attribute,
+	})
+	return Registry.IsGiftable(productId)
 end
 
 return Registry
