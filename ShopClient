@@ -4,8 +4,6 @@
 --
 -- Hierarchy:
 --   StarterGui > MainButtons > Shop             (opens the shop)
---   StarterGui > Balance Indicator > BalanceContainer > ShopMoreMoney
---                                               (opens at Cash Packs)
 --   StarterGui > ShopUI > MainFrame             (shop UI)
 --   StarterGui > ShopUI > MainFrame > CloseButton (closes the shop)
 --   ReplicatedStorage > ShopCodeRedemptionFunction (RemoteFunction; pre-created in Studio)
@@ -31,9 +29,6 @@ local closeButton = mainFrame:WaitForChild("CloseButton")
 local featuredButton = mainFrame:WaitForChild("Featured")
 local shopScrolling = mainFrame:WaitForChild("ShopUIScrolling")
 local shopElements = shopScrolling:WaitForChild("ShopElements")
-local buttonsForBuying = shopScrolling:WaitForChild("ButtonsForBuying")
-local shopButtons = buttonsForBuying:WaitForChild("Buttons")
-local cashPacksSection = shopButtons:WaitForChild("Cash")
 local codeBox = shopElements:WaitForChild("Codes"):WaitForChild("Elements"):WaitForChild("CodeBox")
 local verifyButton = codeBox:WaitForChild("Verify")
 local carsHitRegister = shopElements:WaitForChild("Cars"):WaitForChild("HitRegister")
@@ -46,10 +41,6 @@ local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
 local mainButtonsGui = playerGui:WaitForChild("MainButtons")
 local buttonsContainer = mainButtonsGui:FindFirstChild("Buttons") or mainButtonsGui
 local openButton = buttonsContainer:WaitForChild("Shop")
-
-local balanceIndicator = playerGui:WaitForChild("Balance Indicator")
-local balanceContainer = balanceIndicator:WaitForChild("BalanceContainer")
-local shopMoreMoneyButton = balanceContainer:WaitForChild("ShopMoreMoney")
 
 local OPEN_FOV = 50
 local FOV_TWEEN = TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
@@ -199,18 +190,6 @@ local function scrollToFeaturedCars()
 	scrollToSection(carsHitRegister)
 end
 
-local function openMoneyShop()
-	openShop()
-
-	-- Defer until the frame is visible so AbsolutePosition/AbsoluteCanvasSize
-	-- reflect the current viewport before calculating the Cash Packs offset.
-	task.defer(function()
-		if isOpen then
-			scrollToSection(cashPacksSection)
-		end
-	end)
-end
-
 local function setVerifyLocked(locked)
 	verifyButton.Active = not locked
 	verifyButton.Selectable = not locked
@@ -253,7 +232,6 @@ local function submitCode()
 end
 
 UIButtonUtils.SetupButton(openButton, openShop)
-UIButtonUtils.SetupButton(shopMoreMoneyButton, openMoneyShop)
 UIButtonUtils.SetupButton(closeButton, closeShop)
 UIButtonUtils.SetupButton(featuredButton, scrollToFeaturedCars)
 UIButtonUtils.SetupButton(verifyButton, submitCode)
