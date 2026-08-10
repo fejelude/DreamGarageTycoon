@@ -230,6 +230,7 @@ end
 function UIAudioConfig.CreateStateFeedback(container, options)
 	options = options or {}
 	local showRepeatCount = options.ShowRepeatCount ~= false
+	local forceOpaque = options.ForceOpaque == true
 	local stateLabels = nil
 	local successLabel = nil
 	local failedLabel = nil
@@ -261,8 +262,14 @@ function UIAudioConfig.CreateStateFeedback(container, options)
 	local function resolveLabels()
 		if container then
 			stateLabels = stateLabels or container:FindFirstChild("StateLabels") or container:FindFirstChild("StateLabels", true)
-			successLabel = successLabel or (stateLabels and (stateLabels:FindFirstChild("Success") or stateLabels:FindFirstChild("Sucess")))
-			failedLabel = failedLabel or (stateLabels and stateLabels:FindFirstChild("Failed"))
+			-- Some interfaces keep StateLabels in a folder, while tutorial Parts
+			-- intentionally keep Failed directly under the Part frame.
+			successLabel = successLabel
+				or (stateLabels and (stateLabels:FindFirstChild("Success") or stateLabels:FindFirstChild("Sucess")))
+				or container:FindFirstChild("Success") or container:FindFirstChild("Sucess")
+			failedLabel = failedLabel
+				or (stateLabels and stateLabels:FindFirstChild("Failed"))
+				or container:FindFirstChild("Failed")
 
 			if not (successLabel and failedLabel) then
 				legacyIndicator = legacyIndicator or container:FindFirstChild("Indicator-purchase", true)
@@ -295,6 +302,13 @@ function UIAudioConfig.CreateStateFeedback(container, options)
 
 	local function resetLabelTransparency(label)
 		if not label then return end
+		if forceOpaque then
+			label.TextTransparency = 0
+			label.TextStrokeTransparency = 0
+			local stroke = getStroke(label)
+			if stroke then stroke.Transparency = 0 end
+			return
+		end
 		local defaults = labelDefaults[label]
 		if defaults then
 			label.TextTransparency = defaults.TextTransparency
