@@ -183,23 +183,25 @@ Players.PlayerRemoving:Connect(function(player)
 			local listener
 			local waitStart = os.clock()
 
-			-- 1. Check if ALREADY saved (Attribute Check)
-			if player:GetAttribute("DataSaved") then
+			-- Listen for the *final disconnect save*, not any stale successful autosave.
+			-- DataSaved can be true from an earlier autosave, so using it here lets this
+			-- cleanup wipe the plot while TycoonDataHandler is still taking its final
+			-- layout/pending-earnings snapshot.
+			listener = SaveEvent.Event:Connect(function(savedName)
+				if savedName == player.Name and player:GetAttribute("TycoonFinalSaveCompleted") == true then
+					didSave = true
+				end
+			end)
+
+			if player:GetAttribute("TycoonFinalSaveCompleted") == true then
 				didSave = true
-			else
-				-- 2. Listen for TycoonDataHandler to fire "TycoonSaveCompleted"
-				listener = SaveEvent.Event:Connect(function(savedName)
-					if savedName == player.Name then
-						didSave = true
-					end
-				end)
 			end
 
-			-- WAIT LOOP: Wait until Saved OR Timeout (8 Seconds Failsafe)
+			-- WAIT LOOP: Wait until the final save completes OR timeout.
 			repeat 
 				task.wait(0.1)
-				if player:GetAttribute("DataSaved") then didSave = true end
-			until didSave or (os.clock() - waitStart > 8)
+				if player:GetAttribute("TycoonFinalSaveCompleted") == true then didSave = true end
+			until didSave or (os.clock() - waitStart > 25)
 
 			if listener then listener:Disconnect() end
 
