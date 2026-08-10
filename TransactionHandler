@@ -181,6 +181,19 @@ withdrawFunc.OnServerInvoke = function(player, amount, actionType)
 		return false, "System Error"
 	end
 
+	-- Only successful, server-validated monetary movement can advance tutorial objectives.
+	if result == true then
+		local tutorialAPI = game:GetService("ServerStorage"):FindFirstChild("TutorialProgressAPI")
+		if tutorialAPI and tutorialAPI:IsA("BindableFunction") then
+			-- A Banking App transfer is complete when this authoritative handler accepts
+			-- and commits a positive transfer. Requiring the entire bank balance to reach
+			-- zero incorrectly rejected successful transfers whenever other bank funds
+			-- remained, leaving Part5 permanently locked without a runtime error.
+			local objective = actionType == "Transfer" and "BankTransferred" or "ATMWithdrawn"
+			task.spawn(function() tutorialAPI:Invoke("RecordObjective", player, objective) end)
+		end
+	end
+
 	return result, msg
 end
 
