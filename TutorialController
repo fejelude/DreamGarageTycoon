@@ -1,0 +1,312 @@
+-- LocalScript: StarterGui > TutorialUI > TutorialController
+-- Presentation only: frames, button feedback, delayed reveals and local arrows.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
+
+local player = Players.LocalPlayer
+local Config = require(ReplicatedStorage:WaitForChild("TutorialConfig"))
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local remotes = ReplicatedStorage:WaitForChild("TutorialRemotes")
+local getState = remotes:WaitForChild("GetTutorialState")
+local actionRemote = remotes:WaitForChild("TutorialAction")
+local stateChanged = remotes:WaitForChild("TutorialStateChanged")
+local main = script.Parent:WaitForChild("MainFrame")
+
+local appearanceSound = SoundService:FindFirstChild("TutorialAppearance")
+if not appearanceSound then
+	appearanceSound = Instance.new("Sound")
+	appearanceSound.Name = "TutorialAppearance"
+	appearanceSound.SoundId = "rbxassetid://90752223133261"
+	appearanceSound.Volume = 1
+	appearanceSound.Parent = SoundService
+end
+
+local state, renderToken, requestBusy = nil, 0, false
+local renderedStage = nil
+local activeIndicator, indicatorTween, originalStudsOffset
+local feedback = {}
+local tutorialGui = script:FindFirstAncestorWhichIsA("ScreenGui")
+local suppressedGuis = {}
+local guiWatchConnections = {}
+local focusActive = false
+local isObjectiveAccessGui
+local suppressedBonusObjects = {}
+local bonusesDescendantConnection = nil
+
+local function hideBonusObject(obj)
+	if obj:IsA("GuiObject") and obj.Visible and suppressedBonusObjects[obj] == nil then
+		suppressedBonusObjects[obj] = true
+		obj.Visible = false
+	end
+end
+
+local function bindAndSuppressBonuses()
+	local bonuses = player.PlayerGui:FindFirstChild("Bonuses")
+	if not bonuses then return end
+	if bonuses:IsA("GuiObject") then hideBonusObject(bonuses) end
+	for _, descendant in ipairs(bonuses:GetDescendants()) do hideBonusObject(descendant) end
+	if bonusesDescendantConnection then bonusesDescendantConnection:Disconnect() end
+	bonusesDescendantConnection = bonuses.DescendantAdded:Connect(function(descendant)
+		if focusActive then task.defer(hideBonusObject, descendant) end
+	end)
+end
+
+local function restoreBonuses()
+	if bonusesDescendantConnection then
+		bonusesDescendantConnection:Disconnect()
+		bonusesDescendantConnection = nil
+	end
+	for obj in pairs(suppressedBonusObjects) do
+		if obj.Parent and obj:IsA("GuiObject") then obj.Visible = true end
+		suppressedBonusObjects[obj] = nil
+	end
+end
+
+local function disconnectGuiWatch(gui)
+	local connection = guiWatchConnections[gui]
+	if connection then connection:Disconnect(); guiWatchConnections[gui] = nil end
+end
+
+local function watchConflictingGui(gui)
+	if not gui:IsA("ScreenGui") or gui == tutorialGui or gui.Name == "ActiveLoadingScreen"
+		or gui.Name == "LoadingScreenGui" or guiWatchConnections[gui] then return end
+	guiWatchConnections[gui] = gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if focusActive and gui.Parent and not isObjectiveAccessGui(gui) and gui.Enabled then
+			suppressedGuis[gui] = true
+			gui.Enabled = false
+		end
+	end)
+	gui.Destroying:Once(function()
+		suppressedGuis[gui] = nil
+		disconnectGuiWatch(gui)
+	end)
+end
+
+isObjectiveAccessGui = function(gui)
+	if gui.Name == "ActiveLoadingScreen" or gui.Name == "LoadingScreenGui" then return true end
+	local stage = state and state.Stage
+	if stage == Config.Stage.Inventory then
+		return gui.Name == "MainButtons" or gui:FindFirstChild("InventoryWindow", true) ~= nil
+	elseif stage == Config.Stage.Transfer then
+		return gui.Name == "MainButtons" or gui.Name == "BankGui" or gui:FindFirstChild("TransferFrame", true) ~= nil
+	end
+	return false
+end
+
+local function suppressConflictingGuis()
+	focusActive = true
+	bindAndSuppressBonuses()
+	for _, gui in ipairs(player.PlayerGui:GetChildren()) do
+		watchConflictingGui(gui)
+		if gui:IsA("ScreenGui") and gui ~= tutorialGui and not isObjectiveAccessGui(gui) and gui.Enabled then
+			suppressedGuis[gui] = true
+			gui.Enabled = false
+		end
+	end
+end
+
+local function restoreConflictingGuis()
+	focusActive = false
+	restoreBonuses()
+	for gui in pairs(suppressedGuis) do
+		if gui.Parent then gui.Enabled = true end
+		suppressedGuis[gui] = nil
+	end
+end
+
+player.PlayerGui.ChildAdded:Connect(function(child)
+	if child.Name == "Bonuses" and focusActive then task.defer(bindAndSuppressBonuses) end
+	if not child:IsA("ScreenGui") then return end
+	watchConflictingGui(child)
+	if focusActive and child ~= tutorialGui and not isObjectiveAccessGui(child) and child.Enabled then
+		suppressedGuis[child] = true
+		child.Enabled = false
+	end
+end)
+
+local function stopIndicator()
+	if indicatorTween then indicatorTween:Cancel(); indicatorTween = nil end
+	if activeIndicator then
+		activeIndicator.Enabled = false
+		if originalStudsOffset then activeIndicator.StudsOffset = originalStudsOffset end
+	end
+	activeIndicator, originalStudsOffset = nil, nil
+end
+
+local function startIndicator(indicator)
+	stopIndicator()
+	if not indicator or not indicator:IsA("BillboardGui") then return end
+	activeIndicator, originalStudsOffset = indicator, indicator.StudsOffset
+	indicator.Enabled = true
+	indicatorTween = TweenService:Create(indicator, TweenInfo.new(1.15, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+		StudsOffset = originalStudsOffset + Vector3.new(0, 0.55, 0),
+	})
+	indicatorTween:Play()
+end
+
+local function ownedTycoon()
+	local folder = workspace:FindFirstChild("Tycoons")
+	if not folder then return nil end
+	local occupied = player:GetAttribute("OccupiedPlot")
+	local plot = occupied and folder:FindFirstChild(occupied)
+	if plot and plot:FindFirstChild("Owner") and plot.Owner.Value == player.Name then return plot end
+	for _, candidate in ipairs(folder:GetChildren()) do
+		local owner = candidate:FindFirstChild("Owner")
+		if owner and owner.Value == player.Name then return candidate end
+	end
+end
+
+local function findTycoonIndicator(kind)
+	local plot = ownedTycoon()
+	if not plot then return nil end
+	if kind == "Pad" then
+		-- Indicators were authored only in the active default/base Pad1 hierarchy.
+		for _, item in ipairs(plot:GetDescendants()) do
+			if item.Name == "Pad1" then
+				local found = item:FindFirstChild("Tutorialindicator", true)
+				if found then return found end
+			end
+		end
+	else
+		local tablet = plot:FindFirstChild("ClaimEarnings")
+		local info = tablet and tablet:FindFirstChild("Info2", true)
+		return info and info:FindFirstChild("Tutorialindicator", true)
+	end
+end
+
+local function npcIndicator(name)
+	local npcs = workspace:FindFirstChild("NPCS")
+	local npc = npcs and npcs:FindFirstChild(name)
+	local head = npc and npc:FindFirstChild("Head")
+	return head and head:FindFirstChild("Tutorialindicator")
+end
+
+local function awaitIndicator(stage, resolver)
+	local token = renderToken
+	task.spawn(function()
+		while token == renderToken and state and state.Stage == stage do
+			local indicator = resolver()
+			if indicator then startIndicator(indicator); return end
+			task.wait(0.25)
+		end
+	end)
+end
+
+local function dialogueObstructing()
+	local gui = player.PlayerGui:FindFirstChild("UI_NPC_ATM_AfraiC4t")
+	local container = gui and gui:FindFirstChild("Frame_ATM_Container", true)
+	return gui ~= nil and gui.Enabled and container ~= nil and container.Visible
+end
+
+local function shopObstructing()
+	local gui = player.PlayerGui:FindFirstChild("LocalShopUI")
+	return gui ~= nil and gui.Enabled
+end
+
+local delays = {
+	[Config.Stage.ClaimIntro] = 5, [Config.Stage.Transfer] = 1,
+	[Config.Stage.WithdrawIntro] = 1, [Config.Stage.PurchaseIntro] = 5,
+	[Config.Stage.Finished] = 3,
+}
+
+local function waitForLoadingScreenToFinish(token)
+	-- LoadingSystem owns this attribute for its full lifecycle. Wait for it to
+	-- initialize before showing NewComer so tutorial focus cannot race and hide
+	-- the loading presentation for new players.
+	local loadingSystemExists = ReplicatedFirst:FindFirstChild("LoadingSystem") ~= nil
+	local startedWaiting = os.clock()
+	while token == renderToken and loadingSystemExists
+		and player.PlayerGui:GetAttribute("LoadingScreenActive") == nil
+		and os.clock() - startedWaiting < 45 do
+		task.wait(0.1)
+	end
+	while token == renderToken and player.PlayerGui:GetAttribute("LoadingScreenActive") == true do
+		task.wait(0.1)
+	end
+	return token == renderToken
+end
+
+local function render(newState, force)
+	local previousStage = renderedStage
+	state = newState
+	if not force and previousStage == state.Stage then return end
+	renderedStage = state.Stage
+	renderToken = renderToken + 1
+	local token = renderToken
+	restoreConflictingGuis()
+	stopIndicator()
+	for _, stateFeedback in pairs(feedback) do stateFeedback:Clear() end
+	for _, child in ipairs(main:GetChildren()) do
+		if child:IsA("GuiObject") and (child.Name == "NewComer" or string.match(child.Name, "^Part%d+$")) then child.Visible = false end
+	end
+	local stage = state and state.Stage
+	if stage == Config.Stage.PlaceCar then awaitIndicator(stage, function() return findTycoonIndicator("Pad") end); return end
+	if stage == Config.Stage.ClaimEarnings then awaitIndicator(stage, function() return findTycoonIndicator("Tablet") end); return end
+	if stage == Config.Stage.Withdraw then awaitIndicator(stage, function() return npcIndicator("AfraiC4t") end); return end
+	if stage == Config.Stage.PurchaseCar then awaitIndicator(stage, function() return npcIndicator("Itsmefeje") end); return end
+	local partName = Config.VisiblePartForStage[stage]
+	if not partName then return end
+	local delaySeconds = delays[stage] or 0
+	task.spawn(function()
+		if not waitForLoadingScreenToFinish(token) then return end
+		if delaySeconds > 0 then task.wait(delaySeconds) end
+		while token == renderToken and ((stage == Config.Stage.PurchaseIntro and dialogueObstructing()) or (stage == Config.Stage.Finished and shopObstructing())) do task.wait(0.2) end
+		if token ~= renderToken then return end
+		local frame = main:FindFirstChild(partName)
+		if not frame then warn("[Tutorial] Missing " .. partName); return end
+		if partName == "Part1" then
+			local info = frame:FindFirstChild("Information")
+			if info then info.Text = ("Hi there, %s! Welcome to Dream Garage Tycoon! Let's get you started! :)"):format(player.DisplayName) end
+		end
+		suppressConflictingGuis()
+		frame.Visible = true
+		appearanceSound.TimePosition = 0; appearanceSound:Play()
+	end)
+end
+
+local function send(action)
+	if requestBusy then return end
+	requestBusy = true
+	local ok, accepted, reason, returned = pcall(function() return actionRemote:InvokeServer(action) end)
+	requestBusy = false
+	if ok and accepted then
+		render(type(reason) == "table" and reason or returned)
+	elseif ok then
+		local current = returned or (type(reason) == "table" and reason)
+		if current then state = current end
+		if reason == "InventoryRequired" then feedback.Part2:Failed("Open your Inventory before doing anything else!") end
+		if reason == "TransferRequired" then feedback.Part5:Failed("Transfer your earnings before continuing!") end
+	end
+end
+
+for i = 1, 8 do
+	local frame = main:FindFirstChild("Part" .. i)
+	if frame then
+		if i == 2 or i == 5 then
+			feedback[frame.Name] = UIAudioConfig.CreateStateFeedback(frame, { ForceOpaque = true })
+		end
+		local button = frame:FindFirstChild("Continue")
+		if button then UIButtonUtils.SetupButton(button, function() send(Config.ClientActions.Continue) end) end
+	end
+end
+local newcomer = main:WaitForChild("NewComer")
+UIButtonUtils.SetupButton(newcomer.Buttons.Yes, function() send(Config.ClientActions.Accept) end)
+UIButtonUtils.SetupButton(newcomer.Buttons.No, function() send(Config.ClientActions.Skip) end)
+
+stateChanged.OnClientEvent:Connect(render)
+player.CharacterAdded:Connect(function() if state then task.defer(render, state, true) end end)
+
+-- The inventory script sets this only after its real open path succeeds.
+player:GetAttributeChangedSignal("InventoryUIOpen"):Connect(function()
+	if player:GetAttribute("InventoryUIOpen") == true and state and state.Stage == Config.Stage.Inventory then send(Config.ClientActions.InventoryOpened) end
+end)
+
+while not state do
+	local ok, result = pcall(function() return getState:InvokeServer() end)
+	if ok and result then state = result else task.wait(0.5) end
+end
+render(state)

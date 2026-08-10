@@ -482,6 +482,12 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		session.Purchased[carName] = bought + 1
 		pushUpdate(player, session, "Purchase")
 
+		-- Grant and wallet debit have both succeeded; this is the authoritative Local Shop signal.
+		local tutorialAPI = ServerStorage:FindFirstChild("TutorialProgressAPI")
+		if tutorialAPI and tutorialAPI:IsA("BindableFunction") then
+			task.spawn(function() tutorialAPI:Invoke("RecordObjective", player, "LocalCarPurchased", carName) end)
+		end
+
 		task.spawn(function()
 			safeInvoke(TycoonAdminAPI, 2, "MarkDirty", player)
 		end)

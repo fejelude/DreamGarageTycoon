@@ -316,6 +316,10 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 
 			playerCooldowns[player.UserId] = os.clock()
 			respondClaim(true, finalAmount)
+			local tutorialAPI = game:GetService("ServerStorage"):FindFirstChild("TutorialProgressAPI")
+			if tutorialAPI and tutorialAPI:IsA("BindableFunction") then
+				task.spawn(function() tutorialAPI:Invoke("RecordObjective", player, "EarningsClaimed") end)
+			end
 		else
 			playerCooldowns[player.UserId] = os.clock()
 			respondClaim(false, "NoEarnings")

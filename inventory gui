@@ -189,6 +189,7 @@ local currentTab = "Common"
 local savedFOV   = camera.FieldOfView
 local hiddenGuis = {}
 local isOpen     = false
+player:SetAttribute("InventoryUIOpen", false)
 
 -- CarStats
 local CarStats = nil
@@ -1783,6 +1784,7 @@ local function performClose()
 	if draggingCar then endDrag(false) end
 
 	isOpen = false
+	player:SetAttribute("InventoryUIOpen", false)
 	mainWindow.Visible  = false
 	tierFrame.Visible   = false
 	openButton.Visible  = true
@@ -1800,6 +1802,8 @@ openButton.Activated:Connect(function()
 
 	savedFOV = camera.FieldOfView
 	isOpen   = true
+	-- TutorialController observes the real, successful inventory-open path.
+	player:SetAttribute("InventoryUIOpen", true)
 
 	toggleOtherGuis(true)
 	currentTab = "Common"
