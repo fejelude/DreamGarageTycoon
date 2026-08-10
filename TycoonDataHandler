@@ -145,6 +145,49 @@ local PROMO_CODE_REDEEMED_ATTRIBUTE = "PromoCodesRedeemedJson"
 local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
 local DAILY_REWARDS_SECONDS_PER_DAY = 24 * 60 * 60
 
+local DEFAULT_TUTORIAL_DATA = table.freeze({
+	Answered = false, Skipped = false, Active = false, Stage = "NewComer",
+	Completed = false, InventoryOpened = false, TransferComplete = false, Revision = 0,
+	CarPlaced = false, EarningsClaimed = false, ATMWithdrawn = false, LocalCarPurchased = false,
+})
+
+local VALID_TUTORIAL_STAGES = {
+	NewComer = true, Part1 = true, Part2 = true, Part3 = true, PlaceCar = true,
+	Part4 = true, ClaimEarnings = true, Part5 = true, Part6 = true, Withdraw = true,
+	Part7 = true, PurchaseCar = true, Part8 = true, Completed = true, Skipped = true,
+}
+
+local function sanitizeTutorialData(raw)
+	raw = type(raw) == "table" and raw or {}
+	local stage = VALID_TUTORIAL_STAGES[raw.Stage] and raw.Stage or DEFAULT_TUTORIAL_DATA.Stage
+	local completed, skipped = raw.Completed == true, raw.Skipped == true
+	if completed then stage = "Completed" elseif skipped then stage = "Skipped" end
+	return {
+		Answered = raw.Answered == true or completed or skipped,
+		Skipped = skipped, Active = raw.Active == true and not completed and not skipped,
+		Stage = stage, Completed = completed, InventoryOpened = raw.InventoryOpened == true,
+		TransferComplete = raw.TransferComplete == true,
+		CarPlaced = raw.CarPlaced == true, EarningsClaimed = raw.EarningsClaimed == true,
+		ATMWithdrawn = raw.ATMWithdrawn == true, LocalCarPurchased = raw.LocalCarPurchased == true,
+		Revision = math.max(0, math.floor(tonumber(raw.Revision) or 0)),
+	}
+end
+
+local function applyTutorialAttributes(player, tutorial)
+	player:SetAttribute("TutorialAnswered", tutorial.Answered)
+	player:SetAttribute("TutorialSkipped", tutorial.Skipped)
+	player:SetAttribute("TutorialActive", tutorial.Active)
+	player:SetAttribute("TutorialStage", tutorial.Stage)
+	player:SetAttribute("TutorialCompleted", tutorial.Completed)
+	player:SetAttribute("TutorialInventoryOpened", tutorial.InventoryOpened)
+	player:SetAttribute("TutorialTransferComplete", tutorial.TransferComplete)
+	player:SetAttribute("TutorialCarPlaced", tutorial.CarPlaced)
+	player:SetAttribute("TutorialEarningsClaimed", tutorial.EarningsClaimed)
+	player:SetAttribute("TutorialATMWithdrawn", tutorial.ATMWithdrawn)
+	player:SetAttribute("TutorialLocalCarPurchased", tutorial.LocalCarPurchased)
+	player:SetAttribute("TutorialRevision", tutorial.Revision)
+end
+
 
 local function normalizeBaseLevel(value)
 	local level = math.floor(tonumber(value) or 1)
@@ -1486,10 +1529,33 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		SessionData[player].StarterPackReceipts = {}
 		SessionData[player].StarterPackSaveConfirmed = false
 		SessionData[player].StarterPackClearRequested = true
+		SessionData[player].Tutorial = sanitizeTutorialData(nil)
+		applyTutorialAttributes(player, SessionData[player].Tutorial)
 		if player:FindFirstChild("StarterGear") then player.StarterGear:ClearAllChildren() end
 		if player:FindFirstChild("Backpack") then player.Backpack:ClearAllChildren() end
 		markDirty(player)
 		print("⚠️ FORCE WIPE INITIATED FOR: " .. player.Name)
+		return true
+
+	elseif action == "UpdateTutorial" and player then
+		local expectedStage, nextStage, fields = ...
+		local session = SessionData[player]
+		if not session or not session.DataLoaded or type(expectedStage) ~= "string" or not VALID_TUTORIAL_STAGES[nextStage] then
+			return false, "Invalid tutorial update"
+		end
+		session.Tutorial = sanitizeTutorialData(session.Tutorial)
+		if session.Tutorial.Stage ~= expectedStage then return false, "Tutorial stage changed" end
+		fields = type(fields) == "table" and fields or {}
+		for _, field in ipairs({ "Answered", "Skipped", "Active", "Completed", "InventoryOpened", "TransferComplete", "CarPlaced", "EarningsClaimed", "ATMWithdrawn", "LocalCarPurchased" }) do
+			if type(fields[field]) == "boolean" then session.Tutorial[field] = fields[field] end
+		end
+		session.Tutorial.Stage = nextStage
+		session.Tutorial.Revision += 1
+		if nextStage == "Completed" then session.Tutorial.Completed = true; session.Tutorial.Active = false; session.Tutorial.Answered = true end
+		if nextStage == "Skipped" then session.Tutorial.Skipped = true; session.Tutorial.Active = false; session.Tutorial.Answered = true end
+		applyTutorialAttributes(player, session.Tutorial)
+		markDirty(player)
+		queueCriticalSave(player, 1)
 		return true
 
 	elseif action == "GiveTool" and player then
@@ -1987,6 +2053,7 @@ save = function(player, isClosing, force)
 		end
 		local currentDailyRewards = decodeDailyRewardsAttribute(player)
 		local currentFreeRewardsClaimed = player:GetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE) == true
+		local currentTutorial = sanitizeTutorialData(session.Tutorial)
 
 		if currentTransferResetAt > 0 and os.time() >= currentTransferResetAt then
 			currentTransferUsed = 0
@@ -2226,6 +2293,7 @@ save = function(player, isClosing, force)
 					end
 					oldData.Settings = currentSettings
 					oldData.SettingsVersion = SETTINGS_SCHEMA_VERSION
+					oldData.Tutorial = currentTutorial
 
 					oldData.LastUpdated  = os.time()
 					oldData.LastOfflineAt = os.time()
@@ -2391,7 +2459,8 @@ local function InitializePlayer(player)
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
 		RobuxProductReceipts = {},
 		PromoCodesRedeemed = {},
-		DailyRewards = sanitizeDailyRewardsData(nil), FreeRewardsClaimed = false
+		DailyRewards = sanitizeDailyRewardsData(nil), FreeRewardsClaimed = false,
+		Tutorial = sanitizeTutorialData(nil)
 	}
 
 	data.Inventory              = data.Inventory              or {}
@@ -2424,6 +2493,7 @@ local function InitializePlayer(player)
 	data.PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
 	data.DailyRewards = sanitizeDailyRewardsData(data.DailyRewards)
 	data.FreeRewardsClaimed = data.FreeRewardsClaimed == true
+	data.Tutorial = sanitizeTutorialData(data.Tutorial)
 	data.LastOfflineAt = math.max(0, math.floor(tonumber(data.LastOfflineAt) or 0))
 	data.OfflineEarningsRate = math.max(0, tonumber(data.OfflineEarningsRate) or 0)
 	player:SetAttribute("LastOfflineAt", data.LastOfflineAt)
@@ -2454,6 +2524,8 @@ local function InitializePlayer(player)
 	SessionData[player].StarterPackReceipts = {}
 	SessionData[player].RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
 	SessionData[player].PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
+	SessionData[player].Tutorial = data.Tutorial
+	applyTutorialAttributes(player, data.Tutorial)
 	for receiptId, purchased in pairs(data.StarterPackReceipts) do
 		if type(receiptId) == "string" and purchased == true then
 			SessionData[player].StarterPackReceipts[receiptId] = true
