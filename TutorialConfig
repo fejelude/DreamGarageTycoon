@@ -1,0 +1,32 @@
+-- ModuleScript: ReplicatedStorage > TutorialConfig
+-- Shared, ordered tutorial state names. Keep all transition knowledge here.
+local Config = {}
+
+Config.Stage = table.freeze({
+	Prompt = "NewComer", Welcome = "Part1", Inventory = "Part2",
+	PlaceIntro = "Part3", PlaceCar = "PlaceCar", ClaimIntro = "Part4",
+	ClaimEarnings = "ClaimEarnings", Transfer = "Part5", WithdrawIntro = "Part6",
+	Withdraw = "Withdraw", PurchaseIntro = "Part7", PurchaseCar = "PurchaseCar",
+	Finished = "Part8", Completed = "Completed", Skipped = "Skipped",
+})
+
+Config.Objective = table.freeze({
+	InventoryOpened = "InventoryOpened", CarPlaced = "CarPlaced",
+	EarningsClaimed = "EarningsClaimed", BankTransferred = "BankTransferred",
+	ATMWithdrawn = "ATMWithdrawn", LocalCarPurchased = "LocalCarPurchased",
+})
+
+Config.ClientActions = table.freeze({
+	Accept = "Accept", Skip = "Skip", Continue = "Continue",
+	InventoryOpened = "InventoryOpened",
+})
+
+Config.VisiblePartForStage = table.freeze({
+	[Config.Stage.Prompt] = "NewComer", [Config.Stage.Welcome] = "Part1",
+	[Config.Stage.Inventory] = "Part2", [Config.Stage.PlaceIntro] = "Part3",
+	[Config.Stage.ClaimIntro] = "Part4", [Config.Stage.Transfer] = "Part5",
+	[Config.Stage.WithdrawIntro] = "Part6", [Config.Stage.PurchaseIntro] = "Part7",
+	[Config.Stage.Finished] = "Part8",
+})
+
+return table.freeze(Config)
