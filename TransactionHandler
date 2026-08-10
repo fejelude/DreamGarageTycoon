@@ -181,6 +181,21 @@ withdrawFunc.OnServerInvoke = function(player, amount, actionType)
 		return false, "System Error"
 	end
 
+	-- Only successful, server-validated monetary movement can advance tutorial objectives.
+	if result == true then
+		local tutorialAPI = game:GetService("ServerStorage"):FindFirstChild("TutorialProgressAPI")
+		if tutorialAPI and tutorialAPI:IsA("BindableFunction") then
+			local leaderstats, hiddenStats = player:FindFirstChild("leaderstats"), player:FindFirstChild("HiddenStats")
+			local remaining = actionType == "Transfer"
+				and hiddenStats and hiddenStats:FindFirstChild("Cash")
+				or leaderstats and leaderstats:FindFirstChild("ATMBalance")
+			if remaining and remaining.Value == 0 then
+				local objective = actionType == "Transfer" and "BankTransferred" or "ATMWithdrawn"
+				task.spawn(function() tutorialAPI:Invoke("RecordObjective", player, objective) end)
+			end
+		end
+	end
+
 	return result, msg
 end
 

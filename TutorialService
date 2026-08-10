@@ -1,0 +1,113 @@
+-- Script: ServerScriptService > TutorialService
+-- Owns the tutorial state machine. Gameplay services report only validated successes.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("TutorialConfig"))
+local remotes = ReplicatedStorage:WaitForChild("TutorialRemotes")
+local getState = remotes:WaitForChild("GetTutorialState")
+local actionRemote = remotes:WaitForChild("TutorialAction")
+local stateChanged = remotes:WaitForChild("TutorialStateChanged")
+local progressAPI = ServerStorage:WaitForChild("TutorialProgressAPI")
+local dataAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
+
+assert(getState:IsA("RemoteFunction"), "GetTutorialState must be a RemoteFunction")
+assert(actionRemote:IsA("RemoteFunction"), "TutorialAction must be a RemoteFunction")
+assert(stateChanged:IsA("RemoteEvent"), "TutorialStateChanged must be a RemoteEvent")
+assert(progressAPI:IsA("BindableFunction"), "TutorialProgressAPI must be a BindableFunction")
+
+local locks = {}
+local lastRequest = {}
+
+local function snapshot(player)
+	return {
+		Answered = player:GetAttribute("TutorialAnswered") == true,
+		Skipped = player:GetAttribute("TutorialSkipped") == true,
+		Active = player:GetAttribute("TutorialActive") == true,
+		Stage = player:GetAttribute("TutorialStage") or Config.Stage.Prompt,
+		Completed = player:GetAttribute("TutorialCompleted") == true,
+		Revision = player:GetAttribute("TutorialRevision") or 0,
+	}
+end
+
+local function update(player, expectedStage, nextStage, fields)
+	if locks[player] or player:GetAttribute("TycoonDataLoaded") ~= true then return false, "DataLoading" end
+	if player:GetAttribute("TutorialStage") ~= expectedStage then return false, "StageChanged" end
+	locks[player] = true
+	local ok, changed = pcall(function()
+		return dataAPI:Invoke("UpdateTutorial", player, expectedStage, nextStage, fields)
+	end)
+	locks[player] = nil
+	if not ok or changed ~= true then return false, "SaveUnavailable" end
+	local state = snapshot(player)
+	stateChanged:FireClient(player, state)
+	return true, state
+end
+
+local continueTransitions = {
+	[Config.Stage.Welcome] = Config.Stage.Inventory,
+	[Config.Stage.PlaceIntro] = Config.Stage.PlaceCar,
+	[Config.Stage.ClaimIntro] = Config.Stage.ClaimEarnings,
+	[Config.Stage.WithdrawIntro] = Config.Stage.Withdraw,
+	[Config.Stage.PurchaseIntro] = Config.Stage.PurchaseCar,
+	[Config.Stage.Finished] = Config.Stage.Completed,
+}
+
+local objectiveTransitions = {
+	[Config.Objective.CarPlaced] = { Config.Stage.PlaceCar, Config.Stage.ClaimIntro, "CarPlaced" },
+	[Config.Objective.EarningsClaimed] = { Config.Stage.ClaimEarnings, Config.Stage.Transfer, "EarningsClaimed" },
+	[Config.Objective.BankTransferred] = { Config.Stage.Transfer, Config.Stage.Transfer, "TransferComplete" },
+	[Config.Objective.ATMWithdrawn] = { Config.Stage.Withdraw, Config.Stage.PurchaseIntro, "ATMWithdrawn" },
+	[Config.Objective.LocalCarPurchased] = { Config.Stage.PurchaseCar, Config.Stage.Finished, "LocalCarPurchased" },
+}
+
+getState.OnServerInvoke = function(player)
+	if player:GetAttribute("TycoonDataLoaded") ~= true then return nil, "DataLoading" end
+	return snapshot(player)
+end
+
+actionRemote.OnServerInvoke = function(player, action)
+	local now = os.clock()
+	if now - (lastRequest[player] or 0) < 0.12 then return false, "TooFast", snapshot(player) end
+	lastRequest[player] = now
+	local stage = player:GetAttribute("TutorialStage")
+	if action == Config.ClientActions.Accept then
+		return update(player, Config.Stage.Prompt, Config.Stage.Welcome, { Answered = true, Active = true })
+	elseif action == Config.ClientActions.Skip then
+		return update(player, Config.Stage.Prompt, Config.Stage.Skipped, { Answered = true, Skipped = true, Active = false })
+	elseif action == Config.ClientActions.InventoryOpened then
+		return update(player, Config.Stage.Inventory, Config.Stage.Inventory, { InventoryOpened = true })
+	elseif action == Config.ClientActions.Continue then
+		if stage == Config.Stage.Inventory then
+			if player:GetAttribute("TutorialInventoryOpened") ~= true then return false, "InventoryRequired", snapshot(player) end
+			return update(player, stage, Config.Stage.PlaceIntro)
+		elseif stage == Config.Stage.Transfer then
+			if player:GetAttribute("TutorialTransferComplete") ~= true then return false, "TransferRequired", snapshot(player) end
+			return update(player, stage, Config.Stage.WithdrawIntro)
+		elseif stage == Config.Stage.Finished then
+			return update(player, stage, Config.Stage.Completed, { Active = false, Completed = true })
+		end
+		local nextStage = continueTransitions[stage]
+		if stage == Config.Stage.PlaceIntro and player:GetAttribute("TutorialCarPlaced") == true then nextStage = Config.Stage.ClaimIntro end
+		if stage == Config.Stage.ClaimIntro and player:GetAttribute("TutorialEarningsClaimed") == true then nextStage = Config.Stage.Transfer end
+		if stage == Config.Stage.WithdrawIntro and player:GetAttribute("TutorialATMWithdrawn") == true then nextStage = Config.Stage.PurchaseIntro end
+		if stage == Config.Stage.PurchaseIntro and player:GetAttribute("TutorialLocalCarPurchased") == true then nextStage = Config.Stage.Finished end
+		if nextStage then return update(player, stage, nextStage) end
+	end
+	return false, "InvalidAction", snapshot(player)
+end
+
+progressAPI.OnInvoke = function(action, player, detail)
+	if action ~= "RecordObjective" or not player then return false, "InvalidAction" end
+	local transition = objectiveTransitions[detail]
+	if not transition then return false, "UnknownObjective" end
+	if player:GetAttribute("Tutorial" .. transition[3]) == true then return true, snapshot(player) end
+	local fields = { [transition[3]] = true }
+	local currentStage = player:GetAttribute("TutorialStage")
+	if currentStage == transition[1] then return update(player, currentStage, transition[2], fields) end
+	-- Preserve legitimate early actions without skipping intervening teaching screens.
+	return update(player, currentStage, currentStage, fields)
+end
+
+Players.PlayerRemoving:Connect(function(player) locks[player] = nil; lastRequest[player] = nil end)

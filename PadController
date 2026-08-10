@@ -307,6 +307,14 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 					player.Character:PivotTo(lookAtCar)
 				end
 				playSound("PlaceSound", padPart)
+
+				-- Report only after the authoritative placement and pad state commit.
+				if padObject.Name == "Pad1" then
+					local tutorialAPI = game:GetService("ServerStorage"):FindFirstChild("TutorialProgressAPI")
+					if tutorialAPI and tutorialAPI:IsA("BindableFunction") then
+						task.spawn(function() tutorialAPI:Invoke("RecordObjective", player, "CarPlaced") end)
+					end
+				end
 			else
 				warn("⚠️ Spawn Failed! Refunding item to " .. player.Name)
 				-- Refund using the SECURE ID, not the tool name
