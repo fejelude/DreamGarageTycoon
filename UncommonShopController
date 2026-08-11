@@ -83,6 +83,7 @@ local hiddenGuis = {}
 local hiddenObjects = {} 
 local currentBlur = nil 
 local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
+local lastShopReceiptFeedbackSerial = 0
 
 -- 🛑 UI REFERENCES
 local function getUI()
@@ -100,6 +101,25 @@ local function showFeedback(text, color)
 		shopFeedback:Failed(text, color)
 	end
 end
+
+local function replayCommittedRobuxFeedback()
+	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("ShopReceiptFeedbackSerial")) or 0))
+	if serial <= lastShopReceiptFeedbackSerial then return end
+	lastShopReceiptFeedbackSerial = serial
+	local productId = tonumber(player:GetAttribute("ShopReceiptFeedbackProductId"))
+	local relevant = productId == REROLL_PRODUCT_ID
+	for _, configuredId in pairs(ROBUX_PRODUCTS) do
+		if configuredId == productId then relevant = true; break end
+	end
+	if not relevant then return end
+	UIAudioConfig.HidePurchaseLoading()
+	Kit.Sound:Play("BuySuccess")
+	showFeedback(player:GetAttribute("ShopReceiptFeedbackKind") == "Reroll"
+		and "Restock Successful" or "Purchase Success", FEEDBACK_COLORS.Success)
+end
+
+player:GetAttributeChangedSignal("ShopReceiptFeedbackSerial"):Connect(replayCommittedRobuxFeedback)
+task.defer(replayCommittedRobuxFeedback)
 
 -- ============================================================================
 -- 👁️ FOCUS MODE (BLUR + HIDE UI)
@@ -171,10 +191,7 @@ local function setFocusMode(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
 
-	local char = player.Character
-	if char then
-		player:SetAttribute("MovementLock", active)
-	end
+	player:SetAttribute("MovementLock", active and player.Character ~= nil)
 end
 
 
@@ -407,11 +424,13 @@ local function init()
 		if not isRelevant then return end
 
 		if isPurchased then
+			if tonumber(player:GetAttribute("ShopReceiptFeedbackProductId")) == productId
+				and (tonumber(player:GetAttribute("ShopReceiptFeedbackSerial")) or 0) <= lastShopReceiptFeedbackSerial
+			then return end
 			if productId == REROLL_PRODUCT_ID then
-				showFeedback("Successfully Restocked", FEEDBACK_COLORS.Success)
-				Kit.Sound:Play("PaidReroll")
+				showFeedback("Restock submitted — processing", FEEDBACK_COLORS.TooFast)
 			else
-				showFeedback("Purchase Success", FEEDBACK_COLORS.Success)
+				showFeedback("Purchase submitted — processing", FEEDBACK_COLORS.TooFast)
 			end
 		else
 			Kit.Sound:Play("BuyFail") 
@@ -469,6 +488,3 @@ local function init()
 end
 
 if player.Character then init() else player.CharacterAdded:Wait(); init() end
-
-
-

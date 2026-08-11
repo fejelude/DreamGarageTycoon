@@ -39,6 +39,7 @@ local DEFAULT_TRANSFER_LIMIT = 1000000000000
 
 local isCoolingDown = false
 local messageState = {}
+local lastBankResetFeedbackSerial = 0
 
 local LABEL_SHOW_SECONDS = 3
 local LABEL_FADE_OUT_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -352,10 +353,26 @@ local function showTimerResetFeedback(success, message)
 	end
 end
 
-timerResetFeedbackEvent.OnClientEvent:Connect(function(success, message)
+local function handleTimerResetFeedback(success, message, serial)
+	serial = math.max(0, math.floor(tonumber(serial) or 0))
+	if serial > 0 then
+		if serial <= lastBankResetFeedbackSerial then return end
+		lastBankResetFeedbackSerial = serial
+	end
 	stopVerifying()
 	showTimerResetFeedback(success, message)
-end)
+end
+
+timerResetFeedbackEvent.OnClientEvent:Connect(handleTimerResetFeedback)
+
+local function replayTimerResetFeedback()
+	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("BankResetFeedbackSerial")) or 0))
+	if serial <= lastBankResetFeedbackSerial then return end
+	handleTimerResetFeedback(true, player:GetAttribute("BankResetFeedbackMessage"), serial)
+end
+
+player:GetAttributeChangedSignal("BankResetFeedbackSerial"):Connect(replayTimerResetFeedback)
+task.defer(replayTimerResetFeedback)
 
 local function releaseButtonSoon()
 	task.delay(0.15, function()

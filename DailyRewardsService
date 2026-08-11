@@ -10,7 +10,10 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local MutationRateLimiter = require(ServerScriptService:WaitForChild("MutationRateLimiter"))
 local HttpService = game:GetService("HttpService")
+local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
 
 local REMOTES_FOLDER_NAME = "DailyRewardsRemotes"
 local STATE_ATTRIBUTE = "DailyRewardsStateJson"
@@ -246,7 +249,7 @@ end
 
 local function markDirty(player)
 	pcall(function()
-		adminApi:Invoke("MarkDirty", player)
+		PlayerTransactionCoordinator.InvokeBindable(player, adminApi, "MarkDirty", player)
 	end)
 end
 
@@ -260,18 +263,26 @@ local function getWallet(player)
 	return leaderstats:FindFirstChild("Wallet") or leaderstats:WaitForChild("Wallet", 5)
 end
 
-local function grantCar(player, day, toolName, reward)
+local function grantCar(player, day, toolName, reward, claimId)
 	local attributes = {
 		Source = "DailyRewards",
 		DailyRewardDay = day,
+		DailyRewardClaimId = claimId,
 	}
 
 	if reward.Rarity then
 		attributes.Rarity = reward.Rarity
 	end
 
-	local ok, grantOk, grantMessage = pcall(function()
-		return adminApi:Invoke("GiveTool", player, toolName, attributes)
+	local ok, grantOk, grantMessage, grantedTool = pcall(function()
+		return PlayerTransactionCoordinator.InvokeBindable(
+			player,
+			adminApi,
+			"GiveTool",
+			player,
+			toolName,
+			attributes
+		)
 	end)
 
 	if not ok then
@@ -287,10 +298,13 @@ local function grantCar(player, day, toolName, reward)
 		return false, tostring(grantMessage or "Unable to grant reward.")
 	end
 
-	return true
+	return true, nil, {
+		Kind = "Car",
+		ItemId = grantedTool and grantedTool:GetAttribute("ItemId") or nil,
+	}
 end
 
-local function grantReward(player, day)
+local function grantReward(player, day, claimId)
 	local reward = REWARDS[day]
 
 	if not reward then
@@ -305,14 +319,32 @@ local function grantReward(player, day)
 		end
 
 		wallet.Value += reward.Amount
-		return true
+		return true, nil, { Kind = "Cash", Wallet = wallet, OriginalValue = wallet.Value - reward.Amount }
 	end
 
 	if reward.Type == "Car" then
-		return grantCar(player, day, reward.ToolName, reward)
+		return grantCar(player, day, reward.ToolName, reward, claimId)
 	end
 
 	return false, "Invalid daily reward."
+end
+
+local function rollbackReward(player, rollback)
+	if type(rollback) ~= "table" then return end
+	if rollback.Kind == "Cash" and rollback.Wallet and rollback.Wallet.Parent then
+		rollback.Wallet.Value = rollback.OriginalValue
+	elseif rollback.Kind == "Car" and type(rollback.ItemId) == "string" then
+		pcall(function()
+			PlayerTransactionCoordinator.InvokeBindable(
+				player,
+				adminApi,
+				"RemoveToolInstance",
+				player,
+				rollback.ItemId,
+				true
+			)
+		end)
+	end
 end
 
 local function tryClaim(player, requestedDay)
@@ -332,10 +364,11 @@ local function tryClaim(player, requestedDay)
 
 	claimLocks[player] = true
 
-	local ok, success, message, clientState = pcall(function()
+	local success, message, clientState = PlayerTransactionCoordinator.Run(player, "DailyRewardClaim", function()
 		local now = os.time()
 		local todayKey = getDayKey(now)
 		local state = normalizeCycle(decodeState(player), now)
+		local originalStateJson = player:GetAttribute(STATE_ATTRIBUTE)
 
 		encodeState(player, state)
 
@@ -347,7 +380,8 @@ local function tryClaim(player, requestedDay)
 			return false, "You're not ready for this yet!", buildClientState(player)
 		end
 
-		local grantOk, grantMessage = grantReward(player, requestedDay)
+		local claimId = tostring(player.UserId) .. ":" .. tostring(todayKey) .. ":" .. tostring(requestedDay)
+		local grantOk, grantMessage, rollback = grantReward(player, requestedDay, claimId)
 
 		if not grantOk then
 			return false, grantMessage or "Unable to grant reward.", buildClientState(player)
@@ -368,6 +402,23 @@ local function tryClaim(player, requestedDay)
 		encodeState(player, state)
 		markDirty(player)
 
+		local saveOk = PlayerTransactionCoordinator.InvokeBindable(
+			player,
+			adminApi,
+			"SaveNow",
+			player
+		)
+		if saveOk ~= true then
+			rollbackReward(player, rollback)
+			if type(originalStateJson) == "string" then
+				player:SetAttribute(STATE_ATTRIBUTE, originalStateJson)
+			else
+				encodeState(player, sanitizeState(nil))
+			end
+			markDirty(player)
+			return false, "Reward could not be saved. Please try again.", buildClientState(player)
+		end
+
 		local updatedState = buildClientState(player)
 		stateChangedEvent:FireClient(player, updatedState)
 
@@ -376,15 +427,13 @@ local function tryClaim(player, requestedDay)
 
 	claimLocks[player] = nil
 
-	if not ok then
-		warn("⚠️ [DailyRewards] Claim failed for " .. player.Name .. ": " .. tostring(success))
-		return false, "Reward system is not ready yet.", buildClientState(player)
-	end
-
 	return success, message, clientState
 end
 
 getStateFunction.OnServerInvoke = function(player)
+	if not MutationRateLimiter.Allow(player, "DailyRewards:GetState", 4, 1) then
+		return buildClientState(player)
+	end
 	if not ensureStateReady(player, DATA_READY_TIMEOUT_SECONDS) then
 		return buildUnavailableClientState()
 	end
@@ -393,6 +442,9 @@ getStateFunction.OnServerInvoke = function(player)
 end
 
 claimFunction.OnServerInvoke = function(player, requestedDay)
+	if not MutationRateLimiter.Allow(player, "DailyRewards:Claim", 1, 0.2) then
+		return false, "Please wait before trying again.", buildClientState(player)
+	end
 	return tryClaim(player, requestedDay)
 end
 

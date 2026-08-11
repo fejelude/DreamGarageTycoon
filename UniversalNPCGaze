@@ -22,6 +22,7 @@ local TRACK_SPEED = 0.02       -- Gentle turn when looking at you
 local BODY_TRACK_SPEED = 0.015 -- Natural "head turns first, body follows" effect
 local SHOULDER_LIMIT = 85      -- Degrees: Angle where they stop looking
 local VERTICAL_LIMIT = 40      -- Degrees: Max Up/Down angle
+local UPDATE_INTERVAL_SECONDS = 1 / 30
 
 -- 📋 CONFIGURATION: Add NPC names here for full-body tracking
 -- We use a dictionary [Name] = true for instant O(1) lookup in the Render loop.
@@ -30,6 +31,18 @@ local FULL_BODY_TRACKING_NPCS = {
 	["ethourah"] = true,
      ["Harley"] = true,
 }
+
+local trackedNPCs = {}
+local function trackNPC(npc)
+	if npc:IsA("Model") then trackedNPCs[npc] = true end
+end
+for _, npc in ipairs(npcFolder:GetChildren()) do trackNPC(npc) end
+npcFolder.ChildAdded:Connect(trackNPC)
+npcFolder.ChildRemoved:Connect(function(npc) trackedNPCs[npc] = nil end)
+
+local function scaledAlpha(baseAlpha, deltaTime)
+	return 1 - math.pow(1 - baseAlpha, math.max(0, deltaTime) * 60)
+end
 
 -- 🛠️ MATH HELPER: Normalize angles
 local function getGoalCFrame(rootPart, lookAtPos)
@@ -57,15 +70,20 @@ local function getGoalCFrame(rootPart, lookAtPos)
 end
 
 -- 🔄 MAIN RENDER LOOP
-RunService.RenderStepped:Connect(function()
+local elapsedSinceUpdate = UPDATE_INTERVAL_SECONDS
+RunService.RenderStepped:Connect(function(deltaTime)
+	elapsedSinceUpdate += deltaTime
+	if elapsedSinceUpdate < UPDATE_INTERVAL_SECONDS then return end
+	local updateDelta = elapsedSinceUpdate
+	elapsedSinceUpdate %= UPDATE_INTERVAL_SECONDS
 	local myCharacter = player.Character
 	if not myCharacter then return end
 
 	local myHead = myCharacter:FindFirstChild("Head")
 	if not myHead then return end
 
-	for _, npc in pairs(npcFolder:GetChildren()) do
-		if npc:IsA("Model") then
+	for npc in pairs(trackedNPCs) do
+		if npc.Parent == npcFolder then
 			local head = npc:FindFirstChild("Head")
 			local torso = npc:FindFirstChild("UpperTorso")
 			local rootPart = npc:FindFirstChild("HumanoidRootPart")
@@ -98,7 +116,7 @@ RunService.RenderStepped:Connect(function()
 						currentAlpha = RETURN_SPEED
 					end
 
-					neck.C0 = neck.C0:Lerp(originalC0 * targetCFrame, currentAlpha)
+					neck.C0 = neck.C0:Lerp(originalC0 * targetCFrame, scaledAlpha(currentAlpha, updateDelta))
 				end
 			end
 
@@ -116,11 +134,13 @@ RunService.RenderStepped:Connect(function()
 						local goalBodyCFrame = CFrame.lookAt(rootPart.Position, lookTarget)
 
 						-- Smoothly rotate the body
-						rootPart.CFrame = rootPart.CFrame:Lerp(goalBodyCFrame, BODY_TRACK_SPEED)
+						rootPart.CFrame = rootPart.CFrame:Lerp(goalBodyCFrame, scaledAlpha(BODY_TRACK_SPEED, updateDelta))
 					end
 				end
 			end
 
+		else
+			trackedNPCs[npc] = nil
 		end
 	end
 end)

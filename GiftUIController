@@ -65,9 +65,11 @@ local currentProductId = nil
 local currentTargetName = ""
 local pendingGiftProductId = nil
 local pendingGiftReceiverId = nil
+local pendingGiftIntentId = nil
 local giftPromptInFlight = false
 local waitingForGiftResult = false
 local giftResultToken = 0
+local lastGiftFeedbackSerial = 0
 local isMenuOpen = false 
 local isInitialized = false
 local isInitializing = false
@@ -464,12 +466,13 @@ local function resetGiftPurchaseState()
 	waitingForGiftResult = false
 	pendingGiftProductId = nil
 	pendingGiftReceiverId = nil
+	pendingGiftIntentId = nil
 	giftResultToken += 1
 end
 
 local function cancelPendingGiftIntent(productId)
 	if CancelIntentEvent and productId then
-		CancelIntentEvent:FireServer(productId)
+		CancelIntentEvent:FireServer(productId, pendingGiftIntentId)
 	end
 end
 
@@ -662,7 +665,7 @@ local function UpdateSlots()
 						UIAudioConfig.PlayRobux()
 						UIAudioConfig.ShowPurchaseLoading()
 
-						local intentOk, accepted, message = pcall(function()
+						local intentOk, accepted, message, intentId = pcall(function()
 							return CreateIntentFunction:InvokeServer(productId, capturedTarget.UserId)
 						end)
 
@@ -673,6 +676,7 @@ local function UpdateSlots()
 							playSfx(SFX.Error, 0.6, screenGui)
 							return
 						end
+						pendingGiftIntentId = intentId
 
 						SetIndicator("Opening purchase...", Color3.fromRGB(255, 255, 100))
 
@@ -757,8 +761,13 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 	end
 end)
 
-GiftPurchaseResult.OnClientEvent:Connect(function(result)
+local function handleGiftPurchaseResult(result)
 	if type(result) ~= "table" then return end
+	local serial = math.max(0, math.floor(tonumber(result.FeedbackSerial) or 0))
+	if serial > 0 then
+		if serial <= lastGiftFeedbackSerial then return end
+		lastGiftFeedbackSerial = serial
+	end
 	if result.ProductId ~= pendingGiftProductId then return end
 
 	local receiverName = result.ReceiverName or currentTargetName
@@ -772,7 +781,24 @@ GiftPurchaseResult.OnClientEvent:Connect(function(result)
 		SetIndicator(tostring(result.Message or "Gift could not be completed"), Color3.fromRGB(255, 85, 85))
 		playSfx(SFX.Error, 0.6, screenGui)
 	end
-end)
+end
+
+GiftPurchaseResult.OnClientEvent:Connect(handleGiftPurchaseResult)
+
+local function replayGiftPurchaseFeedback()
+	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("GiftPurchaseFeedbackSerial")) or 0))
+	if serial <= lastGiftFeedbackSerial then return end
+	handleGiftPurchaseResult({
+		Success = player:GetAttribute("GiftPurchaseFeedbackSuccess") == true,
+		ProductId = tonumber(player:GetAttribute("GiftPurchaseFeedbackProductId")),
+		ReceiverName = player:GetAttribute("GiftPurchaseFeedbackReceiver"),
+		Message = player:GetAttribute("GiftPurchaseFeedbackMessage"),
+		FeedbackSerial = serial,
+	})
+end
+
+player:GetAttributeChangedSignal("GiftPurchaseFeedbackSerial"):Connect(replayGiftPurchaseFeedback)
+task.defer(replayGiftPurchaseFeedback)
 
 -- ============================================================================
 -- 🚀 INIT

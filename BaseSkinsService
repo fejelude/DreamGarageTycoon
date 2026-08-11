@@ -5,8 +5,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 local HttpService = game:GetService("HttpService")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local Config = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
+local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
+local MutationRateLimiter = require(ServerScriptService:WaitForChild("MutationRateLimiter"))
 local tycoons = Workspace:WaitForChild("Tycoons")
 local shopRemotes = ReplicatedStorage:WaitForChild("ShopRemotes")
 local openEvent = shopRemotes:WaitForChild("OpenBaseSkins")
@@ -40,7 +43,11 @@ local function getAdminAPI()
 end
 local function markDirty(player)
 	local api = getAdminAPI()
-	if api then task.spawn(function() pcall(function() api:Invoke("MarkDirty", player) end) end) end
+	if api then task.spawn(function()
+		pcall(function()
+			PlayerTransactionCoordinator.InvokeBindable(player, api, "MarkDirty", player)
+		end)
+	end) end
 end
 local function forceSave(player)
 	local api = getAdminAPI()
@@ -49,7 +56,7 @@ local function forceSave(player)
 	local lastMessage = nil
 	for attempt = 1, MAX_FORCE_SAVE_ATTEMPTS do
 		local ok, result, message = pcall(function()
-			return api:Invoke("SaveNow", player)
+			return PlayerTransactionCoordinator.InvokeBindable(player, api, "SaveNow", player)
 		end)
 
 		if ok and result == true then
@@ -60,7 +67,9 @@ local function forceSave(player)
 		task.wait(0.35 * attempt)
 	end
 
-	pcall(function() api:Invoke("QueueSaveSoon", player, 3) end)
+	pcall(function()
+		PlayerTransactionCoordinator.InvokeBindable(player, api, "QueueSaveSoon", player, 3)
+	end)
 	return false, lastMessage or "Save failed."
 end
 local function plotFor(player)
@@ -162,13 +171,18 @@ assert(api:IsA("BindableFunction"), "ServerStorage.BaseSkinsAPI must be a Bindab
 api.OnInvoke = function(action, player, level, skinId)
 	local entry = Config.Get(level, skinId)
 	if action == "Grant" and player and entry then
-		local success, wasNew = grant(player, entry)
-		local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
-		local saveOk = false
-		if success then
-			saveOk = forceSave(player)
-		end
-		if not saveOk then return false, wasNew end
+		local success, wasNew = PlayerTransactionCoordinator.Run(player, "BaseAppearanceGrant", function()
+			local originalOwned = player:GetAttribute("OwnedAppearanceSkins")
+			local grantOk, grantedNew = grant(player, entry)
+			if not grantOk then return false, grantedNew end
+			if forceSave(player) ~= true then
+				player:SetAttribute("OwnedAppearanceSkins", originalOwned)
+				markDirty(player)
+				return false, "Grant could not be saved"
+			end
+			return true, grantedNew
+		end)
+		if not success then return false, wasNew end
 		notify(player, true, wasNew and (entry.DisplayName .. " Level " .. entry.Level .. " skin unlocked!") or nil)
 		return true, wasNew
 	end
@@ -177,12 +191,16 @@ api.OnInvoke = function(action, player, level, skinId)
 end
 
 transaction.OnServerInvoke = function(player, action, level, skinId)
+	if not MutationRateLimiter.Allow(player, "BaseSkins:" .. tostring(action), action == "GetState" and 4 or 2, action == "GetState" and 1 or 0.25) then
+		return false, "Please wait before trying again.", state(player)
+	end
 	if locks[player.UserId] then return false, "Another skin request is in progress.", state(player) end
 	locks[player.UserId] = true
 	local ok, success, message = pcall(function()
 		if action == "GetState" then return true, "Ready" end
-		local entry = Config.Get(level, skinId); if not entry then return false, "Invalid base skin." end
-		if action == "BuyCash" then
+		return PlayerTransactionCoordinator.Run(player, "BaseAppearanceTransaction", function()
+			local entry = Config.Get(level, skinId); if not entry then return false, "Invalid base skin." end
+			if action == "BuyCash" then
 			if owns(player, entry.Level, entry.SkinId) then return false, "You already own this skin." end
 			local wallet = player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Wallet")
 			if not wallet or wallet.Value < entry.WalletPrice then return false, "Insufficient Wallet money." end
@@ -199,7 +217,7 @@ transaction.OnServerInvoke = function(player, action, level, skinId)
 				return false, "Purchase could not be saved. Your Wallet was not charged; please try again."
 			end
 			return true, "Skin purchased successfully."
-		elseif action == "Equip" or action == "Unequip" then
+			elseif action == "Equip" or action == "Unequip" then
 			if not owns(player, entry.Level, entry.SkinId) then return false, "You do not own this skin." end
 			local currentLevel = math.floor(tonumber(player:GetAttribute("BaseLevel")) or 1)
 			local ownedLevel = math.floor(tonumber(player:GetAttribute("OwnedBaseLevel")) or 1)
@@ -213,10 +231,16 @@ transaction.OnServerInvoke = function(player, action, level, skinId)
 			local applied, applyMessage = apply(player); if not applied then player:SetAttribute(attribute, current); apply(player); return false, applyMessage end
 			cooldowns[player.UserId] = os.time() + Config.SKIN_SWITCH_COOLDOWN; markDirty(player)
 			local saveOk = forceSave(player)
-			if not saveOk then return false, "Skin changed, but saving is still retrying. Please wait before leaving." end
+			if not saveOk then
+				player:SetAttribute(attribute, current)
+				apply(player)
+				markDirty(player)
+				return false, "Skin change could not be saved. Please try again."
+			end
 			return true, action == "Equip" and "Skin equipped successfully." or "Default base restored successfully."
-		end
-		return false, "Invalid action."
+			end
+			return false, "Invalid action."
+		end)
 	end)
 	locks[player.UserId] = nil
 	if not ok then warn("[BaseSkinsService] " .. tostring(success)); success, message = false, "An unexpected error occurred. Please try again." end

@@ -57,6 +57,8 @@ mainFrame.Visible = false
 gui.Enabled = false
 local claimLocked = false
 local baseAmount = 0
+local premiumSuccessVisible = false
+local lastPremiumReceiptSerial = 0
 local REQUEST_RETRIES = 90
 local REQUEST_RETRY_DELAY = 0.5
 
@@ -105,6 +107,7 @@ local function showOfflineUi()
 end
 
 local function maybeOpen()
+	if premiumSuccessVisible then return end
 	if playerGui:GetAttribute("LoadingScreenActive") == true then
 		playerGui:GetAttributeChangedSignal("LoadingScreenActive"):Wait()
 	end
@@ -119,7 +122,7 @@ local function maybeOpen()
 		task.wait(REQUEST_RETRY_DELAY)
 	end
 
-	if type(data) ~= "table" or data.ready == false then return end
+	if premiumSuccessVisible or type(data) ~= "table" or data.ready == false then return end
 
 	baseAmount = math.max(0, math.floor(tonumber(data.amount) or 0))
 	if baseAmount <= 0 then
@@ -134,6 +137,28 @@ local function maybeOpen()
 	gui:SetAttribute("ExternallyManaged", true)
 	gui.Enabled = true
 	showOfflineUi()
+end
+
+local function showCommittedPremiumSuccess(amount)
+	if premiumSuccessVisible then return end
+	premiumSuccessVisible = true
+	baseAmount = 0
+	claimLocked = true
+	disableButtons(true)
+	if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+	playerGui:SetAttribute("OfflineEarningsFlowActive", true)
+	gui.Enabled = true
+	showOfflineUi()
+	setState(true, "$" .. formatMoney(amount) .. " has been transferred to your bank account.")
+	task.delay(1.4, function() closeUi(true) end)
+end
+
+local function replayPremiumReceipt()
+	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("OfflinePremiumReceiptSerial")) or 0))
+	if serial <= lastPremiumReceiptSerial then return end
+	lastPremiumReceiptSerial = serial
+	local amount = math.max(0, math.floor(tonumber(player:GetAttribute("OfflinePremiumClaimedAmount")) or 0))
+	if amount > 0 then showCommittedPremiumSuccess(amount) end
 end
 
 local function claimAndClose(showSuccessMessage)
@@ -171,23 +196,39 @@ end)
 
 UIButtonUtils.SetupButton(premiumButton, function()
 	if claimLocked then return end
-	local ok, allowed = pcall(function() return beginPremium:InvokeServer() end)
+	local ok, allowed, prepareMessage, intentId = pcall(function()
+		return beginPremium:InvokeServer()
+	end)
 	if not ok or not allowed then
-		setState(false, "You have already claimed your offline earnings.")
+		setState(false, ok and (prepareMessage or "Premium claim is unavailable.")
+			or "Premium claim is unavailable. Please try again.")
 		return
 	end
 	claimLocked = true
 	disableButtons(true)
 	if UIAudioConfig and UIAudioConfig.PlayRobux then UIAudioConfig.PlayRobux() end
 	if UIAudioConfig and UIAudioConfig.ShowPurchaseLoading then UIAudioConfig.ShowPurchaseLoading() end
-	MarketplaceService:PromptProductPurchase(player, PREMIUM_PRODUCT_ID)
+
+	local promptOk = pcall(function()
+		MarketplaceService:PromptProductPurchase(player, PREMIUM_PRODUCT_ID)
+	end)
+	if not promptOk then
+		-- The server has already persisted an immutable paid-action intent. If the
+		-- Roblox prompt itself could not open, cancel that exact intent so a normal
+		-- claim or a later retry is not blocked by an abandoned pending state.
+		pcall(function()
+			beginPremium:InvokeServer("Cancel", intentId)
+		end)
+		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+		setState(false, "The purchase prompt could not open. Please try again.")
+		claimLocked = false
+		disableButtons(false)
+	end
 end)
 
 premiumResult.OnClientEvent:Connect(function(success, msg, amount)
 	if success then
-		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
-		setState(true, "$" .. formatMoney(amount) .. " has been transferred to your bank account.")
-		task.delay(1.4, function() closeUi(true) end)
+		showCommittedPremiumSuccess(math.max(0, math.floor(tonumber(amount) or 0)))
 	else
 		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
 		setState(false, msg or "Claim failed. Please try again.")
@@ -195,6 +236,9 @@ premiumResult.OnClientEvent:Connect(function(success, msg, amount)
 		disableButtons(false)
 	end
 end)
+
+player:GetAttributeChangedSignal("OfflinePremiumReceiptSerial"):Connect(replayPremiumReceipt)
+task.defer(replayPremiumReceipt)
 
 UIButtonUtils.SetupButton(exitButton, function()
 	-- Exit should still perform the standard 1x offline claim and show the same

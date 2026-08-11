@@ -23,6 +23,19 @@ local MODEL_OWNER_ATTR = "CPSDisplayOwnerUserId"
 local modelConnections = setmetatable({}, { __mode = "k" })
 local toolStates = setmetatable({}, { __mode = "k" })
 
+local function disconnectAll(connections)
+	for _, connection in ipairs(connections or {}) do
+		if connection and connection.Connected then connection:Disconnect() end
+	end
+end
+
+local function cleanupModelConnections(carModel)
+	local connections = modelConnections[carModel]
+	if not connections then return end
+	modelConnections[carModel] = nil
+	disconnectAll(connections)
+end
+
 function CarCPSDisplayUtils.FormatCommas(value)
 	value = math.floor(tonumber(value) or 0)
 	local text = tostring(value)
@@ -201,7 +214,8 @@ function CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
 	local storedBase = tonumber(cpsLabel:GetAttribute(BASE_CPS_ATTR))
 	if storedBase then return storedBase end
 
-	local stats = carModel and (CarStats.GetCarStats and CarStats.GetCarStats(carModel.Name) or CarStats.Cars[carModel.Name])
+	local modelId = carModel and (carModel:GetAttribute("ToolId") or carModel.Name)
+	local stats = modelId and (CarStats.GetCarStats and CarStats.GetCarStats(modelId) or CarStats.Cars[modelId])
 	local baseCPS = stats and tonumber(stats.CPS)
 
 	if not baseCPS then
@@ -255,6 +269,11 @@ end
 local function getStatForObjectName(name)
 	if not name then return nil end
 	return (CarStats.GetCarStats and CarStats.GetCarStats(name)) or CarStats.Cars[name]
+end
+
+local function getStatForCarObject(carObject)
+	if not carObject then return nil end
+	return getStatForObjectName(carObject:GetAttribute("ToolId") or carObject.Name)
 end
 
 local function getMainPart(obj)
@@ -319,7 +338,7 @@ function CarCPSDisplayUtils.GetBestPlacedBaseCPSForModel(carModel, player)
 	for _, pad in ipairs(padsFolder:GetChildren()) do
 		local linkedCar = getLinkedCarValue(pad)
 		if linkedCar and linkedCar.Parent then
-			local stats = getStatForObjectName(linkedCar.Name)
+			local stats = getStatForCarObject(linkedCar)
 			if stats and not CarStats.IsMythicalCar(stats) then
 				bestBaseCPS = math.max(bestBaseCPS, tonumber(stats.CPS) or 0)
 			end
@@ -333,7 +352,7 @@ function CarCPSDisplayUtils.GetEffectiveModelBaseCPS(carModel, cpsLabel, player)
 	local baseCPS = CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
 	if not baseCPS then return nil end
 
-	local stats = carModel and getStatForObjectName(carModel.Name)
+	local stats = carModel and getStatForCarObject(carModel)
 	if stats and CarStats.IsMythicalCar(stats) then
 		return CarStats.CalculateEffectiveBaseCPS(stats, CarCPSDisplayUtils.GetBestPlacedBaseCPSForModel(carModel, player))
 	end
@@ -357,12 +376,7 @@ function CarCPSDisplayUtils.BindModelCPSDisplay(carModel, player)
 	if not carModel or not player then return end
 	if carModel:GetAttribute(MODEL_OWNER_ATTR) == player.UserId and modelConnections[carModel] then return end
 
-	if modelConnections[carModel] then
-		for _, connection in ipairs(modelConnections[carModel]) do
-			connection:Disconnect()
-		end
-		modelConnections[carModel] = nil
-	end
+	cleanupModelConnections(carModel)
 
 	carModel:SetAttribute(MODEL_OWNER_ATTR, player.UserId)
 
@@ -373,12 +387,7 @@ function CarCPSDisplayUtils.BindModelCPSDisplay(carModel, player)
 		if carModel.Parent then
 			CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
 		else
-			if modelConnections[carModel] then
-				for _, connection in ipairs(modelConnections[carModel]) do
-					connection:Disconnect()
-				end
-				modelConnections[carModel] = nil
-			end
+			cleanupModelConnections(carModel)
 		end
 	end
 
@@ -386,6 +395,12 @@ function CarCPSDisplayUtils.BindModelCPSDisplay(carModel, player)
 	table.insert(connections, player:GetAttributeChangedSignal("RankResourceMultiplier"):Connect(safeUpdate))
 	table.insert(connections, player:GetAttributeChangedSignal("OwnsExclusiveGamePass"):Connect(safeUpdate))
 	table.insert(connections, player:GetAttributeChangedSignal("Owns2xMoneyGamePass"):Connect(safeUpdate))
+	table.insert(connections, carModel.Destroying:Connect(function()
+		cleanupModelConnections(carModel)
+	end))
+	table.insert(connections, carModel.AncestryChanged:Connect(function()
+		if carModel.Parent == nil then cleanupModelConnections(carModel) end
+	end))
 end
 
 local function getToolOwner(tool, playersService)
@@ -418,6 +433,18 @@ function CarCPSDisplayUtils.BindToolCPSDisplay(tool, playersService)
 
 	local state = {}
 	toolStates[tool] = state
+
+	local function cleanupToolState()
+		if toolStates[tool] ~= state then return end
+		toolStates[tool] = nil
+		disconnectAll(state.playerConnections)
+		state.playerConnections = nil
+		for _, connectionName in ipairs({ "ancestryConnection", "toolIdConnection", "destroyingConnection" }) do
+			local connection = state[connectionName]
+			if connection and connection.Connected then connection:Disconnect() end
+			state[connectionName] = nil
+		end
+	end
 
 	local function disconnectPlayerConnections()
 		if state.playerConnections then
@@ -468,6 +495,7 @@ function CarCPSDisplayUtils.BindToolCPSDisplay(tool, playersService)
 
 		CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
 	end)
+	state.destroyingConnection = tool.Destroying:Connect(cleanupToolState)
 
 	task.defer(rebindPlayerMultiplier)
 end
