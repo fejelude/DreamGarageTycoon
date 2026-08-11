@@ -45,6 +45,7 @@ local isHoveringMap = {}
 local lastProjectedAmount = 0 
 local claimRequestId = 0
 local pendingClaimByPlot = {}
+local lastTabletPaidReceiptSerial = 0
 
 -- 🛠️ HELPER: The "Z-Offset" Fix & Visibility Logic
 local function enableClicking(gui, part)
@@ -274,7 +275,41 @@ local function setupClientTablet(plot)
 	end
 end
 
+local function showPaidClaimSuccess(plotName, amount, serial)
+	serial = math.max(0, math.floor(tonumber(serial) or 0))
+	if serial > 0 then
+		if serial <= lastTabletPaidReceiptSerial then return end
+		lastTabletPaidReceiptSerial = serial
+	end
+	local part = getClaimPartFromPlotName(plotName)
+	amount = math.max(0, math.floor(tonumber(amount) or 0))
+	local s = Instance.new("Sound")
+	s.SoundId = SUCCESS_SOUND_ID; s.Volume = 1; s.Parent = SoundService; s:Play()
+	game.Debris:AddItem(s, 2)
+	if part then
+		spawnFloatingText(part, "DOUBLE CASH! ( +$" .. amount .. " )", Color3.fromRGB(255, 255, 0), DOUBLE_CASH_DURATION)
+	end
+end
+
+local function replayPaidClaim()
+	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("TabletPaidReceiptSerial")) or 0))
+	if serial <= lastTabletPaidReceiptSerial then return end
+	showPaidClaimSuccess(
+		player:GetAttribute("TabletPaidReceiptPlot"),
+		player:GetAttribute("TabletPaidReceiptAmount"),
+		serial
+	)
+end
+
 TabletEvent.OnClientEvent:Connect(function(action, plotName, wasSuccessful, payload, requestId)
+	if action == "PaidClaimResult" then
+		if wasSuccessful then
+			showPaidClaimSuccess(plotName, payload, requestId)
+		else
+			showClaimFailure(getClaimPartFromPlotName(plotName), tostring(payload or "Unknown"))
+		end
+		return
+	end
 	if action ~= "ClaimResult" then return end
 
 	if pendingClaimByPlot[plotName] ~= requestId then
@@ -300,25 +335,18 @@ TabletEvent.OnClientEvent:Connect(function(action, plotName, wasSuccessful, payl
 	end
 end)
 
+player:GetAttributeChangedSignal("TabletPaidReceiptSerial"):Connect(replayPaidClaim)
+task.defer(replayPaidClaim)
+
 -- ============================================================================
 -- 💰 PURCHASE SUCCESS LISTENER
 -- ============================================================================
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, isPurchased)
 	if userId == player.UserId and productId == DEV_PRODUCT_ID and isPurchased then
-		local s = Instance.new("Sound");
-		s.SoundId = SUCCESS_SOUND_ID; s.Volume = 1; s.Parent = SoundService; s:Play();
-		game.Debris:AddItem(s, 2)
-
 		local myPlotName = player:GetAttribute("OccupiedPlot")
 		if myPlotName then
-			local plot = TycoonFolder:FindFirstChild(myPlotName)
-			local model = plot and plot:FindFirstChild("ClaimEarnings")
-			local part = model and (model:FindFirstChild("ClaimPart") or model:FindFirstChild("Earnings"))
-
-			if part then
-				local msg = "DOUBLE CASH! ( +$" .. lastProjectedAmount .. " )"
-				spawnFloatingText(part, msg, Color3.fromRGB(255, 255, 0), DOUBLE_CASH_DURATION)
-			end
+			local part = getClaimPartFromPlotName(myPlotName)
+			if part then spawnFloatingText(part, "Purchase submitted — processing", Color3.fromRGB(255, 255, 100)) end
 		end
 	end
 end)

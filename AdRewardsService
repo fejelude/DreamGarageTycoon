@@ -8,8 +8,10 @@ local AdService = game:GetService("AdService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))
+local MutationRateLimiter = require(ServerScriptService:WaitForChild("MutationRateLimiter"))
 
 local REMOTES_FOLDER_NAME = "AdRewardsRemotes"
 local REQUEST_EVENT_NAME = "RequestRewardedAd"
@@ -32,6 +34,7 @@ local function fireFailure(player, message)
 end
 
 requestEvent.OnServerEvent:Connect(function(player)
+	if not MutationRateLimiter.Allow(player, "RewardedAdRequest", 1, 1 / 15) then return end
 	if activeRequests[player] then
 		return
 	end

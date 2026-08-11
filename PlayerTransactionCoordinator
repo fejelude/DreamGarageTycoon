@@ -1,0 +1,249 @@
+-- Purpose: Provides one server-wide transaction boundary for every mutation of
+-- a player's economy, inventory, layout, progression, rewards, and receipts.
+-- Runs on: Server (ModuleScript)
+-- Location: ServerScriptService > PlayerTransactionCoordinator
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+
+local Coordinator = {}
+
+local DEFAULT_TIMEOUT_SECONDS = 15
+local locksByUserId = {}
+local contextsByThread = setmetatable({}, { __mode = "k" })
+local DELEGATION_MARKER = "DGT_PLAYER_TRANSACTION_V1"
+local NON_READY_OPERATIONS = {
+	ProfileSave = true,
+	FinalProfileSave = true,
+}
+
+local function currentOwner()
+	return coroutine.running()
+end
+
+local function activeContextToken(userId)
+	local context = contextsByThread[currentOwner()]
+	local lock = locksByUserId[userId]
+	if context and lock and context.Token == lock.Token then
+		return context.Token
+	end
+	return nil
+end
+
+local function acquireUserId(userId, timeoutSeconds, transactionToken)
+	timeoutSeconds = math.max(0.1, tonumber(timeoutSeconds) or DEFAULT_TIMEOUT_SECONDS)
+	local owner = currentOwner()
+	local startedAt = os.clock()
+
+	while true do
+		local lock = locksByUserId[userId]
+		if not lock then
+			locksByUserId[userId] = {
+				Owner = owner,
+				Token = transactionToken,
+				Depth = 1,
+				AcquiredAt = os.clock(),
+			}
+			return true
+		end
+
+		if lock.Token == transactionToken then
+			lock.Depth += 1
+			return true
+		end
+
+		if os.clock() - startedAt >= timeoutSeconds then
+			return false, "Player transaction is busy"
+		end
+
+		task.wait(0.03)
+	end
+end
+
+local function releaseUserId(userId, transactionToken)
+	local lock = locksByUserId[userId]
+	if not lock or lock.Token ~= transactionToken then
+		warn("[PlayerTransactionCoordinator] Ignored an invalid lock release for user " .. tostring(userId))
+		return
+	end
+
+	lock.Depth -= 1
+	if lock.Depth <= 0 then
+		locksByUserId[userId] = nil
+	end
+end
+
+local function normalizePlayers(players)
+	local uniqueByUserId = {}
+	for _, player in ipairs(players) do
+		if typeof(player) ~= "Instance" or not player:IsA("Player") then
+			return nil, "Invalid player transaction target"
+		end
+		if player.Parent ~= Players then
+			return nil, "Player left the server"
+		end
+		uniqueByUserId[player.UserId] = player
+	end
+
+	local ordered = {}
+	for _, player in pairs(uniqueByUserId) do
+		table.insert(ordered, player)
+	end
+	table.sort(ordered, function(a, b)
+		return a.UserId < b.UserId
+	end)
+	return ordered
+end
+
+function Coordinator.RunMany(players, operationName, callback, timeoutSeconds)
+	if type(players) ~= "table" or type(callback) ~= "function" then
+		return false, "Invalid transaction request"
+	end
+
+	local ordered, normalizeError = normalizePlayers(players)
+	if not ordered then
+		return false, normalizeError
+	end
+	if not NON_READY_OPERATIONS[operationName] then
+		for _, player in ipairs(ordered) do
+			if player:GetAttribute("TycoonDataLoaded") ~= true
+				or player:GetAttribute("TycoonDataPhase") ~= "Ready"
+			then
+				return false, "Player data is not ready"
+			end
+		end
+	end
+
+	local owner = currentOwner()
+	local previousContext = contextsByThread[owner]
+	local inheritedToken = previousContext and previousContext.Token or nil
+	local transactionToken = inheritedToken or HttpService:GenerateGUID(false)
+
+	local acquired = {}
+	for _, player in ipairs(ordered) do
+		local ok, acquireError = acquireUserId(
+			player.UserId,
+			timeoutSeconds,
+			transactionToken
+		)
+		if not ok then
+			for index = #acquired, 1, -1 do
+				releaseUserId(acquired[index], transactionToken)
+			end
+			return false, acquireError
+		end
+		table.insert(acquired, player.UserId)
+	end
+
+	contextsByThread[owner] = { Token = transactionToken }
+	local result = table.pack(xpcall(callback, debug.traceback))
+	contextsByThread[owner] = previousContext
+	for index = #acquired, 1, -1 do
+		releaseUserId(acquired[index], transactionToken)
+	end
+
+	if not result[1] then
+		warn(string.format(
+			"[PlayerTransactionCoordinator] %s failed: %s",
+			tostring(operationName or "UnnamedOperation"),
+			tostring(result[2])
+		))
+		return false, "Internal transaction error"
+	end
+
+	return table.unpack(result, 2, result.n)
+end
+
+function Coordinator.Run(player, operationName, callback, timeoutSeconds)
+	return Coordinator.RunMany({ player }, operationName, callback, timeoutSeconds)
+end
+
+-- BindableFunction callbacks run in another coroutine. This helper carries an
+-- opaque server-only transaction token across that synchronous boundary so the
+-- receiving script can safely re-enter the existing lock instead of timing out.
+function Coordinator.InvokeBindable(player, bindable, ...)
+	if typeof(bindable) ~= "Instance" or not bindable:IsA("BindableFunction") then
+		error("PlayerTransactionCoordinator.InvokeBindable requires a BindableFunction", 2)
+	end
+
+	local args = table.pack(...)
+	local token = typeof(player) == "Instance" and player:IsA("Player")
+		and activeContextToken(player.UserId) or nil
+	if token then
+		args.n += 1
+		args[args.n] = {
+			Marker = DELEGATION_MARKER,
+			Token = token,
+			UserId = player.UserId,
+		}
+	end
+
+	return bindable:Invoke(table.unpack(args, 1, args.n))
+end
+
+-- Use this at the receiving side of a BindableFunction. It removes the opaque
+-- final argument before dispatching the original action and temporarily adopts
+-- the originating lock context for nested Coordinator.Run/save calls.
+function Coordinator.DispatchBindable(player, callback, ...)
+	if type(callback) ~= "function" then
+		return false, "Invalid BindableFunction transaction callback"
+	end
+
+	local args = table.pack(...)
+	local candidate = args.n > 0 and args[args.n] or nil
+	local delegationToken = nil
+	if type(candidate) == "table" and candidate.Marker == DELEGATION_MARKER then
+		args[args.n] = nil
+		args.n -= 1
+		if typeof(player) ~= "Instance" or not player:IsA("Player")
+			or candidate.UserId ~= player.UserId
+			or type(candidate.Token) ~= "string"
+		then
+			return false, "Invalid player transaction delegation"
+		end
+
+		local lock = locksByUserId[player.UserId]
+		if not lock or lock.Token ~= candidate.Token then
+			return false, "Player transaction delegation expired"
+		end
+		delegationToken = candidate.Token
+	end
+
+	local function dispatch()
+		return callback(table.unpack(args, 1, args.n))
+	end
+
+	if not delegationToken then
+		return dispatch()
+	end
+
+	local owner = currentOwner()
+	local previousContext = contextsByThread[owner]
+	contextsByThread[owner] = { Token = delegationToken }
+	local result = table.pack(xpcall(dispatch, debug.traceback))
+	contextsByThread[owner] = previousContext
+
+	if not result[1] then
+		warn("[PlayerTransactionCoordinator] Delegated BindableFunction failed: " .. tostring(result[2]))
+		return false, "Internal delegated transaction error"
+	end
+
+	return table.unpack(result, 2, result.n)
+end
+
+function Coordinator.IsLocked(player)
+	return player ~= nil and locksByUserId[player.UserId] ~= nil
+end
+
+function Coordinator.AssertOwned(player)
+	return player ~= nil and activeContextToken(player.UserId) ~= nil
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	local lock = locksByUserId[player.UserId]
+	if lock and lock.Owner == nil then
+		locksByUserId[player.UserId] = nil
+	end
+end)
+
+return Coordinator

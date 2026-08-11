@@ -10,6 +10,7 @@ local FOLDER_NAME = "MovingAddons"
 local DISPLACEMENT_SPREAD = 0.5   -- How high/low it goes (Studs)
 local DISPLACEMENT_SPEED = 2      -- How fast it bobs up and down
 local SPIN_SPEED = math.rad(50)   -- How fast it spins (Degrees per second)
+local UPDATE_INTERVAL_SECONDS = 1 / 15
 
 -- 🛡️ STATE MANAGEMENT
 local movingObjects = {} -- Stores [Object] = OriginalCFrame
@@ -37,9 +38,16 @@ end
 
 -- 3. LISTEN FOR NEW OBJECTS (If you add them while game runs)
 folder.ChildAdded:Connect(setupObject)
+folder.ChildRemoved:Connect(function(obj)
+	movingObjects[obj] = nil
+end)
 
--- 🔄 ANIMATION LOOP (Heartbeat runs every frame on Server)
-RunService.Heartbeat:Connect(function()
+-- Cosmetic server replication is intentionally capped at 15 Hz.
+local elapsedSinceUpdate = UPDATE_INTERVAL_SECONDS
+RunService.Heartbeat:Connect(function(deltaTime)
+	elapsedSinceUpdate += deltaTime
+	if elapsedSinceUpdate < UPDATE_INTERVAL_SECONDS then return end
+	elapsedSinceUpdate %= UPDATE_INTERVAL_SECONDS
 	local t = time() -- Get game time
 	
 	-- Calculate Math (Same as your image)

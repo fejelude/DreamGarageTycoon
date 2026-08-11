@@ -13,6 +13,8 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
 
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
@@ -23,25 +25,23 @@ local function forceSave(player)
 	end
 
 	local ok, result = pcall(function()
-		return api:Invoke("SaveNow", player)
+		return PlayerTransactionCoordinator.InvokeBindable(player, api, "SaveNow", player)
 	end)
 
 	if ok and result == true then
 		return true
 	end
 
-	pcall(function() api:Invoke("QueueSaveSoon", player, 3) end)
+	pcall(function()
+		PlayerTransactionCoordinator.InvokeBindable(player, api, "QueueSaveSoon", player, 3)
+	end)
 	return false
 end
 -- ============================================================================
 -- 📡 REMOTE EVENT SETUP (Communication to Client)
 -- ============================================================================
 local PadUnlockEvent = ReplicatedStorage:FindFirstChild("PadUnlockEvent")
-if not PadUnlockEvent then
-	PadUnlockEvent = Instance.new("RemoteEvent")
-	PadUnlockEvent.Name = "PadUnlockEvent"
-	PadUnlockEvent.Parent = ReplicatedStorage
-end
+if not PadUnlockEvent or not PadUnlockEvent:IsA("RemoteEvent") then error("[PadProgressionHandler] Missing ReplicatedStorage > PadUnlockEvent", 0) end
 
 -- ============================================================================
 -- 🔊 SOUND CONFIGURATION & 🛡️ DEBOUNCE STATE
@@ -206,18 +206,35 @@ local function setupBuyButton(plot, padModel, padNumber)
 		local baseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
 		if padNumber > 14 and baseLevel < 2 then return end
 
-		local cost = tonumber(padModel:GetAttribute("Cost")) or 500
+		local cost = tonumber(padModel:GetAttribute("Cost"))
+		if not cost or cost <= 0 then
+			warn("[PadProgressionHandler] Missing/invalid Cost on " .. padModel:GetFullName())
+			return
+		end
 		local leaderstats = player:FindFirstChild("leaderstats")
 		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 
 		if wallet then
 			-- 🔒 Lock the transaction state
 			playerPurchaseDebounce[player.UserId] = true
+			task.delay(0.5, function()
+				if playerPurchaseDebounce[player.UserId] then
+					playerPurchaseDebounce[player.UserId] = nil
+				end
+			end)
 
 			if wallet.Value >= cost then
 				-- ✅ SUCCESS: Rich enough!
-				wallet.Value -= cost 
+				local originalWallet = wallet.Value
+				local originalLevel = currentLevel
+				wallet.Value -= cost
 				player:SetAttribute("HighestUnlockedPad", padNumber)
+				if not forceSave(player) then
+					wallet.Value = originalWallet
+					player:SetAttribute("HighestUnlockedPad", originalLevel)
+					PadUnlockEvent:FireClient(player, false, "Purchase could not be saved. Please try again.")
+					return
+				end
 				updatePadVisuals(plot, padNumber, tonumber(player:GetAttribute("BaseLevel")) or 1)
 				print("✅ " .. player.Name .. " Purchased Pad " .. padNumber)
 
@@ -247,18 +264,17 @@ local function setupBuyButton(plot, padModel, padNumber)
 				PadUnlockEvent:FireClient(player, false, missing)
 			end
 
-			-- 🔓 Release the lock after a 0.5 second cooldown
-			task.delay(0.5, function()
-				if playerPurchaseDebounce[player.UserId] then
-					playerPurchaseDebounce[player.UserId] = nil
-				end
-			end)
 		end
 	end
 
 	local function onTouch(hit)
 		local player = Players:GetPlayerFromCharacter(hit.Parent)
-		if player then attemptBuy(player) end
+		if player then
+			PlayerTransactionCoordinator.Run(player, "PadUnlockPurchase", function()
+				attemptBuy(player)
+				return true
+			end)
+		end
 	end
 
 	-- Fix 8: PadProgressionHandler Redundant Touched connections
@@ -271,6 +287,64 @@ local function setupBuyButton(plot, padModel, padNumber)
 			primary.Touched:Connect(onTouch)
 		end
 	end
+end
+
+local function rollbackLevelMigration(journal)
+	for index = #(journal or {}), 1, -1 do
+		local move = journal[index]
+		if move.L2Occ and move.L2Occ.Parent then move.L2Occ.Value = move.L2WasOccupied end
+		if move.L2Link and move.L2Link.Parent then move.L2Link.Value = move.L2PreviousCar end
+		if move.L1Occ and move.L1Occ.Parent then move.L1Occ.Value = move.L1WasOccupied end
+		if move.L1Link and move.L1Link.Parent then move.L1Link.Value = move.Car end
+		if move.Car and move.Car.Parent and move.OriginalPivot then move.Car:PivotTo(move.OriginalPivot) end
+	end
+end
+
+local function migrateLevelOneCarsToLevelTwo(plot)
+	local level1 = getLevelModel(plot, "Level1")
+	local level2 = getLevelModel(plot, "Level2")
+	local l1Pads = level1 and level1.Parent:FindFirstChild("Pads")
+	local l2Pads = level2 and level2.Parent:FindFirstChild("Pads")
+	if not l1Pads or not l2Pads then return false, "Base pads are unavailable." end
+
+	local journal = {}
+	for _, l1PadObj in ipairs(l1Pads:GetChildren()) do
+		local padNum = l1PadObj.Name:match("Pad(%d+)")
+		local l1Primary = l1PadObj:IsA("Model") and (l1PadObj.PrimaryPart or l1PadObj:FindFirstChildWhichIsA("BasePart")) or l1PadObj
+		local l1Occ = l1Primary and l1Primary:FindFirstChild("IsOccupied")
+		local l1Link = l1Primary and l1Primary:FindFirstChild("LinkedCar")
+		if l1Link and l1Link.Value then
+			local l2PadObj = padNum and l2Pads:FindFirstChild("Pad" .. padNum)
+			local l2Primary = l2PadObj and (l2PadObj:IsA("Model") and (l2PadObj.PrimaryPart or l2PadObj:FindFirstChildWhichIsA("BasePart")) or l2PadObj)
+			local l2Occ = l2Primary and l2Primary:FindFirstChild("IsOccupied")
+			local l2Link = l2Primary and l2Primary:FindFirstChild("LinkedCar")
+			if not l1Occ or not l2Primary or not l2Occ or not l2Link then
+				return false, "A destination pad is missing required state."
+			end
+			if l2Occ.Value or l2Link.Value then return false, "A Level 2 destination pad is occupied." end
+			table.insert(journal, {
+				L1Occ = l1Occ, L1Link = l1Link, L2Occ = l2Occ, L2Link = l2Link,
+				L1WasOccupied = l1Occ.Value, L2WasOccupied = l2Occ.Value,
+				L2PreviousCar = l2Link.Value, Car = l1Link.Value,
+				OriginalPivot = l1Link.Value:GetPivot(), L2Primary = l2Primary,
+			})
+		end
+	end
+
+	local ok, err = xpcall(function()
+		for _, move in ipairs(journal) do
+			move.L2Occ.Value = true
+			move.L2Link.Value = move.Car
+			move.Car:PivotTo(move.L2Primary.CFrame * CFrame.new(0, (move.L2Primary.Size.Y / 2) + 5, 0))
+			move.L1Occ.Value = false
+			move.L1Link.Value = nil
+		end
+	end, debug.traceback)
+	if not ok then
+		rollbackLevelMigration(journal)
+		return false, tostring(err)
+	end
+	return true, nil, journal
 end
 
 local function setupLevel2BuyButton(plot, buyButtonModel)
@@ -292,6 +366,13 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 		if baseLevel >= 2 then return end
 
 		playerPurchaseDebounce[player.UserId] = true
+		-- Schedule cleanup immediately so every validation/save/rollback return
+		-- path releases the touch debounce.
+		task.delay(1, function()
+			if playerPurchaseDebounce[player.UserId] then
+				playerPurchaseDebounce[player.UserId] = nil
+			end
+		end)
 
 		if currentLevel < 14 then
 			local s = Instance.new("Sound")
@@ -302,15 +383,15 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 			Debris:AddItem(s, 2)
 			PadUnlockEvent:FireClient(player, false, "Unlock all pads first to upgrade your base!")
 
-			task.delay(1, function()
-				if playerPurchaseDebounce[player.UserId] then
-					playerPurchaseDebounce[player.UserId] = nil
-				end
-			end)
 			return
 		end
 
-		local cost = tonumber(buyButtonModel:GetAttribute("Cost")) or 500000
+		local cost = tonumber(buyButtonModel:GetAttribute("Cost"))
+		if not cost or cost <= 0 then
+			warn("[PadProgressionHandler] Missing/invalid Cost on " .. buyButtonModel:GetFullName())
+			playerPurchaseDebounce[player.UserId] = nil
+			return
+		end
 		local leaderstats = player:FindFirstChild("leaderstats")
 		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 
@@ -319,48 +400,11 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 				local originalWallet = wallet.Value
 				wallet.Value -= cost
 
-				-- MIGRATE CAR STATES FROM LEVEL 1 TO LEVEL 2 PADS
-				local level1 = getLevelModel(plot, "Level1")
-				local level2 = getLevelModel(plot, "Level2")
-				if level1 and level2 then
-					local l1Pads = level1.Parent:FindFirstChild("Pads")
-					local l2Pads = level2.Parent:FindFirstChild("Pads")
-					if l1Pads and l2Pads then
-						for _, l1PadObj in pairs(l1Pads:GetChildren()) do
-							local padNum = l1PadObj.Name:match("Pad(%d+)")
-							local l2PadObj = l2Pads:FindFirstChild("Pad" .. tostring(padNum))
-
-							if l2PadObj then
-								local l1Primary = l1PadObj:IsA("Model") and (l1PadObj.PrimaryPart or l1PadObj:FindFirstChildWhichIsA("BasePart")) or l1PadObj
-								local l2Primary = l2PadObj:IsA("Model") and (l2PadObj.PrimaryPart or l2PadObj:FindFirstChildWhichIsA("BasePart")) or l2PadObj
-
-								if l1Primary and l2Primary then
-									local l1Occ = l1Primary:FindFirstChild("IsOccupied")
-									local l2Occ = l2Primary:FindFirstChild("IsOccupied")
-									if l1Occ and l2Occ then
-										l2Occ.Value = l1Occ.Value
-									end
-
-									local l1Lnk = l1Primary:FindFirstChild("LinkedCar")
-									local l2Lnk = l2Primary:FindFirstChild("LinkedCar")
-									if l1Lnk and l2Lnk then
-										l2Lnk.Value = l1Lnk.Value
-
-										-- Fix 6: Physically snap the car to the new pad's location
-										if l1Lnk.Value and l1Lnk.Value:IsA("Model") then
-											local verticalOffset = 5 -- Use a standard offset height
-											local newCFrame = l2Primary.CFrame * CFrame.new(0, (l2Primary.Size.Y / 2) + verticalOffset, 0)
-											l1Lnk.Value:PivotTo(newCFrame)
-										end
-									end
-
-									-- Fix 2: Stale Level 1 Pad States After Base Upgrade
-									if l1Occ then l1Occ.Value = false end
-									if l1Lnk then l1Lnk.Value = nil end
-								end
-							end
-						end
-					end
+				local migrated, migrateMessage, migrationJournal = migrateLevelOneCarsToLevelTwo(plot)
+				if not migrated then
+					wallet.Value = originalWallet
+					warn("[PadProgressionHandler] Base migration rejected: " .. tostring(migrateMessage))
+					return
 				end
 
 				local originalOwnedBaseLevel = tonumber(player:GetAttribute("OwnedBaseLevel")) or baseLevel or 1
@@ -370,6 +414,7 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 				local saveOk = forceSave(player)
 				if not saveOk then
 					wallet.Value = originalWallet
+					rollbackLevelMigration(migrationJournal)
 					player:SetAttribute("OwnedBaseLevel", originalOwnedBaseLevel)
 					player:SetAttribute("BaseLevel", originalBaseLevel)
 					forceSave(player)
@@ -403,11 +448,6 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 				PadUnlockEvent:FireClient(player, false, "Not enough money to upgrade your base!")
 			end
 
-			task.delay(1, function()
-				if playerPurchaseDebounce[player.UserId] then
-					playerPurchaseDebounce[player.UserId] = nil
-				end
-			end)
 		else
 			playerPurchaseDebounce[player.UserId] = nil
 		end
@@ -416,7 +456,12 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 	local function onTouch(otherPart)
 		local character = otherPart.Parent
 		local player = Players:GetPlayerFromCharacter(character)
-		if player then attemptBuy(player) end
+		if player then
+			PlayerTransactionCoordinator.Run(player, "BaseLevelPurchase", function()
+				attemptBuy(player)
+				return true
+			end)
+		end
 	end
 
 	-- Fix 8: PadProgressionHandler Redundant Touched connections

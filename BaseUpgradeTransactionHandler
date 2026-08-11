@@ -14,6 +14,8 @@ local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
 
 local Remotes = ReplicatedStorage:WaitForChild("ShopRemotes")
 local TransactionFunc = Remotes:WaitForChild("BaseUpgradeTransaction")
@@ -22,11 +24,7 @@ local StatsModule = require(ReplicatedStorage:WaitForChild("BaseSkinStats"))
 -- 📡 NEW: VFX Event Connection
 -- Grabbing the event created by PadProgressionHandler to reuse the Confetti system
 local PadUnlockEvent = ReplicatedStorage:FindFirstChild("PadUnlockEvent")
-if not PadUnlockEvent then
-	PadUnlockEvent = Instance.new("RemoteEvent")
-	PadUnlockEvent.Name = "PadUnlockEvent"
-	PadUnlockEvent.Parent = ReplicatedStorage
-end
+if not PadUnlockEvent or not PadUnlockEvent:IsA("RemoteEvent") then error("[BaseUpgradeTransactionHandler] Missing ReplicatedStorage > PadUnlockEvent", 0) end
 
 -- 🛡️ SECURITY: Transaction Locks
 local activeTransactions = {}
@@ -44,7 +42,7 @@ local function forceSave(player)
 	local lastMessage = nil
 	for attempt = 1, MAX_FORCE_SAVE_ATTEMPTS do
 		local ok, result, message = pcall(function()
-			return api:Invoke("SaveNow", player)
+			return PlayerTransactionCoordinator.InvokeBindable(player, api, "SaveNow", player)
 		end)
 
 		if ok and result == true then
@@ -55,7 +53,9 @@ local function forceSave(player)
 		task.wait(0.35 * attempt)
 	end
 
-	pcall(function() api:Invoke("QueueSaveSoon", player, 3) end)
+	pcall(function()
+		PlayerTransactionCoordinator.InvokeBindable(player, api, "QueueSaveSoon", player, 3)
+	end)
 	return false, lastMessage or "Save failed."
 end
 
@@ -99,6 +99,19 @@ local function getPlayerPlot(player)
 	return nil
 end
 
+local function rollbackPadMigration(journal)
+	for index = #(journal or {}), 1, -1 do
+		local move = journal[index]
+		if move.ToOcc and move.ToOcc.Parent then move.ToOcc.Value = move.ToOccupied end
+		if move.ToLink and move.ToLink.Parent then move.ToLink.Value = move.ToLinkedCar end
+		if move.FromOcc and move.FromOcc.Parent then move.FromOcc.Value = move.FromOccupied end
+		if move.FromLink and move.FromLink.Parent then move.FromLink.Value = move.FromLinkedCar end
+		if move.Car and move.Car.Parent and move.OriginalPivot then
+			move.Car:PivotTo(move.OriginalPivot)
+		end
+	end
+end
+
 local function migratePadOccupancy(plot, fromLevel, toLevel)
 	local fromModel = getLevelModel(plot, "Level" .. tostring(fromLevel))
 	local toModel = getLevelModel(plot, "Level" .. tostring(toLevel))
@@ -108,41 +121,49 @@ local function migratePadOccupancy(plot, fromLevel, toLevel)
 		return false, "Base pads are unavailable. Please try again."
 	end
 
+	local journal = {}
 	for _, fromPadObj in ipairs(fromPads:GetChildren()) do
 		local padNumber = fromPadObj.Name:match("Pad(%d+)")
 		local toPadObj = padNumber and toPads:FindFirstChild("Pad" .. padNumber)
-		if not toPadObj then
-			local fromPart = getMainPart(fromPadObj)
-			local fromOcc = fromPart and fromPart:FindFirstChild("IsOccupied")
-			local fromLink = fromPart and fromPart:FindFirstChild("LinkedCar")
-			if (fromOcc and fromOcc.Value) or (fromLink and fromLink.Value) then
+		local fromPart = getMainPart(fromPadObj)
+		local fromOcc = fromPart and fromPart:FindFirstChild("IsOccupied")
+		local fromLink = fromPart and fromPart:FindFirstChild("LinkedCar")
+		local hasCar = (fromOcc and fromOcc.Value == true) or (fromLink and fromLink.Value ~= nil)
+		if hasCar then
+			if not toPadObj then
 				return false, "Move cars off Level " .. tostring(fromLevel) .. "-only pads before switching bases."
 			end
-		elseif toPadObj then
-			local fromPart = getMainPart(fromPadObj)
 			local toPart = getMainPart(toPadObj)
-			if fromPart and toPart then
-				local fromOcc = fromPart:FindFirstChild("IsOccupied")
-				local toOcc = toPart:FindFirstChild("IsOccupied")
-				local fromLink = fromPart:FindFirstChild("LinkedCar")
-				local toLink = toPart:FindFirstChild("LinkedCar")
-
-				if fromOcc and toOcc then toOcc.Value = fromOcc.Value end
-				if fromLink and toLink then
-					toLink.Value = fromLink.Value
-					if fromLink.Value and fromLink.Value:IsA("Model") then
-						local verticalOffset = 5
-						fromLink.Value:PivotTo(toPart.CFrame * CFrame.new(0, (toPart.Size.Y / 2) + verticalOffset, 0))
-					end
-				end
-
-				if fromOcc then fromOcc.Value = false end
-				if fromLink then fromLink.Value = nil end
+			local toOcc = toPart and toPart:FindFirstChild("IsOccupied")
+			local toLink = toPart and toPart:FindFirstChild("LinkedCar")
+			if not fromPart or not fromOcc or not fromLink or not toPart or not toOcc or not toLink then
+				return false, "A base pad is missing required occupancy state."
 			end
+			if not fromLink.Value then return false, "A placed car link is missing. Pick up the car and try again." end
+			if toOcc.Value or toLink.Value then return false, "A destination pad is already occupied." end
+			table.insert(journal, {
+				FromOcc = fromOcc, FromLink = fromLink, ToOcc = toOcc, ToLink = toLink,
+				FromOccupied = fromOcc.Value, FromLinkedCar = fromLink.Value,
+				ToOccupied = toOcc.Value, ToLinkedCar = toLink.Value,
+				Car = fromLink.Value, OriginalPivot = fromLink.Value:GetPivot(), ToPart = toPart,
+			})
 		end
 	end
 
-	return true
+	local ok, err = xpcall(function()
+		for _, move in ipairs(journal) do
+			move.ToOcc.Value = true
+			move.ToLink.Value = move.Car
+			move.Car:PivotTo(move.ToPart.CFrame * CFrame.new(0, (move.ToPart.Size.Y / 2) + 5, 0))
+			move.FromOcc.Value = false
+			move.FromLink.Value = nil
+		end
+	end, debug.traceback)
+	if not ok then
+		rollbackPadMigration(journal)
+		return false, "Base migration failed: " .. tostring(err)
+	end
+	return true, nil, journal
 end
 
 -- 💰 UNIFIED TRANSACTION & EQUIP FUNCTION
@@ -155,6 +176,7 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 
 	-- Use a wrapper to ensure the lock is ALWAYS released, even if the script errors
 	local success, result, msg = pcall(function()
+		return PlayerTransactionCoordinator.Run(player, "BaseUpgradeTransaction", function()
 		local skinData = StatsModule[skinName]
 
 
@@ -199,7 +221,7 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 				return false, "Base unavailable. Please try again."
 			end
 
-			local migrated, migrateMessage = migratePadOccupancy(plot, currentBaseLevel, targetLevel)
+			local migrated, migrateMessage, migrationJournal = migratePadOccupancy(plot, currentBaseLevel, targetLevel)
 			if not migrated then
 				return false, migrateMessage or "Base switch failed."
 			end
@@ -208,7 +230,7 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 			player:SetAttribute("BaseLevel", targetLevel)
 			local saveOk = forceSave(player)
 			if not saveOk then
-				migratePadOccupancy(plot, targetLevel, currentBaseLevel)
+				rollbackPadMigration(migrationJournal)
 				player:SetAttribute("BaseLevel", currentBaseLevel)
 				forceSave(player)
 				return false, "Base switch could not be saved. Please try again."
@@ -313,6 +335,7 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 		end
 
 		return false, "Invalid Action"
+		end)
 	end)
 
 	-- Release Lock
