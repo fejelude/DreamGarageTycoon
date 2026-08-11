@@ -9,10 +9,12 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Players = game:GetService("Players")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local CarSellPrices = require(ReplicatedStorage:WaitForChild("CarSellPrices"))
 local SellFunction = ReplicatedStorage:WaitForChild("SofhiaSellFunction")
 local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
+local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
 
 local MAX_DISTANCE = 30 -- Max interaction distance
 local SELL_ALL_ACTION = "SellAllCars"
@@ -67,6 +69,7 @@ end
 local function getSellableToolDetails(tool)
 	if not tool or not tool:IsA("Tool") then return nil end
 	if tool:GetAttribute("IssuedByServer") ~= true then return nil end
+	if type(tool:GetAttribute("ItemId")) ~= "string" then return nil end
 
 	local rawId = tool:GetAttribute("ToolId") or tool.Name
 	local cleanId = CarSellPrices.CleanId(rawId)
@@ -78,16 +81,19 @@ end
 
 local function collectSellableInventoryTools(player)
 	local sellableTools = {}
-	local seen = {}
+	local seenItemIds = {}
 
 	local function scan(container)
 		if not container then return end
 		for _, child in ipairs(container:GetChildren()) do
 			local cleanId, details = getSellableToolDetails(child)
-			if cleanId and not seen[child] then
-				seen[child] = true
+			local itemId = child:IsA("Tool") and child:GetAttribute("ItemId")
+			if cleanId and type(itemId) == "string" and not seenItemIds[itemId] then
+				seenItemIds[itemId] = true
 				table.insert(sellableTools, {
 					Tool = child,
+					ToolId = child:GetAttribute("ToolId") or child.Name,
+					ItemId = child:GetAttribute("ItemId"),
 					CleanId = cleanId,
 					SellPrice = details.SellPrice,
 				})
@@ -101,21 +107,6 @@ local function collectSellableInventoryTools(player)
 	return sellableTools
 end
 
-local function cleanupStarterGearMirrors(player, soldCleanIds)
-	local starterGear = player:FindFirstChild("StarterGear")
-	if not starterGear then return end
-
-	for _, child in ipairs(starterGear:GetChildren()) do
-		if child:IsA("Tool") then
-			local rawId = child:GetAttribute("ToolId") or child.Name
-			local cleanId = CarSellPrices.CleanId(rawId)
-			if soldCleanIds[cleanId] then
-				child:Destroy()
-			end
-		end
-	end
-end
-
 local function sellAllInventoryCars(player)
 	local toolsToSell = collectSellableInventoryTools(player)
 	if #toolsToSell == 0 then
@@ -123,10 +114,8 @@ local function sellAllInventoryCars(player)
 	end
 
 	local sellAmount = 0
-	local soldCleanIds = {}
 	for _, entry in ipairs(toolsToSell) do
 		sellAmount += entry.SellPrice
-		soldCleanIds[entry.CleanId] = true
 	end
 
 	if sellAmount <= 0 then
@@ -139,15 +128,34 @@ local function sellAllInventoryCars(player)
 		return false, "Could not locate wallet."
 	end
 
+	local removed = {}
 	for _, entry in ipairs(toolsToSell) do
-		if entry.Tool and entry.Tool.Parent then
-			entry.Tool:Destroy()
+		local removeOk = TycoonAdminAPI:Invoke("RemoveToolInstance", player, entry.ItemId, true)
+		if not removeOk then
+			for _, rollback in ipairs(removed) do
+				TycoonAdminAPI:Invoke("GiveTool", player, rollback.ToolId, {
+					ItemId = rollback.ItemId,
+					BypassStorageLimit = true,
+					Source = "SellRollback",
+				})
+			end
+			return false, "Inventory changed during the sale. Please try again."
 		end
+		table.insert(removed, entry)
 	end
-	cleanupStarterGearMirrors(player, soldCleanIds)
-
+	local originalWallet = wallet.Value
 	wallet.Value += sellAmount
-	TycoonAdminAPI:Invoke("MarkInventoryCleared", player)
+	if TycoonAdminAPI:Invoke("SaveNow", player) ~= true then
+		wallet.Value = originalWallet
+		for _, rollback in ipairs(removed) do
+			TycoonAdminAPI:Invoke("GiveTool", player, rollback.ToolId, {
+				ItemId = rollback.ItemId,
+				BypassStorageLimit = true,
+				Source = "SellRollback",
+			})
+		end
+		return false, "Sale could not be saved. Your cars were restored."
+	end
 
 	print("💰 Sofhia Sell All: " .. player.Name .. " sold " .. tostring(#toolsToSell) .. " inventory cars for $" .. tostring(sellAmount))
 	return true, "Success", sellAmount, #toolsToSell
@@ -180,57 +188,33 @@ local function sellEquippedCar(player, requestedCarId)
 		return false, "Invalid sell amount."
 	end
 
-	-- Execution: Remove item via TycoonAdminAPI & clean up all instances
-	-- TycoonDataHandler's `RemoveTool` scans Backpack → StarterGear → Character
-	-- and stops after destroying `requestedAmount` matches.
-	-- We request 1 removal, then manually clean up any remaining instances
-	-- (the held tool in Character, or a lingering StarterGear clone).
-	local removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, cleanActualId, 1)
-	if not removeSuccess then
-		-- Fallback: try removing with exact `actualCarId` just in case the API strictly needs the raw name
-		removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, actualCarId, 1)
-	end
-
-	-- CRITICAL: If both attempts to remove the tool fail, abort the transaction completely.
-	-- Do not give the player cash if we could not guarantee the car was removed from their data.
-	if not removeSuccess then
-		return false, "Failed to remove the car from your inventory. Transaction aborted."
-	end
-
-	-- FIX (Double Removal): Only destroy the held tool if RemoveTool didn't already get it.
-	-- RemoveTool scans Backpack first, so it usually destroys a Backpack/StarterGear clone
-	-- and leaves the Character tool alive. We clean it up here without double-counting.
-	if actualTool and actualTool.Parent then
-		actualTool:Destroy()
-	end
-
-	-- FIX: Also clean up any remaining StarterGear clone so the sold car
-	-- doesn't respawn into the player's inventory on death.
-	local starterGear = player:FindFirstChild("StarterGear")
-	if starterGear then
-		for _, child in ipairs(starterGear:GetChildren()) do
-			if child:IsA("Tool") then
-				local childId = child:GetAttribute("ToolId") or child.Name
-				local cleanChildId = CarSellPrices.CleanId(childId)
-				if cleanChildId == cleanActualId then
-					child:Destroy()
-					break
-				end
-			end
-		end
-	end
-
-	-- Execution: Add Funds
 	local leaderstats = player:FindFirstChild("leaderstats")
 	local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 
 	if not wallet then
-		-- Highly unlikely, but refund if leaderstats is suddenly missing
-		TycoonAdminAPI:Invoke("GiveTool", player, actualCarId)
 		return false, "Could not locate wallet."
 	end
 
+	local itemId = actualTool:GetAttribute("ItemId")
+	if type(itemId) ~= "string" or itemId == "" then
+		return false, "This car is missing its ownership identity. Rejoin and try again."
+	end
+	local removeSuccess = TycoonAdminAPI:Invoke("RemoveToolInstance", player, itemId, true)
+	if not removeSuccess then
+		return false, "Failed to remove the exact car. Transaction aborted."
+	end
+
+	local originalWallet = wallet.Value
 	wallet.Value += sellAmount
+	if TycoonAdminAPI:Invoke("SaveNow", player) ~= true then
+		wallet.Value = originalWallet
+		TycoonAdminAPI:Invoke("GiveTool", player, actualCarId, {
+			ItemId = itemId,
+			BypassStorageLimit = true,
+			Source = "SellRollback",
+		})
+		return false, "Sale could not be saved. Your car was restored."
+	end
 	print("💰 Sofhia Sell: " .. player.Name .. " sold " .. cleanActualId .. " for $" .. sellAmount)
 
 	return true, "Success"
@@ -241,6 +225,7 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 	if type(requestedCarId) ~= "string" then
 		return false, "Invalid request format."
 	end
+	if #requestedCarId > 100 then return false, "Invalid request format." end
 
 	-- 2. Transaction Lock (Prevents Spam/Race Conditions)
 	if activeTransactions[player.UserId] then
@@ -249,17 +234,14 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 	activeTransactions[player.UserId] = true
 
 	local success, result, msg, sellAmount, soldCount = pcall(function()
-		-- 3. Validation: Verify character and distance to Sofhia
-		local isNear, distanceMessage = validatePlayerNearSofhia(player)
-		if not isNear then
-			return false, distanceMessage
-		end
-
-		if requestedCarId == SELL_ALL_ACTION then
-			return sellAllInventoryCars(player)
-		end
-
-		return sellEquippedCar(player, requestedCarId)
+		return PlayerTransactionCoordinator.Run(player, "SellCars", function()
+			local isNear, distanceMessage = validatePlayerNearSofhia(player)
+			if not isNear then return false, distanceMessage end
+			if requestedCarId == SELL_ALL_ACTION then
+				return sellAllInventoryCars(player)
+			end
+			return sellEquippedCar(player, requestedCarId)
+		end)
 	end)
 
 	-- FIX (Transaction Lock): Release immediately after completion with a brief

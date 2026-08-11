@@ -10,6 +10,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 
 local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local RankTags = ServerStorage:WaitForChild("RankTags", 10)
 
 local function requireChild(parent, childName, className)
@@ -33,6 +34,121 @@ local Sessions = {}
 local PlayerConnections = {}
 local PendingSessionCleanup = {}
 local PLAYER_REMOVING_SESSION_GRACE_SECONDS = 120
+local InvalidRequirements = {}
+
+local SUPPORTED_REQUIREMENT_TYPES = {
+	Buy = true,
+	Craft = true,
+	Obtain = true,
+	CraftOrObtain = true,
+	Hold = true,
+	GiftSent = true,
+	GiftSentUnique = true,
+	GiftReceived = true,
+	GiftReceivedUnique = true,
+	Pad = true,
+	BaseLevel = true,
+}
+
+local function findConfiguredCar(carName)
+	local cars = type(CarStats) == "table" and CarStats.Cars or nil
+	if type(cars) ~= "table" then return nil end
+	if cars[carName] then return cars[carName] end
+	local target = RankConfig.NormalizeCarName(carName)
+	for configuredName, carData in pairs(cars) do
+		if RankConfig.NormalizeCarName(configuredName) == target then return carData end
+	end
+	return nil
+end
+
+local function invalidateRequirement(rankName, requirementId, reason)
+	InvalidRequirements[rankName] = InvalidRequirements[rankName] or {}
+	InvalidRequirements[rankName][requirementId] = reason
+	warn(string.format(
+		"[RankService] Configuration error; %s.%s is disabled: %s",
+		tostring(rankName), tostring(requirementId), tostring(reason)
+	))
+end
+
+local function validateRankConfiguration()
+	local seenRanks = {}
+	local previousRank = nil
+	local previousValue = RankConfig.GetRankValue(RankConfig.DefaultRankName)
+
+	for _, rankName in ipairs(RankConfig.Order or {}) do
+		local rankData = RankConfig.Ranks and RankConfig.Ranks[rankName]
+		if seenRanks[rankName] or type(rankData) ~= "table" then
+			error("[RankService] RankConfig.Order contains a duplicate or missing rank: " .. tostring(rankName), 0)
+		end
+		seenRanks[rankName] = true
+
+		local rankValue = RankConfig.GetRankValue(rankName)
+		local rankStructureError = nil
+		if rankValue <= previousValue then
+			rankStructureError = "rank values must increase in RankConfig.Order"
+		elseif rankData.PreviousRank ~= previousRank then
+			rankStructureError = "PreviousRank must be " .. tostring(previousRank)
+		end
+		previousValue = rankValue
+		previousRank = rankName
+
+		if type(rankData.Requirements) ~= "table" then
+			error("[RankService] " .. rankName .. ".Requirements must be a table", 0)
+		end
+		local seenRequirementIds = {}
+		for index, requirement in ipairs(rankData.Requirements) do
+			local requirementId = type(requirement) == "table" and requirement.Id or nil
+			if type(requirementId) ~= "string" or requirementId == "" then
+				requirementId = "Requirement" .. tostring(index)
+				invalidateRequirement(rankName, requirementId, "missing stable requirement Id")
+				continue
+			end
+			if seenRequirementIds[requirementId] then
+				invalidateRequirement(rankName, requirementId, "duplicate requirement Id")
+				continue
+			end
+			seenRequirementIds[requirementId] = true
+
+			local reason = rankStructureError
+			if not reason and not SUPPORTED_REQUIREMENT_TYPES[requirement.Type] then
+				reason = "unsupported requirement type " .. tostring(requirement.Type)
+			end
+			local target = requirement.UniquePlayers or requirement.Amount or 1
+			if not reason and (tonumber(target) == nil or tonumber(target) <= 0) then
+				reason = "target must be a positive number"
+			end
+
+			if not reason and table.find({ "Buy", "Craft", "Obtain", "CraftOrObtain" }, requirement.Type) then
+				local carData = findConfiguredCar(requirement.Car)
+				if not carData then
+					reason = "quest car is missing from CarStats"
+				elseif requirement.Type == "Buy" then
+					local configuredShop = tostring(requirement.Shop or "")
+					local rarity = tostring(carData.Rarity or "")
+					if configuredShop == "" or configuredShop:lower() ~= rarity:lower() then
+						reason = string.format("shop %s does not match CarStats rarity %s", configuredShop, rarity)
+					end
+				end
+			elseif not reason and requirement.Type == "Hold"
+				and requirement.Currency ~= "Wallet" and requirement.Currency ~= "Bank"
+			then
+				reason = "Hold currency must be Wallet or Bank"
+			elseif not reason and requirement.Type == "Pad"
+				and (tonumber(requirement.PadNumber) or 0) < 1
+			then
+				reason = "PadNumber must be reachable and positive"
+			elseif not reason and requirement.Type == "BaseLevel"
+				and (tonumber(requirement.Level) or 0) < 1
+			then
+				reason = "base Level must be reachable and positive"
+			end
+
+			if reason then invalidateRequirement(rankName, requirementId, reason) end
+		end
+	end
+end
+
+validateRankConfiguration()
 
 local function newProgress()
 	return {
@@ -111,6 +227,21 @@ local function sanitizeProgress(raw)
 	}
 end
 
+local function sanitizeProcessedOperations(raw)
+	local entries = {}
+	if type(raw) == "table" then
+		for operationId, timestamp in pairs(raw) do
+			if type(operationId) == "string" and operationId ~= "" then
+				table.insert(entries, { Id = string.sub(operationId, 1, 200), At = math.max(0, math.floor(tonumber(timestamp) or 0)) })
+			end
+		end
+	end
+	table.sort(entries, function(a, b) return a.At > b.At end)
+	local clean = {}
+	for index, entry in ipairs(entries) do if index <= 500 then clean[entry.Id] = entry.At end end
+	return clean
+end
+
 local function isLegacyProgressShape(raw)
 	return type(raw) == "table"
 		and (
@@ -182,6 +313,7 @@ local function normalizeLoadedData(data)
 	end
 
 	data.Progress = normalizeProgressByRank(data.Progress, data)
+	data.ProcessedOperations = sanitizeProcessedOperations(data.ProcessedOperations)
 
 	return data
 end
@@ -249,6 +381,17 @@ local function getSession(player)
 		Sessions[player] = normalizeLoadedData({ CurrentRank = player:GetAttribute("Rank") or RankConfig.DefaultRankName })
 	end
 	return Sessions[player]
+end
+
+local function beginOperation(player, operationId)
+	if type(operationId) ~= "string" or operationId == "" then return true end
+	operationId = string.sub(operationId, 1, 200)
+	local session = getSession(player)
+	session.ProcessedOperations = sanitizeProcessedOperations(session.ProcessedOperations)
+	if session.ProcessedOperations[operationId] then return false end
+	session.ProcessedOperations[operationId] = os.time()
+	markDirty(player)
+	return true
 end
 
 local function countDictionary(dictionary)
@@ -441,6 +584,17 @@ local function evaluateRequirement(player, rankName, requirement)
 	local progress = getRankProgress(session, rankName)
 	local current = 0
 	local target = requirement.Amount or 1
+	local configurationError = InvalidRequirements[rankName]
+		and InvalidRequirements[rankName][requirement.Id]
+	if configurationError then
+		return {
+			Id = requirement.Id,
+			Current = 0,
+			Target = target,
+			Complete = false,
+			Error = configurationError,
+		}
+	end
 
 	if requirement.Type == "Buy" then
 		current = progress.Purchases[progressKey(requirement.Shop, requirement.Car)] or 0
@@ -602,16 +756,18 @@ local function recordGiftProgress(player, otherPlayer, isSender)
 
 	local progress = getRankProgress(session, activeRank)
 	local changed = false
+	local otherUserId = typeof(otherPlayer) == "Instance" and otherPlayer:IsA("Player") and otherPlayer.UserId
+		or math.floor(tonumber(otherPlayer) or 0)
 
 	for _, requirement in ipairs(rankData.Requirements or {}) do
 		if isSender and requirement.Type == "GiftSent" then
 			changed = incrementFieldCapped(progress, "GiftSentTotal", 1, requirement.Amount or 1) or changed
-		elseif isSender and requirement.Type == "GiftSentUnique" and otherPlayer then
-			changed = addUniquePlayerCapped(progress.GiftSentPlayers, otherPlayer.UserId, requirement.UniquePlayers or requirement.Amount or 1) or changed
+		elseif isSender and requirement.Type == "GiftSentUnique" and otherUserId > 0 then
+			changed = addUniquePlayerCapped(progress.GiftSentPlayers, otherUserId, requirement.UniquePlayers or requirement.Amount or 1) or changed
 		elseif not isSender and requirement.Type == "GiftReceived" then
 			changed = incrementFieldCapped(progress, "GiftReceivedTotal", 1, requirement.Amount or 1) or changed
-		elseif not isSender and requirement.Type == "GiftReceivedUnique" and otherPlayer then
-			changed = addUniquePlayerCapped(progress.GiftReceivedPlayers, otherPlayer.UserId, requirement.UniquePlayers or requirement.Amount or 1) or changed
+		elseif not isSender and requirement.Type == "GiftReceivedUnique" and otherUserId > 0 then
+			changed = addUniquePlayerCapped(progress.GiftReceivedPlayers, otherUserId, requirement.UniquePlayers or requirement.Amount or 1) or changed
 		end
 	end
 
@@ -632,17 +788,40 @@ RankProgressAPI.OnInvoke = function(action, player, ...)
 		local amount = ...
 		return canAddCar(player, amount), getStorageLimit(player), getInventoryCarCount(player)
 	elseif action == "CarObtained" then
-		local carName, source, shopName = ...
+		local carName, source, shopName, operationId = ...
+		if not beginOperation(player, operationId and ("Car:" .. operationId)) then return true end
 		recordCarObtained(player, carName, source, shopName)
+		markDirty(player)
+		requestSave(player)
 		return true
 	elseif action == "CarGiftSent" then
-		local receiver, carName = ...
+		local receiver, carName, operationId = ...
+		if not beginOperation(player, operationId and ("GiftSent:" .. operationId)) then return true end
 		recordGiftProgress(player, receiver, true)
+		markDirty(player)
+		requestSave(player)
 
-		if receiver then
+		if receiver and beginOperation(receiver, operationId and ("GiftReceived:" .. operationId)) then
 			recordGiftProgress(receiver, player, false)
 			recordCarObtained(receiver, carName, "Gift", nil)
+			markDirty(receiver)
+			requestSave(receiver)
 		end
+		return true
+	elseif action == "CarGiftQueued" then
+		local receiverUserId, carName, operationId = ...
+		if not beginOperation(player, operationId and ("GiftSent:" .. operationId)) then return true end
+		recordGiftProgress(player, receiverUserId, true)
+		markDirty(player)
+		requestSave(player)
+		return true
+	elseif action == "CarGiftReceived" then
+		local buyerUserId, carName, operationId = ...
+		if not beginOperation(player, operationId and ("GiftReceived:" .. operationId)) then return true end
+		recordGiftProgress(player, buyerUserId, false)
+		recordCarObtained(player, carName, "Gift", nil)
+		markDirty(player)
+		requestSave(player)
 		return true
 	elseif action == "Refresh" then
 		applyBenefits(player)
@@ -665,8 +844,9 @@ RankPersistenceFunction.OnInvoke = function(action, player, data)
 		return {
 			CurrentRank = session.CurrentRank,
 			CompletedRanks = session.CompletedRanks,
-			ClaimedRewards = session.ClaimedRewards,
-			Progress = session.Progress,
+				ClaimedRewards = session.ClaimedRewards,
+				Progress = session.Progress,
+				ProcessedOperations = session.ProcessedOperations,
 		}
 	elseif action == "Close" then
 		disconnectPlayer(player)

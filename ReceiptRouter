@@ -1,977 +1,616 @@
--- Purpose: Centralizes MarketplaceService.ProcessReceipt with IDEMPOTENCY, GIFTING, VFX, and Anti-Exploit guards.
+-- Purpose: Single, replay-safe MarketplaceService.ProcessReceipt dispatcher.
+-- Profile entitlements and their PurchaseId are saved together; gifts first
+-- commit an immutable offline delivery; paid actions bind an exact intent.
 -- Runs on: Server
 -- Location: ServerScriptService > ReceiptRouter
--- Dependencies: MarketplaceService, DataStoreService, Players, Workspace, ServerStorage, ReplicatedStorage, HttpService
--- Public API: N/A
--- Networking: Listens to ProcessReceipt. Fires 'NotifyGiftReceived' to clients when gifted. Alerts Darrel on Uncommon Robux purchases.
--- Security: Verifies target doesn't already own the item before granting to prevent wasted Robux via exploits.
--- Performance: Uses caching and pcalls for DataStore resilience.
--- Notes: Updated to support UNCOMMON, RARE, and EPIC SHOP tier purchases and rerolls.
---       Starter Pack ownership now uses TycoonDataHandler main player data only.
 
 local MarketplaceService = game:GetService("MarketplaceService")
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local ServerStorage = game:GetService("ServerStorage")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
+local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
-local PURCHASE_HISTORY_NAMES = {"ReceiptHistory_V3"}
-local ActivePurchaseHistory = nil
+local GRANTED = Enum.ProductPurchaseDecision.PurchaseGranted
+local PENDING = Enum.ProductPurchaseDecision.NotProcessedYet
+
+-- Register immediately. Module/config initialization below cannot leave Roblox
+-- without a receipt callback; unavailable product handlers simply retry later.
+local routeReceipt = nil
 local activeReceiptLocks = {}
+MarketplaceService.ProcessReceipt = function(receiptInfo)
+	local lockKey = tostring(receiptInfo.PlayerId) .. ":" .. tostring(receiptInfo.PurchaseId)
+	if activeReceiptLocks[lockKey] then return PENDING end
+	activeReceiptLocks[lockKey] = true
+	local result = table.pack(xpcall(function()
+		if not routeReceipt then return PENDING end
+		return routeReceipt(receiptInfo)
+	end, debug.traceback))
+	activeReceiptLocks[lockKey] = nil
+	if not result[1] then
+		warn(string.format(
+			"[ReceiptRouter] Handler exception buyer=%s product=%s purchase=%s: %s",
+			tostring(receiptInfo.PlayerId), tostring(receiptInfo.ProductId),
+			tostring(receiptInfo.PurchaseId), tostring(result[2])
+		))
+		return PENDING
+	end
+	return result[2] == GRANTED and GRANTED or PENDING
+end
 
--- 🟢 COMMON SHOP CONFIG
+local function requireReplicated(name)
+	local module = ReplicatedStorage:FindFirstChild(name)
+	if not module or not module:IsA("ModuleScript") then
+		warn("[ReceiptRouter] Missing ReplicatedStorage > " .. name .. " ModuleScript")
+		return nil
+	end
+	local ok, value = pcall(require, module)
+	if not ok then warn("[ReceiptRouter] Failed to require " .. name .. ": " .. tostring(value)); return nil end
+	return value
+end
+
+local serverModuleCache = {}
+local function getServerModule(name)
+	if serverModuleCache[name] ~= nil then return serverModuleCache[name] or nil end
+	local module = ServerScriptService:FindFirstChild(name)
+	if not module or not module:IsA("ModuleScript") then
+		serverModuleCache[name] = false
+		return nil
+	end
+	local ok, value = pcall(require, module)
+	if not ok then
+		warn("[ReceiptRouter] Failed to load handler " .. name .. ": " .. tostring(value))
+		return nil
+	end
+	serverModuleCache[name] = value
+	return value
+end
+
+local GiftProductRegistry = requireReplicated("GiftProductRegistry")
+local CashPackConfig = requireReplicated("CashPackConfig")
+local GlobalLuckConfig = requireReplicated("GlobalLuckConfig")
+local GlobalMoneyFrenzyConfig = requireReplicated("GlobalMoneyFrenzyConfig")
+local LimitedCarsConfig = requireReplicated("LimitedCarsConfig")
+local BaseAppearanceConfig = requireReplicated("BaseAppearanceConfig")
+local BaseSkinStats = requireReplicated("BaseSkinStats")
+local RebirthConfig = requireReplicated("RebirthConfig")
+local AdRewardsConfig = requireReplicated("AdRewardsConfig")
+
+local Coordinator = getServerModule("PlayerTransactionCoordinator")
+local PaidActionIntentStore = getServerModule("PaidActionIntentStore")
+local PaidActionFulfillmentService = getServerModule("PaidActionFulfillmentService")
+local GiftIntentStore = getServerModule("GiftIntentStore")
+local GiftDeliveryService = getServerModule("GiftDeliveryService")
+
 local TABLET_2X_ID = 3509697462
 local SHOP_REROLL_ID = 3520990584
+local UNCOMMON_SHOP_REROLL_ID = 3555934441
+local RARE_SHOP_REROLL_ID = 3556132134
+local EPIC_SHOP_REROLL_ID = 3556540207
+local LEGENDARY_SKIP_CRAFT_ID = 3573930334
+local MYTHICAL_SKIP_CRAFT_ID = 3573933156
 local BANK_TRANSFER_SKIP_ID = 3591736957
 local OFFLINE_10X_CLAIM_ID = 3598967453
 local STARTER_PACK_PRODUCT_ID = 3599481243
 local STARTER_PACK_CAR_NAME = "Senator"
-local GlobalLuckConfig = require(ReplicatedStorage:WaitForChild("GlobalLuckConfig"))
-local GlobalMoneyFrenzyConfig = require(ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyConfig"))
-local CashPackConfig = require(ReplicatedStorage:WaitForChild("CashPackConfig"))
-local LimitedCarsConfig = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
-local BaseAppearanceConfig = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
-local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
-
-local function requireServerModule(moduleName)
-	local module = script.Parent:WaitForChild(moduleName, 15)
-	if not module then
-		error("[ReceiptRouter] Missing ServerScriptService > " .. moduleName .. " ModuleScript", 0)
-	end
-	if not module:IsA("ModuleScript") then
-		error("[ReceiptRouter] ServerScriptService > " .. moduleName .. " must be a ModuleScript, got " .. module.ClassName, 0)
-	end
-	return require(module)
-end
-
-local GlobalLuckService = requireServerModule("GlobalLuckService")
-local GlobalMoneyFrenzyService = requireServerModule("GlobalMoneyFrenzyService")
-local LimitedCarsService = requireServerModule("LimitedCarsService")
-local GiftEntitlementService = requireServerModule("GiftEntitlementService")
 local STARTER_PACK_WALLET_CASH = 800000
-local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
-local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))
 
-local BANK_TRANSFER_USED_ATTR = "BankTransferLimitUsed"
-local BANK_TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
-
-local CAR_PRODUCT_IDS = {
-	[3524326648] = "Delta",
-	[3524327150] = "Iva",
-	[3524327478] = "Atom",
-	[3524327780] = "Windsor",
-	[3524328208] = "Senator",
-	[3524328713] = "Riva",
-	[3569674363] = "Clunker",
-	[3569675190] = "Rustix",
-	[3569675919] = "Breako",
-	[3569677174] = "Diva",
-	[3569678091] = "Hiva",
+local REROLL_BINDABLES = {
+	[SHOP_REROLL_ID] = "ShopRerollFunction",
+	[UNCOMMON_SHOP_REROLL_ID] = "UncommonShopRerollFunction",
+	[RARE_SHOP_REROLL_ID] = "RareShopRerollFunction",
+	[EPIC_SHOP_REROLL_ID] = "EpicShopRerollFunction",
 }
 
--- 🔵 UNCOMMON SHOP CONFIG
-local UNCOMMON_SHOP_REROLL_ID = 3555934441
-
-local UNCOMMON_CAR_PRODUCT_IDS = {
-	[3555929015] = "Raiju",
-	[3555929595] = "Ironclad",
-	[3555930076] = "Vapid",
-	[3555930681] = "Galadriel",
-	[3555931766] = "Kingston",
-	[3569681463] = "Vioz",
-	[3569682549] = "Yora",
-	[3569683032] = "Ricky",
-	[3569683706] = "Uber",
-	[3569699394] = "Blackhead",
-	[3569699739] = "Mia",
-}
-
--- 🟣 RARE SHOP CONFIG
-local RARE_SHOP_REROLL_ID = 3556132134
-
-local RARE_CAR_PRODUCT_IDS = {
-	[3556129501] = "Maverick",
-	[3556127982] = "Javelin",
-	[3556128765] = "Stuttgart",
-	[3556130011] = "Velocity",
-	[3556536171] = "Sadie", -- Sadie moved from Epic to Rare
-	[3569702085] = "Vipera",
-	[3569702417] = "Camara",
-	[3569702782] = "Corvo",
-}
-
--- 🟡 EPIC SHOP CONFIG
-local EPIC_SHOP_REROLL_ID = 3556540207
-
-local EPIC_CAR_PRODUCT_IDS = {
-	[3556537696] = "Sirene",
-	[3556538294] = "Vortex",
-	[3569704442] = "Razor",
-	[3569705950] = "Apollo",
-	[3569706897] = "Sovereign",
-	[3569707752] = "Classy",
-	[3569708179] = "Shaguar",
-}
-
--- 🔴 SKIP CRAFT TIME PRODUCT IDS
-local CAR_PRODUCT_INFO = {}
-for productId, productInfo in pairs(GiftProductRegistry.GetAllProducts()) do
-	if productInfo.Kind == "Car" then
-		CAR_PRODUCT_INFO[productId] = {
-			CarName = productInfo.CarName,
-			Rarity = productInfo.Rarity,
-			FeedbackRemoteName = productInfo.FeedbackRemoteName,
-		}
+local REBIRTH_PRODUCT_IDS = {}
+if RebirthConfig and type(RebirthConfig.SkipProductIds) == "table" then
+	for _, productId in pairs(RebirthConfig.SkipProductIds) do
+		if tonumber(productId) then REBIRTH_PRODUCT_IDS[tonumber(productId)] = true end
 	end
 end
 
-local LEGENDARY_SKIP_CRAFT_ID = 3573930334
-local MYTHICAL_SKIP_CRAFT_ID = 3573933156
+-- Populate this version-controlled registry when Creator Dashboard products
+-- are retired. Each entry should document its historical entitlement and be
+-- paired with an explicit reconciliation branch before deployment.
+local RETIRED_PRODUCTS = {}
 
-local TycoonFolder = Workspace:WaitForChild("Tycoons")
-
--- Bindable Functions Reference Setup
-local ShopRerollFunc = ServerStorage:WaitForChild("ShopRerollFunction", 30)
-local UncommonShopRerollFunc = ServerStorage:WaitForChild("UncommonShopRerollFunction", 30)
-local RareShopRerollFunc = ServerStorage:WaitForChild("RareShopRerollFunction", 30)
-local EpicShopRerollFunc = ServerStorage:WaitForChild("EpicShopRerollFunction", 30)
-
-local BindableFunctions = ReplicatedStorage:WaitForChild("BindableFunctions")
-local SkipLegendaryCraftFunc = BindableFunctions:WaitForChild("SkipLegendaryCraftFunction")
-local SkipMythicalCraftFunc = BindableFunctions:WaitForChild("SkipMythicalCraftFunction")
-
--- 📡 REMOTES SETUP
-local PadUnlockEvent = ReplicatedStorage:WaitForChild("PadUnlockEvent")
-local Remotes = ReplicatedStorage:WaitForChild("GiftRemotes")
-local NotifyGiftReceived = Remotes:WaitForChild("NotifyGiftReceived")
-
-local GlobalChatBroadcast = Remotes:WaitForChild("GlobalChatBroadcast", 10)
-local GiftPurchaseResult = Remotes:WaitForChild("GiftPurchaseResult", 10)
-
--- RemoteEvent must be directly inside ReplicatedStorage.
-local BankTimerResetFeedback = ReplicatedStorage:WaitForChild("BankTimerResetFeedback")
-
-local BaseSkinStats
-pcall(function()
-	BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats"))
-end)
-
--- ============================================================================
--- ⏱️ TIMEOUT UTILITY
--- ============================================================================
-local function safeInvoke(bindable, timeout, ...)
-	local args = table.pack(...)
-	local result = nil
-	local finished = false
-
-	task.spawn(function()
-		result = table.pack(pcall(function()
-			return bindable:Invoke(table.unpack(args, 1, args.n))
-		end))
-		finished = true
-	end)
-
-	local start = os.clock()
-	while not finished and (os.clock() - start) < timeout do
-		task.wait()
+local function validateProductRouteConfiguration()
+	local owners = {}
+	local function register(productId, owner)
+		productId = math.floor(tonumber(productId) or 0)
+		if productId <= 0 then return end
+		if owners[productId] then
+			error(string.format(
+				"[ReceiptRouter] Developer Product %d is routed by both %s and %s",
+				productId, owners[productId], owner
+			), 0)
+		end
+		owners[productId] = owner
 	end
 
-	if not finished then return false, "Timeout" end
-	if not result[1] then return false, result[2] end
+	if GiftProductRegistry and type(GiftProductRegistry.GetAllProducts) == "function" then
+		for productId, info in pairs(GiftProductRegistry.GetAllProducts()) do
+			register(productId, "GiftProductRegistry:" .. tostring(info.Kind))
+		end
+	end
+	register(TABLET_2X_ID, "Tablet2x")
+	register(SHOP_REROLL_ID, "CommonShopReroll")
+	register(UNCOMMON_SHOP_REROLL_ID, "UncommonShopReroll")
+	register(RARE_SHOP_REROLL_ID, "RareShopReroll")
+	register(EPIC_SHOP_REROLL_ID, "EpicShopReroll")
+	register(LEGENDARY_SKIP_CRAFT_ID, "LegendaryCraftSkip")
+	register(MYTHICAL_SKIP_CRAFT_ID, "MythicalCraftSkip")
+	register(BANK_TRANSFER_SKIP_ID, "BankTransferReset")
+	register(OFFLINE_10X_CLAIM_ID, "Offline10x")
+	register(STARTER_PACK_PRODUCT_ID, "StarterPack")
+	register(GlobalLuckConfig and GlobalLuckConfig.ProductId, "GlobalLuck")
+	register(GlobalMoneyFrenzyConfig and GlobalMoneyFrenzyConfig.ProductId, "GlobalMoneyFrenzy")
+	register(AdRewardsConfig and AdRewardsConfig.DEV_PRODUCT_ID, "RewardedAd")
+	for productId in pairs(REBIRTH_PRODUCT_IDS) do register(productId, "RebirthSkip") end
+	for productId, info in pairs(RETIRED_PRODUCTS) do
+		register(productId, "Retired:" .. tostring(type(info) == "table" and info.Entitlement or info))
+	end
+end
 
+validateProductRouteConfiguration()
+
+-- Unknown and documented-retired receipts are durably quarantined below so
+-- support has a recovery trail until an exact legacy handler is configured.
+local quarantineStore = DataStoreService:GetDataStore("UnroutedDeveloperProductReceipts_V1")
+
+local function adminInvoke(action, player, ...)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not api or not api:IsA("BindableFunction") then return false, nil, "TycoonAdminAPI unavailable" end
+	local args = table.pack(...)
+	local result = table.pack(pcall(function()
+		return api:Invoke(action, player, table.unpack(args, 1, args.n))
+	end))
+	if not result[1] then return false, nil, result[2] end
 	return true, table.unpack(result, 2, result.n)
 end
 
-local function fireGiftPurchaseResult(buyerPlayer, payload)
-	if GiftPurchaseResult and buyerPlayer and buyerPlayer.Parent then
-		GiftPurchaseResult:FireClient(buyerPlayer, payload)
-	end
+local function profileReceiptState(player, purchaseId)
+	local invokeOk, granted, message = adminInvoke("HasReceiptGrant", player, tostring(purchaseId))
+	if not invokeOk or granted == nil then return nil, message end
+	return granted == true
 end
 
-local function savePlayerNow(player, timeout)
-	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-	if not TycoonAdminAPI then
-		return false, "TycoonAdminAPI missing"
-	end
-
-	local invokeOk, saveOk, saveMessage = safeInvoke(TycoonAdminAPI, timeout or 10, "SaveNow", player)
-	if not invokeOk or saveOk ~= true then
-		return false, saveMessage or saveOk or "Save failed"
-	end
-
-	return true
+local function commitReceipt(player, receiptInfo, action, targetUserId, grantHash)
+	local invokeOk, committed, message = adminInvoke(
+		"CommitReceiptGrant", player, tostring(receiptInfo.PurchaseId), receiptInfo.ProductId,
+		action, targetUserId or player.UserId, grantHash
+	)
+	return invokeOk and committed == true, message
 end
 
-local function getPurchaseHistoryStore()
-	if ActivePurchaseHistory then return ActivePurchaseHistory end
-
-	for _, name in ipairs(PURCHASE_HISTORY_NAMES) do
-		local ok, store = pcall(function() return DataStoreService:GetDataStore(name) end)
-		if ok and store then
-			ActivePurchaseHistory = store
-			return ActivePurchaseHistory
-		end
-	end
-	return nil
+local function invokeBindable(name, ...)
+	local bindable = ServerStorage:FindFirstChild(name)
+	if not bindable or not bindable:IsA("BindableFunction") then return false, "Handler unavailable" end
+	local args = table.pack(...)
+	local result = table.pack(pcall(function()
+		return bindable:Invoke(table.unpack(args, 1, args.n))
+	end))
+	if not result[1] then return false, result[2] end
+	return true, table.unpack(result, 2, result.n)
 end
 
-
-
-local function isDeletedStoreError(err)
-	err = string.lower(tostring(err or ""))
-	return string.find(err, "data store is deleted", 1, true) ~= nil
+local function optionalRemote(folderName, remoteName)
+	local folder = ReplicatedStorage:FindFirstChild(folderName)
+	local remote = folder and folder:FindFirstChild(remoteName)
+	return remote and remote:IsA("RemoteEvent") and remote or nil
 end
 
-local function wasPurchaseProcessed(purchaseKey)
-	local store = getPurchaseHistoryStore()
-	if not store then return nil end
-
-	for attempt = 1, 3 do
-		local success, result = pcall(function() return store:GetAsync(purchaseKey) end)
-		if success then return result == true end
-
-		if isDeletedStoreError(result) then
-			local fallbackOk, fallbackStore = pcall(function() return DataStoreService:GetDataStore("PurchaseHistory_V2") end)
-			if fallbackOk and fallbackStore then
-				ActivePurchaseHistory = fallbackStore
-				store = ActivePurchaseHistory
-			else
-				return nil
-			end
-		else
-			task.wait(0.25 * attempt)
-		end
-	end
-	return nil
+local function fireGiftResult(buyer, payload)
+	local remote = optionalRemote("GiftRemotes", "GiftPurchaseResult")
+	if remote and buyer and buyer.Parent then remote:FireClient(buyer, payload) end
 end
 
-local function markPurchaseProcessed(purchaseKey)
-	local store = getPurchaseHistoryStore()
-	if not store then return false end
+local function notifyGiftQueued(buyer, intent, productInfo)
+	local serial = tonumber(buyer:GetAttribute("GiftPurchaseFeedbackSerial")) or 0
+	fireGiftResult(buyer, {
+		Success = true, ProductId = productInfo.ProductId,
+		ReceiverName = intent.ReceiverName, ReceiverUserId = intent.ReceiverUserId,
+		Message = "Gift delivery committed", FeedbackSerial = serial,
+	})
+end
 
-	local success, err = pcall(function()
-		store:UpdateAsync(purchaseKey, function(current) return true end)
+local function quarantine(receiptInfo, reason)
+	local key = tostring(receiptInfo.PlayerId) .. ":" .. tostring(receiptInfo.PurchaseId)
+	local ok = pcall(function()
+		quarantineStore:UpdateAsync(key, function(old)
+			old = type(old) == "table" and old or {
+				PlayerId = receiptInfo.PlayerId, ProductId = receiptInfo.ProductId,
+				PurchaseId = tostring(receiptInfo.PurchaseId), FirstSeenAt = os.time(), Attempts = 0,
+				FirstJobId = game.JobId, PlaceId = game.PlaceId,
+			}
+			old.Attempts = math.min(1000000, math.max(0, tonumber(old.Attempts) or 0) + 1)
+			old.LastSeenAt = os.time(); old.Reason = tostring(reason or "Unrouted")
+			old.LastJobId = game.JobId; old.PlaceId = game.PlaceId
+			return old
+		end)
 	end)
-
-	if not success then return false end
-	return true
+	warn(string.format(
+		"[ReceiptRouter] QUARANTINED buyer=%d product=%d purchase=%s reason=%s stored=%s",
+		receiptInfo.PlayerId, receiptInfo.ProductId, tostring(receiptInfo.PurchaseId),
+		tostring(reason), tostring(ok)
+	))
+	return PENDING
 end
 
--- ============================================================================
--- 🚗 HELPER: Give a car tool immediately upon purchase
--- ============================================================================
-local function giveCarTool(targetPlayer, carName, receiptInfo, isGift, buyerPlayer)
-	local CarTools = ServerStorage:FindFirstChild("CarTools")
-	local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName .. " Item", true))
-	if not tool then
-		warn("⚠️ Car Tool missing from ServerStorage: " .. carName)
-		return false
+local function recordRankCar(player, carName, rarity, purchaseId)
+	local api = ServerStorage:FindFirstChild("RankProgressAPI")
+	if api and api:IsA("BindableFunction") then
+		pcall(function() api:Invoke("CarObtained", player, carName, "Buy", rarity, tostring(purchaseId)) end)
 	end
+end
 
-	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-	if not TycoonAdminAPI then
-		warn("⚠️ TycoonAdminAPI missing!")
-		return false
-	end
-
-	local attributes = {
-		IssuedByServer = true,
-		IssuedAt = os.time(),
-		ToolId = tool.Name,
+local function grantCar(player, receiptInfo, productInfo)
+	local invokeOk, granted, message = adminInvoke("GiveTool", player, productInfo.CarName, {
 		BypassStorageLimit = true,
-		Source = isGift and "RobuxGift" or "RobuxPurchase",
-		ReceiptPurchaseId = receiptInfo.PurchaseId,
+		Source = "RobuxPurchase",
+		ReceiptPurchaseId = tostring(receiptInfo.PurchaseId),
 		ReceiptProductId = receiptInfo.ProductId,
-	}
-
-	if isGift and buyerPlayer then
-		attributes.GiftSenderUserId = buyerPlayer.UserId
-		attributes.GiftReceiverUserId = targetPlayer.UserId
+	})
+	if not invokeOk or granted ~= true then return false, message or granted end
+	local already = message == "Already granted"
+	if not already then recordRankCar(player, productInfo.CarName, productInfo.Rarity, receiptInfo.PurchaseId) end
+	local saveInvokeOk, saved, saveMessage = adminInvoke("SaveNow", player)
+	if not saveInvokeOk or saved ~= true then return false, saveMessage or "Car grant save failed" end
+	if productInfo.FeedbackRemoteName then
+		local remotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
+		local feedback = remotes and remotes:FindFirstChild(productInfo.FeedbackRemoteName)
+		if feedback and feedback:IsA("RemoteEvent") then
+			feedback:FireClient(player, productInfo.CarName)
+		else
+			warn("[ReceiptRouter] Missing optional car feedback remote " .. tostring(productInfo.FeedbackRemoteName))
+		end
 	end
-
-	local invokeOk, giveResult, giveMessage = safeInvoke(TycoonAdminAPI, 5, "GiveTool", targetPlayer, tool.Name, attributes)
-	if not invokeOk or giveResult ~= true then
-		return false, giveMessage or giveResult or "GiveTool failed"
-	end
-
-	local saveOk, saveMessage = savePlayerNow(targetPlayer, 12)
-	if not saveOk then
-		warn("Robux car save failed for " .. targetPlayer.Name .. ": " .. tostring(saveMessage))
-		return false, "Save failed"
-	end
-
-	return true, giveMessage == "Already granted" and "Already granted" or nil
-end
-
-local function grantCashPackWalletReward(player, receiptInfo, packInfo)
-	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-	if not TycoonAdminAPI then
-		warn("⚠️ Cash Pack grant failed: TycoonAdminAPI missing!")
-		return false
-	end
-
-	local invokeOk, grantOk, grantMsg = safeInvoke(
-		TycoonAdminAPI,
-		20,
-		"GrantWalletCashProduct",
-		player,
-		receiptInfo.PurchaseId,
-		receiptInfo.ProductId,
-		packInfo.WalletReward
-	)
-
-	if not invokeOk or grantOk ~= true then
-		warn("⚠️ Cash Pack grant failed for " .. player.Name .. ": " .. tostring(grantMsg or grantOk))
-		return false
-	end
-
-	local serial = (tonumber(player:GetAttribute("CashPackReceiptSerial")) or 0) + 1
-	player:SetAttribute("CashPackLastProductId", receiptInfo.ProductId)
-	player:SetAttribute("CashPackLastWalletReward", packInfo.WalletReward)
-	player:SetAttribute("CashPackReceiptSerial", serial)
 	return true
 end
 
-local function grantStarterPackRewards(player, purchaseId)
-	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-	if not TycoonAdminAPI then
-		warn("⚠️ Starter Pack grant failed: TycoonAdminAPI missing!")
-		return false
+local function routeGift(buyer, receiptInfo, productInfo)
+	if not GiftIntentStore or not GiftDeliveryService then return nil, "Gift services unavailable" end
+	local intentState, intent = GiftIntentStore.Get(buyer.UserId, receiptInfo.ProductId)
+	if intentState == "TemporarilyUnavailable" then return nil, "Gift intent store unavailable" end
+	if intentState ~= "Found" then
+		-- Only an authoritative no-intent result permits a dual-use product to
+		-- fall through to self-purchase. Invalid/expired state is ambiguous and
+		-- must remain pending for reconciliation instead of changing recipient.
+		if intentState ~= "ConfirmedNoIntent" then
+			return nil, "Gift intent is " .. tostring(intentState)
+		end
+		if productInfo.Kind == "GamePassGift" then return nil, "Gift-only product has no intent" end
+		return false -- ordinary self purchase
 	end
 
-	local invokeOk, grantOk, grantMsg = safeInvoke(
-		TycoonAdminAPI,
-		20,
-		"GrantStarterPack",
-		player,
-		purchaseId,
-		STARTER_PACK_CAR_NAME,
-		STARTER_PACK_WALLET_CASH
-	)
+	local bound, bindError = GiftIntentStore.BindReceipt(buyer.UserId, receiptInfo.ProductId, receiptInfo.PurchaseId)
+	if not bound then return nil, bindError end
+	if bound.ReceiverUserId == buyer.UserId then return nil, "Invalid self-targeted gift intent" end
 
-	if not invokeOk or grantOk ~= true then
-		warn("⚠️ Starter Pack grant failed for " .. player.Name .. ": " .. tostring(grantMsg or grantOk))
-		return false
+	if productInfo.Kind == "LimitedCar" then
+		local limitedService = getServerModule("LimitedCarsService")
+		if not limitedService then return nil, "Limited car handler unavailable" end
+		local finalized, finalMessage = limitedService.FinalizeQueuedGift(
+			receiptInfo, bound.ReceiverUserId, bound.ReceiverName
+		)
+		if not finalized then return nil, finalMessage end
 	end
 
-	return true
-end
-
-local function hasStarterPackDataGrant(player)
-	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-	if not TycoonAdminAPI then
-		return nil
-	end
-
-	local invokeOk, isGranted = safeInvoke(TycoonAdminAPI, 3, "HasStarterPackGrant", player)
-	if not invokeOk then
-		return nil
-	end
-
-	if isGranted == nil then
-		return nil
-	end
-
-	return isGranted == true
-end
-
-local function recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, rarity)
-	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
-	if not rankApi then return end
-
-	if isGift then
-		pcall(function()
-			rankApi:Invoke("CarGiftSent", buyerPlayer, targetPlayer, carName)
-		end)
-	else
-		pcall(function()
-			rankApi:Invoke("CarObtained", targetPlayer, carName, "Buy", rarity)
-		end)
-	end
-end
-
--- ============================================================================
--- 🎁 HELPER: Handle Car Purchase & Broadcasts
--- ============================================================================
-local function grantCarPurchase(buyerPlayer, targetPlayer, isGift, productInfo, receiptInfo)
-	local purchaseSuccess, grantMessage = giveCarTool(targetPlayer, productInfo.CarName, receiptInfo, isGift, buyerPlayer)
-	if not purchaseSuccess then
-		return false, grantMessage
-	end
-
-	return true, nil, {
-		ProductId = receiptInfo.ProductId,
-		CarName = productInfo.CarName,
-		Rarity = productInfo.Rarity,
-		FeedbackRemoteName = productInfo.FeedbackRemoteName,
-		IsGift = isGift,
-		BuyerPlayer = buyerPlayer,
-		TargetPlayer = targetPlayer,
-		AlreadyGranted = grantMessage == "Already granted",
-	}
-end
-
-local function runCarPostCommit(postCommit)
-	if not postCommit then return end
-
-	local buyerPlayer = postCommit.BuyerPlayer
-	local targetPlayer = postCommit.TargetPlayer
-	local carName = postCommit.CarName
-	local rarity = postCommit.Rarity
-	local isGift = postCommit.IsGift == true
-
-	recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, rarity)
-
-	local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
-	local feedbackRemote = ShopRemotes and postCommit.FeedbackRemoteName and ShopRemotes:FindFirstChild(postCommit.FeedbackRemoteName)
-
-	if isGift then
-		local buyerName = buyerPlayer.Name
-		local targetName = targetPlayer.Name
-
-		fireGiftPurchaseResult(buyerPlayer, {
-			Success = true,
-			ProductId = postCommit.ProductId,
-			CarName = carName,
-			Rarity = rarity,
-			ReceiverName = targetName,
-			ReceiverUserId = targetPlayer.UserId,
-		})
-
-		if feedbackRemote then
-			task.delay(0.5, function()
-				if buyerPlayer and buyerPlayer.Parent then
-					feedbackRemote:FireClient(buyerPlayer, carName, true, targetName, buyerName)
-				end
-			end)
-		end
-
-		if GlobalChatBroadcast then
-			GlobalChatBroadcast:FireAllClients({
-				Type = "CarGift",
-				SenderName = buyerName,
-				ReceiverName = targetName,
-				CarName = carName,
-				Rarity = rarity
-			})
-		end
-	else
-		if feedbackRemote then
-			feedbackRemote:FireClient(targetPlayer, carName, true)
-		end
-	end
-end
-
-local starterPackRemotes = ReplicatedStorage:WaitForChild("StarterPackRemotes")
-local checkStarterPackOwned = starterPackRemotes:WaitForChild("CheckOwned")
-
-checkStarterPackOwned.OnServerInvoke = function(player)
-	-- Single source of truth: the Starter Pack flag lives in TycoonDataHandler's
-	-- main player save data through TycoonAdminAPI.HasStarterPackGrant.
-	local dataGranted = hasStarterPackDataGrant(player)
-	if dataGranted == nil then
-		return nil
-	end
-
-	return dataGranted == true
-end
-
--- ============================================================================
--- 🧾 MAIN RECEIPT PROCESSOR
--- ============================================================================
-MarketplaceService.ProcessReceipt = function(receiptInfo)
-	local buyerId = receiptInfo.PlayerId
-	local buyerPlayer = Players:GetPlayerByUserId(buyerId)
-
-	if not buyerPlayer then
-		return Enum.ProductPurchaseDecision.NotProcessedYet
-	end
-
-	local pid = receiptInfo.ProductId
-	local carProductInfo = CAR_PRODUCT_INFO[pid]
-	local appearanceFound = BaseAppearanceConfig.GetByProductId(pid)
-	local skinFound = nil
-	if BaseSkinStats then
-		for name, data in pairs(BaseSkinStats) do
-			if data.ProductId == pid then
-				skinFound = name
-				break
-			end
-		end
-	end
-
-	local registeredGiftProduct = GiftProductRegistry.GetByProductId(pid)
-	local isGiftableProduct = registeredGiftProduct ~= nil and registeredGiftProduct.Giftable == true
-	local targetPlayer = buyerPlayer
-	local isGift = false
-	local giftReceiverId = nil
-	local consumeStaleGiftIntentAfterGrant = false
-	local giftFallbackMessage = nil
-	local giftIntentStatus = nil
-
-	if isGiftableProduct and _G.GetGiftIntent then
-		local giftIntent = nil
-		giftIntent, giftIntentStatus = _G.GetGiftIntent(buyerId, pid, false)
-		if giftIntent then
-			giftReceiverId = giftIntent.ReceiverUserId
-			local receiver = Players:GetPlayerByUserId(giftReceiverId)
-			if receiver and receiver ~= buyerPlayer then
-				targetPlayer = receiver
-				isGift = true
-			else
-				-- Never redirect a paid gift to the purchaser. Holding the receipt lets
-				-- Roblox retry safely when the original recipient rejoins.
-				return Enum.ProductPurchaseDecision.NotProcessedYet
-			end
-		elseif giftIntentStatus == "ProductMismatch" then
-			consumeStaleGiftIntentAfterGrant = true
-		end
-	elseif not isGiftableProduct and _G.GetGiftReceiver then
-		giftReceiverId = _G.GetGiftReceiver(buyerId, false)
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
-	end
-
-	local purchaseKey = buyerId .. "_" .. receiptInfo.PurchaseId
-	if activeReceiptLocks[purchaseKey] then
-		return Enum.ProductPurchaseDecision.NotProcessedYet
-	end
-
-	activeReceiptLocks[purchaseKey] = true
-	local function finish(decision)
-		activeReceiptLocks[purchaseKey] = nil
-		return decision
-	end
-
-	local alreadyProcessed = wasPurchaseProcessed(purchaseKey)
-
-	if alreadyProcessed == nil then
-		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-	end
-
-	if alreadyProcessed then
-		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
-	end
-
-	local limitedCarProductInfo = LimitedCarsConfig.GetProductByProductId(pid)
-	if limitedCarProductInfo and limitedCarProductInfo.ProductId > 0 then
-		local ok, message, alreadyGranted = LimitedCarsService.ProcessReceipt(receiptInfo, isGift and targetPlayer or nil)
-		LimitedCarsService.NotifyClient(buyerPlayer, ok and not alreadyGranted, message)
-		if ok then
-			if not markPurchaseProcessed(purchaseKey) then
-				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-			end
-			if isGift then
-				NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, limitedCarProductInfo.DisplayName)
-				fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
-				if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid) end
-			end
-			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
-		end
-		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-	end
-
-	if pid == GlobalLuckConfig.ProductId and GlobalLuckConfig.ProductId > 0 then
-		local ok, message, alreadyGranted = GlobalLuckService.ProcessReceipt(receiptInfo)
-		GlobalLuckService.NotifyClient(buyerPlayer, ok and not alreadyGranted, message)
-		if ok then
-			if not markPurchaseProcessed(purchaseKey) then
-				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-			end
-			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
-		end
-		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-	end
-
-	if pid == GlobalMoneyFrenzyConfig.ProductId and GlobalMoneyFrenzyConfig.ProductId > 0 then
-		local ok, message, alreadyGranted = GlobalMoneyFrenzyService.ProcessReceipt(receiptInfo)
-		GlobalMoneyFrenzyService.NotifyClient(buyerPlayer, ok and not alreadyGranted, message)
-		if ok then
-			if not markPurchaseProcessed(purchaseKey) then
-				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-			end
-			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
-		end
-		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-	end
-
-	local purchaseSuccess = false
-	local cashPackInfo = CashPackConfig.GetPackByProductId(pid)
-	local bankResetFeedback = nil
-	local offlinePremiumClientResult = nil
-	local adRewardClientResult = nil
-	local carPostCommit = nil
-
-	-- ─── REWARDED VIDEO AD ────────────────────────────────────────────────────
-	if cashPackInfo then
-		-- Cash Packs are repeatable developer products that grant Wallet cash only.
-		-- They use the universal gift target only when explicitly registered as giftable.
-		if not isGift then
-			targetPlayer = buyerPlayer
-			consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
-		end
-
-		purchaseSuccess = grantCashPackWalletReward(targetPlayer, receiptInfo, cashPackInfo)
-		if purchaseSuccess and isGift then
-			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, registeredGiftProduct.DisplayName or "Wallet Cash")
-			fireGiftPurchaseResult(buyerPlayer, {
-				Success = true,
-				ProductId = pid,
-				ReceiverName = targetPlayer.Name,
-				ReceiverUserId = targetPlayer.UserId,
-			})
-			if GlobalChatBroadcast then
-				GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> <b><font color='#FFD700'>%s</font></b>! 💸"):format(buyerPlayer.Name, targetPlayer.Name, registeredGiftProduct.DisplayName) })
-			end
-		end
-
-	elseif registeredGiftProduct and registeredGiftProduct.Kind == "GamePassGift" then
-		if not isGift then
-			-- Gift-only developer products are never awarded to their purchaser.
-			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-		end
-		local grantOk, grantMessage, wasNew = GiftEntitlementService.Grant(targetPlayer, registeredGiftProduct.PassKey, receiptInfo)
-		purchaseSuccess = grantOk
-		if grantOk then
-			local displayName = registeredGiftProduct.DisplayName
-			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, displayName)
-			fireGiftPurchaseResult(buyerPlayer, { Success = wasNew, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId, Message = wasNew and nil or (targetPlayer.Name .. " already owns this perk.") })
-			if wasNew and GlobalChatBroadcast then
-				GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> the <b><font color='#FFD700'>%s</font></b>! ✨"):format(buyerPlayer.Name, targetPlayer.Name, displayName) })
-			end
-		else
-			warn("[ReceiptRouter] Perk gift grant failed:", grantMessage)
-		end
-
-	elseif AdRewardsConfig.IsConfigured() and pid == AdRewardsConfig.DEV_PRODUCT_ID then
-		-- Rewarded ads are never giftable. Roblox requires the disclosed ad reward
-		-- to be a non-random developer product, so this grants fixed Wallet Cash.
-		isGift = false
-		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
-
-		local leaderstats = buyerPlayer:FindFirstChild("leaderstats")
-		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
-		if wallet then
-			wallet.Value += AdRewardsConfig.WALLET_CASH_AMOUNT
-			purchaseSuccess = true
-			adRewardClientResult = {
-				rewardName = AdRewardsConfig.SUCCESS_REWARD_NAME,
-				rewardColor = AdRewardsConfig.SUCCESS_REWARD_COLOR,
-			}
-		end
-
-	-- ─── BANK TRANSFER LIMIT SKIP ─────────────────────────────────────────────
-	elseif pid == BANK_TRANSFER_SKIP_ID then
-		-- This product should never be gifted. If a gift target was pending,
-		-- consume it only after the receipt is successfully granted/persisted.
-		isGift = false
-		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
-
-		local resetOk, resetErr = pcall(function()
-			buyerPlayer:SetAttribute(BANK_TRANSFER_USED_ATTR, 0)
-			buyerPlayer:SetAttribute(BANK_TRANSFER_RESET_AT_ATTR, 0)
-		end)
-
-		if resetOk then
-			purchaseSuccess = true
-			bankResetFeedback = {
-				success = true,
-				message = "Timer Reset Successful",
-			}
-		else
-			warn("⚠️ Bank timer reset failed: " .. tostring(resetErr))
-
-			if BankTimerResetFeedback then
-				BankTimerResetFeedback:FireClient(buyerPlayer, false, "Timer Reset Failed")
-			end
-		end
-
-	elseif pid == OFFLINE_10X_CLAIM_ID then
-		isGift = false
-		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
-
-		if _G.OfflineEarningsService and _G.OfflineEarningsService.TryGrantPremium then
-			local ok, payout, msg = _G.OfflineEarningsService.TryGrantPremium(buyerPlayer, receiptInfo.PurchaseId)
-			purchaseSuccess = ok or (msg == "You have already claimed your offline earnings.")
-			offlinePremiumClientResult = {
-				success = ok,
-				message = ok and "Claimed" or (msg or "You have already claimed your offline earnings."),
-				amount = ok and payout or 0,
-			}
-		end
-
-	elseif pid == STARTER_PACK_PRODUCT_ID then
-		isGift = false
-		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
-
-		-- Single source of truth: ownership is stored by TycoonDataHandler in the
-		-- player's main data record. Always route the receipt through GrantStarterPack
-		-- so retries force-save the receipt id without granting duplicate rewards.
-		purchaseSuccess = grantStarterPackRewards(buyerPlayer, receiptInfo.PurchaseId)
-
-		-- ─── REBIRTH SKIP PRODUCTS ────────────────────────────────────────────────
-	elseif RebirthConfig.SkipProductIds[math.floor(tonumber(targetPlayer:GetAttribute("Rebirth")) or 0)] == pid then
-		local currentRebirth = math.floor(tonumber(targetPlayer:GetAttribute("Rebirth")) or 0)
-		if currentRebirth < RebirthConfig.MAX_REBIRTH then
-			targetPlayer:SetAttribute("Rebirth", currentRebirth + 1)
-			targetPlayer:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(currentRebirth + 1))
-			purchaseSuccess = true
-		end
-
-		-- ─── 2X TABLET ───────────────────────────────────────────────────────────
-	elseif pid == TABLET_2X_ID then
-		local myPlotName = targetPlayer:GetAttribute("OccupiedPlot")
-		local plot = myPlotName and TycoonFolder:FindFirstChild(myPlotName)
-
-		if plot and plot:FindFirstChild("PendingEarnings") then
-			local pendingVal = plot.PendingEarnings
-			local amount = pendingVal.Value
-
-			if amount > 0 then
-				pendingVal.Value = 0
-
-				local hs = targetPlayer:FindFirstChild("HiddenStats")
-				if hs and hs:FindFirstChild("Cash") then
-					hs.Cash.Value += amount * 2
-				end
-			end
-
-			purchaseSuccess = true
-		end
-
-		-- ─── SHOP REROLLS ────────────────────────────────────────────────────────
-	elseif pid == SHOP_REROLL_ID then
-		if ShopRerollFunc then
-			local ok, result = safeInvoke(ShopRerollFunc, 5, targetPlayer)
-			purchaseSuccess = ok and result ~= false
-			if not purchaseSuccess then
-				warn("⚠️ ShopRerollFunction failed: " .. tostring(result))
-			end
-		end
-
-	elseif pid == UNCOMMON_SHOP_REROLL_ID then
-		if UncommonShopRerollFunc then
-			local ok, result = safeInvoke(UncommonShopRerollFunc, 5, targetPlayer)
-			purchaseSuccess = ok and result ~= false
-			if not purchaseSuccess then
-				warn("⚠️ UncommonShopRerollFunction failed: " .. tostring(result))
-			end
-		else
-			warn("⚠️ UncommonShopRerollFunction missing!")
-		end
-
-	elseif pid == RARE_SHOP_REROLL_ID then
-		if RareShopRerollFunc then
-			local ok, result = safeInvoke(RareShopRerollFunc, 5, targetPlayer)
-			purchaseSuccess = ok and result ~= false
-			if not purchaseSuccess then
-				warn("⚠️ RareShopRerollFunction failed: " .. tostring(result))
-			end
-		else
-			warn("⚠️ RareShopRerollFunction missing!")
-		end
-
-	elseif pid == EPIC_SHOP_REROLL_ID then
-		if EpicShopRerollFunc then
-			local ok, result = safeInvoke(EpicShopRerollFunc, 5, targetPlayer)
-			purchaseSuccess = ok and result ~= false
-			if not purchaseSuccess then
-				warn("⚠️ EpicShopRerollFunction failed: " .. tostring(result))
-			end
-		else
-			warn("⚠️ EpicShopRerollFunction missing!")
-		end
-
-		-- ─── 🟢 COMMON CAR ───────────────────────────────────────────────────────
-	elseif carProductInfo then
-		local grantMessage = nil
-		purchaseSuccess, grantMessage, carPostCommit = grantCarPurchase(buyerPlayer, targetPlayer, isGift, carProductInfo, receiptInfo)
-		if not purchaseSuccess then
-			warn("Robux car receipt grant failed:", tostring(grantMessage), "ProductId:", pid, "PurchaseId:", receiptInfo.PurchaseId)
-		end
-
-		-- ─── 🔵 UNCOMMON CAR ─────────────────────────────────────────────────────
-	elseif UNCOMMON_CAR_PRODUCT_IDS[pid] then
-		local carName = UNCOMMON_CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = false
-
-		-- ─── 🟣 RARE CAR ─────────────────────────────────────────────────────────
-	elseif RARE_CAR_PRODUCT_IDS[pid] then
-		local carName = RARE_CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = false
-
-		-- ─── 🟡 EPIC CAR ─────────────────────────────────────────────────────────
-	elseif EPIC_CAR_PRODUCT_IDS[pid] then
-		local carName = EPIC_CAR_PRODUCT_IDS[pid]
-		purchaseSuccess = false
-
-		-- ─── ⏩ SKIP CRAFT TIMES ─────────────────────────────────────────────────
-	elseif pid == LEGENDARY_SKIP_CRAFT_ID then
-		-- Craft skip products are account-specific and must never consume a
-		-- stale gift receiver. A delayed receipt should always complete the
-		-- buyer's own saved pending/active craft after they rejoin.
-		isGift = false
-		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
-
-		local ok, success, msg = safeInvoke(SkipLegendaryCraftFunc, 20, targetPlayer)
-		if ok and success then
-			purchaseSuccess = true
-		else
-			warn("⚠️ Legendary Craft Skip failed or no active craft: " .. tostring(msg))
-		end
-
-	elseif pid == MYTHICAL_SKIP_CRAFT_ID then
-		-- Craft skip products are account-specific and must never consume a
-		-- stale gift receiver. A delayed receipt should always complete the
-		-- buyer's own saved pending/active craft after they rejoin.
-		isGift = false
-		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
-
-		local ok, success, msg = safeInvoke(SkipMythicalCraftFunc, 20, targetPlayer)
-		if ok and success then
-			purchaseSuccess = true
-		else
-			warn("⚠️ Mythical Craft Skip failed or no active craft: " .. tostring(msg))
-		end
-
-		-- ─── 🏠 COSMETIC BASE APPEARANCE ─────────────────────────────────────────
-	elseif appearanceFound then
-		local baseSkinsAPI = ServerStorage:FindFirstChild("BaseSkinsAPI")
-		if baseSkinsAPI then
-			local ok, granted, wasNew = pcall(function()
-				return baseSkinsAPI:Invoke("Grant", targetPlayer, appearanceFound.Level, appearanceFound.SkinId)
-			end)
-			purchaseSuccess = ok and granted == true
-			if purchaseSuccess and isGift then
-				if wasNew then
-					local giftName = registeredGiftProduct and registeredGiftProduct.DisplayName or ("Level %d %s Base Skin"):format(appearanceFound.Level, appearanceFound.DisplayName)
-					NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, giftName)
-					fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
-					if GlobalChatBroadcast then GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> the <b><font color='#FFD700'>%s</font></b>! 💎 Generous friends build dream garages together!"):format(buyerPlayer.Name, targetPlayer.Name, giftName) }) end
-				else
-					fireGiftPurchaseResult(buyerPlayer, { Success = false, ProductId = pid, Message = targetPlayer.Name .. " already owns this Base Skin." })
-				end
-			end
-		end
-
-		-- ─── 🎨 BASE SKIN ────────────────────────────────────────────────────────
-	elseif skinFound then
-		local ownedRaw = targetPlayer:GetAttribute("OwnedBaseSkins") or "[]"
-		local ownedTable = {}
-
-		local decodeSuccess = pcall(function()
-			ownedTable = HttpService:JSONDecode(ownedRaw)
-		end)
-
-		if not decodeSuccess then
-			ownedTable = {}
-		end
-
-		if table.find(ownedTable, skinFound) then
-			warn("🛡️ Security: Blocked purchase! " .. targetPlayer.Name .. " already owns the " .. skinFound .. " pad.")
-			purchaseSuccess = true
-			if isGift then
-				fireGiftPurchaseResult(buyerPlayer, {
-					Success = false,
-					ProductId = pid,
-					Message = targetPlayer.Name .. " already owns this item.",
-				})
-			end
-		else
-			table.insert(ownedTable, skinFound)
-			targetPlayer:SetAttribute("OwnedBaseSkins", HttpService:JSONEncode(ownedTable))
-			targetPlayer:SetAttribute("EquippedSkin", skinFound)
-
-			purchaseSuccess = true
-
-			if PadUnlockEvent and not isGift then
-				PadUnlockEvent:FireClient(targetPlayer, true, skinFound .. " Base")
-			end
-
-			if isGift then
-				local giftName = registeredGiftProduct and registeredGiftProduct.DisplayName or skinFound
-				NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, giftName)
-				fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
-			end
-		end
-	end
-
-	-- ─── FINALIZE ─────────────────────────────────────────────────────────────
-	if purchaseSuccess then
-		if not markPurchaseProcessed(purchaseKey) then
-			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-		end
-
-		runCarPostCommit(carPostCommit)
-		if carPostCommit and giftFallbackMessage then
-			fireGiftPurchaseResult(buyerPlayer, {
-				Success = false,
-				ProductId = pid,
-				CarName = carPostCommit.CarName,
-				Rarity = carPostCommit.Rarity,
-				Message = giftFallbackMessage,
-				GrantedToBuyer = true,
-			})
-		end
-
-		local adRewardReceiptGranted = ServerStorage:FindFirstChild("AdRewardReceiptGranted")
-		if adRewardClientResult and adRewardReceiptGranted then
-			adRewardReceiptGranted:Fire(
-				buyerPlayer,
-				adRewardClientResult.rewardName,
-				adRewardClientResult.rewardColor
-			)
-		end
-
-		if offlinePremiumClientResult then
-			local folder = ReplicatedStorage:FindFirstChild("OfflineEarningsRemotes")
-			local resultEvent = folder and folder:FindFirstChild("OfflinePremiumClaimResult")
-			if resultEvent then
-				resultEvent:FireClient(
-					buyerPlayer,
-					offlinePremiumClientResult.success,
-					offlinePremiumClientResult.message,
-					offlinePremiumClientResult.amount
+	local queued, queueResult = GiftDeliveryService.Queue(bound, receiptInfo, productInfo)
+	if not queued then return nil, queueResult end
+	if productInfo.Kind == "Car" or productInfo.Kind == "LimitedCar" then
+		local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
+		if rankApi and rankApi:IsA("BindableFunction") then
+			pcall(function()
+				rankApi:Invoke(
+					"CarGiftQueued", buyer, bound.ReceiverUserId, productInfo.CarName,
+					tostring(receiptInfo.PurchaseId)
 				)
-			end
-		end
-
-		if _G.ClearGiftIntent then
-			if isGift and giftReceiverId then
-				_G.ClearGiftIntent(buyerId, pid)
-			elseif consumeStaleGiftIntentAfterGrant then
-				_G.ClearGiftIntent(buyerId)
-			end
-		elseif _G.GetGiftReceiver then
-			if (isGift and giftReceiverId) or consumeStaleGiftIntentAfterGrant then
-				_G.GetGiftReceiver(buyerId, true)
-			end
-		end
-
-		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-		if TycoonAdminAPI then
-			task.spawn(function()
-				safeInvoke(TycoonAdminAPI, 2, "MarkDirty", targetPlayer)
 			end)
 		end
+	end
+	local committed, commitError = commitReceipt(
+		buyer, receiptInfo, "GiftQueued", bound.ReceiverUserId,
+		string.format(
+			"Gift:%d:%s:%s", bound.ReceiverUserId,
+			tostring(bound.ReceiverName), tostring(productInfo.Kind)
+		)
+	)
+	if not committed then return nil, commitError end
+	local archived = GiftIntentStore.Complete(
+		buyer.UserId, receiptInfo.ProductId, receiptInfo.PurchaseId, "Queued"
+	)
+	if not archived then return nil, "Gift intent archival is unavailable" end
 
-		if bankResetFeedback and BankTimerResetFeedback then
-			BankTimerResetFeedback:FireClient(
-				buyerPlayer,
-				bankResetFeedback.success,
-				bankResetFeedback.message
-			)
-		end
+	local target = Players:GetPlayerByUserId(bound.ReceiverUserId)
+	if target then task.defer(function() GiftDeliveryService.DeliverForPlayer(target) end) end
+	notifyGiftQueued(buyer, bound, productInfo)
+	return true
+end
 
-		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
+local function bindPaidAction(receiptInfo, expectedAction)
+	if not PaidActionIntentStore then return nil, "Paid-action store unavailable" end
+	return PaidActionIntentStore.BindReceipt(
+		receiptInfo.PlayerId, receiptInfo.ProductId, receiptInfo.PurchaseId, expectedAction
+	)
+end
+
+local function completePaidAction(receiptInfo)
+	if not PaidActionIntentStore then return false end
+	return PaidActionIntentStore.Complete(
+		receiptInfo.PlayerId, receiptInfo.ProductId, receiptInfo.PurchaseId
+	)
+end
+
+local function isPaidActionProduct(productId)
+	return productId == OFFLINE_10X_CLAIM_ID
+		or productId == TABLET_2X_ID
+		or productId == LEGENDARY_SKIP_CRAFT_ID
+		or productId == MYTHICAL_SKIP_CRAFT_ID
+		or REBIRTH_PRODUCT_IDS[productId] == true
+end
+
+local function handleSelfPurchase(player, receiptInfo, productInfo)
+	local productId = receiptInfo.ProductId
+
+	local limitedInfo = LimitedCarsConfig and LimitedCarsConfig.GetProductByProductId(productId)
+	if limitedInfo then
+		local service = getServerModule("LimitedCarsService")
+		if not service then return false, "Limited car handler unavailable" end
+		local ok, message, already = service.ProcessReceipt(receiptInfo)
+		service.NotifyClient(player, ok and not already, message)
+		return ok, message
 	end
 
-	return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+	if GlobalLuckConfig and productId == GlobalLuckConfig.ProductId and productId > 0 then
+		local service = getServerModule("GlobalLuckService")
+		if not service then return false, "Global Luck handler unavailable" end
+		local ok, message, already = service.ProcessReceipt(receiptInfo)
+		if not ok then return false, message end
+		local committed, commitError = commitReceipt(player, receiptInfo, "GlobalLuck", player.UserId, tostring(productId))
+		if not committed then return false, commitError end
+		service.NotifyClient(player, not already, message)
+		return true
+	end
+
+	if GlobalMoneyFrenzyConfig and productId == GlobalMoneyFrenzyConfig.ProductId and productId > 0 then
+		local service = getServerModule("GlobalMoneyFrenzyService")
+		if not service then return false, "Money Frenzy handler unavailable" end
+		local ok, message, already = service.ProcessReceipt(receiptInfo)
+		if not ok then return false, message end
+		local committed, commitError = commitReceipt(player, receiptInfo, "GlobalMoneyFrenzy", player.UserId, tostring(productId))
+		if not committed then return false, commitError end
+		service.NotifyClient(player, not already, message)
+		return true
+	end
+
+	local cashPack = CashPackConfig and CashPackConfig.GetPackByProductId(productId)
+	if cashPack then
+		local invokeOk, granted, message = adminInvoke(
+			"GrantWalletCashProduct", player, tostring(receiptInfo.PurchaseId), productId, cashPack.WalletReward
+		)
+		return invokeOk and granted == true, message
+	end
+
+	if AdRewardsConfig and AdRewardsConfig.IsConfigured() and productId == AdRewardsConfig.DEV_PRODUCT_ID then
+		local invokeOk, granted, message = adminInvoke(
+			"GrantWalletCashProduct", player, tostring(receiptInfo.PurchaseId), productId,
+			AdRewardsConfig.WALLET_CASH_AMOUNT, "AdReward", false
+		)
+		if invokeOk and granted == true then
+			-- TycoonDataHandler publishes a replicated receipt serial only after the
+			-- matching value and receipt are durable, so early UI startup cannot lose it.
+			return true
+		end
+		return false, message
+	end
+
+	if productId == BANK_TRANSFER_SKIP_ID then
+		local oldUsed = player:GetAttribute("BankTransferLimitUsed")
+		local oldReset = player:GetAttribute("BankTransferLimitResetAt")
+		local oldCredits = player:GetAttribute("BankTransferSkipCredits")
+		local used = math.max(0, math.floor(tonumber(oldUsed) or 0))
+		local resetAt = math.max(0, math.floor(tonumber(oldReset) or 0))
+		local grantHash
+		if used > 0 and resetAt > os.time() then
+			player:SetAttribute("BankTransferLimitUsed", 0)
+			player:SetAttribute("BankTransferLimitResetAt", 0)
+			grantHash = "reset"
+		else
+			local credits = math.max(0, math.floor(tonumber(oldCredits) or 0))
+			player:SetAttribute("BankTransferSkipCredits", math.min(100, credits + 1))
+			grantHash = "credit"
+		end
+		local committed, message = commitReceipt(player, receiptInfo, "BankTransferReset", player.UserId, grantHash)
+		if not committed then
+			player:SetAttribute("BankTransferLimitUsed", oldUsed)
+			player:SetAttribute("BankTransferLimitResetAt", oldReset)
+			player:SetAttribute("BankTransferSkipCredits", oldCredits)
+			return false, message
+		end
+		local feedbackSerial = tonumber(player:GetAttribute("BankResetFeedbackSerial")) or 0
+		local feedbackMessage = player:GetAttribute("BankResetFeedbackMessage") or "Timer Reset Successful"
+		local feedback = ReplicatedStorage:FindFirstChild("BankTimerResetFeedback")
+		if feedback and feedback:IsA("RemoteEvent") then
+			feedback:FireClient(player, true, feedbackMessage, feedbackSerial)
+		end
+		return true
+	end
+
+	if productId == OFFLINE_10X_CLAIM_ID then
+		local intent, intentError = bindPaidAction(receiptInfo, "Offline10x")
+		if not intent or not PaidActionFulfillmentService then return false, intentError or "Offline action unavailable" end
+		local ok, amountOrError = PaidActionFulfillmentService.GrantOffline10x(player, receiptInfo, intent)
+		if not ok then return false, amountOrError end
+		if not completePaidAction(receiptInfo) then return false, "Paid-action completion is unavailable" end
+		local resultEvent = optionalRemote("OfflineEarningsRemotes", "OfflinePremiumClaimResult")
+		if resultEvent then resultEvent:FireClient(player, true, "Claimed", amountOrError) end
+		return true
+	end
+
+	if productId == TABLET_2X_ID then
+		local intent, intentError = bindPaidAction(receiptInfo, "Tablet2x")
+		if not intent or not PaidActionFulfillmentService then return false, intentError or "Tablet action unavailable" end
+		local ok, amountOrError = PaidActionFulfillmentService.GrantTablet2x(player, receiptInfo, intent)
+		if not ok then return false, amountOrError end
+		if not completePaidAction(receiptInfo) then return false, "Paid-action completion is unavailable" end
+		local tabletEvent = ReplicatedStorage:FindFirstChild("TabletEvent")
+		if tabletEvent and tabletEvent:IsA("RemoteEvent") then
+			tabletEvent:FireClient(
+				player, "PaidClaimResult", intent.Payload.PlotName, true, amountOrError,
+				tonumber(player:GetAttribute("TabletPaidReceiptSerial")) or 0
+			)
+		end
+		return true
+	end
+
+	if REBIRTH_PRODUCT_IDS[productId] then
+		local intent, intentError = bindPaidAction(receiptInfo, "RebirthSkip")
+		if not intent or not PaidActionFulfillmentService then return false, intentError or "Rebirth action unavailable" end
+		local ok, result = PaidActionFulfillmentService.GrantRebirthSkip(player, receiptInfo, intent)
+		if not ok then return false, result end
+		if not completePaidAction(receiptInfo) then return false, "Paid-action completion is unavailable" end
+		local refresh = optionalRemote("RebirthRemotes", "RefreshRebirthUI")
+		if refresh then refresh:FireClient(player, "Success", result) end
+		return true
+	end
+
+	if productId == STARTER_PACK_PRODUCT_ID then
+		local invokeOk, granted, message = adminInvoke(
+			"GrantStarterPack", player, tostring(receiptInfo.PurchaseId),
+			STARTER_PACK_CAR_NAME, STARTER_PACK_WALLET_CASH
+		)
+		return invokeOk and granted == true, message
+	end
+
+	local rerollBindable = REROLL_BINDABLES[productId]
+	if rerollBindable then
+		local invokeOk, rerolled, message = invokeBindable(
+			rerollBindable, player, tostring(receiptInfo.PurchaseId)
+		)
+		if not invokeOk or rerolled ~= true then return false, message or rerolled end
+		return commitReceipt(player, receiptInfo, "ShopReroll", player.UserId, rerollBindable)
+	end
+
+	if productId == LEGENDARY_SKIP_CRAFT_ID or productId == MYTHICAL_SKIP_CRAFT_ID then
+		local expectedAction = productId == LEGENDARY_SKIP_CRAFT_ID and "LegendaryCraftSkip" or "MythicalCraftSkip"
+		local intent, intentError = bindPaidAction(receiptInfo, expectedAction)
+		if not intent then return false, intentError end
+		local folder = ReplicatedStorage:FindFirstChild("BindableFunctions")
+		local functionName = productId == LEGENDARY_SKIP_CRAFT_ID and "SkipLegendaryCraftFunction" or "SkipMythicalCraftFunction"
+		local handler = folder and folder:FindFirstChild(functionName)
+		if not handler or not handler:IsA("BindableFunction") then return false, "Craft skip handler unavailable" end
+		local ok, granted, message = pcall(function()
+			return handler:Invoke(player, tostring(receiptInfo.PurchaseId), intent)
+		end)
+		if not ok or granted ~= true then return false, message or granted end
+		if not completePaidAction(receiptInfo) then return false, "Paid-action completion is unavailable" end
+		return true
+	end
+
+	if productInfo and productInfo.Kind == "Car" then
+		return grantCar(player, receiptInfo, productInfo)
+	end
+
+	if productInfo and productInfo.Kind == "BaseAppearance" then
+		local invokeOk, granted, message = adminInvoke(
+			"GrantBaseAppearanceProduct", player, tostring(receiptInfo.PurchaseId),
+			productId, productInfo.Level, productInfo.SkinId, "RobuxBaseAppearance"
+		)
+		return invokeOk and granted == true, message
+	end
+
+	if productInfo and productInfo.Kind == "BaseSkin" then
+		local invokeOk, granted, message = adminInvoke(
+			"GrantLegacyBaseSkinProduct", player, tostring(receiptInfo.PurchaseId),
+			productId, productInfo.SkinName, "RobuxBaseSkin"
+		)
+		return invokeOk and granted == true, message
+	end
+
+	if productInfo and productInfo.Kind == "GamePassGift" then
+		return false, "Gift-only product requires a bound recipient"
+	end
+
+	return nil, RETIRED_PRODUCTS[productId] and "Retired product" or "Unknown product"
+end
+
+local function routeUnderTransaction(receiptInfo)
+	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
+	if not player or player:GetAttribute("TycoonDataLoaded") ~= true
+		or player:GetAttribute("TycoonDataPhase") ~= "Ready"
+	then return PENDING end
+
+	local productInfo = GiftProductRegistry and GiftProductRegistry.GetByProductId(receiptInfo.ProductId) or nil
+	local receiptState = profileReceiptState(player, receiptInfo.PurchaseId)
+	if receiptState == nil then return PENDING end
+	if receiptState == true then
+		-- The car/profile save can succeed just before the limited-stock receipt
+		-- is marked Granted. Repair that second ledger before acknowledging the
+		-- retry so Processing records and their announcement are not stranded.
+		local limitedInfo = LimitedCarsConfig
+			and LimitedCarsConfig.GetProductByProductId(receiptInfo.ProductId)
+		if limitedInfo then
+			local service = getServerModule("LimitedCarsService")
+			if not service then return PENDING end
+			local reconciled, message, already = service.ProcessReceipt(receiptInfo)
+			if not reconciled then return PENDING end
+			if not already then service.NotifyClient(player, true, message) end
+		end
+		-- The value and profile receipt may have committed just before an intent
+		-- archival outage. Reconcile that metadata before acknowledging the retry,
+		-- otherwise a stale Bound intent could block every future purchase.
+		if isPaidActionProduct(receiptInfo.ProductId) then
+			if not completePaidAction(receiptInfo) then return PENDING end
+		end
+		if productInfo and productInfo.Giftable == true and GiftIntentStore then
+			local archived = GiftIntentStore.Complete(
+				player.UserId, receiptInfo.ProductId, receiptInfo.PurchaseId, "Queued"
+			)
+			if not archived then return PENDING end
+		end
+		return GRANTED
+	end
+
+	if productInfo and productInfo.Giftable == true then
+		local gifted, giftError = routeGift(player, receiptInfo, productInfo)
+		if gifted == true then return GRANTED end
+		if gifted == nil then
+			warn("[ReceiptRouter] Gift receipt pending: " .. tostring(giftError))
+			return PENDING
+		end
+	end
+
+	local handled, handleError = handleSelfPurchase(player, receiptInfo, productInfo)
+	if handled == true then return GRANTED end
+	if handled == nil then return quarantine(receiptInfo, handleError) end
+	if handleError then
+		warn(string.format(
+			"[ReceiptRouter] Receipt pending buyer=%d product=%d purchase=%s: %s",
+			receiptInfo.PlayerId, receiptInfo.ProductId, tostring(receiptInfo.PurchaseId), tostring(handleError)
+		))
+	end
+	return PENDING
+end
+
+routeReceipt = function(receiptInfo)
+	if type(receiptInfo) ~= "table" or tonumber(receiptInfo.PlayerId) == nil
+		or tonumber(receiptInfo.ProductId) == nil or receiptInfo.PurchaseId == nil
+	then return PENDING end
+	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
+	if not player or not Coordinator then return PENDING end
+	local decision = Coordinator.Run(player, "ProcessReceipt", function()
+		return routeUnderTransaction(receiptInfo)
+	end, 20)
+	return decision == GRANTED and GRANTED or PENDING
+end
+
+-- Starter Pack UI ownership remains a projection of the main profile flag.
+local starterFolder = ReplicatedStorage:FindFirstChild("StarterPackRemotes")
+local checkOwned = starterFolder and starterFolder:FindFirstChild("CheckOwned")
+if checkOwned and checkOwned:IsA("RemoteFunction") then
+	checkOwned.OnServerInvoke = function(player)
+		local invokeOk, granted = adminInvoke("HasStarterPackGrant", player)
+		return invokeOk and granted or nil
+	end
 end

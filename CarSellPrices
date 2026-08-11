@@ -15,9 +15,9 @@ local SELL_MULTIPLIER = 0.50 -- 50% of base price
 CarSellPrices.Prices = {}
 
 -- Initialize the sell prices based on CarStats
--- The dictionary key is populated with BOTH the real tool name (stats.Name) AND the fantasy name (carId)
--- so the player's equipped car can be looked up regardless of how the tool is named.
--- The Name property ALWAYS forces the fantasy name (carId) so the NPC dialogue speaks the correct lore name.
+-- Authoritative lookups are keyed only by immutable CarId/ToolId. Display names
+-- are presentation and are not unique (Ricky and Ironclad intentionally share
+-- "Toyota Hilux"), so accepting them here could select a random sell price.
 for carId, stats in pairs(CarStats.Cars) do
 	local priceStr = tostring(stats.Price or 0):gsub(",", "")
 	local priceVal = tonumber(priceStr)
@@ -27,16 +27,14 @@ for carId, stats in pairs(CarStats.Cars) do
 			Name = carId,
 			SellPrice = math.floor(priceVal * SELL_MULTIPLIER)
 		}
-		-- Map both possible tool names to the same details
 		CarSellPrices.Prices[carId] = details
-		CarSellPrices.Prices[stats.Name] = details
 	end
 end
 
 -- Centralized ID cleaning
 function CarSellPrices.CleanId(carId)
-	if not carId then return nil end
-	return carId:gsub(" Item", ""):gsub("Item", "")
+	if type(carId) ~= "string" then return nil end
+	return carId:gsub(" Item$", "")
 end
 
 -- Safely lookup car sell price and display name

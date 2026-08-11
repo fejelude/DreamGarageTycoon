@@ -11,6 +11,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage     = game:GetService("ServerStorage")
 local Players           = game:GetService("Players")
 local HttpService       = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local ServerScriptService = game:GetService("ServerScriptService")
+local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
+local PaidActionIntentStore = require(ServerScriptService:WaitForChild("PaidActionIntentStore"))
+local MutationRateLimiter = require(ServerScriptService:WaitForChild("MutationRateLimiter"))
 
 -- =========================
 -- LEGENDARY CONFIG (END-GAME RARITY)
@@ -81,30 +86,27 @@ local function hasRequiredRank(player)
 	return (RANK_VALUES[player:GetAttribute("Rank") or "Player"] or 0) >= (RANK_VALUES["MVP+"] or 0)
 end
 
+local function isNearShop(player)
+	local character = player and player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local npcs = workspace:FindFirstChild("NPCS")
+	local npc = npcs and npcs:FindFirstChild("Monk3yDAngelo-Cars")
+	local npcRoot = npc and npc:FindFirstChild("HumanoidRootPart")
+	return root ~= nil and npcRoot ~= nil and (root.Position - npcRoot.Position).Magnitude <= MAX_INTERACTION_DISTANCE
+end
+
 -- =========================
 -- REMOTES (ISOLATED)
 -- =========================
 local Remotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
-if not Remotes then
-	Remotes        = Instance.new("Folder")
-	Remotes.Name   = "ShopRemotes"
-	Remotes.Parent = ReplicatedStorage
-end
+if not Remotes or not Remotes:IsA("Folder") then error("[LegendaryShopService] Missing ReplicatedStorage > ShopRemotes", 0) end
 
 local LegendaryRemotes = Remotes:FindFirstChild("LegendaryShop")
-if not LegendaryRemotes then
-	LegendaryRemotes        = Instance.new("Folder")
-	LegendaryRemotes.Name   = "LegendaryShop"
-	LegendaryRemotes.Parent = Remotes
-end
+if not LegendaryRemotes or not LegendaryRemotes:IsA("Folder") then error("[LegendaryShopService] Missing ShopRemotes > LegendaryShop", 0) end
 
 local function getRemote(name, className)
 	local r = LegendaryRemotes:FindFirstChild(name)
-	if not r then
-		r        = Instance.new(className)
-		r.Name   = name
-		r.Parent = LegendaryRemotes
-	end
+	if not r or not r:IsA(className) then error("[LegendaryShopService] Missing LegendaryShop > " .. name .. " " .. className, 0) end
 	return r
 end
 
@@ -122,20 +124,18 @@ local FuncAcknowledge   = getRemote("AcknowledgeLegendaryCraft",   "RemoteFuncti
 -- BINDABLES
 -- =========================
 local PersistenceBindable = ServerStorage:FindFirstChild("LegendaryShopPersistenceFunction")
-if not PersistenceBindable then
-	PersistenceBindable        = Instance.new("BindableFunction")
-	PersistenceBindable.Name   = "LegendaryShopPersistenceFunction"
-	PersistenceBindable.Parent = ServerStorage
+if not PersistenceBindable or not PersistenceBindable:IsA("BindableFunction") then
+	error("[LegendaryShopService] Missing ServerStorage > LegendaryShopPersistenceFunction BindableFunction", 0)
 end
 
-local BindableFunctions = ReplicatedStorage:WaitForChild("BindableFunctions")
-local SkipCraftFunc = BindableFunctions:WaitForChild("SkipLegendaryCraftFunction")
+local BindableFunctions = ReplicatedStorage:FindFirstChild("BindableFunctions")
+if not BindableFunctions or not BindableFunctions:IsA("Folder") then error("[LegendaryShopService] Missing ReplicatedStorage > BindableFunctions", 0) end
+local SkipCraftFunc = BindableFunctions:FindFirstChild("SkipLegendaryCraftFunction")
+if not SkipCraftFunc or not SkipCraftFunc:IsA("BindableFunction") then error("[LegendaryShopService] Missing SkipLegendaryCraftFunction BindableFunction", 0) end
 
 local LegendaryInventoryBindable = ServerStorage:FindFirstChild("LegendaryCraftingInventoryFunction")
-if not LegendaryInventoryBindable then
-	LegendaryInventoryBindable        = Instance.new("BindableFunction")
-	LegendaryInventoryBindable.Name   = "LegendaryCraftingInventoryFunction"
-	LegendaryInventoryBindable.Parent = ServerStorage
+if not LegendaryInventoryBindable or not LegendaryInventoryBindable:IsA("BindableFunction") then
+	error("[LegendaryShopService] Missing ServerStorage > LegendaryCraftingInventoryFunction BindableFunction", 0)
 end
 
 -- FIX: Reference to Mythical persistence for cross-tier craft lock
@@ -165,24 +165,11 @@ end
 -- TIMEOUT UTILITY
 -- =========================
 local function safeInvoke(bindable, timeout, ...)
-	local args     = table.pack(...)
-	local result   = nil
-	local finished = false
-
-	task.spawn(function()
-		result = table.pack(pcall(function()
-			return bindable:Invoke(table.unpack(args, 1, args.n))
-		end))
-		finished = true
-	end)
-
-	local start = os.clock()
-	while not finished and (os.clock() - start) < timeout do
-		task.wait(0.05)
-	end
-
-	if not finished       then return false, "Timeout" end
-	if not result[1]      then return false, result[2] end
+	local args = table.pack(...)
+	local result = table.pack(pcall(function()
+		return bindable:Invoke(table.unpack(args, 1, args.n))
+	end))
+	if not result[1] then return false, result[2] end
 	return true, table.unpack(result, 2, result.n)
 end
 
@@ -219,12 +206,17 @@ local function queuePlayerSaveSoon(player)
 	return true
 end
 
-local function grantCraftReward(player, recipeCarName, realToolName, source)
-	return invokeInventory("GiveTool", player, realToolName, {
+local function grantCraftReward(player, recipeCarName, realToolName, source, receiptInfo)
+	local attributes = {
 		BypassStorageLimit = true,
 		Source = source,
 		CraftRecipe = recipeCarName,
-	})
+	}
+	if type(receiptInfo) == "table" then
+		attributes.ReceiptPurchaseId = tostring(receiptInfo.PurchaseId)
+		attributes.ReceiptProductId = receiptInfo.ProductId
+	end
+	return invokeInventory("GiveTool", player, realToolName, attributes)
 end
 
 -- =========================
@@ -243,9 +235,38 @@ local function getSession(player)
 			CompletedCrafts = {},
 			AwardedCrafts = {},
 			PendingPremiumCraft = nil,
+			PendingPremiumIntentId = nil,
 		}
 	end
 	return PlayerSessions[uid]
+end
+
+local function sanitizeCraftState(raw)
+	raw = type(raw) == "table" and raw or {}
+	local clean = {
+		CraftProgress = {}, ActiveCrafts = {}, CompletedCrafts = {}, AwardedCrafts = {},
+		PendingPremiumCraft = nil,
+	}
+	for carName, recipe in pairs(RECIPES) do
+		local rawProgress = type(raw.CraftProgress) == "table" and raw.CraftProgress[carName] or nil
+		local progress = {}
+		for ingredient, required in pairs(recipe) do
+			if ingredient ~= "TargetCar" and ingredient ~= "CraftTime" then
+				progress[ingredient] = math.clamp(math.floor(tonumber(rawProgress and rawProgress[ingredient]) or 0), 0, required)
+			end
+		end
+		clean.CraftProgress[carName] = progress
+		local activeEnd = type(raw.ActiveCrafts) == "table" and tonumber(raw.ActiveCrafts[carName]) or nil
+		if activeEnd and activeEnd > 0 then clean.ActiveCrafts[carName] = math.floor(activeEnd) end
+		local completedAt = type(raw.CompletedCrafts) == "table" and tonumber(raw.CompletedCrafts[carName]) or nil
+		if completedAt and completedAt > 0 then clean.CompletedCrafts[carName] = math.floor(completedAt) end
+		local awardedAt = type(raw.AwardedCrafts) == "table" and tonumber(raw.AwardedCrafts[carName]) or nil
+		if awardedAt and awardedAt > 0 then clean.AwardedCrafts[carName] = math.floor(awardedAt) end
+	end
+	if type(raw.PendingPremiumCraft) == "string" and RECIPES[raw.PendingPremiumCraft] then
+		clean.PendingPremiumCraft = raw.PendingPremiumCraft
+	end
+	return clean
 end
 
 local function buildStatePayload(session)
@@ -275,33 +296,19 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 		local session = getSession(player)
 
 		if type(data) == "table" then
-			if type(data.CraftProgress) == "table" then
-				session.CraftProgress = data.CraftProgress
-			end
-			if type(data.ActiveCrafts) == "table" then
-				session.ActiveCrafts = data.ActiveCrafts
-			end
-			if type(data.CompletedCrafts) == "table" then
-				session.CompletedCrafts = data.CompletedCrafts
-			end
-			if type(data.AwardedCrafts) == "table" then
-				session.AwardedCrafts = data.AwardedCrafts
-			end
-			if type(data.PendingPremiumCraft) == "string" and RECIPES[data.PendingPremiumCraft] then
-				session.PendingPremiumCraft = data.PendingPremiumCraft
-			else
-				session.PendingPremiumCraft = nil
-			end
-
-			session.CraftProgress["Neo-Periscopio"] = session.CraftProgress["Neo-Periscopio"] or {}
-			session.CraftProgress["Neo-Performante"] = session.CraftProgress["Neo-Performante"] or {}
-			session.CraftProgress["Neo-Zentorno"] = session.CraftProgress["Neo-Zentorno"] or {}
-			session.CraftProgress["Neo-Revuelto"] = session.CraftProgress["Neo-Revuelto"] or {}
-			session.CraftProgress["Yamura"]  = session.CraftProgress["Yamura"]  or {}
-			session.CraftProgress["LaRossa"] = session.CraftProgress["LaRossa"] or {}
+			local sanitized = sanitizeCraftState(data)
+			session.CraftProgress = sanitized.CraftProgress
+			session.ActiveCrafts = sanitized.ActiveCrafts
+			session.CompletedCrafts = sanitized.CompletedCrafts
+			session.AwardedCrafts = sanitized.AwardedCrafts
+			session.PendingPremiumCraft = sanitized.PendingPremiumCraft
 
 			print("✅ [LegendaryShop] Loaded progress for " .. player.Name)
 		end
+
+	elseif action == "HasActiveCraft" then
+		local session = getSession(player)
+		return next(session.ActiveCrafts) ~= nil or session.PendingPremiumCraft ~= nil
 
 	elseif action == "Get" then
 		local session = getSession(player)
@@ -321,12 +328,13 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 	end
 end
 
-local function recordRankCraft(player, carName)
+local function recordRankCraft(player, carName, operationId)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
-	if rankApi then
-		return pcall(function() rankApi:Invoke("CarObtained", player, carName, "Craft", nil) end)
-	end
-	return false
+	if not rankApi or not rankApi:IsA("BindableFunction") then return false end
+	local ok, result = pcall(function()
+		return rankApi:Invoke("CarObtained", player, carName, "Craft", nil, operationId)
+	end)
+	return ok and result == true
 end
 
 local function clearExpiredSacrificeConfirmations(uid)
@@ -374,6 +382,46 @@ local function consumeSacrificeConfirmation(player, carName, ingredient, token)
 	return confirmation.CarName == carName and confirmation.Ingredient == ingredient
 end
 
+local function validateMutationContext(player, action)
+	if not player or not player.Parent then return false, "Player missing" end
+	if player:GetAttribute("TycoonDataLoaded") ~= true then return false, "Player data is still loading" end
+	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
+	if not isNearShop(player) then return false, "Move closer to the Legendary shop" end
+	if not MutationRateLimiter.Allow(player, "LegendaryShop:" .. action, 5, 2) then
+		return false, "Please wait a moment"
+	end
+	return true
+end
+
+local function hasCrossTierCraft(player)
+	if not MythicalPersistenceBindable or not MythicalPersistenceBindable:IsA("BindableFunction") then return false end
+	local ok, active = safeInvoke(MythicalPersistenceBindable, 3, "HasActiveCraft", player)
+	return ok and active == true
+end
+
+local function preparePremiumIntent(player, carName, session)
+	local recipe = RECIPES[carName]
+	if not recipe then return false, "Invalid Legendary Car" end
+	local existing, lookupError = PaidActionIntentStore.GetPending(player.UserId, 3573930334, "LegendaryCraftSkip")
+	if existing == nil then return false, lookupError or "Paid-action intent unavailable" end
+	if existing then
+		if existing.Payload and existing.Payload.CarName == carName then
+			session.PendingPremiumIntentId = existing.IntentId
+			return true, existing.IntentId
+		end
+		return false, "Another premium craft purchase is unresolved"
+	end
+	local ok, intentId = PaidActionIntentStore.Create(player, 3573930334, "LegendaryCraftSkip", {
+		CarName = carName,
+		TargetCar = recipe.TargetCar,
+		OriginalEndTime = tonumber(session.ActiveCrafts[carName]) or 0,
+		Mode = session.ActiveCrafts[carName] and "ActiveCraft" or "PreparedCraft",
+	})
+	if not ok then return false, intentId or "Unable to prepare premium craft" end
+	session.PendingPremiumIntentId = intentId
+	return true, intentId
+end
+
 -- =========================
 -- CLIENT REQUESTS
 -- =========================
@@ -416,8 +464,8 @@ FuncPrepareSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	if typeof(carName) ~= "string" or typeof(ingredient) ~= "string" then
 		return false, "Invalid Request"
 	end
-	if not player or not player.Parent then return false, "Player missing" end
-	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
+	local contextOk, contextError = validateMutationContext(player, "PrepareSacrifice")
+	if not contextOk then return false, contextError end
 
 	local recipe = RECIPES[carName]
 	if not recipe              then return false, "Invalid Legendary Car" end
@@ -444,8 +492,8 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 	if typeof(carName) ~= "string" or typeof(ingredient) ~= "string" then
 		return false, "Invalid Request"
 	end
-	if not player or not player.Parent then return false, "Player missing" end
-	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
+	local contextOk, contextError = validateMutationContext(player, "Sacrifice")
+	if not contextOk then return false, contextError end
 
 	local recipe = RECIPES[carName]
 	if not recipe              then return false, "Invalid Legendary Car" end
@@ -457,6 +505,7 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 	InteractionLocks[uid] = true
 
 	local pOk, logicOk, msg = pcall(function()
+		return PlayerTransactionCoordinator.Run(player, "LegendarySacrifice", function()
 		if not consumeSacrificeConfirmation(player, carName, ingredient, confirmationToken) then
 			return false, "Sacrifice confirmation required."
 		end
@@ -520,6 +569,7 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 		pushUpdate(player, session, "Sacrifice")
 
 		return true, "Success"
+		end)
 	end)
 
 	InteractionLocks[uid] = nil
@@ -543,12 +593,11 @@ end
 -- =========================
 FuncRequestSkip.OnServerInvoke = function(player, carName)
 	if typeof(carName) ~= "string" then return false, "Invalid Request" end
-	if not player or not player.Parent then return false, "Player missing" end
+	local contextOk, contextError = validateMutationContext(player, "PrepareSkip")
+	if not contextOk then return false, contextError end
 
 	local recipe = RECIPES[carName]
 	if not recipe then return false, "Invalid Legendary Car" end
-
-	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
 
 	local uid = player.UserId
 	if InteractionLocks[uid] then return false, "Transaction in progress" end
@@ -556,6 +605,7 @@ FuncRequestSkip.OnServerInvoke = function(player, carName)
 	InteractionLocks[uid] = true
 
 	local pOk, logicOk, msg = pcall(function()
+		return PlayerTransactionCoordinator.Run(player, "PrepareLegendaryCraftSkip", function()
 		local session = getSession(player)
 
 		if session.CompletedCrafts[carName] then
@@ -566,8 +616,10 @@ FuncRequestSkip.OnServerInvoke = function(player, carName)
 			if session.PendingPremiumCraft ~= carName then
 				return false, "Another premium craft purchase is already pending"
 			end
+			local intentOk, intentResult = preparePremiumIntent(player, carName, session)
+			if not intentOk then return false, intentResult end
 			pushUpdate(player, session, "PendingPremium")
-			return true, "PendingPremium"
+			return true, "PendingPremium", intentResult
 		end
 
 		if not session.ActiveCrafts[carName] then
@@ -575,14 +627,18 @@ FuncRequestSkip.OnServerInvoke = function(player, carName)
 		end
 
 		session.PendingPremiumCraft = carName
+		local intentOk, intentResult = preparePremiumIntent(player, carName, session)
+		if not intentOk then session.PendingPremiumCraft = nil; return false, intentResult end
 		local saveOk, saveMessage = savePlayerNow(player)
 		if not saveOk then
+			PaidActionIntentStore.Cancel(player, 3573930334, intentResult)
 			session.PendingPremiumCraft = nil
 			return false, saveMessage or "Save failed. Premium skip was not prepared."
 		end
 
 		pushUpdate(player, session, "PendingPremium")
-		return true, "PendingPremium"
+		return true, "PendingPremium", intentResult
+		end)
 	end)
 
 	InteractionLocks[uid] = nil
@@ -597,14 +653,13 @@ end
 
 FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 	if typeof(carName) ~= "string" then return false, "Invalid Request" end
-	if not player or not player.Parent then return false, "Player missing" end
+	local contextOk, contextError = validateMutationContext(player, "Craft")
+	if not contextOk then return false, contextError end
 
 
 
 	local recipe = RECIPES[carName]
 	if not recipe then return false, "Invalid Legendary Car" end
-
-	if not hasRequiredRank(player) then return false, "Rank requirement not met" end
 
 	local uid = player.UserId
 	if InteractionLocks[uid] then return false, "Transaction in progress" end
@@ -612,9 +667,11 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 	InteractionLocks[uid] = true
 
 	local pOk, logicOk, msg = pcall(function()
+		return PlayerTransactionCoordinator.Run(player, "StartLegendaryCraft", function()
 		local session = getSession(player)
 
 		if next(session.ActiveCrafts) then return false, "Crafting already in progress!" end
+		if hasCrossTierCraft(player) then return false, "Another end-game craft is already in progress!" end
 
 		if session.CompletedCrafts[carName] then return false, "You already crafted this!"    end
 
@@ -623,7 +680,9 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 				return false, "Premium craft purchase already pending!"
 			end
 			if isPremiumRequest then
-				return true, "PendingPremium"
+				local intentOk, intentResult = preparePremiumIntent(player, carName, session)
+				if not intentOk then return false, intentResult end
+				return true, "PendingPremium", intentResult
 			end
 			session.PendingPremiumCraft = nil
 		end
@@ -640,13 +699,16 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 
 		if isPremiumRequest then
 			session.PendingPremiumCraft = carName
+			local intentOk, intentResult = preparePremiumIntent(player, carName, session)
+			if not intentOk then session.PendingPremiumCraft = nil; return false, intentResult end
 			local saveOk, saveMessage = savePlayerNow(player)
 			if not saveOk then
+				PaidActionIntentStore.Cancel(player, 3573930334, intentResult)
 				session.PendingPremiumCraft = nil
 				return false, saveMessage or "Save failed. Premium craft was not started."
 			end
 			pushUpdate(player, session, "PendingPremium")
-			return true, "PendingPremium"
+			return true, "PendingPremium", intentResult
 		end
 
 		session.ActiveCrafts[carName] = os.time() + recipe.CraftTime
@@ -657,12 +719,10 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 			return false, saveMessage or "Save failed. Craft was not started."
 		end
 
-		recordRankCraft(player, recipe.TargetCar)
-		savePlayerNow(player)
-
 		pushUpdate(player, session, "Craft")
 
 		return true, "Success"
+		end)
 	end)
 
 	InteractionLocks[uid] = nil
@@ -680,22 +740,33 @@ end
 -- =========================
 FuncAcknowledge.OnServerInvoke = function(player, carName)
 	if typeof(carName) ~= "string" then return false end
-	local session = getSession(player)
-	if session.CompletedCrafts[carName] then
-		session.CompletedCrafts[carName] = nil
-		pushUpdate(player, session, "Acknowledge")
-		savePlayerNow(player)
-		return true
-	end
-	return false
+	local contextOk = validateMutationContext(player, "Acknowledge")
+	if not contextOk then return false end
+	return PlayerTransactionCoordinator.Run(player, "AcknowledgeLegendaryCraft", function()
+		local session = getSession(player)
+		if session.CompletedCrafts[carName] then
+			session.CompletedCrafts[carName] = nil
+			pushUpdate(player, session, "Acknowledge")
+			return savePlayerNow(player)
+		end
+		return false
+	end)
 end
 
 -- =========================
 -- SKIP CRAFTING BINDABLE (FROM RECEIPT ROUTER)
 -- =========================
-SkipCraftFunc.OnInvoke = function(player)
+SkipCraftFunc.OnInvoke = function(player, purchaseId, intent)
 	if not player then return false, "No player provided" end
 	if not player.Parent then return false, "Player left before craft skip could be granted" end
+	if type(purchaseId) ~= "string" or purchaseId == ""
+		or type(intent) ~= "table" or intent.Action ~= "LegendaryCraftSkip"
+		or type(intent.Payload) ~= "table" or not RECIPES[intent.Payload.CarName]
+	then
+		return false, "Invalid Legendary craft intent"
+	end
+	local intendedCar = intent.Payload.CarName
+	local receiptInfo = { PurchaseId = purchaseId, ProductId = 3573930334 }
 
 	local uid = player.UserId
 	if InteractionLocks[uid] then
@@ -707,36 +778,58 @@ SkipCraftFunc.OnInvoke = function(player)
 	InteractionLocks[uid] = true
 
 	local pOk, logicOk, msg = pcall(function()
+		return PlayerTransactionCoordinator.Run(player, "GrantLegendaryCraftSkip", function()
 		local session = getSession(player)
 
-		if session.PendingPremiumCraft
-			and session.CompletedCrafts[session.PendingPremiumCraft]
-			and not session.ActiveCrafts[session.PendingPremiumCraft]
-		then
-			session.PendingPremiumCraft = nil
-			local saveOk, saveMessage = savePlayerNow(player)
-			if saveOk then
-				return true, "Already granted"
+		local receiptOk, alreadyGranted = invokeInventory("HasReceiptGrant", player, purchaseId)
+		if receiptOk and alreadyGranted == true then return true, "Already granted" end
+
+		local function grantCapturedRewardFallback(reason)
+			local recipe = RECIPES[intendedCar]
+			local invokeOk, giveResult, giveMessage = grantCraftReward(
+				player, intendedCar, recipe.TargetCar, "LegendaryCraftSkipFallback", receiptInfo
+			)
+			if not invokeOk or giveResult == false then
+				return false, giveMessage or giveResult or "System error granting paid craft fallback"
 			end
-			return false, saveMessage or "System error saving completed craft"
+			if session.PendingPremiumCraft == intendedCar then session.PendingPremiumCraft = nil end
+			recordRankCraft(player, recipe.TargetCar, tostring(purchaseId))
+			local saveOk, saveMessage = savePlayerNow(player)
+			if not saveOk then
+				-- Keep the receipt-tagged projection. A receipt retry saves the same
+				-- grant instead of producing another car.
+				return false, saveMessage or "System error saving paid craft fallback"
+			end
+			pushUpdate(player, session, "Skipped")
+			return true, reason
+		end
+
+		if session.PendingPremiumCraft == intendedCar
+			and session.CompletedCrafts[intendedCar]
+			and not session.ActiveCrafts[intendedCar]
+		then
+			return grantCapturedRewardFallback("Craft completed independently; equivalent car granted")
 		end
 
 		local activeCars = {}
-		if session.PendingPremiumCraft then
+		if session.PendingPremiumCraft == intendedCar then
 			table.insert(activeCars, {
-				CarName = session.PendingPremiumCraft,
+				CarName = intendedCar,
 				WasPendingPremium = true,
 				OriginalEndTime = nil,
 			})
 			session.PendingPremiumCraft = nil
+		elseif session.ActiveCrafts[intendedCar] then
+			table.insert(activeCars, {
+				CarName = intendedCar,
+				WasPendingPremium = false,
+				OriginalEndTime = session.ActiveCrafts[intendedCar],
+			})
 		else
-			for carName, endTime in pairs(session.ActiveCrafts) do
-				table.insert(activeCars, {
-					CarName = carName,
-					WasPendingPremium = false,
-					OriginalEndTime = endTime,
-				})
-			end
+			-- The immutable intent was validated before the prompt. If the original
+			-- job completed or its live projection disappeared before the delayed
+			-- receipt, the exact target car is the documented paid fallback.
+			return grantCapturedRewardFallback("Original craft unavailable; equivalent car granted")
 		end
 
 		local foundActive = false
@@ -755,17 +848,18 @@ SkipCraftFunc.OnInvoke = function(player)
 			local realToolName = recipe.TargetCar
 			local alreadyAwarded = session.AwardedCrafts[carName] ~= nil
 			session.AwardedCrafts[carName] = session.AwardedCrafts[carName] or os.time()
-			local invokeOk, giveResult, giveMessage = grantCraftReward(player, carName, realToolName, "LegendaryCraftSkip")
+			local invokeOk, giveResult, giveMessage = grantCraftReward(
+				player, carName, realToolName, "LegendaryCraftSkip", receiptInfo
+			)
 
 			if invokeOk and giveResult ~= false then
+				recordRankCraft(player, realToolName, tostring(purchaseId))
 				local saveOk, saveMessage = savePlayerNow(player)
 				if not saveOk then
 					warn("[LegendaryShop] Failed to save skipped " .. realToolName .. " for " .. player.Name .. ": " .. tostring(saveMessage))
+					-- Keep the in-memory state and receipt-tagged tool intact. A retry
+					-- force-saves the same state instead of granting a second car.
 					return false, saveMessage or "System error saving item"
-				end
-				if not alreadyAwarded then
-					recordRankCraft(player, realToolName)
-					savePlayerNow(player)
 				end
 				pushUpdate(player, session, "Skipped")
 				foundActive = true
@@ -785,23 +879,11 @@ SkipCraftFunc.OnInvoke = function(player)
 		end
 
 		if not foundActive then
-			for completedCar in pairs(session.CompletedCrafts) do
-				if RECIPES[completedCar] then
-					if session.PendingPremiumCraft == completedCar then
-						session.PendingPremiumCraft = nil
-					end
-					local saveOk, saveMessage = savePlayerNow(player)
-					if saveOk then
-						return true, "Already granted"
-					end
-					return false, saveMessage or "System error saving completed craft"
-				end
-			end
-
-			return false, grantFailureMessage or "No active crafts to skip"
+			return false, grantFailureMessage or "No matching craft to skip"
 		end
 
 		return true, "Success"
+		end)
 	end)
 
 	InteractionLocks[uid] = nil
@@ -813,6 +895,18 @@ SkipCraftFunc.OnInvoke = function(player)
 
 	return logicOk, msg
 end
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
+	if productId ~= 3573930334 or wasPurchased == true then return end
+	local player = Players:GetPlayerByUserId(userId)
+	local session = player and PlayerSessions[userId]
+	if not player or not session or not session.PendingPremiumIntentId then return end
+	PaidActionIntentStore.Cancel(player, productId, session.PendingPremiumIntentId)
+	session.PendingPremiumIntentId = nil
+	session.PendingPremiumCraft = nil
+	pushUpdate(player, session, "PremiumCancelled")
+	savePlayerNow(player)
+end)
 
 -- =========================
 -- OFFLINE COMPLETION / TIMER LOOP
@@ -829,6 +923,7 @@ task.spawn(function()
 
 			InteractionLocks[uid] = true
 			local pOk, err = pcall(function()
+				return PlayerTransactionCoordinator.Run(player, "CompleteLegendaryCraft", function()
 				local dirty = false
 
 				for carName, endTime in pairs(session.ActiveCrafts) do
@@ -848,7 +943,9 @@ task.spawn(function()
 
 					if invokeOk and giveResult ~= false then
 						if not alreadyAwarded then
-							recordRankCraft(player, realToolName)
+							recordRankCraft(player, realToolName, string.format(
+								"LegendaryCraft:%d:%s:%d", player.UserId, carName, endTime
+							))
 						end
 						savePlayerNow(player)
 						print("✅ [LegendaryShop] Granted " .. realToolName .. " to " .. player.Name)
@@ -869,6 +966,7 @@ task.spawn(function()
 					pushUpdate(player, session, "Complete")
 					savePlayerNow(player)
 				end
+				end)
 			end)
 
 			InteractionLocks[uid] = nil

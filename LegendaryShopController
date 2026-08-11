@@ -624,9 +624,7 @@ local function setFocusMode(active)
 	setBlur(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
-	if char then
-		player:SetAttribute("MovementLock", active)
-	end
+	player:SetAttribute("MovementLock", active and player.Character ~= nil)
 end
 
 local function closeShopUI(forceDialogueClose)

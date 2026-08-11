@@ -4,6 +4,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
+local HttpService = game:GetService("HttpService")
 
 local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI", 10)
 
@@ -50,15 +51,6 @@ local function canReceiveGift(player)
 	end)
 
 	return ok and allowed == true
-end
-
-local function recordGift(giver, receiver, carId)
-	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
-	if rankApi then
-		pcall(function()
-			rankApi:Invoke("CarGiftSent", giver, receiver, carId)
-		end)
-	end
 end
 
 local function isDataLoaded(player)
@@ -368,6 +360,7 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			Receiver = receiver,
 			CarId = tool.Name,
 			ToolId = getToolUniqueId(tool),
+			OperationId = HttpService:GenerateGUID(false),
 			Tool = tool,
 			State = "PendingGiver",
 			Timer = nil
@@ -516,8 +509,14 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			return
 		end
 
-		local success, transferOk, giverMessage, receiverMessage = pcall(function()
-			return TycoonAdminAPI:Invoke("TransferTool", session.Giver, player, session.Tool)
+		local success, transferOk, giverMessage, receiverMessage, deliveryStatus = pcall(function()
+			return TycoonAdminAPI:Invoke(
+				"TransferTool",
+				session.Giver,
+				player,
+				session.Tool,
+				session.OperationId
+			)
 		end)
 
 		if not success or not transferOk then
@@ -532,18 +531,16 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			return
 		end
 
-		recordGift(session.Giver, player, session.CarId)
-
 		sendGiverUpdate(
 			session.Giver,
 			"Success",
-			"Successfully sent a gift to " .. session.Receiver.DisplayName .. "!"
+			giverMessage or ("Successfully sent a gift to " .. session.Receiver.DisplayName .. "!")
 		)
 
 		sendReceiverUpdate(
 			player,
 			"Success",
-			"Car Added to Inventory!"
+			receiverMessage or (deliveryStatus == "Delivered" and "Car added to inventory!" or "Gift delivery is processing.")
 		)
 
 		clearSession(session)

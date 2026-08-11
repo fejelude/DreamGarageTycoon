@@ -1,0 +1,398 @@
+-- Purpose: Durable, replay-safe delivery queue for Developer Product gifts.
+-- The buyer's receipt may be acknowledged after this queue is committed even
+-- when the selected recipient is offline or active in another server.
+-- Runs on: Server (ModuleScript)
+-- Location: ServerScriptService > GiftDeliveryService
+
+local DataStoreService = game:GetService("DataStoreService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local GiftEntitlementService = require(ServerScriptService:WaitForChild("GiftEntitlementService"))
+local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
+local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
+
+local STORE = DataStoreService:GetDataStore("PendingRobuxGiftDeliveries_V2")
+local Service = {}
+local deliveryLocks = {}
+
+local MAX_ENTRIES_PER_PLAYER = 100
+local RETAIN_COMPLETED_SECONDS = 30 * 24 * 60 * 60
+
+local function keyFor(userId)
+	return "User_" .. tostring(math.floor(tonumber(userId) or 0))
+end
+
+local function finiteNumber(value, default)
+	value = tonumber(value)
+	if not value or value ~= value or value == math.huge or value == -math.huge then return default end
+	return value
+end
+
+local function sanitizeEntry(raw)
+	if type(raw) ~= "table" then return nil end
+	local purchaseId = type(raw.PurchaseId) == "string" and string.sub(raw.PurchaseId, 1, 160) or nil
+	local productId = math.floor(finiteNumber(raw.ProductId, 0))
+	local targetUserId = math.floor(finiteNumber(raw.TargetUserId, 0))
+	local buyerUserId = math.floor(finiteNumber(raw.BuyerUserId, 0))
+	if not purchaseId or purchaseId == "" or productId <= 0 or targetUserId <= 0 or buyerUserId <= 0 then return nil end
+	return {
+		PurchaseId = purchaseId,
+		ProductId = productId,
+		TargetUserId = targetUserId,
+		TargetName = type(raw.TargetName) == "string" and string.sub(raw.TargetName, 1, 80) or "Player",
+		BuyerUserId = buyerUserId,
+		BuyerName = type(raw.BuyerName) == "string" and string.sub(raw.BuyerName, 1, 80) or "Player",
+		IntentId = type(raw.IntentId) == "string" and string.sub(raw.IntentId, 1, 160) or nil,
+		Kind = type(raw.Kind) == "string" and string.sub(raw.Kind, 1, 60) or "DeveloperProduct",
+		DisplayName = type(raw.DisplayName) == "string" and string.sub(raw.DisplayName, 1, 120) or "Gift",
+		CarName = type(raw.CarName) == "string" and string.sub(raw.CarName, 1, 120) or nil,
+		PassKey = type(raw.PassKey) == "string" and string.sub(raw.PassKey, 1, 80) or nil,
+		SkinName = type(raw.SkinName) == "string" and string.sub(raw.SkinName, 1, 80) or nil,
+		SkinId = type(raw.SkinId) == "string" and string.sub(raw.SkinId, 1, 80) or nil,
+		Level = math.floor(finiteNumber(raw.Level, 0)),
+		WalletReward = math.max(0, math.floor(finiteNumber(raw.WalletReward, 0))),
+		Status = raw.Status == "Delivered" and "Delivered"
+			or (raw.Status == "FallbackQueued" and "FallbackQueued" or "Pending"),
+		QueuedAt = math.max(0, math.floor(finiteNumber(raw.QueuedAt, os.time()))),
+		DeliveredAt = math.max(0, math.floor(finiteNumber(raw.DeliveredAt, 0))),
+		IsFallback = raw.IsFallback == true,
+		FallbackReason = type(raw.FallbackReason) == "string" and string.sub(raw.FallbackReason, 1, 160) or nil,
+		OriginalTargetUserId = math.max(0, math.floor(finiteNumber(raw.OriginalTargetUserId, 0))),
+		OriginalPurchaseId = type(raw.OriginalPurchaseId) == "string"
+			and string.sub(raw.OriginalPurchaseId, 1, 160) or nil,
+	}
+end
+
+local function sanitizeLedger(raw)
+	local clean = { Entries = {}, UpdatedAt = os.time() }
+	if type(raw) ~= "table" or type(raw.Entries) ~= "table" then return clean end
+	local activeEntries = {}
+	local completedEntries = {}
+	for purchaseId, value in pairs(raw.Entries) do
+		local entry = sanitizeEntry(value)
+		if entry and purchaseId == entry.PurchaseId then
+			if entry.Status == "Pending" or entry.Status == "FallbackQueued" then
+				table.insert(activeEntries, entry)
+			elseif entry.DeliveredAt >= os.time() - RETAIN_COMPLETED_SECONDS then
+				table.insert(completedEntries, entry)
+			end
+		end
+	end
+	-- Never discard an undelivered paid entitlement merely to satisfy the
+	-- history cap. queueEntry rejects new work while this bounded queue is full.
+	for _, entry in ipairs(activeEntries) do clean.Entries[entry.PurchaseId] = entry end
+	table.sort(completedEntries, function(a, b) return a.DeliveredAt > b.DeliveredAt end)
+	local completedCapacity = math.max(0, MAX_ENTRIES_PER_PLAYER - #activeEntries)
+	for index, entry in ipairs(completedEntries) do
+		if index > completedCapacity then break end
+		clean.Entries[entry.PurchaseId] = entry
+	end
+	return clean
+end
+
+local function makeEntry(intent, receiptInfo, productInfo, targetUserId, targetName, isFallback, fallbackReason)
+	return sanitizeEntry({
+		PurchaseId = tostring(receiptInfo.PurchaseId),
+		ProductId = receiptInfo.ProductId,
+		TargetUserId = targetUserId,
+		TargetName = targetName,
+		BuyerUserId = intent.BuyerUserId,
+		BuyerName = intent.BuyerName,
+		IntentId = intent.IntentId,
+		Kind = productInfo.Kind,
+		DisplayName = productInfo.DisplayName,
+		CarName = productInfo.CarName,
+		PassKey = productInfo.PassKey,
+		SkinName = productInfo.SkinName,
+		SkinId = productInfo.SkinId,
+		Level = productInfo.Level,
+		WalletReward = productInfo.WalletReward,
+		Status = "Pending",
+		QueuedAt = os.time(),
+		IsFallback = isFallback == true,
+		FallbackReason = fallbackReason,
+	})
+end
+
+local function queueEntry(entry)
+	if not entry then return false, "Invalid gift delivery" end
+	local success, result = pcall(function()
+		return STORE:UpdateAsync(keyFor(entry.TargetUserId), function(old)
+			local ledger = sanitizeLedger(old)
+			local existing = ledger.Entries[entry.PurchaseId]
+			if existing then
+				if existing.TargetUserId ~= entry.TargetUserId or existing.ProductId ~= entry.ProductId then
+					return nil
+				end
+				return ledger
+			end
+			local activeCount = 0
+			for _, queued in pairs(ledger.Entries) do
+				if queued.Status == "Pending" or queued.Status == "FallbackQueued" then
+					activeCount += 1
+				end
+			end
+			if activeCount >= MAX_ENTRIES_PER_PLAYER then return nil end
+			ledger.Entries[entry.PurchaseId] = entry
+			ledger.UpdatedAt = os.time()
+			return ledger
+		end)
+	end)
+	if not success or type(result) ~= "table" or not result.Entries or not result.Entries[entry.PurchaseId] then
+		return false, "Gift delivery queue unavailable"
+	end
+	return true, entry
+end
+
+function Service.Queue(intent, receiptInfo, productInfo)
+	if type(intent) ~= "table" or type(receiptInfo) ~= "table" or type(productInfo) ~= "table" then
+		return false, "Invalid gift delivery request"
+	end
+	local entry = makeEntry(
+		intent,
+		receiptInfo,
+		productInfo,
+		intent.ReceiverUserId,
+		intent.ReceiverName,
+		false,
+		nil
+	)
+	return queueEntry(entry)
+end
+
+local function markStatus(userId, purchaseId, status)
+	local success = pcall(function()
+		STORE:UpdateAsync(keyFor(userId), function(old)
+			local ledger = sanitizeLedger(old)
+			local entry = ledger.Entries[purchaseId]
+			if not entry then return ledger end
+			entry.Status = status
+			if status == "Delivered" then entry.DeliveredAt = os.time() end
+			ledger.UpdatedAt = os.time()
+			return ledger
+		end)
+	end)
+	return success
+end
+
+local function queuePreferenceFallback(entry)
+	local fallback = table.clone(entry)
+	fallback.PurchaseId = entry.PurchaseId .. ":fallback"
+	fallback.TargetUserId = entry.BuyerUserId
+	fallback.TargetName = entry.BuyerName
+	fallback.IsFallback = true
+	fallback.FallbackReason = "Recipient disabled Receive Gifts before delivery"
+	fallback.OriginalTargetUserId = entry.TargetUserId
+	fallback.OriginalPurchaseId = entry.PurchaseId
+	fallback.Status = "Pending"
+	fallback.QueuedAt = os.time()
+	local ok = queueEntry(fallback)
+	if not ok then return false end
+	return markStatus(entry.TargetUserId, entry.PurchaseId, "FallbackQueued")
+end
+
+local function queueOwnershipFallback(entry)
+	local fallback = table.clone(entry)
+	fallback.PurchaseId = entry.PurchaseId .. ":fallback"
+	fallback.TargetUserId = entry.BuyerUserId
+	fallback.TargetName = entry.BuyerName
+	fallback.IsFallback = true
+	fallback.FallbackReason = "Selected recipient already owned the permanent perk"
+	fallback.OriginalTargetUserId = entry.TargetUserId
+	fallback.OriginalPurchaseId = entry.PurchaseId
+	fallback.Status = "Pending"
+	fallback.QueuedAt = os.time()
+	local ok = queueEntry(fallback)
+	if not ok then return false end
+	return markStatus(entry.TargetUserId, entry.PurchaseId, "FallbackQueued")
+end
+
+local function invokeAdmin(action, player, ...)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not api or not api:IsA("BindableFunction") then return false, "TycoonAdminAPI missing" end
+	local args = table.pack(...)
+	local ok, result, message = pcall(function()
+		return api:Invoke(action, player, table.unpack(args, 1, args.n))
+	end)
+	if not ok or result ~= true then return false, message or result or "Grant failed" end
+	return true, message
+end
+
+local function deliverEntry(player, entry)
+	if player.UserId ~= entry.TargetUserId or player:GetAttribute("TycoonDataLoaded") ~= true then
+		return false, "Target profile is not ready"
+	end
+	if not entry.IsFallback and player:GetAttribute("Setting_ReceiveGiftsEnabled") == false then
+		if queuePreferenceFallback(entry) then return true, "FallbackQueued" end
+		return false, "Unable to queue recipient-preference fallback"
+	end
+
+	local receiptInfo = {
+		PurchaseId = entry.PurchaseId,
+		ProductId = entry.ProductId,
+		PlayerId = entry.BuyerUserId,
+	}
+	local granted, grantMessage
+	if entry.Kind == "Car" or entry.Kind == "LimitedCar" then
+		granted, grantMessage = invokeAdmin("GiveTool", player, entry.CarName, {
+			BypassStorageLimit = true,
+			Source = entry.IsFallback and "RobuxGiftFallback" or "RobuxGift",
+			ReceiptPurchaseId = entry.PurchaseId,
+			ReceiptProductId = entry.ProductId,
+			GiftSenderUserId = entry.BuyerUserId,
+			GiftReceiverUserId = entry.TargetUserId,
+		})
+		if granted then
+			local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
+			if rankApi and rankApi:IsA("BindableFunction") then
+				pcall(function()
+					rankApi:Invoke(
+						"CarGiftReceived", player, entry.BuyerUserId, entry.CarName,
+						entry.PurchaseId
+					)
+				end)
+			end
+			granted, grantMessage = invokeAdmin("SaveNow", player)
+		end
+	elseif entry.Kind == "CashPack" then
+		granted, grantMessage = invokeAdmin(
+			"GrantWalletCashProduct",
+			player,
+			entry.PurchaseId,
+			entry.ProductId,
+			entry.WalletReward,
+			"RobuxGiftCash",
+			false
+		)
+	elseif entry.Kind == "GamePassGift" then
+		if player:GetAttribute("GamePassOwnershipReady") ~= true then
+			return false, "Permanent-perk ownership is not ready"
+		end
+		local registered = GiftProductRegistry.GetByProductId(entry.ProductId)
+		local ownershipAttribute = registered and registered.OwnershipAttribute
+		local alreadyOwns = type(ownershipAttribute) == "string"
+			and player:GetAttribute(ownershipAttribute) == true
+		if alreadyOwns then
+			if not entry.IsFallback then
+				if queueOwnershipFallback(entry) then return true, "FallbackQueued" end
+				return false, "Unable to queue already-owned perk fallback"
+			end
+			if entry.WalletReward <= 0 then return false, "Permanent-perk fallback is not configured" end
+			granted, grantMessage = invokeAdmin(
+				"GrantWalletCashProduct", player, entry.PurchaseId, entry.ProductId,
+				entry.WalletReward, "GamePassGiftFallback", false
+			)
+			return granted == true, grantMessage
+		end
+		local wasNew, alreadySameReceipt
+		granted, grantMessage, wasNew, alreadySameReceipt = GiftEntitlementService.Grant(player, entry.PassKey, receiptInfo)
+		if granted and not wasNew and not alreadySameReceipt then
+			if not entry.IsFallback then
+				if queueOwnershipFallback(entry) then return true, "FallbackQueued" end
+				return false, "Unable to queue already-owned perk fallback"
+			end
+			if entry.WalletReward <= 0 then return false, "Permanent-perk fallback is not configured" end
+			granted, grantMessage = invokeAdmin(
+				"GrantWalletCashProduct", player, entry.PurchaseId, entry.ProductId,
+				entry.WalletReward, "GamePassGiftFallback", false
+			)
+			return granted == true, grantMessage
+		end
+		if granted then
+			granted, grantMessage = invokeAdmin(
+				"CommitReceiptGrant", player, entry.PurchaseId, entry.ProductId,
+				"GiftedGamePass", entry.TargetUserId, entry.PassKey
+			)
+		end
+	elseif entry.Kind == "BaseAppearance" then
+		granted, grantMessage = invokeAdmin(
+			"GrantBaseAppearanceProduct", player, entry.PurchaseId, entry.ProductId,
+			entry.Level, entry.SkinId, "RobuxGiftBaseAppearance"
+		)
+	elseif entry.Kind == "BaseSkin" then
+		granted, grantMessage = invokeAdmin(
+			"GrantLegacyBaseSkinProduct", player, entry.PurchaseId, entry.ProductId,
+			entry.SkinName, "RobuxGiftBaseSkin"
+		)
+	else
+		return false, "Unsupported gift entitlement kind: " .. tostring(entry.Kind)
+	end
+	return granted == true, grantMessage
+end
+
+local function notifyDelivered(player, entry)
+	local serial = (tonumber(player:GetAttribute("GiftDeliveryNotificationSerial")) or 0) + 1
+	player:SetAttribute("GiftDeliveryNotificationBuyer", entry.BuyerName)
+	player:SetAttribute("GiftDeliveryNotificationProduct", entry.DisplayName)
+	player:SetAttribute("GiftDeliveryNotificationKind", entry.Kind)
+	player:SetAttribute("GiftDeliveryNotificationFallback", entry.IsFallback == true)
+	player:SetAttribute("GiftDeliveryNotificationSerial", serial)
+
+	local folder = ReplicatedStorage:FindFirstChild("GiftRemotes")
+	local remote = folder and folder:FindFirstChild("NotifyGiftReceived")
+	if remote and remote:IsA("RemoteEvent") then
+		remote:FireClient(
+			player, entry.BuyerName, entry.DisplayName, entry.Kind,
+			entry.IsFallback == true, serial
+		)
+	else
+		warn("[GiftDeliveryService] NotifyGiftReceived RemoteEvent is unavailable; attribute replay remains active")
+	end
+end
+
+function Service.DeliverForPlayer(player)
+	if not player or not player.Parent or player:GetAttribute("TycoonDataLoaded") ~= true then return false end
+	if deliveryLocks[player.UserId] then return false end
+	deliveryLocks[player.UserId] = true
+
+	local ok, result = xpcall(function()
+		local readOk, raw = pcall(function() return STORE:GetAsync(keyFor(player.UserId)) end)
+		if not readOk then return false end
+		local ledger = sanitizeLedger(raw)
+		local pending = {}
+		for _, entry in pairs(ledger.Entries) do
+			if entry.Status == "Pending" then table.insert(pending, entry) end
+		end
+		table.sort(pending, function(a, b) return a.QueuedAt < b.QueuedAt end)
+		for _, entry in ipairs(pending) do
+			local delivered, status = PlayerTransactionCoordinator.Run(player, "DeliverRobuxGift", function()
+				return deliverEntry(player, entry)
+			end)
+			if delivered then
+				if status ~= "FallbackQueued" then
+					local originMarked = true
+					if entry.IsFallback and entry.OriginalTargetUserId > 0 and entry.OriginalPurchaseId then
+						originMarked = markStatus(
+							entry.OriginalTargetUserId, entry.OriginalPurchaseId, "Delivered"
+						)
+					end
+					-- If either write fails, leave this entry pending. The value grant is
+					-- receipt-idempotent, so reconciliation can safely retry the metadata.
+					if originMarked then
+						local deliveryMarked = markStatus(player.UserId, entry.PurchaseId, "Delivered")
+						if deliveryMarked then notifyDelivered(player, entry) end
+					end
+				end
+			else
+				warn(string.format(
+					"[GiftDeliveryService] Delivery pending: buyer=%d target=%d product=%d purchase=%s error=%s",
+					entry.BuyerUserId, entry.TargetUserId, entry.ProductId, entry.PurchaseId, tostring(status)
+				))
+			end
+		end
+		return true
+	end, debug.traceback)
+
+	deliveryLocks[player.UserId] = nil
+	if not ok then warn("[GiftDeliveryService] " .. tostring(result)); return false end
+	return result
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	deliveryLocks[player.UserId] = nil
+end)
+
+return Service

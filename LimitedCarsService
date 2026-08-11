@@ -2,12 +2,16 @@
 -- Purpose: Server-authoritative reservations, stock, receipt finalization, and purchase announcements for Neo Performante.
 
 local DataStoreService = game:GetService("DataStoreService")
+local HttpService = game:GetService("HttpService")
 local MessagingService = game:GetService("MessagingService")
+local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local Config = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
+local MutationRateLimiter = require(ServerScriptService:WaitForChild("MutationRateLimiter"))
 local Product = Config.GetDefaultProduct()
 
 local remotes = ReplicatedStorage:WaitForChild("LimitedCarsRemotes")
@@ -22,6 +26,8 @@ local GlobalChatBroadcast = GiftRemotes:WaitForChild("GlobalChatBroadcast")
 
 local stateStore = DataStoreService:GetDataStore(Product.StateStoreName)
 local currentState = nil
+local lastStateReadAt = -math.huge
+local STATE_CACHE_SECONDS = 5
 local localReservations = {}
 local seenAnnouncements = {}
 local PUBLISH_RETRY_DELAYS = { 0, 1, 3, 7 }
@@ -40,8 +46,14 @@ local function sanitize(raw)
 	state.Receipts = type(state.Receipts) == "table" and state.Receipts or {}
 	state.AnnouncedReceipts = type(state.AnnouncedReceipts) == "table" and state.AnnouncedReceipts or {}
 	state.UpdatedAt = tonumber(state.UpdatedAt) or now()
+	state.Revision = math.max(0, math.floor(tonumber(state.Revision) or 0))
 	for key, res in pairs(state.Reservations) do
-		if type(res) ~= "table" or res.ProductId ~= Product.ProductId or res.State ~= "Reserved" or (tonumber(res.ExpiresAt) or 0) <= now() then
+		if type(res) ~= "table" or res.ProductId ~= Product.ProductId
+			or (res.State ~= "Reserved" and res.State ~= "AwaitingReceipt")
+			-- AwaitingReceipt is a paid allocation and must not age out on a
+			-- browsing TTL. Only clearly unpurchased Reserved entries expire.
+			or (res.State == "Reserved" and (tonumber(res.ExpiresAt) or 0) <= now())
+		then
 			state.Reservations[key] = nil
 		end
 	end
@@ -57,7 +69,11 @@ end
 
 local function publicState(state)
 	state = sanitize(state or currentState)
-	return { Remaining = remainingFromState(state), MaxStock = Product.MaxGlobalStock, ProductId = Product.ProductId, CarId = Product.CarId, ServerTime = now() }
+	return {
+		Remaining = remainingFromState(state), MaxStock = Product.MaxGlobalStock,
+		ProductId = Product.ProductId, CarId = Product.CarId, ServerTime = now(),
+		Revision = state.Revision, UpdatedAt = state.UpdatedAt,
+	}
 end
 
 local function publishState(payload)
@@ -86,19 +102,34 @@ local function updateState(mutator)
 				local state = sanitize(old)
 				local nextState = mutator(state)
 				if nextState == nil then return nil end
+				nextState.Revision = math.max(0, math.floor(tonumber(state.Revision) or 0)) + 1
 				nextState.UpdatedAt = now()
 				return nextState
 			end)
 		end)
-		if ok then currentState = sanitize(out); publishState(publicState(currentState)); return true, currentState end
+		if ok then
+			currentState = sanitize(out)
+			lastStateReadAt = os.clock()
+			publishState(publicState(currentState))
+			return true, currentState
+		end
 		task.wait(0.25 * attempt)
 	end
 	return false, out
 end
 
-function Service.GetState()
+function Service.GetState(forceRefresh)
+	if currentState and forceRefresh ~= true and os.clock() - lastStateReadAt < STATE_CACHE_SECONDS then
+		return publicState(currentState)
+	end
+	if not MutationRateLimiter.AllowGlobal("LimitedCarsStateRead", 2, 0.2) then
+		return publicState(currentState or sanitize(nil))
+	end
 	local ok, data = pcall(function() return stateStore:GetAsync(Product.StateKey) end)
-	if ok then currentState = sanitize(data) end
+	if ok then
+		currentState = sanitize(data)
+		lastStateReadAt = os.clock()
+	end
 	currentState = currentState or sanitize(nil)
 	return publicState(currentState)
 end
@@ -106,24 +137,63 @@ end
 function Service.Reserve(player)
 	if not player or not player.Parent then return false, "Player unavailable", Service.GetState() end
 	local key = reserveKey(player)
+	local reservationId = HttpService:GenerateGUID(false)
 	local reserved = false
+	local reserveMessage = "Out Of Stock"
 	local ok = updateState(function(state)
-		if state.Reservations[key] then reserved = true; state.Reservations[key].ExpiresAt = now() + Config.ReservationSeconds; return state end
-		if remainingFromState(state) <= 0 then reserved = false; return state end
-		state.Reservations[key] = { State = "Reserved", UserId = player.UserId, Username = player.Name, ProductId = Product.ProductId, ReservedAt = now(), ExpiresAt = now() + Config.ReservationSeconds }
+		-- The datastore transform can be retried; only expose the result of its
+		-- final invocation to the caller.
+		reserved = false
+		reserveMessage = "Out Of Stock"
+		local existing = state.Reservations[key]
+		if existing then
+			if existing.State == "AwaitingReceipt" then
+				reserveMessage = "Previous purchase is awaiting its receipt"
+				return state
+			end
+			if localReservations[player.UserId] == existing.ReservationId then
+				reserved = true
+				reserveMessage = "Reserved"
+				reservationId = existing.ReservationId
+				existing.ExpiresAt = math.max(existing.ExpiresAt or 0, now() + Config.ReservationSeconds)
+				return state
+			end
+			-- A reconnect/new server rotates the version while retaining the same
+			-- stock allocation. Delayed cleanup from the old server can now remove
+			-- only its obsolete token.
+			state.Reservations[key] = nil
+		end
+		if remainingFromState(state) <= 0 then reserved = false; reserveMessage = "Out Of Stock"; return state end
+		state.Reservations[key] = { State = "Reserved", ReservationId = reservationId, UserId = player.UserId, Username = player.Name, ProductId = Product.ProductId, ReservedAt = now(), ExpiresAt = now() + Config.ReservationSeconds }
 		reserved = true
+		reserveMessage = "Reserved"
 		return state
 	end)
-	if reserved then localReservations[player.UserId] = true end
-	return ok and reserved, reserved and "Reserved" or "Out Of Stock", Service.GetState()
+	if reserved then localReservations[player.UserId] = reservationId end
+	return ok and reserved, reserveMessage, Service.GetState(), reserved and reservationId or nil
 end
 
-function Service.ReleaseReservation(userId)
+function Service.ReleaseReservation(userId, reservationId)
 	local key = tostring(userId) .. "_" .. tostring(Product.ProductId)
+	if reservationId and localReservations[userId] ~= reservationId then return false end
 	localReservations[userId] = nil
 	updateState(function(state)
 		local res = state.Reservations[key]
-		if res and res.State == "Reserved" then state.Reservations[key] = nil end
+		if res and res.State == "Reserved" and (not reservationId or res.ReservationId == reservationId) then state.Reservations[key] = nil end
+		return state
+	end)
+	return true
+end
+
+function Service.MarkAwaitingReceipt(userId, reservationId)
+	local key = tostring(userId) .. "_" .. tostring(Product.ProductId)
+	return updateState(function(state)
+		local res = state.Reservations[key]
+		if res and res.ReservationId == reservationId and res.State == "Reserved" then
+			res.State = "AwaitingReceipt"
+			res.ExpiresAt = now() + 45 * 24 * 60 * 60
+			res.PromptPurchasedAt = now()
+		end
 		return state
 	end)
 end
@@ -145,7 +215,10 @@ local function grantCar(player, receiptInfo, buyerPlayer)
 end
 
 function Service.NotifyClient(player, success, message)
-	if player then PurchaseResultEvent:FireClient(player, success == true, message or "") end
+	if player then
+		local serial = success == true and (tonumber(player:GetAttribute("LimitedCarReceiptSerial")) or 0) or 0
+		PurchaseResultEvent:FireClient(player, success == true, message or "", serial)
+	end
 end
 
 function Service.ProcessReceipt(receiptInfo, giftTarget)
@@ -156,23 +229,29 @@ function Service.ProcessReceipt(receiptInfo, giftTarget)
 	local already = false
 	local finalized = false
 	local ok = updateState(function(state)
+		already = false
+		finalized = false
 		if state.Receipts[key] and state.Receipts[key].State == "Granted" then already = true; finalized = true; return state end
-		if state.Receipts[key] and state.Receipts[key].State == "Processing" then finalized = true; return state end
+		if state.Receipts[key] and (state.Receipts[key].State == "Processing" or state.Receipts[key].State == "Queued") then finalized = true; return state end
 		local rKey = tostring(receiptInfo.PlayerId) .. "_" .. tostring(Product.ProductId)
 		local res = state.Reservations[rKey]
-		if not res or res.UserId ~= receiptInfo.PlayerId or res.ProductId ~= Product.ProductId or res.State ~= "Reserved" then return state end
+		if not res or res.UserId ~= receiptInfo.PlayerId or res.ProductId ~= Product.ProductId
+			or (res.State ~= "Reserved" and res.State ~= "AwaitingReceipt")
+		then return state end
 		state.Reservations[rKey] = nil
-		state.Sold = math.min(Product.MaxGlobalStock, state.Sold + 1)
-		state.Receipts[key] = { State = "Processing", UserId = receiptInfo.PlayerId, Username = player.Name, ProductId = Product.ProductId, CarId = Product.CarId, FinalizedAt = now() }
+		state.Sold = state.Sold + 1
+		state.Receipts[key] = { State = "Processing", ReservationId = res.ReservationId, UserId = receiptInfo.PlayerId, TargetUserId = player.UserId, Username = player.Name, ProductId = Product.ProductId, CarId = Product.CarId, FinalizedAt = now() }
 		finalized = true
 		return state
 	end)
 	if not ok or not finalized then return false, "Reservation unavailable", false end
+	localReservations[receiptInfo.PlayerId] = nil
 	if already then return true, "Already granted", true end
 	local grantOk, grantMsg = grantCar(player, receiptInfo, buyer)
 	if not grantOk then return false, grantMsg, false end
 	local announceText = nil
 	local markOk = updateState(function(state)
+		announceText = nil
 		local rec = state.Receipts[key]
 		if rec and rec.State == "Processing" then
 			rec.State = "Granted"
@@ -194,13 +273,77 @@ function Service.ProcessReceipt(receiptInfo, giftTarget)
 	return true, "Neo Performante Purchased", false
 end
 
-GetStateFunction.OnServerInvoke = function() return Service.GetState() end
-ReserveFunction.OnServerInvoke = function(player) return Service.Reserve(player) end
-PromptClosedEvent.OnServerEvent:Connect(function(player) Service.ReleaseReservation(player.UserId) end)
+function Service.FinalizeQueuedGift(receiptInfo, targetUserId, targetName)
+	local key = receiptKey(receiptInfo)
+	local already, finalized = false, false
+	local ok = updateState(function(state)
+		already = false
+		finalized = false
+		local existing = state.Receipts[key]
+		if existing then
+			already = existing.State == "Queued" or existing.State == "Granted"
+			finalized = existing.TargetUserId == targetUserId
+			return state
+		end
+		local rKey = tostring(receiptInfo.PlayerId) .. "_" .. tostring(Product.ProductId)
+		local res = state.Reservations[rKey]
+		if not res or res.UserId ~= receiptInfo.PlayerId
+			or (res.State ~= "Reserved" and res.State ~= "AwaitingReceipt")
+		then return state end
+		state.Reservations[rKey] = nil
+		state.Sold += 1
+		state.Receipts[key] = {
+			State = "Queued", ReservationId = res.ReservationId, UserId = receiptInfo.PlayerId,
+			TargetUserId = targetUserId, Username = targetName, ProductId = Product.ProductId,
+			CarId = Product.CarId, FinalizedAt = now(),
+		}
+		finalized = true
+		return state
+	end)
+	if finalized then localReservations[receiptInfo.PlayerId] = nil end
+	return ok and finalized, finalized and (already and "Already queued" or "Reserved for delivery") or "Reservation unavailable", already
+end
+
+GetStateFunction.OnServerInvoke = function(player)
+	if not MutationRateLimiter.Allow(player, "LimitedCars:GetState", 4, 0.5) then
+		return publicState(currentState or sanitize(nil))
+	end
+	return Service.GetState()
+end
+ReserveFunction.OnServerInvoke = function(player)
+	if not MutationRateLimiter.Allow(player, "LimitedCars:Reserve", 1, 0.2) then
+		return false, "Please wait before trying again", publicState(currentState or sanitize(nil))
+	end
+	if not MutationRateLimiter.AllowGlobal("LimitedCars:ReserveWrites", 12, 3) then
+		return false, "The limited shop is busy. Please try again.", publicState(currentState or sanitize(nil))
+	end
+	return Service.Reserve(player)
+end
+PromptClosedEvent.OnServerEvent:Connect(function(player, reservationId)
+	if not MutationRateLimiter.Allow(player, "LimitedCars:ClosePrompt", 2, 0.5) then return end
+	if not MutationRateLimiter.AllowGlobal("LimitedCars:ReservationCleanupWrites", 30, 10) then return end
+	if type(reservationId) ~= "string" or #reservationId > 100 then return end
+	Service.ReleaseReservation(player.UserId, reservationId)
+end)
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
+	if productId ~= Product.ProductId then return end
+	local reservationId = localReservations[userId]
+	if not reservationId then return end
+	if wasPurchased then Service.MarkAwaitingReceipt(userId, reservationId)
+	else Service.ReleaseReservation(userId, reservationId) end
+end)
 Players.PlayerAdded:Connect(function(player) StateEvent:FireClient(player, Service.GetState()) end)
-Players.PlayerRemoving:Connect(function(player) if localReservations[player.UserId] then task.delay(60, function() Service.ReleaseReservation(player.UserId) end) end end)
+Players.PlayerRemoving:Connect(function(player)
+	-- A purchased prompt may receive its receipt after disconnect. The durable
+	-- reservation expires by status; an old server never releases a newer id.
+	localReservations[player.UserId] = nil
+end)
 task.spawn(function()
-	for _, delaySeconds in ipairs({ 0, 2, 5, 10, 20 }) do
+	local retryDelays = { 0, 2, 5, 10, 20 }
+	local attempt = 0
+	while true do
+		attempt += 1
+		local delaySeconds = retryDelays[math.min(attempt, #retryDelays)]
 		if delaySeconds > 0 then task.wait(delaySeconds) end
 		local ok = pcall(function()
 			MessagingService:SubscribeAsync(Product.TopicName, function(message)
@@ -213,6 +356,7 @@ task.spawn(function()
 						GlobalChatBroadcast:FireAllClients(announcement)
 					end
 				elseif message.Data.Remaining ~= nil then
+					lastStateReadAt = -math.huge
 					StateEvent:FireAllClients(message.Data)
 				end
 			end)
@@ -220,5 +364,11 @@ task.spawn(function()
 		if ok then return end
 	end
 end)
-Service.GetState()
+Service.GetState(true)
+task.spawn(function()
+	while true do
+		task.wait(30)
+		Service.GetState(true)
+	end
+end)
 return Service

@@ -46,6 +46,7 @@ assert(
 local state = nil
 local busy = false
 local isOpen = false
+local lastBasePurchaseFeedbackSerial = 0
 local hidden = {}
 local hiddenObjects = {}
 
@@ -531,6 +532,18 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(
 		end
 	end
 )
+
+local function replayBasePurchaseFeedback()
+	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("BasePurchaseFeedbackSerial")) or 0))
+	if serial <= lastBasePurchaseFeedbackSerial then return end
+	lastBasePurchaseFeedbackSerial = serial
+	if player:GetAttribute("BasePurchaseFeedbackKind") ~= "Appearance" then return end
+	UIAudioConfig.HidePurchaseLoading()
+	showResult(true, "Base skin purchase successful.")
+end
+
+player:GetAttributeChangedSignal("BasePurchaseFeedbackSerial"):Connect(replayBasePurchaseFeedback)
+task.defer(replayBasePurchaseFeedback)
 
 gui.Enabled = false
 main.Visible = false

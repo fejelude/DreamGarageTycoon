@@ -11,6 +11,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
+local ServerScriptService = game:GetService("ServerScriptService")
+local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
 
 local withdrawFunc = ReplicatedStorage:WaitForChild("WithdrawFunction")
 
@@ -22,6 +24,7 @@ local TRANSFER_RESET_SECONDS = 60 * 60
 
 local TRANSFER_USED_ATTR = "BankTransferLimitUsed"
 local TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
+local TRANSFER_SKIP_CREDITS_ATTR = "BankTransferSkipCredits"
 
 -- 🛡️ SECURITY: Transaction Locks
 local activeTransactions = {}
@@ -32,6 +35,9 @@ local function initializeTransferAttributes(player)
 	end
 	if player:GetAttribute(TRANSFER_RESET_AT_ATTR) == nil then
 		player:SetAttribute(TRANSFER_RESET_AT_ATTR, 0)
+	end
+	if player:GetAttribute(TRANSFER_SKIP_CREDITS_ATTR) == nil then
+		player:SetAttribute(TRANSFER_SKIP_CREDITS_ATTR, 0)
 	end
 end
 
@@ -59,11 +65,17 @@ local function validateTransferLimit(player, amount)
 	local used = getTransferState(player)
 	local remaining = math.max(0, limit - used)
 
-	if remaining <= 0 or amount > remaining then
-		return false, "Transfer Limit Reached"
-	end
+	if amount <= remaining then return true end
+	if amount > limit then return false, "Transfer Limit Reached" end
 
-	return true
+	local credits = math.max(0, math.floor(tonumber(player:GetAttribute(TRANSFER_SKIP_CREDITS_ATTR)) or 0))
+	if credits > 0 then
+		player:SetAttribute(TRANSFER_SKIP_CREDITS_ATTR, credits - 1)
+		player:SetAttribute(TRANSFER_USED_ATTR, 0)
+		player:SetAttribute(TRANSFER_RESET_AT_ATTR, 0)
+		return true
+	end
+	return false, "Transfer Limit Reached"
 end
 
 local function recordTransferProgress(player, amount)
@@ -86,19 +98,16 @@ local function TransferToATM(player, amount)
 	local atm = leaderstats:FindFirstChild("ATMBalance")
 
 	if not bank or not atm then return false, "Missing Values" end
+	if bank.Value < amount then return false, "Insufficient Bank Funds" end
 
 	local withinLimit, limitMessage = validateTransferLimit(player, amount)
 	if not withinLimit then return false, limitMessage end
 
-	if bank.Value >= amount then
-		bank.Value -= amount
-		atm.Value += amount
-		recordTransferProgress(player, amount)
-		print("📱 Mobile Transfer: " .. player.Name .. " moved $"..amount.." to ATM.")
-		return true, "Transfer Successful! Visit ATM to collect."
-	else
-		return false, "Insufficient Bank Funds"
-	end
+	bank.Value -= amount
+	atm.Value += amount
+	recordTransferProgress(player, amount)
+	print("📱 Mobile Transfer: " .. player.Name .. " moved $"..amount.." to ATM.")
+	return true, "Transfer Successful! Visit ATM to collect."
 end
 
 -- [[ 2. WITHDRAW: ATM -> WALLET (Physical / NPC) ]]
@@ -143,6 +152,7 @@ end
 
 -- [[ MAIN HANDLER ]]
 withdrawFunc.OnServerInvoke = function(player, amount, actionType)
+	if player:GetAttribute("TycoonDataLoaded") ~= true then return false, "Data is still loading" end
 	-- 1. Strict Type & Bound Validation
 	if type(actionType) ~= "string" then return false, "Invalid Action Type" end
 	if type(amount) ~= "number" or amount <= 0 or amount ~= amount or amount == math.huge then
@@ -163,14 +173,16 @@ withdrawFunc.OnServerInvoke = function(player, amount, actionType)
 
 	-- 3. Route Request Safely via pcall
 	local success, result, msg = pcall(function()
-		if actionType == "Transfer" then
-			return TransferToATM(player, amount)
-		elseif actionType == "Withdraw" then
-			return WithdrawFromATM(player, amount)
-		else
-			warn("⚠️ Unknown Transaction Type from " .. player.Name .. ": " .. tostring(actionType))
-			return false, "System Error: Unknown Action"
-		end
+		return PlayerTransactionCoordinator.Run(player, "BankTransaction", function()
+			if actionType == "Transfer" then
+				return TransferToATM(player, amount)
+			elseif actionType == "Withdraw" then
+				return WithdrawFromATM(player, amount)
+			else
+				warn("⚠️ Unknown Transaction Type from " .. player.Name .. ": " .. tostring(actionType))
+				return false, "System Error: Unknown Action"
+			end
+		end)
 	end)
 
 	-- 4. Release Lock reliably

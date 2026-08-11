@@ -208,55 +208,32 @@ end
 -- ⚡ COMMAND ACTIONS
 -- ============================================================================
 
-local function Action_Give(player, tool, force)
-	local backpack = player:WaitForChild("Backpack", 5)
-	if not backpack then return false, "No Backpack" end
-	local cleanID = getCleanID(tool.Name)
-	local owned = getOwnedSet(player)
-
-	-- If they already have it, warn the admin (unless forced)
-	if owned[cleanID] and not force then 
-		return false, "Already Owns Item" 
-	end
-
-	-- Give to Backpack
-	local bpTool = tool:Clone()
-	tagIssued(bpTool, tool.Name) 
-	bpTool.Parent = backpack
-
-	-- Give to StarterGear (Persistence)
-	local sg = player:FindFirstChild("StarterGear")
-	if sg then
-		local sgTool = tool:Clone()
-		tagIssued(sgTool, tool.Name)
-		sgTool.Parent = sg
-	end
-
-	return true, "Given"
+local function Action_Give(player, toolNames, actor, reason)
+	if not TycoonAdminAPI then return false, "TycoonAdminAPI missing" end
+	if type(toolNames) ~= "table" then return false, "Invalid grant list" end
+	local operationId = HttpService:GenerateGUID(false)
+	local ok, success, result = pcall(function()
+		return TycoonAdminAPI:Invoke(
+			"AdminGiveTools", player, toolNames, actor.UserId,
+			reason or "Admin /give command", operationId
+		)
+	end)
+	if not ok then return false, success end
+	return success == true, result, operationId
 end
 
-local function Action_Remove(player, toolName)
-	local targetID = getCleanID(toolName)
-	local count = 0
-
-	local function scanAndDestroy(container)
-		if not container then return end
-		for _, t in pairs(container:GetChildren()) do
-			if t:IsA("Tool") then
-				local id = getCleanID(t:GetAttribute("ToolId") or t.Name)
-				if id == targetID or (targetID == "all" or targetID == "*") then
-					t:Destroy()
-					count = count + 1
-				end
-			end
-		end
-	end
-
-	scanAndDestroy(player:FindFirstChild("Backpack"))
-	scanAndDestroy(player:FindFirstChild("StarterGear"))
-	if player.Character then scanAndDestroy(player.Character) end
-
-	return count > 0, count
+local function Action_Remove(player, toolName, actor, reason)
+	if not TycoonAdminAPI then return false, "TycoonAdminAPI missing" end
+	local target = (toolName == "all" or toolName == "*") and "*" or toolName
+	local operationId = HttpService:GenerateGUID(false)
+	local ok, success, result = pcall(function()
+		return TycoonAdminAPI:Invoke(
+			"AdminRemoveTools", player, target, actor.UserId,
+			reason or "Admin /remove command", operationId
+		)
+	end)
+	if not ok then return false, success end
+	return success == true, result, operationId
 end
 
 local function Action_SetFlight(player, shouldFly)
@@ -318,14 +295,14 @@ Players.PlayerAdded:Connect(function(player)
 			if itemName:lower() == "all" then
 				local allTools = getAllTools()
 				for _, t in pairs(targets) do
-					local count = 0
+					local grantList = {}
 					for _, tool in pairs(allTools) do
 						for i = 1, amount do
-							local success, _ = Action_Give(t, tool, true)
-							if success then count = count + 1 end
+							table.insert(grantList, tool.Name)
 						end
 					end
-					print(string.format("🎁 [Admin] Given %d items (x%d each) to %s", count, amount, t.Name))
+					local success, count, operationId = Action_Give(t, grantList, player, "Admin /give all command")
+					print(string.format("🎁 [Admin] give-all target=%s count=%s operation=%s result=%s", t.Name, tostring(count), tostring(operationId), tostring(success)))
 				end
 				return
 			end
@@ -339,18 +316,12 @@ Players.PlayerAdded:Connect(function(player)
 			end
 
 			for _, t in pairs(targets) do
-				local givenCount = 0
+				local grantList = {}
 				for i = 1, amount do
-					local success, reason = Action_Give(t, tool, true)
-					if success then
-						givenCount = givenCount + 1
-					else
-						print(string.format("⚠️ Failed to give [%s] to %s: %s", tool.Name, t.Name, reason))
-					end
+					table.insert(grantList, tool.Name)
 				end
-				if givenCount > 0 then
-					print(string.format("✅ Given [%s] x%d to %s", tool.Name, givenCount, t.Name))
-				end
+				local success, result, operationId = Action_Give(t, grantList, player, "Admin /give command")
+				print(string.format("[Admin] give actor=%d target=%s item=%s amount=%d operation=%s result=%s detail=%s", player.UserId, t.Name, tool.Name, amount, tostring(operationId), tostring(success), tostring(result)))
 			end
 
 			-- 🔴 /remove [player] [item]
@@ -362,9 +333,9 @@ Players.PlayerAdded:Connect(function(player)
 			local targets = getTargets(player, selector)
 
 			for _, t in pairs(targets) do
-				local success, count = Action_Remove(t, itemName)
+				local success, count, operationId = Action_Remove(t, itemName, player, "Admin /remove command")
 				if success then
-					print(string.format("🗑️ Removed %d instance(s) of '%s' from %s", count, itemName, t.Name))
+					print(string.format("🗑️ Removed %d instance(s) of '%s' from %s operation=%s", count, itemName, t.Name, tostring(operationId)))
 				else
 					print(string.format("⚠️ %s does not have item: %s", t.Name, itemName))
 				end
@@ -375,8 +346,8 @@ Players.PlayerAdded:Connect(function(player)
 			local selector = args[2]
 			local targets = getTargets(player, selector)
 			for _, t in pairs(targets) do
-				Action_Remove(t, "all")
-				print("🗑️ Cleared inventory of " .. t.Name)
+				local success, count, operationId = Action_Remove(t, "*", player, "Admin /clearinventory command")
+				print(string.format("🗑️ Clear inventory target=%s count=%s operation=%s result=%s", t.Name, tostring(count), tostring(operationId), tostring(success)))
 			end
 
 			-- ✈️ /fly & /unfly
@@ -403,27 +374,12 @@ Players.PlayerAdded:Connect(function(player)
 			local targets = getTargets(player, selector)
 
 			for _, t in pairs(targets) do
-				if command == "/bank" then
-					-- ✅ FIX: Cash lives in HiddenStats, not leaderstats
-					local hs = t:FindFirstChild("HiddenStats")
-					local stat = hs and hs:FindFirstChild("Cash")
-					if stat then
-						local newBalance = addMoneySafely(stat, amount)
-						print(string.format("💰 Added $%.0f to %s's Bank (HiddenStats.Cash). New balance: $%.0f", amount, t.Name, newBalance))
-					else
-						warn("⚠️ HiddenStats.Cash not found for " .. t.Name)
-					end
-				else
-					-- Wallet stays in leaderstats, no change needed
-					local ls = t:FindFirstChild("leaderstats")
-					local stat = ls and ls:FindFirstChild("Wallet")
-					if stat then
-						local newBalance = addMoneySafely(stat, amount)
-						print(string.format("💰 Added $%.0f to %s's Wallet. New balance: $%.0f", amount, t.Name, newBalance))
-					else
-						warn("⚠️ leaderstats.Wallet not found for " .. t.Name)
-					end
-				end
+				local balanceName = command == "/bank" and "Bank" or "Wallet"
+				local operationId = HttpService:GenerateGUID(false)
+				local invokeOk, success, newBalance = pcall(function()
+					return TycoonAdminAPI:Invoke("AdminAdjustBalance", t, balanceName, amount, player.UserId, "Admin " .. command .. " command", operationId)
+				end)
+				print(string.format("💰 [Admin] balance actor=%d target=%s balance=%s amount=%.0f operation=%s result=%s new=%s", player.UserId, t.Name, balanceName, amount, operationId, tostring(invokeOk and success == true), tostring(newBalance)))
 			end
 
 			-- 👑 /rank [player] [RankFolderName]
@@ -520,4 +476,8 @@ Players.PlayerAdded:Connect(function(player)
 			end
 		end
 	end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	AdminDebounces[player.UserId] = nil
 end)

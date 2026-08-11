@@ -14,12 +14,16 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Workspace = game:GetService("Workspace")
 local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
+local PaidActionIntentStore = require(ServerScriptService:WaitForChild("PaidActionIntentStore"))
 
 local OFFLINE_RATE = 0.30
 local MAX_OFFLINE_SECONDS = 8 * 60 * 60
 local PREMIUM_PRODUCT_ID = 3598967453
+local PREMIUM_RECEIPT_SERIAL_ATTRIBUTE = "OfflinePremiumReceiptSerial"
 
 local function requireChild(parent, childName, expectedClass)
 	local child = parent:FindFirstChild(childName)
@@ -81,8 +85,6 @@ local premiumResult = requireChild(
 
 print("✅ [OfflineEarningsService] All remotes found. Service started successfully.")
 
-_G.OfflineEarningsService = _G.OfflineEarningsService or {}
-
 local sessions = {}
 
 local tycoonAdminApi = ServerStorage:FindFirstChild("TycoonAdminAPI")
@@ -124,7 +126,8 @@ local function rebuildBaseCPS(plot)
 	local bestPlacedBaseCPS = 0
 
 	for _, car in ipairs(placedCarsFolder:GetChildren()) do
-		local stats = CarStats.GetCarStats and CarStats.GetCarStats(car.Name)
+		local carId = car:GetAttribute("ToolId") or car.Name
+		local stats = CarStats.GetCarStats and CarStats.GetCarStats(carId)
 		if stats then
 			table.insert(placedCars, stats)
 			if not CarStats.IsMythicalCar(stats) then
@@ -198,21 +201,30 @@ end
 local function ensureSession(player)
 	local session = sessions[player]
 
-	if session then
-		return session
+	if not session then
+		session = {
+			baseAmount = 0,
+			prepared = false,
+			claimed = false,
+			premiumPending = false,
+			claimInProgress = false,
+			premiumIntentId = nil,
+			lastPremiumReceiptSerial = 0,
+		}
+		sessions[player] = session
 	end
 
-	session = {
-		baseAmount = 0,
-		prepared = false,
-		claimed = false,
-		premiumPending = false,
-		premiumPurchaseId = nil,
-		lastPremiumGrantedPurchaseId = nil,
-		claimInProgress = false,
-	}
-
-	sessions[player] = session
+	local receiptSerial = math.max(0, math.floor(
+		tonumber(player:GetAttribute(PREMIUM_RECEIPT_SERIAL_ATTRIBUTE)) or 0
+	))
+	if receiptSerial > session.lastPremiumReceiptSerial then
+		session.lastPremiumReceiptSerial = receiptSerial
+		session.baseAmount = 0
+		session.prepared = true
+		session.claimed = true
+		session.premiumPending = false
+		session.premiumIntentId = nil
+	end
 
 	return session
 end
@@ -287,7 +299,16 @@ local function claimPreparedSession(player, session)
 
 	local success, message, amount = false, "Claim failed. Please try again.", 0
 
-	if session.claimed then
+	local unresolvedIntent, intentError = PaidActionIntentStore.GetPending(
+		player.UserId, PREMIUM_PRODUCT_ID, "Offline10x"
+	)
+	if unresolvedIntent == nil then
+		message = intentError or "Premium purchase state is unavailable."
+	elseif unresolvedIntent then
+		session.premiumPending = true
+		session.premiumIntentId = unresolvedIntent.IntentId
+		message = "Premium purchase is currently processing."
+	elseif session.claimed then
 		message = "You have already claimed your offline earnings."
 	elseif session.premiumPending then
 		message = "Premium purchase is currently processing."
@@ -295,12 +316,26 @@ local function claimPreparedSession(player, session)
 		message = "No offline earnings available."
 	else
 		amount = session.baseAmount
+		local originalCarry = getTabletCarry(player)
+		local hiddenStats = player:FindFirstChild("HiddenStats")
+		local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
+		local originalBank = bank and bank.Value or nil
 		success, message = grant(player, amount)
 
 		if success then
 			session.claimed = true
 			clearTabletCarry(player)
-			message = "Claimed"
+			local saveOk = tycoonAdminApi and tycoonAdminApi:Invoke("SaveNow", player)
+			if saveOk == true then
+				message = "Claimed"
+			else
+				if bank and originalBank ~= nil then bank.Value = originalBank end
+				player:SetAttribute("OfflineTabletCarry", originalCarry)
+				session.claimed = false
+				success = false
+				amount = 0
+				message = "Offline earnings could not be saved. Please try again."
+			end
 		else
 			amount = 0
 		end
@@ -312,86 +347,52 @@ local function claimPreparedSession(player, session)
 end
 
 local function claimOfflineEarnings(player)
-	local session = ensureSession(player)
-
-	if not prepareSession(player, session) then
-		return false, "Offline earnings still loading. Please try again.", 0
-	end
-
-	return claimPreparedSession(player, session)
+	return PlayerTransactionCoordinator.Run(player, "OfflineEarningsClaim", function()
+		local session = ensureSession(player)
+		if not prepareSession(player, session) then
+			return false, "Offline earnings still loading. Please try again.", 0
+		end
+		return claimPreparedSession(player, session)
+	end)
 end
 
 claimNormal.OnServerInvoke = function(player)
 	return claimOfflineEarnings(player)
 end
 
-function _G.OfflineEarningsService.TryClaim(player)
-	return claimOfflineEarnings(player)
-end
-
 beginPremium.OnServerInvoke = function(player)
-	local session = ensureSession(player)
+	return PlayerTransactionCoordinator.Run(player, "PrepareOffline10x", function()
+		local session = ensureSession(player)
+		if not prepareSession(player, session) then
+			return false, "Offline earnings still loading. Please wait."
+		end
+		if session.claimed then return false, "You have already claimed your offline earnings." end
 
-	if not prepareSession(player, session) then
-		return false, "Offline earnings still loading. Please wait."
-	end
+		local unresolvedIntent, intentError = PaidActionIntentStore.GetPending(
+			player.UserId, PREMIUM_PRODUCT_ID, "Offline10x"
+		)
+		if unresolvedIntent == nil then return false, intentError or "Purchase state unavailable." end
+		if unresolvedIntent then
+			session.premiumPending = true
+			session.premiumIntentId = unresolvedIntent.IntentId
+			return false, "Premium purchase already in progress."
+		end
+		if session.premiumPending then return false, "Premium purchase already in progress." end
+		if session.baseAmount <= 0 then return false, "No offline earnings available." end
 
-	if session.claimed then
-		return false, "You have already claimed your offline earnings."
-	end
-
-	if session.premiumPending then
-		return false, "Premium purchase already in progress."
-	end
-
-	if session.baseAmount <= 0 then
-		return false, "No offline earnings available."
-	end
-
-	session.premiumPending = true
-	session.premiumPurchaseId = nil
-
-	return true, "Prompt"
-end
-
-function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
-	local session = sessions[player]
-
-	if not session then
-		return false, 0, "You have already claimed your offline earnings."
-	end
-
-	if purchaseId and session.lastPremiumGrantedPurchaseId == purchaseId then
-		return true, session.baseAmount * 10, "Claimed"
-	end
-
-	if not session.premiumPending or session.claimed or session.baseAmount <= 0 then
-		return false, 0, "You have already claimed your offline earnings."
-	end
-
-	if purchaseId and session.premiumPurchaseId and session.premiumPurchaseId ~= purchaseId then
-		return false, 0, "Purchase mismatch."
-	end
-
-	local payout = session.baseAmount * 10
-	local success, message = grant(player, payout)
-
-	if not success then
-		session.premiumPending = false
-		session.premiumPurchaseId = nil
-
-		return false, 0, message
-	end
-
-	session.claimed = true
-	clearTabletCarry(player)
-	session.premiumPending = false
-	session.premiumPurchaseId = purchaseId
-	session.lastPremiumGrantedPurchaseId = purchaseId
-
-	premiumResult:FireClient(player, true, "Claimed", payout)
-
-	return true, payout, "Claimed"
+		session.premiumPending = true
+		local intentOk, intentId = PaidActionIntentStore.Create(player, PREMIUM_PRODUCT_ID, "Offline10x", {
+			Amount = session.baseAmount * 10,
+			BaseAmount = session.baseAmount,
+			OfflineTabletCarry = getTabletCarry(player),
+		})
+		if not intentOk then
+			session.premiumPending = false
+			return false, intentId or "Unable to prepare purchase."
+		end
+		session.premiumIntentId = intentId
+		return true, "Prompt", intentId
+	end)
 end
 
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
@@ -412,8 +413,11 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 	end
 
 	if not wasPurchased then
+		if session.premiumIntentId then
+			PaidActionIntentStore.Cancel(player, PREMIUM_PRODUCT_ID, session.premiumIntentId)
+		end
 		session.premiumPending = false
-		session.premiumPurchaseId = nil
+		session.premiumIntentId = nil
 
 		premiumResult:FireClient(player, false, "Purchase failed or cancelled.", 0)
 	end
