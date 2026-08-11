@@ -222,7 +222,6 @@ local function ensureSession(player)
 			prepared = false,
 			claimed = false,
 			premiumPending = false,
-			claimInProgress = false,
 			premiumIntentId = nil,
 			lastPremiumReceiptSerial = 0,
 		}
@@ -306,59 +305,75 @@ local function prepareSession(player, session)
 end
 
 local function claimPreparedSession(player, session)
-	if session.claimInProgress then
-		return false, "Claim already in progress.", 0
-	end
+	-- PlayerTransactionCoordinator already serializes this entire function.
+	-- Keeping a second manual claim flag created a permanent in-memory deadlock
+	-- whenever an unexpected error occurred before that flag was cleared.
+	local bank = nil
+	local originalBank = nil
+	local originalCarry = nil
+	local mutationApplied = false
+	local saveCommitted = false
 
-	session.claimInProgress = true
+	local result = table.pack(xpcall(function()
+		local unresolvedIntent, intentError = PaidActionIntentStore.GetPending(
+			player.UserId, PREMIUM_PRODUCT_ID, "Offline10x"
+		)
+		if unresolvedIntent == nil then
+			return false, intentError or "Premium purchase state is unavailable.", 0
+		elseif unresolvedIntent then
+			session.premiumPending = true
+			session.premiumIntentId = unresolvedIntent.IntentId
+			return false, "Premium purchase is currently processing.", 0
+		elseif session.claimed then
+			return false, "You have already claimed your offline earnings.", 0
+		elseif session.premiumPending then
+			return false, "Premium purchase is currently processing.", 0
+		elseif session.baseAmount <= 0 then
+			return false, "No offline earnings available.", 0
+		end
 
-	local success, message, amount = false, "Claim failed. Please try again.", 0
-
-	local unresolvedIntent, intentError = PaidActionIntentStore.GetPending(
-		player.UserId, PREMIUM_PRODUCT_ID, "Offline10x"
-	)
-	if unresolvedIntent == nil then
-		message = intentError or "Premium purchase state is unavailable."
-	elseif unresolvedIntent then
-		session.premiumPending = true
-		session.premiumIntentId = unresolvedIntent.IntentId
-		message = "Premium purchase is currently processing."
-	elseif session.claimed then
-		message = "You have already claimed your offline earnings."
-	elseif session.premiumPending then
-		message = "Premium purchase is currently processing."
-	elseif session.baseAmount <= 0 then
-		message = "No offline earnings available."
-	else
-		amount = session.baseAmount
-		local originalCarry = getTabletCarry(player)
+		local amount = session.baseAmount
+		originalCarry = getTabletCarry(player)
 		local hiddenStats = player:FindFirstChild("HiddenStats")
-		local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
-		local originalBank = bank and bank.Value or nil
-		success, message = grant(player, amount)
+		bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
+		originalBank = bank and bank.Value or nil
 
-		if success then
-			session.claimed = true
-			clearTabletCarry(player)
-			local saveOk = invokeAdmin("SaveNow", player)
-			if saveOk == true then
-				message = "Claimed"
-			else
+		local granted, grantMessage = grant(player, amount)
+		if not granted then
+			return false, grantMessage, 0
+		end
+
+		mutationApplied = true
+		session.claimed = true
+		clearTabletCarry(player)
+
+		if invokeAdmin("SaveNow", player) == true then
+			saveCommitted = true
+			return true, "Claimed", amount
+		end
+
+		if bank and originalBank ~= nil then bank.Value = originalBank end
+		player:SetAttribute("OfflineTabletCarry", originalCarry)
+		session.claimed = false
+		mutationApplied = false
+		return false, "Offline earnings could not be saved. Please try again.", 0
+	end, debug.traceback))
+
+	if not result[1] then
+		-- Roll back only an uncommitted live mutation. A committed save must never
+		-- be reversed in memory merely because later presentation work failed.
+		if mutationApplied and not saveCommitted then
+			pcall(function()
 				if bank and originalBank ~= nil then bank.Value = originalBank end
 				player:SetAttribute("OfflineTabletCarry", originalCarry)
-				session.claimed = false
-				success = false
-				amount = 0
-				message = "Offline earnings could not be saved. Please try again."
-			end
-		else
-			amount = 0
+			end)
+			session.claimed = false
 		end
+		warn("[OfflineEarningsService] Claim recovered after an unexpected error: " .. tostring(result[2]))
+		return false, "Claim failed safely. Please try again.", 0
 	end
 
-	session.claimInProgress = false
-
-	return success, message, amount
+	return table.unpack(result, 2, result.n)
 end
 
 local function claimOfflineEarnings(player)
@@ -375,7 +390,47 @@ claimNormal.OnServerInvoke = function(player)
 	return claimOfflineEarnings(player)
 end
 
-beginPremium.OnServerInvoke = function(player)
+beginPremium.OnServerInvoke = function(player, requestAction, requestIntentId)
+	if requestAction == "Cancel" then
+		return PlayerTransactionCoordinator.Run(player, "CancelOffline10x", function()
+			local session = ensureSession(player)
+			if type(requestIntentId) ~= "string" or requestIntentId == ""
+				or session.premiumIntentId ~= requestIntentId
+			then
+				return false, "Premium purchase state changed."
+			end
+
+			local cancelRequested = false
+			for attempt = 1, 3 do
+				cancelRequested = PaidActionIntentStore.Cancel(
+					player, PREMIUM_PRODUCT_ID, requestIntentId
+				)
+				if cancelRequested then break end
+				if attempt < 3 then task.wait(0.2 * attempt) end
+			end
+
+			if not cancelRequested then
+				return false, "Premium purchase cancellation is still processing."
+			end
+
+			local remaining, pendingError = PaidActionIntentStore.GetPending(
+				player.UserId, PREMIUM_PRODUCT_ID, "Offline10x"
+			)
+			if remaining == nil then
+				return false, pendingError or "Premium purchase state is unavailable."
+			end
+			if remaining then
+				return false, "Premium purchase is already processing."
+			end
+
+			session.premiumPending = false
+			session.premiumIntentId = nil
+			return true, "Cancelled"
+		end)
+	elseif requestAction ~= nil then
+		return false, "Invalid premium claim request."
+	end
+
 	return PlayerTransactionCoordinator.Run(player, "PrepareOffline10x", function()
 		local session = ensureSession(player)
 		if not prepareSession(player, session) then
@@ -395,16 +450,15 @@ beginPremium.OnServerInvoke = function(player)
 		if session.premiumPending then return false, "Premium purchase already in progress." end
 		if session.baseAmount <= 0 then return false, "No offline earnings available." end
 
-		session.premiumPending = true
 		local intentOk, intentId = PaidActionIntentStore.Create(player, PREMIUM_PRODUCT_ID, "Offline10x", {
 			Amount = session.baseAmount * 10,
 			BaseAmount = session.baseAmount,
 			OfflineTabletCarry = getTabletCarry(player),
 		})
 		if not intentOk then
-			session.premiumPending = false
 			return false, intentId or "Unable to prepare purchase."
 		end
+		session.premiumPending = true
 		session.premiumIntentId = intentId
 		return true, "Prompt", intentId
 	end)

@@ -136,6 +136,8 @@ local SAVE_LOCK_WAIT_SECONDS = 12
 local CLOSING_SAVE_LOCK_WAIT_SECONDS = 25
 local PROFILE_LEASE_SECONDS = 180
 local PROFILE_LEASE_RENEW_INTERVAL = 45
+local PROFILE_REJOIN_GRACE_SECONDS = 8
+local PROFILE_REJOIN_RETRY_INTERVAL = 1
 local PROFILE_LEASE_FIELD = "_SessionLease"
 local PROFILE_LEASE_VERSION_FIELD = "_SessionLeaseVersion"
 local SERVER_SESSION_TOKEN = game.JobId .. ":" .. HttpService:GenerateGUID(false)
@@ -3316,51 +3318,60 @@ local function saveWithinTransaction(player, isClosing, force)
 		print("✅ Saved: " .. player.Name)
 	end
 
-	if saveSucceeded then
-		for receiptId in pairs(savedReceiptIds) do
-			if not session.DurableReceipts[receiptId] then
-				session.DurableReceipts[receiptId] = true
-				emitDurableReceiptFeedback(player, session, receiptId)
+	-- Everything after the DataStore write is presentation/session bookkeeping.
+	-- Keep it inside a protected finalization block so an unexpected feedback or
+	-- cleanup error can never strand session.IsSaving at true forever.
+	local finalizeOk, finalizeError = pcall(function()
+		if saveSucceeded then
+			for receiptId in pairs(savedReceiptIds) do
+				if not session.DurableReceipts[receiptId] then
+					session.DurableReceipts[receiptId] = true
+					emitDurableReceiptFeedback(player, session, receiptId)
+				end
 			end
-		end
-		if not isClosing then
-			session.LeaseExpiresAt = os.time() + PROFILE_LEASE_SECONDS
-		end
-		local hasNewerDirtyState = (session.DirtyVersion or 0) ~= saveDirtyVersion
-		session.IsDirty = hasNewerDirtyState
-		session.LastSave = hasNewerDirtyState and 0 or os.time()
-		if not hasNewerDirtyState then
-			session.SacrificeOccurred = false
-			session.ExplicitClear = false
-			if session.StarterPackClearRequested then
-				session.StarterPackSaveConfirmed = false
-			else
-				session.StarterPackSaveConfirmed = session.StarterPackPurchased == true
+			if not isClosing then
+				session.LeaseExpiresAt = os.time() + PROFILE_LEASE_SECONDS
 			end
-			session.StarterPackClearRequested = false
-		end
-	end
-
-	if isClosing and saveSucceeded then
-		local function safeClose(bindableName)
-			local b = ServerStorage:FindFirstChild(bindableName)
-			if not b then return end
-			local ok2, err2 = pcall(function() b:Invoke("Close", player) end)
-			if not ok2 then
-				warn("⚠️ Shop cleanup error (" .. bindableName .. "): " .. tostring(err2))
+			local hasNewerDirtyState = (session.DirtyVersion or 0) ~= saveDirtyVersion
+			session.IsDirty = hasNewerDirtyState
+			session.LastSave = hasNewerDirtyState and 0 or os.time()
+			if not hasNewerDirtyState then
+				session.SacrificeOccurred = false
+				session.ExplicitClear = false
+				if session.StarterPackClearRequested then
+					session.StarterPackSaveConfirmed = false
+				else
+					session.StarterPackSaveConfirmed = session.StarterPackPurchased == true
+				end
+				session.StarterPackClearRequested = false
 			end
 		end
 
-		safeClose("ShopPersistenceFunction")
-		safeClose("UncommonShopPersistenceFunction")
-		safeClose("RareShopPersistenceFunction")
-		safeClose("EpicShopPersistenceFunction")
-		safeClose("LegendaryShopPersistenceFunction")
-		safeClose("MythicalShopPersistenceFunction")
-		safeClose("RankPersistenceFunction")
-	end
+		if isClosing and saveSucceeded then
+			local function safeClose(bindableName)
+				local b = ServerStorage:FindFirstChild(bindableName)
+				if not b then return end
+				local ok2, err2 = pcall(function() b:Invoke("Close", player) end)
+				if not ok2 then
+					warn("⚠️ Shop cleanup error (" .. bindableName .. "): " .. tostring(err2))
+				end
+			end
+
+			safeClose("ShopPersistenceFunction")
+			safeClose("UncommonShopPersistenceFunction")
+			safeClose("RareShopPersistenceFunction")
+			safeClose("EpicShopPersistenceFunction")
+			safeClose("LegendaryShopPersistenceFunction")
+			safeClose("MythicalShopPersistenceFunction")
+			safeClose("RankPersistenceFunction")
+		end
+	end)
 
 	session.IsSaving = false
+	if not finalizeOk then
+		warn("⚠️ [TycoonDataHandler] Save finalization recovered for " .. player.Name
+			.. ": " .. tostring(finalizeError))
+	end
 
 	local syncEvent = game.ServerStorage:FindFirstChild("TycoonSaveCompleted")
 	if syncEvent then
@@ -3512,7 +3523,10 @@ local function InitializePlayer(player)
 		IsSaving          = false,
 		SacrificeOccurred = false,
 		HeldToolRecord    = nil,
-		LeaseToken        = SERVER_SESSION_TOKEN .. ":" .. tostring(player.UserId),
+		-- A fresh token per Player instance fences a delayed callback from an old
+		-- same-server session after a quick leave/rejoin.
+		LeaseToken        = SERVER_SESSION_TOKEN .. ":" .. tostring(player.UserId)
+			.. ":" .. HttpService:GenerateGUID(false),
 		LeaseLost         = false,
 		LeaseExpiresAt    = 0,
 		LeaseVersion      = 0,
@@ -3589,9 +3603,20 @@ local function InitializePlayer(player)
 	local loadErr = nil
 	local leaseDenied = false
 	local leaseDeniedDetail = nil
-	for attempt = 1, MAX_RETRIES do
+	local lastLeaseConflictDetail = nil
+	local leaseConflictStartedAt = nil
+	local leaseTakeover = false
+	local leaseTakeoverDetail = nil
+	local loadFailureCount = 0
+
+	while player.Parent == Players do
+		local allowLeaseTakeover = leaseConflictStartedAt ~= nil
+			and os.clock() - leaseConflictStartedAt >= PROFILE_REJOIN_GRACE_SECONDS
 		leaseDenied = false
 		leaseDeniedDetail = nil
+		leaseTakeover = false
+		leaseTakeoverDetail = nil
+		data = nil
 		loadSuccess, loadErr = pcall(function()
 			local now = os.time()
 			data = PlayerDataStore:UpdateAsync(key, function(current)
@@ -3599,17 +3624,30 @@ local function InitializePlayer(player)
 				-- a rejected abandoned invocation poison the final successful one.
 				leaseDenied = false
 				leaseDeniedDetail = nil
+				leaseTakeover = false
+				leaseTakeoverDetail = nil
 				current = type(current) == "table" and current or {}
 				local lease = type(current[PROFILE_LEASE_FIELD]) == "table" and current[PROFILE_LEASE_FIELD] or nil
-				if lease and lease.Token ~= session.LeaseToken and finiteNumber(lease.ExpiresAt, 0, 0) > now then
-					leaseDenied = true
-					leaseDeniedDetail = string.format(
+				local conflictingLease = lease and lease.Token ~= session.LeaseToken
+					and finiteNumber(lease.ExpiresAt, 0, 0) > now
+				if conflictingLease then
+					local conflictDetail = string.format(
 						"active lease owned by JobId %s in PlaceId %s until %d",
 						tostring(lease.JobId or "unknown"),
 						tostring(lease.PlaceId or "unknown"),
 						math.floor(finiteNumber(lease.ExpiresAt, 0, 0))
 					)
-					return nil
+					if not allowLeaseTakeover then
+						leaseDenied = true
+						leaseDeniedDetail = conflictDetail
+						return nil
+					end
+
+					-- The previous server has had a bounded grace period to finish its
+					-- closing save. Atomically advancing the lease version fences every
+					-- older save/renewal callback before this new session becomes Ready.
+					leaseTakeover = true
+					leaseTakeoverDetail = conflictDetail
 				end
 
 				local sameLease = lease and lease.Token == session.LeaseToken
@@ -3635,23 +3673,30 @@ local function InitializePlayer(player)
 			end)
 		end)
 
-		if leaseDenied then break end
 		if loadSuccess and data ~= nil then
 			break
 		end
 
-		warn("⚠️ [TycoonDataHandler] Data load attempt " .. tostring(attempt) .. " failed for " .. player.Name .. ": " .. tostring(loadErr))
-		task.wait(0.5 * attempt)
+		if leaseDenied then
+			lastLeaseConflictDetail = leaseDeniedDetail
+			leaseConflictStartedAt = leaseConflictStartedAt or os.clock()
+			local elapsed = os.clock() - leaseConflictStartedAt
+			local remaining = PROFILE_REJOIN_GRACE_SECONDS - elapsed
+			if remaining > 0 then
+				player:SetAttribute(DATA_PHASE_ATTRIBUTE, "WaitingForSessionRelease")
+				task.wait(math.min(PROFILE_REJOIN_RETRY_INTERVAL, remaining))
+			end
+		else
+			loadFailureCount += 1
+			warn("⚠️ [TycoonDataHandler] Data load attempt " .. tostring(loadFailureCount)
+				.. " failed for " .. player.Name .. ": " .. tostring(loadErr))
+			if loadFailureCount >= MAX_RETRIES then break end
+			task.wait(0.5 * loadFailureCount)
+		end
 	end
 
-	if leaseDenied then
+	if player.Parent ~= Players then
 		SessionData[player] = nil
-		kickForDataSafety(
-			player,
-			"DGT-LEASE-CONFLICT",
-			"Your data is active in another server. Please wait a moment, then rejoin.",
-			leaseDeniedDetail
-		)
 		return
 	end
 	if not loadSuccess or data == nil then
@@ -3662,6 +3707,15 @@ local function InitializePlayer(player)
 			loadErr
 		)
 		return
+	end
+	if leaseTakeover then
+		warn(string.format(
+			"⚠️ [TycoonDataHandler][DGT-LEASE-TAKEOVER] Recovered session for %s (%d) after %.1f seconds: %s",
+			player.Name,
+			player.UserId,
+			leaseConflictStartedAt and (os.clock() - leaseConflictStartedAt) or 0,
+			tostring(leaseTakeoverDetail or lastLeaseConflictDetail or "stale lease")
+		))
 	end
 	local acquiredLease = type(data[PROFILE_LEASE_FIELD]) == "table" and data[PROFILE_LEASE_FIELD] or {}
 	session.LeaseExpiresAt = math.floor(finiteNumber(acquiredLease.ExpiresAt, os.time() + PROFILE_LEASE_SECONDS, 0))

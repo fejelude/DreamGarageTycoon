@@ -30,7 +30,8 @@ local function activeContextToken(userId)
 	return nil
 end
 
-local function acquireUserId(userId, timeoutSeconds, transactionToken)
+local function acquireUserId(player, timeoutSeconds, transactionToken)
+	local userId = player.UserId
 	timeoutSeconds = math.max(0.1, tonumber(timeoutSeconds) or DEFAULT_TIMEOUT_SECONDS)
 	local owner = currentOwner()
 	local startedAt = os.clock()
@@ -40,6 +41,7 @@ local function acquireUserId(userId, timeoutSeconds, transactionToken)
 		if not lock then
 			locksByUserId[userId] = {
 				Owner = owner,
+				Player = player,
 				Token = transactionToken,
 				Depth = 1,
 				AcquiredAt = os.clock(),
@@ -122,7 +124,7 @@ function Coordinator.RunMany(players, operationName, callback, timeoutSeconds)
 	local acquired = {}
 	for _, player in ipairs(ordered) do
 		local ok, acquireError = acquireUserId(
-			player.UserId,
+			player,
 			timeoutSeconds,
 			transactionToken
 		)
@@ -241,7 +243,12 @@ end
 
 Players.PlayerRemoving:Connect(function(player)
 	local lock = locksByUserId[player.UserId]
-	if lock and lock.Owner == nil then
+	-- A callback that is suspended when its Player leaves may never unwind far
+	-- enough for RunMany's normal release path. Remove only that exact Player's
+	-- lock so a legitimate rejoin with the same UserId cannot remain blocked for
+	-- the lifetime of the server. The old transaction token can no longer adopt
+	-- or release a newer session's lock.
+	if lock and lock.Player == player then
 		locksByUserId[player.UserId] = nil
 	end
 end)

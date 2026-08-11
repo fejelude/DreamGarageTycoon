@@ -47,8 +47,8 @@ local state = nil
 local busy = false
 local isOpen = false
 local lastBasePurchaseFeedbackSerial = 0
-local hidden = {}
-local hiddenObjects = {}
+local uiStateSnapshot = {}
+local movementLockSnapshot = nil
 
 local BALANCE_INDICATOR_GUI_NAME = "Balance Indicator"
 local FOCUS_GUI_OBJECTS_TO_HIDE = {
@@ -71,25 +71,45 @@ local FOCUS_SCRIPT_NAMES_TO_HIDE = {
 }
 
 
-local function rememberAndHideGuiObject(obj)
-	if not obj or not obj.Parent or hiddenObjects[obj] ~= nil then
-		return
+local function rememberUiProperty(instance, propertyName)
+	if not instance or not instance.Parent then return end
+	local instanceState = uiStateSnapshot[instance]
+	if not instanceState then
+		instanceState = {}
+		uiStateSnapshot[instance] = instanceState
 	end
-
-	if obj:IsA("GuiObject") and obj.Visible then
-		hiddenObjects[obj] = true
-		obj.Visible = false
+	if instanceState[propertyName] == nil then
+		instanceState[propertyName] = { Value = instance[propertyName] }
 	end
 end
 
-local function restoreHiddenGuiObjects()
-	for obj in pairs(hiddenObjects) do
-		if obj and obj.Parent and obj:IsA("GuiObject") then
-			obj.Visible = true
+local function temporarilySetUiProperty(instance, propertyName, value)
+	rememberUiProperty(instance, propertyName)
+	instance[propertyName] = value
+end
+
+local function rememberAndHideGuiObject(obj)
+	if obj and obj.Parent and obj:IsA("GuiObject") then
+		-- Capture false as well as true. Restoring only the objects that happened
+		-- to be visible at open time could incorrectly enable a HUD element whose
+		-- intended state was already hidden.
+		temporarilySetUiProperty(obj, "Visible", false)
+	end
+end
+
+local function restoreUiState()
+	local snapshot = uiStateSnapshot
+	uiStateSnapshot = {}
+
+	for instance, properties in pairs(snapshot) do
+		if instance and instance.Parent then
+			for propertyName, saved in pairs(properties) do
+				pcall(function()
+					instance[propertyName] = saved.Value
+				end)
+			end
 		end
 	end
-
-	hiddenObjects = {}
 end
 
 local function hideBonusesFolder()
@@ -128,7 +148,7 @@ local function getFocusScriptContainer(scriptInstance)
 end
 
 local function isFocusBonusWidget(obj)
-	if not obj:IsA("GuiObject") or not obj.Visible or obj:IsDescendantOf(gui) then
+	if not obj:IsA("GuiObject") or obj:IsDescendantOf(gui) then
 		return false
 	end
 
@@ -317,19 +337,24 @@ local function setOpen(value)
 	isOpen = value
 
 	if value then
+		uiStateSnapshot = {}
+		local previousMovementLock = player:GetAttribute("MovementLock")
+		movementLockSnapshot = {
+			HadValue = previousMovementLock ~= nil,
+			Value = previousMovementLock,
+		}
+
 		for _, other in ipairs(playerGui:GetChildren()) do
-			local shouldHide =
+			local shouldManage =
 				other:IsA("ScreenGui")
 				and other ~= gui
-				and other.Enabled
 				and other.Name ~= BALANCE_INDICATOR_GUI_NAME
 				and other.Name ~= "TouchGui"
 				and other.Name ~= "Chat"
 				and other.Name ~= "Notifications"
 
-			if shouldHide then
-				hidden[other] = true
-				other.Enabled = false
+			if shouldManage then
+				temporarilySetUiProperty(other, "Enabled", false)
 			end
 		end
 
@@ -353,16 +378,17 @@ local function setOpen(value)
 		main.Visible = false
 		gui.Enabled = false
 
-		player:SetAttribute("MovementLock", false)
-
-		for other in pairs(hidden) do
-			if other.Parent then
-				other.Enabled = true
+		restoreUiState()
+		if movementLockSnapshot then
+			if movementLockSnapshot.HadValue then
+				player:SetAttribute("MovementLock", movementLockSnapshot.Value)
+			else
+				player:SetAttribute("MovementLock", nil)
 			end
+			movementLockSnapshot = nil
+		else
+			player:SetAttribute("MovementLock", false)
 		end
-
-		hidden = {}
-		restoreHiddenGuiObjects()
 		feedback:Clear()
 
 		local tween = TweenService:Create(

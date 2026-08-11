@@ -196,16 +196,34 @@ end)
 
 UIButtonUtils.SetupButton(premiumButton, function()
 	if claimLocked then return end
-	local ok, allowed = pcall(function() return beginPremium:InvokeServer() end)
+	local ok, allowed, prepareMessage, intentId = pcall(function()
+		return beginPremium:InvokeServer()
+	end)
 	if not ok or not allowed then
-		setState(false, "You have already claimed your offline earnings.")
+		setState(false, ok and (prepareMessage or "Premium claim is unavailable.")
+			or "Premium claim is unavailable. Please try again.")
 		return
 	end
 	claimLocked = true
 	disableButtons(true)
 	if UIAudioConfig and UIAudioConfig.PlayRobux then UIAudioConfig.PlayRobux() end
 	if UIAudioConfig and UIAudioConfig.ShowPurchaseLoading then UIAudioConfig.ShowPurchaseLoading() end
-	MarketplaceService:PromptProductPurchase(player, PREMIUM_PRODUCT_ID)
+
+	local promptOk = pcall(function()
+		MarketplaceService:PromptProductPurchase(player, PREMIUM_PRODUCT_ID)
+	end)
+	if not promptOk then
+		-- The server has already persisted an immutable paid-action intent. If the
+		-- Roblox prompt itself could not open, cancel that exact intent so a normal
+		-- claim or a later retry is not blocked by an abandoned pending state.
+		pcall(function()
+			beginPremium:InvokeServer("Cancel", intentId)
+		end)
+		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
+		setState(false, "The purchase prompt could not open. Please try again.")
+		claimLocked = false
+		disableButtons(false)
+	end
 end)
 
 premiumResult.OnClientEvent:Connect(function(success, msg, amount)

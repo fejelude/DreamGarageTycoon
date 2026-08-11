@@ -66,21 +66,53 @@ function Service.GrantOffline10x(player, receiptInfo, intent)
 		if not bank then return false, "Bank account unavailable" end
 		local oldBank = bank.Value
 		local oldCarry = player:GetAttribute("OfflineTabletCarry")
-		bank.Value += amount
-		player:SetAttribute("OfflineTabletCarry", 0)
-		local committed, message = commit(player, receiptInfo, "Offline10x", tostring(amount))
-		if not committed then
-			bank.Value = oldBank
-			player:SetAttribute("OfflineTabletCarry", oldCarry)
-			return false, message or "Offline claim save failed"
+		local mutationApplied = false
+		local saveCommitted = false
+
+		local result = table.pack(xpcall(function()
+			bank.Value += amount
+			mutationApplied = true
+			player:SetAttribute("OfflineTabletCarry", 0)
+
+			local committed, message = commit(player, receiptInfo, "Offline10x", tostring(amount))
+			if not committed then
+				bank.Value = oldBank
+				player:SetAttribute("OfflineTabletCarry", oldCarry)
+				mutationApplied = false
+				return false, message or "Offline claim save failed"
+			end
+			saveCommitted = true
+
+			-- OfflineEarningsService owns an in-memory presentation session. Publish
+			-- only after the payout and receipt are durable so that session cannot
+			-- offer or block a second claim based on stale premiumPending state.
+			-- Presentation failure must not turn a durable paid grant back into a
+			-- pending receipt or tempt the caller to roll the saved payout back.
+			local feedbackOk, feedbackError = pcall(function()
+				player:SetAttribute("OfflinePremiumClaimedAmount", amount)
+				player:SetAttribute("OfflinePremiumReceiptSerial",
+					(tonumber(player:GetAttribute("OfflinePremiumReceiptSerial")) or 0) + 1)
+			end)
+			if not feedbackOk then
+				warn("[PaidActionFulfillmentService] Offline10x feedback was deferred: "
+					.. tostring(feedbackError))
+			end
+			return true, amount
+		end, debug.traceback))
+
+		if not result[1] then
+			if mutationApplied and not saveCommitted then
+				pcall(function()
+					bank.Value = oldBank
+					player:SetAttribute("OfflineTabletCarry", oldCarry)
+				end)
+			end
+			warn("[PaidActionFulfillmentService] Offline10x recovered after an unexpected error: "
+				.. tostring(result[2]))
+			return false, "Offline claim failed safely"
 		end
-		-- OfflineEarningsService owns an in-memory presentation session. Publish
-		-- only after the payout and receipt are durable so that session cannot
-		-- offer or block a second claim based on stale premiumPending state.
-		player:SetAttribute("OfflinePremiumClaimedAmount", amount)
-		player:SetAttribute("OfflinePremiumReceiptSerial",
-			(tonumber(player:GetAttribute("OfflinePremiumReceiptSerial")) or 0) + 1)
-		return true, amount
+
+		return table.unpack(result, 2, result.n)
 	end)
 end
 
