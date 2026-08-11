@@ -50,15 +50,6 @@ local function GetSkinHexColor(skinName)
 	return DEFAULT_COLOR_HEX
 end
 
-local function escapeRichText(value)
-	return tostring(value or "")
-		:gsub("&", "&amp;")
-		:gsub("<", "&lt;")
-		:gsub(">", "&gt;")
-		:gsub('"', "&quot;")
-		:gsub("'", "&apos;")
-end
-
 local function PlayPopSound()
 	local s = Instance.new("Sound")
 	s.SoundId = TADA_SFX_ID
@@ -115,14 +106,8 @@ end
 -- ✨ ANIMATION LOGIC (FADE + CONFETTI)
 -- ============================================================================
 local activeHideTask = nil
-local lastNotificationSerial = 0
 
-local function ShowNotification(buyerName, productName, productKind, isFallback, serial)
-	serial = math.max(0, math.floor(tonumber(serial) or 0))
-	if serial > 0 then
-		if serial <= lastNotificationSerial then return end
-		lastNotificationSerial = serial
-	end
+local function ShowNotification(buyerName, skinName)
 	local screenGui = PlayerGui:FindFirstChild(UI_NAME)
 	if not screenGui then return end
 
@@ -130,21 +115,17 @@ local function ShowNotification(buyerName, productName, productKind, isFallback,
 	if not notificationLbl then return end
 
 	-- 1. Setup Maximum Rich Text Formatting
-	local productHexColor = productKind == "BaseSkin" and GetSkinHexColor(productName) or DEFAULT_COLOR_HEX
+	local padHexColor = GetSkinHexColor(skinName)
 	notificationLbl.RichText = true
 
-	if isFallback == true then
-		notificationLbl.Text = string.format(
-			"🎁 <b>Gift fallback delivered:</b> <font color='%s'><b>%s</b></font> 🎁",
-			productHexColor, escapeRichText(productName)
-		)
-	else
-		notificationLbl.Text = string.format(
-			"🎁 <b><font color='%s'>%s</font></b> gifted you <b><font color='%s'>%s</font></b>! 🎁",
-			PLAYER_COLOR_HEX, escapeRichText(buyerName),
-			productHexColor, escapeRichText(productName)
-		)
-	end
+	-- 🎨 NEW FORMAT: Emojis + Bright Green Player Name + Colored Pad Name + Bold Tags
+	notificationLbl.Text = string.format(
+		"🎁 <b><font color='%s'>%s</font></b> gifted you the <b><font color='%s'>%s Pad</font></b>! 🎁",
+		PLAYER_COLOR_HEX,
+		buyerName,
+		padHexColor,
+		skinName
+	)
 
 	-- 2. Reset State for Fade In
 	notificationLbl.Visible = true
@@ -181,18 +162,3 @@ end
 if NotifyGiftReceived then
 	NotifyGiftReceived.OnClientEvent:Connect(ShowNotification)
 end
-
-local function replayDurableGiftNotification()
-	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("GiftDeliveryNotificationSerial")) or 0))
-	if serial <= lastNotificationSerial then return end
-	ShowNotification(
-		player:GetAttribute("GiftDeliveryNotificationBuyer"),
-		player:GetAttribute("GiftDeliveryNotificationProduct"),
-		player:GetAttribute("GiftDeliveryNotificationKind"),
-		player:GetAttribute("GiftDeliveryNotificationFallback") == true,
-		serial
-	)
-end
-
-player:GetAttributeChangedSignal("GiftDeliveryNotificationSerial"):Connect(replayDurableGiftNotification)
-task.defer(replayDurableGiftNotification)

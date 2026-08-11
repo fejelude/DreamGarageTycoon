@@ -9,12 +9,7 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Debris = game:GetService("Debris")
-local ServerStorage = game:GetService("ServerStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
-local GlobalMoneyFrenzyService = require(ServerScriptService:WaitForChild("GlobalMoneyFrenzyService"))
-local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
-local PaidActionIntentStore = require(ServerScriptService:WaitForChild("PaidActionIntentStore"))
-local MutationRateLimiter = require(ServerScriptService:WaitForChild("MutationRateLimiter"))
+local GlobalMoneyFrenzyService = require(game:GetService("ServerScriptService"):WaitForChild("GlobalMoneyFrenzyService"))
 
 -- ⚙️ CONFIGURATION
 local DEV_PRODUCT_ID = 3509697462
@@ -27,10 +22,11 @@ local MAX_CLAIM_DISTANCE = 20
 local TycoonFolder = Workspace:WaitForChild(TYCOON_FOLDER_NAME)
 local TabletEvent  = ReplicatedStorage:FindFirstChild("TabletEvent")
 
-if not TabletEvent or not TabletEvent:IsA("RemoteEvent") then
-	error("[TabletServerHandler] Missing required ReplicatedStorage > TabletEvent RemoteEvent", 0)
+if not TabletEvent then
+	TabletEvent = Instance.new("RemoteEvent")
+	TabletEvent.Name = "TabletEvent"
+	TabletEvent.Parent = ReplicatedStorage
 end
-local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
 
 -- 🛡️ STATE MANAGEMENT
 local playerCooldowns          = {}
@@ -39,22 +35,8 @@ local nameToUserIdCache        = {}
 local thumbnailCache           = {}
 local pendingUserIdRequests    = {}
 local pendingThumbnailRequests = {}
-local pendingTabletIntents     = {}
 local USER_ID_LOOKUP_MAX_RETRIES = 4
 local USER_ID_LOOKUP_BASE_DELAY = 0.35
-local MAX_IDENTITY_CACHE_ENTRIES = 500
-
-local function trimCache(cache)
-	local count = 0
-	for _ in pairs(cache) do count += 1 end
-	if count <= MAX_IDENTITY_CACHE_ENTRIES then return end
-	local removed = 0
-	for key in pairs(cache) do
-		cache[key] = nil
-		removed += 1
-		if count - removed <= MAX_IDENTITY_CACHE_ENTRIES * 0.8 then break end
-	end
-end
 
 local function getUserIdCached(playerName)
 	if not playerName or playerName == "" then return nil end
@@ -89,7 +71,6 @@ local function getUserIdCached(playerName)
 
 	if success and userId then
 		nameToUserIdCache[playerName] = userId
-		trimCache(nameToUserIdCache)
 		return userId
 	end
 
@@ -107,18 +88,15 @@ local function getHeadshotCached(userId)
 	end
 
 	pendingThumbnailRequests[userId] = true
-	local ok, content, isReady = pcall(function()
-		return Players:GetUserThumbnailAsync(
-			userId,
-			Enum.ThumbnailType.HeadShot,
-			Enum.ThumbnailSize.Size420x420
-		)
-	end)
+	local content, isReady = Players:GetUserThumbnailAsync(
+		userId,
+		Enum.ThumbnailType.HeadShot,
+		Enum.ThumbnailSize.Size420x420
+	)
 	pendingThumbnailRequests[userId] = nil
 
-	if ok and isReady and content and content ~= "" then
+	if isReady and content and content ~= "" then
 		thumbnailCache[userId] = content
-		trimCache(thumbnailCache)
 		return content
 	end
 
@@ -281,12 +259,6 @@ TycoonFolder.ChildAdded:Connect(setupTablet)
 -- ============================================================================
 TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 	if type(action) ~= "string" or type(plotName) ~= "string" then return end
-	if action ~= "Claim" and action ~= "Prompt2X" then return end
-	if type(requestId) ~= "string" and type(requestId) ~= "number" then requestId = nil end
-	if type(requestId) == "string" then requestId = string.sub(requestId, 1, 64) end
-	if not MutationRateLimiter.Allow(player, "Tablet:" .. action, action == "Claim" and 4 or 2, action == "Claim" and 2 or 0.2, 1) then
-		return
-	end
 
 	local function respondClaim(success, payload)
 		TabletEvent:FireClient(player, "ClaimResult", plotName, success, payload, requestId)
@@ -331,41 +303,26 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 			return
 		end
 
-		local claimOk, claimResult = PlayerTransactionCoordinator.Run(player, "TabletClaim", function()
-			local paidIntent, intentError = PaidActionIntentStore.GetPending(player.UserId, DEV_PRODUCT_ID, "Tablet2x")
-			if paidIntent == nil then return false, intentError or "PurchasePending" end
-			if paidIntent then return false, "PurchasePending" end
+		local amount = pendingVal.Value
+
+		if amount > 0 then
+			pendingVal.Value = 0
+			local finalAmount = amount
 
 			local hs = player:FindFirstChild("HiddenStats")
-			local cash = hs and hs:FindFirstChild("Cash")
-			if not cash then return false, "MissingState" end
-			local amount = math.max(0, math.floor(tonumber(pendingVal.Value) or 0))
-			if amount <= 0 then return false, "NoEarnings" end
-
-			local originalCash = cash.Value
-			pendingVal.Value = 0
-			cash.Value += amount
-			local saveOk = TycoonAdminAPI:Invoke("SaveNow", player)
-			if saveOk ~= true then
-				cash.Value = originalCash
-				pendingVal.Value = amount
-				return false, "SaveFailed"
+			if hs and hs:FindFirstChild("Cash") then
+				hs.Cash.Value += finalAmount
 			end
-			return true, amount
-		end)
 
-		playerCooldowns[player.UserId] = os.clock()
-		if claimOk then
-			respondClaim(true, claimResult)
-			local tutorialAPI = ServerStorage:FindFirstChild("TutorialProgressAPI")
+			playerCooldowns[player.UserId] = os.clock()
+			respondClaim(true, finalAmount)
+			local tutorialAPI = game:GetService("ServerStorage"):FindFirstChild("TutorialProgressAPI")
 			if tutorialAPI and tutorialAPI:IsA("BindableFunction") then
 				task.spawn(function() tutorialAPI:Invoke("RecordObjective", player, "EarningsClaimed") end)
 			end
 		else
-			respondClaim(false, claimResult or "ClaimFailed")
-		end
-		if not claimOk and claimResult == "NoEarnings" then
 			playerCooldowns[player.UserId] = os.clock()
+			respondClaim(false, "NoEarnings")
 		end
 
 	elseif action == "Prompt2X" then
@@ -375,36 +332,14 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 
 		local amount = pendingVal.Value
 		if amount <= 0 then return end
-		local intentOk, intentId = PaidActionIntentStore.Create(player, DEV_PRODUCT_ID, "Tablet2x", {
-			PendingAmount = math.floor(amount),
-			PayoutAmount = math.floor(amount) * 2,
-			PlotName = plot.Name,
-		})
-		if not intentOk then return end
-		pendingTabletIntents[player.UserId] = intentId
 
-		local promptOk = pcall(function()
+		pcall(function()
 			MarketplaceService:PromptProductPurchase(player, DEV_PRODUCT_ID)
 		end)
-		if not promptOk then
-			PaidActionIntentStore.Cancel(player, DEV_PRODUCT_ID, intentId)
-			pendingTabletIntents[player.UserId] = nil
-		end
 	end
-end)
-
-MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
-	if productId ~= DEV_PRODUCT_ID then return end
-	local player = Players:GetPlayerByUserId(userId)
-	local intentId = pendingTabletIntents[userId]
-	if player and intentId and not wasPurchased then
-		PaidActionIntentStore.Cancel(player, DEV_PRODUCT_ID, intentId)
-	end
-	if not wasPurchased then pendingTabletIntents[userId] = nil end
 end)
 
 Players.PlayerRemoving:Connect(function(player)
 	playerCooldowns[player.UserId] = nil
 	promptCooldowns[player.UserId] = nil
-	pendingTabletIntents[player.UserId] = nil
 end)

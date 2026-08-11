@@ -57,7 +57,6 @@ local defaultLoadingText = loadingLabel.Text
 local hiddenGuis = {}
 local isOpen = false
 local savedFOV = 70
-local lastAdRewardReceiptSerial = 0
 
 local function getCamera()
 	return Workspace.CurrentCamera
@@ -217,7 +216,6 @@ local function showSuccess(rewardName, rewardColor)
 end
 
 local function openAdRewards()
-	if not AdRewardsConfig.IsConfigured() then return end
 	local camera = getCamera()
 
 	if camera then
@@ -310,7 +308,7 @@ UIButtonUtils.SetupButton(openButton, openAdRewards)
 UIButtonUtils.SetupButton(exitButton, closeAdRewards)
 
 UIButtonUtils.SetupButton(adButton, function()
-	if isRequestPending or not AdRewardsConfig.IsConfigured() then
+	if isRequestPending then
 		return
 	end
 
@@ -344,16 +342,6 @@ adRewardResultEvent.OnClientEvent:Connect(function(status, firstValue, secondVal
 	end
 end)
 
-local function replayDurableAdFeedback()
-	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("AdRewardReceiptSerial")) or 0))
-	if serial <= lastAdRewardReceiptSerial then return end
-	lastAdRewardReceiptSerial = serial
-	showSuccess(AdRewardsConfig.SUCCESS_REWARD_NAME, AdRewardsConfig.SUCCESS_REWARD_COLOR)
-end
-
-player:GetAttributeChangedSignal("AdRewardReceiptSerial"):Connect(replayDurableAdFeedback)
-task.defer(replayDurableAdFeedback)
-
 if adRewardsScreenGui then
 	adRewardsScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
 		if isOpen and not adRewardsScreenGui.Enabled then
@@ -372,11 +360,5 @@ setVisible(loadingLabel, false)
 setVisible(noAdsLabel, false)
 setVisible(adButton, false)
 
--- Disabled configurations stay completely hidden instead of advertising a
--- feature that cannot issue a valid developer-product receipt.
-if AdRewardsConfig.IsConfigured() then
-	task.defer(checkForAds, false)
-else
-	openButton.Visible = false
-	if adRewardsScreenGui then adRewardsScreenGui.Enabled = false end
-end
+-- Keep the Bonuses availability indicator useful before the panel is opened.
+task.defer(checkForAds, false)

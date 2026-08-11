@@ -3,12 +3,8 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
-local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
-local PaidActionIntentStore = require(ServerScriptService:WaitForChild("PaidActionIntentStore"))
-local MutationRateLimiter = require(ServerScriptService:WaitForChild("MutationRateLimiter"))
 
 local remotes = ReplicatedStorage:WaitForChild("RebirthRemotes")
 local requestRebirth = remotes:WaitForChild("RequestRebirth")
@@ -81,32 +77,9 @@ local function withRebirthLock(player, callback)
 	return success, message, snapshot
 end
 
-requestRebirth.OnServerInvoke = function(player, action, ...)
+requestRebirth.OnServerInvoke = function(player, action)
 	if action == "Snapshot" then
 		return true, getSnapshot(player)
-	end
-
-	if action == "PrepareRobuxRebirth" then
-		if not MutationRateLimiter.Allow(player, "PrepareRobuxRebirth", 2, 0.25) then
-			return false, "Please wait a moment."
-		end
-		local rebirth = getRebirth(player)
-		if rebirth >= RebirthConfig.MAX_REBIRTH then return false, "Max rebirth reached." end
-		local productId = RebirthConfig.SkipProductIds[rebirth]
-		if not productId then return false, "Robux rebirth is unavailable for this level." end
-		local ok, intentId = PaidActionIntentStore.Create(player, productId, "RebirthSkip", {
-			FromRebirth = rebirth,
-			ToRebirth = rebirth + 1,
-			CompensationWallet = RebirthConfig.GetCost(rebirth + 1),
-		})
-		if not ok then return false, intentId or "Unable to prepare the purchase." end
-		return true, productId, intentId, rebirth
-	end
-
-	if action == "CancelRobuxRebirth" then
-		local productId, intentId = ...
-		if type(intentId) ~= "string" then return false end
-		return PaidActionIntentStore.Cancel(player, productId, intentId)
 	end
 
 	if action ~= "CashRebirth" then
@@ -114,7 +87,6 @@ requestRebirth.OnServerInvoke = function(player, action, ...)
 	end
 
 	return withRebirthLock(player, function()
-		return PlayerTransactionCoordinator.Run(player, "CashRebirth", function()
 		local rebirth = getRebirth(player)
 
 		if rebirth >= RebirthConfig.MAX_REBIRTH then
@@ -139,7 +111,6 @@ requestRebirth.OnServerInvoke = function(player, action, ...)
 		local snapshot = getSnapshot(player)
 
 		return true, buildSuccessMessage(newRebirth), snapshot
-		end)
 	end)
 end
 

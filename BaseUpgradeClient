@@ -74,7 +74,6 @@ local watchedFocusGuis = {}
 local connectedCards = {}
 local currentBlur = nil 
 local isProcessingTransaction = false 
-local lastBasePurchaseFeedbackSerial = 0
 
 -- ============================================================================
 -- 🔊 SOUND ENGINE
@@ -105,9 +104,7 @@ local function ShowFeedback(message, statusType)
 	local feedback = getShopFeedback()
 	if not feedback then return end
 
-	if statusType == "RobuxPending" then
-		feedback:Success(message or "Purchase submitted. Grant is processing.", Color3.fromRGB(255, 220, 90))
-	elseif statusType == "CashSuccess" or statusType == "RobuxSuccess" or statusType == "EquipSuccess" then
+	if statusType == "CashSuccess" or statusType == "RobuxSuccess" or statusType == "EquipSuccess" then
 		PlaySound(statusType == "EquipSuccess" and "Equip" or statusType)
 		feedback:Success(message or "Purchase successful.")
 	else
@@ -132,27 +129,12 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 
 	if isBaseSkin then
 		if isPurchased then
-			if player:GetAttribute("BasePurchaseFeedbackKind") == "Legacy"
-				and (tonumber(player:GetAttribute("BasePurchaseFeedbackSerial")) or 0) <= lastBasePurchaseFeedbackSerial
-			then return end
-			ShowFeedback("Purchase submitted. Grant is processing.", "RobuxPending")
+			ShowFeedback("Purchase successful.", "RobuxSuccess")
 		else
 			ShowFeedback("Purchase cancelled.", "RobuxFail") -- ✅ Triggers specific Robux fail sound
 		end
 	end
 end)
-
-local function replayBasePurchaseFeedback()
-	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("BasePurchaseFeedbackSerial")) or 0))
-	if serial <= lastBasePurchaseFeedbackSerial then return end
-	lastBasePurchaseFeedbackSerial = serial
-	if player:GetAttribute("BasePurchaseFeedbackKind") ~= "Legacy" then return end
-	UIAudioConfig.HidePurchaseLoading()
-	ShowFeedback("Base skin purchase successful.", "RobuxSuccess")
-end
-
-player:GetAttributeChangedSignal("BasePurchaseFeedbackSerial"):Connect(replayBasePurchaseFeedback)
-task.defer(replayBasePurchaseFeedback)
 
 -- ============================================================================
 -- 🛠️ HELPER FUNCTIONS
@@ -638,3 +620,4 @@ task.spawn(function()
 	end
 	SetupShop()
 end)
+

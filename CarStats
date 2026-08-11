@@ -374,7 +374,6 @@ CarStats.Cars = {
 }
 
 local normalizedCarLookup = {}
-local ambiguousCarAliases = {}
 
 local function normalizeCarName(name)
 	name = tostring(name or "")
@@ -385,57 +384,22 @@ local function normalizeCarName(name)
 	return name
 end
 
-local function addAlias(alias, carId)
-	local normalized = normalizeCarName(alias)
-	if normalized == "" then return end
-
-	local existing = normalizedCarLookup[normalized]
-	if existing == nil then
-		normalizedCarLookup[normalized] = carId
-		return
-	end
-	if existing == carId then return end
-
-	local ids = ambiguousCarAliases[normalized] or {}
-	if existing ~= false then ids[existing] = true end
-	ids[carId] = true
-	ambiguousCarAliases[normalized] = ids
-	normalizedCarLookup[normalized] = false
-end
-
 for carId, stats in pairs(CarStats.Cars) do
-	addAlias(carId, carId)
-	if stats.Name then addAlias(stats.Name, carId) end
+	normalizedCarLookup[normalizeCarName(carId)] = carId
+	if stats.Name then
+		normalizedCarLookup[normalizeCarName(stats.Name)] = carId
+	end
 end
 
 function CarStats.GetCarId(carName)
 	if not carName then return nil end
 	if CarStats.Cars[carName] then return carName end
-	local normalized = normalizeCarName(carName)
-	local resolved = normalizedCarLookup[normalized]
-	if resolved == false then
-		local ids = {}
-		for carId in pairs(ambiguousCarAliases[normalized] or {}) do
-			table.insert(ids, carId)
-		end
-		table.sort(ids)
-		return nil, "AmbiguousCarAlias", ids
-	end
-	return resolved
+	return normalizedCarLookup[normalizeCarName(carName)]
 end
 
 function CarStats.GetCarStats(carName)
-	local carId, resolutionError, candidates = CarStats.GetCarId(carName)
-	return carId and CarStats.Cars[carId] or nil, carId, resolutionError, candidates
-end
-
-function CarStats.GetAmbiguousCarIds(alias)
-	local normalized = normalizeCarName(alias)
-	if normalizedCarLookup[normalized] ~= false then return nil end
-	local ids = {}
-	for carId in pairs(ambiguousCarAliases[normalized] or {}) do table.insert(ids, carId) end
-	table.sort(ids)
-	return ids
+	local carId = CarStats.GetCarId(carName)
+	return carId and CarStats.Cars[carId] or nil, carId
 end
 
 function CarStats.IsMythicalCar(carNameOrStats)

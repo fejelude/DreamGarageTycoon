@@ -31,9 +31,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
-local MutationRateLimiter = require(ServerScriptService:WaitForChild("MutationRateLimiter"))
 
 local REMOTES_FOLDER_NAME = "FreeRewardsRemotes"
 local GET_STATE_NAME = "GetFreeRewardsState"
@@ -50,9 +48,9 @@ local REWARD_CAR_NAME = "Windsor"
 local REWARD_WALLET_CASH = 250000
 
 local DATA_READY_TIMEOUT_SECONDS = 12
-local CLAIM_COOLDOWN_SECONDS = 5
+local CLAIM_COOLDOWN_SECONDS = 0.75
 local LIKE_ACK_COOLDOWN_SECONDS = 1
-local GROUP_STATE_CACHE_SECONDS = 60
+local GROUP_STATE_CACHE_SECONDS = 3
 local REQUIRED_WAIT_SECONDS = 8
 
 local SUCCESS_MESSAGE = "Reward claimed! The Windsor Car has been added to your inventory, and 250,000 Wallet Cash has been added to your account."
@@ -181,30 +179,21 @@ local function isInRewardsGroupFresh(player)
 
 	if not ok then
 		warn("⚠️ [FreeRewards] Group check failed for " .. player.Name .. ": " .. tostring(result))
-		return nil
+		return false
 	end
 
 	return result == true
 end
 
-local function isInRewardsGroupCached(player, forceRefresh)
+local function isInRewardsGroupCached(player)
 	local cached = groupStateCache[player]
 	local now = os.clock()
 
-	if cached and not forceRefresh and now - cached.CheckedAt < GROUP_STATE_CACHE_SECONDS then
+	if cached and now - cached.CheckedAt < GROUP_STATE_CACHE_SECONDS then
 		return cached.Value == true
-	end
-	if forceRefresh and not MutationRateLimiter.Allow(player, "FreeRewards:GroupLookup", 1, 1 / 30) then
-		return cached and cached.Value == true or false
-	end
-	if not MutationRateLimiter.AllowGlobal("FreeRewards:GroupLookup", 20, 2) then
-		return cached and cached.Value == true or false
 	end
 
 	local value = isInRewardsGroupFresh(player)
-	if value == nil then
-		return cached and cached.Value == true or false
-	end
 	groupStateCache[player] = {
 		CheckedAt = now,
 		Value = value,
@@ -229,7 +218,7 @@ local function buildClientState(player, useFreshGroupCheck)
 	if claimed then
 		groupJoined = true
 	elseif useFreshGroupCheck then
-		groupJoined = isInRewardsGroupCached(player, true)
+		groupJoined = isInRewardsGroupFresh(player)
 	else
 		groupJoined = isInRewardsGroupCached(player)
 	end
@@ -276,7 +265,9 @@ local function tryClaim(player)
 			return false, "You have already claimed this reward."
 		end
 
-		if not isInRewardsGroupCached(player, true) or not hasAcknowledgedLike(player) then
+		clearGroupCache(player)
+
+		if not isInRewardsGroupFresh(player) or not hasAcknowledgedLike(player) then
 			return false, "Complete both quests before claiming your reward."
 		end
 
@@ -302,9 +293,6 @@ local function tryClaim(player)
 end
 
 getStateFunction.OnServerInvoke = function(player)
-	if not MutationRateLimiter.Allow(player, "FreeRewards:GetState", 4, 0.5) then
-		return buildClientState(player, false)
-	end
 	if player:GetAttribute(DATA_READY_ATTRIBUTE) ~= true then
 		task.spawn(function()
 			if ensureStateReady(player, DATA_READY_TIMEOUT_SECONDS) and player.Parent then
@@ -313,11 +301,11 @@ getStateFunction.OnServerInvoke = function(player)
 		end)
 	end
 
-	return buildClientState(player, false)
+	clearGroupCache(player)
+	return buildClientState(player, true)
 end
 
 acknowledgeLikeEvent.OnServerEvent:Connect(function(player)
-	if not MutationRateLimiter.Allow(player, "FreeRewards:AcknowledgeLike", 2, 0.2) then return end
 	if hasClaimed(player) then
 		return
 	end
@@ -334,9 +322,6 @@ acknowledgeLikeEvent.OnServerEvent:Connect(function(player)
 end)
 
 claimFunction.OnServerInvoke = function(player)
-	if not MutationRateLimiter.Allow(player, "FreeRewards:Claim", 1, 0.2) then
-		return false, "Please wait a moment before trying again.", buildClientState(player, false)
-	end
 	return tryClaim(player)
 end
 

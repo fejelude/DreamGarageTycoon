@@ -1444,9 +1444,6 @@ local PRELOAD_CLASSES = {
 	Sound = true,
 	Decal = true,
 	Texture = true,
-	ParticleEmitter = true,
-	Trail = true,
-	Beam = true,
 	MeshPart = true,
 	SpecialMesh = true,
 	Animation = true,
@@ -1489,102 +1486,20 @@ local function shouldPreload(inst)
 	return true
 end
 
-local function describePreloadInstance(inst)
-	local contentIds = {}
-
-	local function addProperty(propertyName)
-		local ok, value = pcall(function()
-			return inst[propertyName]
-		end)
-		if ok and hasContentId(value) then
-			table.insert(contentIds, propertyName .. "=" .. value)
-		end
-	end
-
-	if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
-		addProperty("Image")
-	elseif inst:IsA("Sound") then
-		addProperty("SoundId")
-	elseif inst:IsA("Decal") or inst:IsA("Texture")
-		or inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam") then
-		addProperty("Texture")
-	elseif inst:IsA("Animation") then
-		addProperty("AnimationId")
-	elseif inst:IsA("VideoFrame") then
-		addProperty("Video")
-	elseif inst:IsA("MeshPart") then
-		addProperty("MeshId")
-		addProperty("TextureID")
-	elseif inst:IsA("SpecialMesh") then
-		addProperty("MeshId")
-		addProperty("TextureId")
-	elseif inst:IsA("SurfaceAppearance") then
-		addProperty("ColorMap")
-		addProperty("MetalnessMap")
-		addProperty("NormalMap")
-		addProperty("RoughnessMap")
-	end
-
-	local fullName = inst.Parent and inst:GetFullName() or inst.Name
-	local suffix = #contentIds > 0 and (" | " .. table.concat(contentIds, ", ")) or ""
-	return fullName .. " <" .. inst.ClassName .. ">" .. suffix
-end
-
-local function diagnoseOpaquePreloadFailures(preloadList)
-	local diagnostics = {}
-
-	for _, inst in ipairs(preloadList) do
-		local failures = {}
-		local ok, err = pcall(function()
-			ContentProvider:PreloadAsync({ inst }, function(assetId, status)
-				if status and status.Name and status.Name ~= "Success" then
-					local reportedId = tostring(assetId or "")
-					if reportedId == "" then reportedId = "ID not reported" end
-					table.insert(failures, reportedId .. " [" .. status.Name .. "]")
-				end
-			end)
-		end)
-
-		if not ok then
-			table.insert(failures, "PreloadAsync error: " .. tostring(err))
-		end
-
-		if #failures > 0 then
-			table.insert(diagnostics, describePreloadInstance(inst) .. " => " .. table.concat(failures, ", "))
-		end
-	end
-
-	if #diagnostics > 0 then
-		warn("[LoadingScreen] Failed preload instance diagnostics:\n - " .. table.concat(diagnostics, "\n - "))
-	else
-		warn("[LoadingScreen] Roblox reported an opaque preload failure, but it did not reproduce during per-instance diagnostics.")
-	end
-end
-
 local function buildPreloadList()
 	local preloadList = {}
-	local seen = {}
-
-	local function addInstance(inst)
-		if inst and not seen[inst] and shouldPreload(inst) then
-			seen[inst] = true
-			table.insert(preloadList, inst)
-		end
-	end
 
 	if loadingGui then
-		-- Preload individual content-bearing descendants. Passing the ScreenGui
-		-- root makes Roblox report failures as an untraceable "unknown asset".
-		for _, inst in ipairs(loadingGui:GetDescendants()) do
-			addInstance(inst)
-		end
+		table.insert(preloadList, loadingGui)
 	end
 
 	local folder = ReplicatedStorage:FindFirstChild(PRELOAD_FOLDER_NAME)
 
 	if folder then
 		for _, inst in ipairs(folder:GetDescendants()) do
-			addInstance(inst)
+			if shouldPreload(inst) then
+				table.insert(preloadList, inst)
+			end
 		end
 	end
 
@@ -1606,7 +1521,6 @@ local function preloadAssets()
 	local preloadOk = true
 	local preloadErr = nil
 	local failedAssets = {}
-	local opaqueFailureCount = 0
 
 	local started = os.clock()
 
@@ -1618,8 +1532,7 @@ local function preloadAssets()
 				if status and status.Name and status.Name ~= "Success" then
 					local assetLabel = tostring(assetId or "")
 					if assetLabel == "" then
-						opaqueFailureCount += 1
-						assetLabel = "asset ID not reported by Roblox"
+						assetLabel = "unknown asset"
 					end
 					table.insert(failedAssets, assetLabel .. " [" .. status.Name .. "]")
 				end
@@ -1653,13 +1566,6 @@ local function preloadAssets()
 
 	if #failedAssets > 0 then
 		warn("[LoadingScreen] Some assets failed to preload:", table.concat(failedAssets, ", "))
-	end
-
-	if opaqueFailureCount > 0 then
-		-- Diagnostics run after the main batch so unavailable assets never block
-		-- the loading sequence. The next warning names the exact Studio instance
-		-- and content property even when Roblox omits the callback asset ID.
-		task.spawn(diagnoseOpaquePreloadFailures, table.clone(preloadList))
 	end
 
 	tweenProgressAndWait(PHASE_PRELOAD_TO, 0.4)
