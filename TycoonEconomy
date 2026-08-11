@@ -36,11 +36,56 @@ for id, stats in pairs(CarStats.Cars) do
 	CarLookup[id] = stats
 end
 
+local function resolveCarStats(carName)
+	if type(carName) ~= "string" or carName == "" then
+		return nil, nil
+	end
+
+	local direct = CarLookup[carName]
+	if direct then
+		return direct, carName
+	end
+
+	if CarStats.GetCarStats then
+		local stats, canonicalId = CarStats.GetCarStats(carName)
+		return stats, canonicalId
+	end
+
+	return nil, nil
+end
+
 local function getCarStats(carOrName)
-	local carName = typeof(carOrName) == "Instance"
-		and (carOrName:GetAttribute("ToolId") or carOrName.Name)
-		or carOrName
-	return CarLookup[carName] or (CarStats.GetCarStats and CarStats.GetCarStats(carName))
+	if typeof(carOrName) ~= "Instance" then
+		return resolveCarStats(carOrName)
+	end
+
+	local persistedToolId = carOrName:GetAttribute("ToolId")
+	local stats = nil
+	local canonicalId = nil
+
+	if type(persistedToolId) == "string" and persistedToolId ~= "" then
+		stats, canonicalId = resolveCarStats(persistedToolId)
+	end
+
+	if stats then
+		return stats, canonicalId
+	end
+
+	-- Older or manually placed models can carry a stale/empty ToolId. The model
+	-- name is still server-owned, so use it as a migration fallback and repair
+	-- the attribute for later saving/economy passes.
+	stats, canonicalId = resolveCarStats(carOrName.Name)
+	if stats and canonicalId then
+		carOrName:SetAttribute("ToolId", canonicalId)
+		warn(string.format(
+			"⚠️ [TycoonEconomy] Repaired invalid ToolId '%s' on %s to '%s'.",
+			tostring(persistedToolId),
+			carOrName:GetFullName(),
+			canonicalId
+		))
+	end
+
+	return stats, canonicalId
 end
 
 -- ============================================================================

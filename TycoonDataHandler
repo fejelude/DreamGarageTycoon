@@ -157,6 +157,7 @@ local FREE_REWARDS_CLAIMED_ATTRIBUTE = "FreeRewardsClaimed"
 local PROMO_CODE_REDEEMED_ATTRIBUTE = "PromoCodesRedeemedJson"
 local DATA_READY_ATTRIBUTE = "TycoonDataLoaded"
 local DATA_PHASE_ATTRIBUTE = "TycoonDataPhase"
+local DATA_KICK_REASON_ATTRIBUTE = "TycoonDataKickReason"
 local DAILY_REWARDS_SECONDS_PER_DAY = 24 * 60 * 60
 
 local function finiteNumber(value, defaultValue, minimum, maximum)
@@ -167,6 +168,20 @@ local function finiteNumber(value, defaultValue, minimum, maximum)
 	if minimum ~= nil then value = math.max(minimum, value) end
 	if maximum ~= nil then value = math.min(maximum, value) end
 	return value
+end
+
+local function kickForDataSafety(player, reasonCode, userMessage, serverDetail)
+	if not player then return end
+
+	player:SetAttribute(DATA_KICK_REASON_ATTRIBUTE, reasonCode)
+	warn(string.format(
+		"❌ [TycoonDataHandler][%s] Kicking %s (%d): %s",
+		reasonCode,
+		player.Name,
+		player.UserId,
+		tostring(serverDetail or userMessage)
+	))
+	player:Kick(string.format("[%s] %s", reasonCode, userMessage))
 end
 
 local function validPersistentId(value)
@@ -3358,41 +3373,94 @@ local function startLeaseRenewal(player)
 
 			local now = os.time()
 			local rejected = false
-			local ok, result = pcall(function()
-				return PlayerDataStore:UpdateAsync(session.ProfileKey, function(current)
-					current = type(current) == "table" and current or {}
-					local lease = type(current[PROFILE_LEASE_FIELD]) == "table" and current[PROFILE_LEASE_FIELD] or nil
-					if not lease or lease.Token ~= session.LeaseToken
-						or math.floor(finiteNumber(lease.Version, 0, 0)) ~= session.LeaseVersion
-						or math.floor(finiteNumber(current[PROFILE_LEASE_VERSION_FIELD], 0, 0)) ~= session.LeaseVersion
-					then
-						rejected = true
-						return nil
-					end
-					lease.JobId = game.JobId
-					lease.PlaceId = game.PlaceId
-					lease.AcquiredAt = session.LeaseAcquiredAt
-					lease.Version = session.LeaseVersion
-					lease.ExpiresAt = now + PROFILE_LEASE_SECONDS
-					lease.UpdatedAt = now
-					current[PROFILE_LEASE_FIELD] = lease
-					current[PROFILE_LEASE_VERSION_FIELD] = session.LeaseVersion
-					return current
+			local rejectionDetail = nil
+			local renewed = false
+			local lastRenewError = "UpdateAsync returned no result"
+
+			for attempt = 1, MAX_RETRIES do
+				rejected = false
+				rejectionDetail = nil
+
+				local ok, result = pcall(function()
+					return PlayerDataStore:UpdateAsync(session.ProfileKey, function(current)
+						-- UpdateAsync may rerun this transform. These flags must describe
+						-- only the latest invocation, not an abandoned callback attempt.
+						rejected = false
+						rejectionDetail = nil
+						current = type(current) == "table" and current or {}
+						local lease = type(current[PROFILE_LEASE_FIELD]) == "table" and current[PROFILE_LEASE_FIELD] or nil
+						local leaseVersion = math.floor(finiteNumber(lease and lease.Version, 0, 0))
+						local rootVersion = math.floor(finiteNumber(current[PROFILE_LEASE_VERSION_FIELD], 0, 0))
+						if not lease or lease.Token ~= session.LeaseToken
+							or leaseVersion ~= session.LeaseVersion
+							or rootVersion ~= session.LeaseVersion
+						then
+							rejected = true
+							rejectionDetail = string.format(
+								"lease mismatch (expected version %d; stored lease version %d; root version %d; stored JobId %s)",
+								session.LeaseVersion,
+								leaseVersion,
+								rootVersion,
+								tostring(lease and lease.JobId or "missing")
+							)
+							return nil
+						end
+						lease.JobId = game.JobId
+						lease.PlaceId = game.PlaceId
+						lease.AcquiredAt = session.LeaseAcquiredAt
+						lease.Version = session.LeaseVersion
+						lease.ExpiresAt = now + PROFILE_LEASE_SECONDS
+						lease.UpdatedAt = now
+						current[PROFILE_LEASE_FIELD] = lease
+						current[PROFILE_LEASE_VERSION_FIELD] = session.LeaseVersion
+						return current
+					end)
 				end)
-			end)
+
+				if rejected then
+					break
+				end
+				if ok and result ~= nil then
+					renewed = true
+					break
+				end
+
+				lastRenewError = ok and "UpdateAsync returned no result" or tostring(result)
+				if attempt < MAX_RETRIES then
+					task.wait(0.35 * attempt)
+				end
+			end
 
 			if rejected then
 				session.LeaseLost = true
 				player:SetAttribute(DATA_PHASE_ATTRIBUTE, "LeaseLost")
-				player:Kick("Your data session could not be kept safe. Please rejoin.")
+				kickForDataSafety(
+					player,
+					"DGT-LEASE-LOST",
+					"Your data session could not be kept safe. Please rejoin.",
+					rejectionDetail
+				)
 				return
-			elseif ok and result ~= nil then
+			elseif renewed then
 				session.LeaseExpiresAt = now + PROFILE_LEASE_SECONDS
 			elseif now >= finiteNumber(session.LeaseExpiresAt, 0, 0) then
 				session.LeaseLost = true
 				player:SetAttribute(DATA_PHASE_ATTRIBUTE, "LeaseLost")
-				player:Kick("Your data session could not be kept safe. Please rejoin.")
+				kickForDataSafety(
+					player,
+					"DGT-LEASE-EXPIRED",
+					"Your data session could not be renewed safely. Please rejoin.",
+					lastRenewError
+				)
 				return
+			else
+				warn(string.format(
+					"⚠️ [TycoonDataHandler][DGT-LEASE-RETRY] Lease renewal deferred for %s (%d); expires in %d seconds: %s",
+					player.Name,
+					player.UserId,
+					math.max(0, finiteNumber(session.LeaseExpiresAt, now, 0) - now),
+					lastRenewError
+				))
 			end
 		end
 	end)
@@ -3502,14 +3570,27 @@ local function InitializePlayer(player)
 	local loadSuccess = false
 	local loadErr = nil
 	local leaseDenied = false
+	local leaseDeniedDetail = nil
 	for attempt = 1, MAX_RETRIES do
+		leaseDenied = false
+		leaseDeniedDetail = nil
 		loadSuccess, loadErr = pcall(function()
 			local now = os.time()
 			data = PlayerDataStore:UpdateAsync(key, function(current)
+				-- UpdateAsync can rerun this transform after contention. Do not let
+				-- a rejected abandoned invocation poison the final successful one.
+				leaseDenied = false
+				leaseDeniedDetail = nil
 				current = type(current) == "table" and current or {}
 				local lease = type(current[PROFILE_LEASE_FIELD]) == "table" and current[PROFILE_LEASE_FIELD] or nil
 				if lease and lease.Token ~= session.LeaseToken and finiteNumber(lease.ExpiresAt, 0, 0) > now then
 					leaseDenied = true
+					leaseDeniedDetail = string.format(
+						"active lease owned by JobId %s in PlaceId %s until %d",
+						tostring(lease.JobId or "unknown"),
+						tostring(lease.PlaceId or "unknown"),
+						math.floor(finiteNumber(lease.ExpiresAt, 0, 0))
+					)
 					return nil
 				end
 
@@ -3547,10 +3628,23 @@ local function InitializePlayer(player)
 
 	if leaseDenied then
 		SessionData[player] = nil
-		player:Kick("Your data is active in another server. Please wait a moment, then rejoin.")
+		kickForDataSafety(
+			player,
+			"DGT-LEASE-CONFLICT",
+			"Your data is active in another server. Please wait a moment, then rejoin.",
+			leaseDeniedDetail
+		)
 		return
 	end
-	if not loadSuccess or data == nil then player:Kick("Data Load Error. Rejoin.") return end
+	if not loadSuccess or data == nil then
+		kickForDataSafety(
+			player,
+			"DGT-DATA-LOAD",
+			"Your data could not be loaded safely. Please rejoin.",
+			loadErr
+		)
+		return
+	end
 	local acquiredLease = type(data[PROFILE_LEASE_FIELD]) == "table" and data[PROFILE_LEASE_FIELD] or {}
 	session.LeaseExpiresAt = math.floor(finiteNumber(acquiredLease.ExpiresAt, os.time() + PROFILE_LEASE_SECONDS, 0))
 	session.LeaseVersion = math.max(1, math.floor(finiteNumber(acquiredLease.Version, 1, 1)))
@@ -3845,7 +3939,12 @@ local function InitializePlayer(player)
 			player:SetAttribute(DATA_PHASE_ATTRIBUTE, "WorldLoadFailed")
 			warn("⚠️ [TycoonDataHandler] Refusing to mark profile Ready because the saved layout could not be projected for " .. player.Name)
 			releaseProfileLeaseWithoutSave(SessionData[player])
-			player:Kick("Your garage could not be loaded safely. Please rejoin.")
+			kickForDataSafety(
+				player,
+				"DGT-WORLD-LOAD",
+				"Your garage could not be loaded safely. Please rejoin.",
+				string.format("plot=%s, saved layout records=%d", tostring(plotName), #data.Layout)
+			)
 			return
 		end
 	end
