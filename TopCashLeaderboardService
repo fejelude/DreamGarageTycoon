@@ -20,11 +20,11 @@ local LocalizationService = game:GetService("LocalizationService")
 local LEADERBOARD_ROOT_NAME = "LeaderboardFunction"
 local LEADERBOARD_SIZE = 50
 
-local SAVE_INTERVAL_SECONDS = 30
+local SAVE_INTERVAL_SECONDS = 120
 local SAVE_STAGGER_SECONDS = 0.25
-local GLOBAL_FETCH_INTERVAL_SECONDS = 30
-local RENDER_INTERVAL_SECONDS = 5
-local WALLET_WATCH_INTERVAL_SECONDS = 5
+local GLOBAL_FETCH_INTERVAL_SECONDS = 120
+local RENDER_INTERVAL_SECONDS = 10
+local WALLET_WATCH_INTERVAL_SECONDS = 10
 local PROFILE_CACHE_SECONDS = 300
 
 -- OrderedDataStore values must be integers. This cap stays safely below the

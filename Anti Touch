@@ -70,3 +70,7 @@ local function onTouch(hit)
 end
 
 plate.Touched:Connect(onTouch)
+
+Players.PlayerRemoving:Connect(function(player)
+	debounces[player.UserId] = nil
+end)

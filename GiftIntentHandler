@@ -1,33 +1,15 @@
--- [[ SERVER SCRIPT: GiftIntentHandler (HARDENED) ]]
--- Purpose: Creates gift remotes and owns the server-authoritative Robux gift intent.
+-- Purpose: Validates Robux gift requests and persists versioned gift intents.
 -- Runs on: Server
--- Location: ServerScriptService
+-- Location: ServerScriptService > GiftIntentHandler
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
-local DataStoreService = game:GetService("DataStoreService")
-local StarterGui = game:GetService("StarterGui")
-local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
-local GamePassConfig = require(ReplicatedStorage:WaitForChild("GamePassConfig"))
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
--- Studio may keep the two gift Developer Product ids as attributes on their
--- buttons. Register those server-side; clients never get to nominate an id.
-local shopGui = StarterGui:FindFirstChild("ShopUI")
-local giftButtons = shopGui and shopGui:FindFirstChild("GiftButtons", true)
-if not giftButtons then
-	warn("[GiftIntentHandler] StarterGui > ShopUI > ... > GiftButtons was not found; button-attribute Game Pass gift IDs cannot be registered")
-end
-for buttonName, passKey in pairs({ GiftExclusive = "Exclusive", Gift2xMoney = "DoubleMoney" }) do
-	local button = giftButtons and giftButtons:FindFirstChild(buttonName)
-	local passInfo = GamePassConfig.Passes[passKey]
-	local productId = passInfo and tonumber(passInfo.GiftProductId)
-	if (not productId or productId <= 0) and button then
-		productId = tonumber(button:GetAttribute("DeveloperProductId") or button:GetAttribute("ProductId"))
-	end
-	if productId and productId > 0 then
-		GiftProductRegistry.RegisterGamePassGift(productId, passKey, passInfo)
-	end
-end
+local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
+local GiftIntentStore = require(ServerScriptService:WaitForChild("GiftIntentStore"))
+local MutationRateLimiter = require(ServerScriptService:WaitForChild("MutationRateLimiter"))
 
 local function requireInstance(parent, name, className, fullPath)
 	local instance = parent:WaitForChild(name, 15)
@@ -46,178 +28,88 @@ requireInstance(Remotes, "NotifyGiftReceived", "RemoteEvent", "ReplicatedStorage
 requireInstance(Remotes, "GlobalChatBroadcast", "RemoteEvent", "ReplicatedStorage > GiftRemotes > GlobalChatBroadcast")
 requireInstance(Remotes, "GiftPurchaseResult", "RemoteEvent", "ReplicatedStorage > GiftRemotes > GiftPurchaseResult")
 
--- { [buyerUserId] = { ReceiverUserId, ProductId, CreatedAt, ExpiresAt } }
-local pendingGifts = {}
-local lastIntentTime = {}
-local intentStore = DataStoreService:GetDataStore("PendingRobuxGiftIntents_V1")
+local activeClientIntents = {} -- [buyerUserId] = { [productId] = intentId }
 
-local INTENT_COOLDOWN = 0.75
-local INTENT_TTL = 30 * 60
-local function intentKey(userId) return "Buyer_" .. tostring(userId) end
-
-local function loadIntent(buyerUserId)
-	if pendingGifts[buyerUserId] then return pendingGifts[buyerUserId] end
-	local ok, stored = pcall(function() return intentStore:GetAsync(intentKey(buyerUserId)) end)
-	if ok and type(stored) == "table" then pendingGifts[buyerUserId] = stored end
-	return pendingGifts[buyerUserId]
+local function setLocalIntent(buyerUserId, productId, intentId)
+	activeClientIntents[buyerUserId] = activeClientIntents[buyerUserId] or {}
+	activeClientIntents[buyerUserId][productId] = intentId
 end
 
-local function pruneExpiredIntent(buyerUserId)
-	local intent = loadIntent(buyerUserId)
-	if intent and (tonumber(intent.ExpiresAt) or 0) <= os.time() then
-		pendingGifts[buyerUserId] = nil
-		pcall(function() intentStore:RemoveAsync(intentKey(buyerUserId)) end)
-		return nil
+local function clearLocalIntent(buyerUserId, productId, intentId)
+	local byProduct = activeClientIntents[buyerUserId]
+	if not byProduct then return end
+	if intentId == nil or byProduct[productId] == intentId then
+		byProduct[productId] = nil
 	end
-	return intent
+	if next(byProduct) == nil then activeClientIntents[buyerUserId] = nil end
 end
 
-local function validateIntentRequest(buyer, productId, receiverUserId)
-	if not buyer or not buyer.Parent then
-		return false, "Buyer left the server"
+local function validateReceiver(buyer, receiverUserId)
+	if typeof(receiverUserId) ~= "number" then return nil, "Invalid receiver" end
+	receiverUserId = math.floor(receiverUserId)
+	if receiverUserId == buyer.UserId then return nil, "You cannot gift yourself" end
+	local receiver = Players:GetPlayerByUserId(receiverUserId)
+	if not receiver then return nil, "Player left the server" end
+	if receiver:GetAttribute("Setting_ReceiveGiftsEnabled") == false then
+		return nil, receiver.DisplayName .. " has Receive Gifts disabled"
 	end
+	return receiver
+end
 
-	if typeof(productId) ~= "number" or productId <= 0 or productId ~= productId then
-		return false, "Invalid gift product"
-	end
-
-	if not GiftProductRegistry.IsGiftable(productId) then
-		return false, "This product cannot be gifted"
-	end
-
-	if typeof(receiverUserId) ~= "number" then
-		return false, "Invalid receiver"
-	end
-
-	if receiverUserId == buyer.UserId then
-		return false, "You cannot gift yourself"
-	end
-
-	local now = os.clock()
-	if lastIntentTime[buyer.UserId] and (now - lastIntentTime[buyer.UserId]) < INTENT_COOLDOWN then
+local function createIntent(buyer, productId, receiverUserId)
+	if not buyer or not buyer.Parent then return false, "Buyer left the server" end
+	if not MutationRateLimiter.Allow(buyer, "CreateRobuxGiftIntent", 2, 0.5) then
 		return false, "Please wait a moment"
 	end
-	lastIntentTime[buyer.UserId] = now
-
-	local receiverPlayer = Players:GetPlayerByUserId(receiverUserId)
-	if not receiverPlayer then
-		return false, "Player left the server"
+	if not MutationRateLimiter.AllowGlobal("RobuxGiftIntentWrites", 20, 5) then
+		return false, "Gift service is busy. Please try again shortly."
 	end
-	local product = GiftProductRegistry.GetByProductId(productId)
-	if product and product.OwnershipAttribute and receiverPlayer:GetAttribute(product.OwnershipAttribute) == true then
-		return false, receiverPlayer.Name .. " already owns this perk"
+	productId = math.floor(tonumber(productId) or 0)
+	local productInfo = GiftProductRegistry.GetByProductId(productId)
+	if not productInfo or productInfo.Giftable ~= true then
+		return false, "This product cannot be gifted"
+	end
+	local receiver, receiverError = validateReceiver(buyer, receiverUserId)
+	if not receiver then return false, receiverError end
+	if productInfo.OwnershipAttribute and receiver:GetAttribute(productInfo.OwnershipAttribute) == true then
+		return false, receiver.DisplayName .. " already owns this perk"
 	end
 
-	return true
+	local ok, message, intentId = GiftIntentStore.Create(buyer, productId, receiver, productInfo)
+	if ok then setLocalIntent(buyer.UserId, productId, intentId) end
+	return ok, message, intentId
 end
 
-local function setIntent(buyer, productId, receiverUserId)
-	local valid, message = validateIntentRequest(buyer, productId, receiverUserId)
-	if not valid then
-		return false, message
-	end
+CreateIntentFunction.OnServerInvoke = createIntent
 
-	local existing = pruneExpiredIntent(buyer.UserId)
-	if existing then
-		if existing.ProductId == math.floor(productId) and existing.ReceiverUserId == receiverUserId then
-			return true, "Gift ready"
-		end
-		return false, "Another gift purchase is already pending"
-	end
-
-	local now = os.time()
-	pendingGifts[buyer.UserId] = {
-		ReceiverUserId = receiverUserId,
-		ProductId = math.floor(productId),
-		CreatedAt = now,
-		ExpiresAt = now + INTENT_TTL,
-	}
-	local saved, saveErr = pcall(function()
-		intentStore:SetAsync(intentKey(buyer.UserId), pendingGifts[buyer.UserId])
-	end)
-	if not saved then
-		pendingGifts[buyer.UserId] = nil
-		return false, "Unable to securely save gift intent: " .. tostring(saveErr)
-	end
-
-	return true, "Gift ready"
-end
-
-CreateIntentFunction.OnServerInvoke = function(buyer, productId, receiverUserId)
-	return setIntent(buyer, productId, receiverUserId)
-end
-
--- Backwards-compatible event path. New clients use CreateGiftIntent so the
--- purchase prompt only opens after the server has committed the intent.
+-- Compatibility for older clients. It creates the same durable record, but
+-- callers should use CreateGiftIntent so they can keep the returned intent id.
 SetIntentEvent.OnServerEvent:Connect(function(buyer, receiverUserId, productId)
-	if typeof(productId) ~= "number" then
-		return
-	end
-	setIntent(buyer, productId, receiverUserId)
+	createIntent(buyer, productId, receiverUserId)
 end)
 
-CancelIntentEvent.OnServerEvent:Connect(function(buyer, productId)
-	local intent = pendingGifts[buyer.UserId]
-	if not intent then
-		return
-	end
+CancelIntentEvent.OnServerEvent:Connect(function(buyer, productId, intentId)
+	if not MutationRateLimiter.Allow(buyer, "CancelRobuxGiftIntent", 3, 1) then return end
+	if not MutationRateLimiter.AllowGlobal("RobuxGiftIntentCleanupWrites", 30, 10) then return end
+	productId = math.floor(tonumber(productId) or 0)
+	if productId <= 0 then return end
+	intentId = type(intentId) == "string" and intentId
+		or (activeClientIntents[buyer.UserId] and activeClientIntents[buyer.UserId][productId])
+	if not intentId then return end
+	GiftIntentStore.Cancel(buyer.UserId, productId, intentId)
+	clearLocalIntent(buyer.UserId, productId, intentId)
+end)
 
-	if typeof(productId) == "number" and intent.ProductId ~= math.floor(productId) then
-		return
-	end
-
-	pendingGifts[buyer.UserId] = nil
-	pcall(function() intentStore:RemoveAsync(intentKey(buyer.UserId)) end)
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
+	local byProduct = activeClientIntents[userId]
+	local intentId = byProduct and byProduct[productId]
+	if not intentId then return end
+	local changed = GiftIntentStore.MarkPromptFinished(userId, productId, intentId, wasPurchased == true)
+	if changed and wasPurchased ~= true then clearLocalIntent(userId, productId, intentId) end
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-	-- Do not discard an accepted intent here. Roblox may deliver the receipt after
-	-- the purchaser disconnects; keeping it prevents a retry from changing target.
-	lastIntentTime[player.UserId] = nil
+	-- The durable intent remains authoritative after disconnect. Local state is
+	-- only a convenience for correlating this server's prompt-finished callback.
+	activeClientIntents[player.UserId] = nil
 end)
-
--- ReceiptRouter API. Intents are consumed only after the receipt is fully
--- granted and marked, so receipt retries keep the same target.
-_G.GetGiftIntent = function(buyerUserId, productId, consume)
-	local intent = pruneExpiredIntent(buyerUserId)
-	if not intent then
-		return nil, "NoIntent"
-	end
-
-	if typeof(productId) == "number" and intent.ProductId ~= math.floor(productId) then
-		return nil, "ProductMismatch", intent
-	end
-
-	if consume then
-		pendingGifts[buyerUserId] = nil
-	end
-
-	return intent, nil
-end
-
-_G.ClearGiftIntent = function(buyerUserId, productId)
-	local intent = pendingGifts[buyerUserId]
-	if not intent then return false end
-
-	if typeof(productId) == "number" and intent.ProductId ~= math.floor(productId) then
-		return false
-	end
-
-	pendingGifts[buyerUserId] = nil
-	pcall(function() intentStore:RemoveAsync(intentKey(buyerUserId)) end)
-	return true
-end
-
--- Backwards-compatible API for older scripts.
-_G.GetGiftReceiver = function(buyerUserId, consume)
-	local intent = pruneExpiredIntent(buyerUserId)
-	local receiverId = intent and intent.ReceiverUserId
-
-	if receiverId and consume then
-		pendingGifts[buyerUserId] = nil
-	end
-
-	return receiverId
-end
-
-return {}

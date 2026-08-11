@@ -99,7 +99,7 @@ local function playAnimation(id)
 
 	if not success or not newTrack then
 		warn("Failed to load animation ID: " .. id)
-		return
+		return false
 	end
 
 	-- 3. Configure Track
@@ -107,7 +107,14 @@ local function playAnimation(id)
 	newTrack.Looped = true -- We loop it so it plays for the full duration we choose
 
 	-- 4. Play with fade
-	newTrack:Play(FADE_TIME)
+	local played, playError = pcall(function()
+		newTrack:Play(FADE_TIME)
+	end)
+	if not played then
+		warn("Failed to play animation ID " .. tostring(id) .. ": " .. tostring(playError))
+		pcall(function() newTrack:Destroy() end)
+		return false
+	end
 
 	-- 5. Stop previous track smoothly
 	if currentTrack then
@@ -131,18 +138,34 @@ local function playAnimation(id)
 
 	-- Wait for the determined time before switching to the next
 	task.wait(waitTime)
+	return true
 end
 
 -- MAIN LOOP
-while true do
+local failureBackoff = 0.5
+while npc.Parent and humanoid.Parent and humanoid.Health > 0 do
 	if RANDOMIZE then
 		-- Pick a random ID
 		local randomId = animationIds[math.random(1, #animationIds)]
-		playAnimation(randomId)
+		if playAnimation(randomId) then
+			failureBackoff = 0.5
+		else
+			task.wait(failureBackoff)
+			failureBackoff = math.min(failureBackoff * 2, 10)
+		end
 	else
 		-- Play in order
 		for _, id in ipairs(animationIds) do
-			playAnimation(id)
+			if not npc.Parent or humanoid.Health <= 0 then break end
+			if playAnimation(id) then
+				failureBackoff = 0.5
+			else
+				task.wait(failureBackoff)
+				failureBackoff = math.min(failureBackoff * 2, 10)
+			end
 		end
 	end
 end
+
+if currentTrack then pcall(function() currentTrack:Stop(FADE_TIME) end) end
+animationObject:Destroy()

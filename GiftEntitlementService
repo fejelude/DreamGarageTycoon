@@ -20,10 +20,21 @@ function Service.Grant(player, passKey, receiptInfo)
 	local passInfo = GamePassConfig.Passes[passKey]
 	if not player or not passInfo then return false, "Invalid perk" end
 	local wasNew = false
+	local alreadySameReceipt = false
 	local ok, err = pcall(function()
 		store:UpdateAsync(key(player.UserId), function(old)
+			-- Report only the final transform invocation; UpdateAsync may discard an
+			-- earlier attempt after a concurrent write.
+			wasNew = false
+			alreadySameReceipt = false
 			old = type(old) == "table" and old or {}
-			if old[passKey] ~= true then wasNew = true end
+			if old[passKey] == true then
+				alreadySameReceipt = old[passKey .. "Receipt"] == tostring(receiptInfo.PurchaseId)
+				-- Do not overwrite the receipt that actually created this unique
+				-- entitlement. A different PurchaseId needs a configured fallback.
+				return old
+			end
+			wasNew = true
 			old[passKey] = true
 			old[passKey .. "Receipt"] = tostring(receiptInfo.PurchaseId)
 			old.UpdatedAt = os.time()
@@ -33,7 +44,7 @@ function Service.Grant(player, passKey, receiptInfo)
 	if not ok then return false, tostring(err) end
 	player:SetAttribute(passInfo.Attribute, true)
 	player:SetAttribute("Gifted" .. passKey, true)
-	return true, nil, wasNew
+	return true, nil, wasNew, alreadySameReceipt
 end
 
 return Service

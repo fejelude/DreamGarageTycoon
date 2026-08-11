@@ -41,6 +41,8 @@ local currentState = nil
 local promptBusy = false
 local pendingPrompt = false
 local promptAttemptId = 0
+local pendingReservationId = nil
+local lastLimitedCarReceiptSerial = 0
 
 local function setButtonInputLocked(button, locked)
 	if not button then return end
@@ -79,7 +81,7 @@ local function beginPurchase()
 	UIAudioConfig.PlayRobux()
 	UIAudioConfig.ShowPurchaseLoading()
 
-	local ok, reserved, message, state = pcall(function() return Reserve:InvokeServer() end)
+	local ok, reserved, message, state, reservationId = pcall(function() return Reserve:InvokeServer() end)
 	if ok and type(state) == "table" then currentState = state; render() end
 	if not ok or reserved ~= true then
 		finishPrompt()
@@ -87,13 +89,15 @@ local function beginPurchase()
 		Kit.Sound:Play("BuyFail")
 		return
 	end
+	pendingReservationId = reservationId
 
 	pendingPrompt = true
 	local promptOk, promptErr = pcall(function()
 		MarketplaceService:PromptProductPurchase(player, Product.ProductId)
 	end)
 	if not promptOk then
-		pcall(function() PromptClosed:FireServer() end)
+		pcall(function() PromptClosed:FireServer(pendingReservationId) end)
+		pendingReservationId = nil
 		finishPrompt()
 		shopFeedback:Failed("Purchase Failed")
 		Kit.Sound:Play("BuyFail")
@@ -118,7 +122,13 @@ StateEvent.OnClientEvent:Connect(function(state)
 	if type(state) == "table" then currentState = state; render() end
 end)
 
-PurchaseResult.OnClientEvent:Connect(function(success, message)
+local function handlePurchaseResult(success, message, serial)
+	serial = math.max(0, math.floor(tonumber(serial) or 0))
+	if serial > 0 then
+		if serial <= lastLimitedCarReceiptSerial then return end
+		lastLimitedCarReceiptSerial = serial
+	end
+	pendingReservationId = nil
 	finishPrompt()
 	if success then
 		shopFeedback:Success(message ~= "" and message or "Neo Performante Purchased")
@@ -127,16 +137,32 @@ PurchaseResult.OnClientEvent:Connect(function(success, message)
 		shopFeedback:Failed(message ~= "" and message or "Purchase Failed")
 		Kit.Sound:Play("BuyFail")
 	end
-end)
+end
+
+PurchaseResult.OnClientEvent:Connect(handlePurchaseResult)
+
+local function replayLimitedCarReceipt()
+	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("LimitedCarReceiptSerial")) or 0))
+	if serial <= lastLimitedCarReceiptSerial then return end
+	handlePurchaseResult(true, "Neo Performante Purchased", serial)
+end
+
+player:GetAttributeChangedSignal("LimitedCarReceiptSerial"):Connect(replayLimitedCarReceipt)
+task.defer(replayLimitedCarReceipt)
 
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
 	if userId ~= player.UserId or productId ~= Product.ProductId then return end
 	UIAudioConfig.HidePurchaseLoading()
 	if not wasPurchased and pendingPrompt then
-		pcall(function() PromptClosed:FireServer() end)
+		pcall(function() PromptClosed:FireServer(pendingReservationId) end)
+		pendingReservationId = nil
 		finishPrompt()
 	elseif not wasPurchased then
 		finishPrompt()
+	else
+		-- The server converted this exact reservation to AwaitingReceipt. Local
+		-- cleanup must not release it while Roblox delivery is still pending.
+		pendingReservationId = nil
 	end
 	-- Do not show Failed for cancellation and do not show Success until PurchaseResult.
 end)

@@ -1,0 +1,170 @@
+-- Purpose: Applies immutable paid-action payloads and the matching profile
+-- receipt record under the shared player transaction boundary.
+-- Runs on: Server (ModuleScript)
+-- Location: ServerScriptService > PaidActionFulfillmentService
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local Workspace = game:GetService("Workspace")
+
+local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
+local Coordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
+
+local Service = {}
+
+local function adminInvoke(action, player, ...)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not api or not api:IsA("BindableFunction") then return false, "TycoonAdminAPI unavailable" end
+	local args = table.pack(...)
+	local ok, result, message = pcall(function()
+		return api:Invoke(action, player, table.unpack(args, 1, args.n))
+	end)
+	if not ok then return false, result end
+	return result, message
+end
+
+local function alreadyGranted(player, purchaseId)
+	local granted, message = adminInvoke("HasReceiptGrant", player, purchaseId)
+	if granted == true then return true end
+	if granted == nil then return nil, message end
+	return false
+end
+
+local function commit(player, receiptInfo, action, grantHash)
+	return adminInvoke(
+		"CommitReceiptGrant",
+		player,
+		tostring(receiptInfo.PurchaseId),
+		receiptInfo.ProductId,
+		action,
+		player.UserId,
+		grantHash
+	)
+end
+
+local function validIntent(intent, action)
+	return type(intent) == "table" and intent.Action == action and type(intent.Payload) == "table"
+end
+
+function Service.GrantOffline10x(player, receiptInfo, intent)
+	return Coordinator.Run(player, "ReceiptOffline10x", function()
+		local granted, grantError = alreadyGranted(player, receiptInfo.PurchaseId)
+		if granted ~= false then return granted, granted and 0 or grantError end
+		if not validIntent(intent, "Offline10x") then return false, "No matching offline claim intent" end
+		local amount = math.max(0, math.floor(tonumber(intent.Payload.Amount) or 0))
+		if amount <= 0 then return false, "Invalid offline claim payload" end
+
+		local hiddenStats = player:FindFirstChild("HiddenStats")
+		local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
+		if not bank then return false, "Bank account unavailable" end
+		local oldBank = bank.Value
+		local oldCarry = player:GetAttribute("OfflineTabletCarry")
+		bank.Value += amount
+		player:SetAttribute("OfflineTabletCarry", 0)
+		local committed, message = commit(player, receiptInfo, "Offline10x", tostring(amount))
+		if not committed then
+			bank.Value = oldBank
+			player:SetAttribute("OfflineTabletCarry", oldCarry)
+			return false, message or "Offline claim save failed"
+		end
+		-- OfflineEarningsService owns an in-memory presentation session. Publish
+		-- only after the payout and receipt are durable so that session cannot
+		-- offer or block a second claim based on stale premiumPending state.
+		player:SetAttribute("OfflinePremiumClaimedAmount", amount)
+		player:SetAttribute("OfflinePremiumReceiptSerial",
+			(tonumber(player:GetAttribute("OfflinePremiumReceiptSerial")) or 0) + 1)
+		return true, amount
+	end)
+end
+
+function Service.GrantTablet2x(player, receiptInfo, intent)
+	return Coordinator.Run(player, "ReceiptTablet2x", function()
+		local granted, grantError = alreadyGranted(player, receiptInfo.PurchaseId)
+		if granted ~= false then return granted, granted and 0 or grantError end
+		if not validIntent(intent, "Tablet2x") then return false, "No matching tablet claim intent" end
+
+		local pendingAmount = math.max(0, math.floor(tonumber(intent.Payload.PendingAmount) or 0))
+		local payoutAmount = math.max(0, math.floor(tonumber(intent.Payload.PayoutAmount) or 0))
+		local plotName = type(intent.Payload.PlotName) == "string" and intent.Payload.PlotName or ""
+		if pendingAmount <= 0 or payoutAmount <= 0 or plotName == "" then return false, "Invalid tablet claim payload" end
+
+		local tycoons = Workspace:FindFirstChild("Tycoons")
+		local plot = tycoons and tycoons:FindFirstChild(plotName)
+		local owner = plot and plot:FindFirstChild("Owner")
+		local pending = plot and plot:FindFirstChild("PendingEarnings")
+		local hiddenStats = player:FindFirstChild("HiddenStats")
+		local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
+		if not plot or not owner or owner.Value ~= player.Name or not pending or not bank then
+			return false, "Tablet earning batch is unavailable"
+		end
+
+		local oldPending = pending.Value
+		local oldBank = bank.Value
+		-- Earnings may have accumulated after the prompt. Consume only the exact
+		-- captured batch; newer earnings remain claimable.
+		pending.Value = math.max(0, oldPending - pendingAmount)
+		bank.Value += payoutAmount
+		local committed, message = commit(
+			player, receiptInfo, "Tablet2x",
+			string.format("%s:%d:%d", plotName, pendingAmount, payoutAmount)
+		)
+		if not committed then
+			pending.Value = oldPending
+			bank.Value = oldBank
+			return false, message or "Tablet claim save failed"
+		end
+		player:SetAttribute("TabletPaidReceiptPlot", plotName)
+		player:SetAttribute("TabletPaidReceiptAmount", payoutAmount)
+		player:SetAttribute("TabletPaidReceiptSerial",
+			(tonumber(player:GetAttribute("TabletPaidReceiptSerial")) or 0) + 1)
+		return true, payoutAmount
+	end)
+end
+
+function Service.GrantRebirthSkip(player, receiptInfo, intent)
+	return Coordinator.Run(player, "ReceiptRebirthSkip", function()
+		local granted, grantError = alreadyGranted(player, receiptInfo.PurchaseId)
+		if granted ~= false then return granted, granted and "Already granted" or grantError end
+		if not validIntent(intent, "RebirthSkip") then return false, "No matching rebirth intent" end
+
+		local fromLevel = math.floor(tonumber(intent.Payload.FromRebirth) or -1)
+		local toLevel = math.floor(tonumber(intent.Payload.ToRebirth) or -1)
+		local compensation = math.max(0, math.floor(tonumber(intent.Payload.CompensationWallet) or 0))
+		local current = math.clamp(math.floor(tonumber(player:GetAttribute("Rebirth")) or 0), 0, RebirthConfig.MAX_REBIRTH)
+		if fromLevel < 0 or toLevel ~= fromLevel + 1 or toLevel > RebirthConfig.MAX_REBIRTH then
+			return false, "Invalid rebirth transition payload"
+		end
+
+		local wallet = player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Wallet")
+		local oldWallet = wallet and wallet.Value or nil
+		local oldRebirth = current
+		local resultMessage
+		if current == fromLevel then
+			player:SetAttribute("Rebirth", toLevel)
+			player:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(toLevel))
+			resultMessage = "Rebirth advanced"
+		elseif current >= toLevel and wallet then
+			-- The player independently completed the purchased transition before
+			-- delivery. Reimburse the captured cash cost so the paid value is not lost.
+			wallet.Value += compensation
+			resultMessage = "Transition already complete; Wallet compensation granted"
+		else
+			return false, "Rebirth state does not match the paid transition"
+		end
+
+		local committed, message = commit(
+			player, receiptInfo, "RebirthSkip",
+			string.format("%d:%d:%d", fromLevel, toLevel, compensation)
+		)
+		if not committed then
+			player:SetAttribute("Rebirth", oldRebirth)
+			player:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(oldRebirth))
+			if wallet and oldWallet ~= nil then wallet.Value = oldWallet end
+			return false, message or "Rebirth save failed"
+		end
+		return true, resultMessage
+	end)
+end
+
+return Service

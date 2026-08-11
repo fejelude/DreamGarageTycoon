@@ -1,0 +1,61 @@
+-- Purpose: Small token-bucket utility for server remotes that can consume
+-- DataStore, Marketplace, group, thumbnail, or other external-service budgets.
+-- Runs on: Server (ModuleScript)
+-- Location: ServerScriptService > MutationRateLimiter
+
+local Players = game:GetService("Players")
+
+local RateLimiter = {}
+local buckets = {}
+local globalBuckets = {}
+
+local function allowBucket(bucketTable, key, capacity, refillPerSecond, cost)
+	capacity = math.max(1, tonumber(capacity) or 1)
+	refillPerSecond = math.max(0.01, tonumber(refillPerSecond) or 1)
+	cost = math.max(0.01, tonumber(cost) or 1)
+
+	local now = os.clock()
+	local bucket = bucketTable[key]
+	if not bucket then
+		bucket = { Tokens = capacity, UpdatedAt = now }
+		bucketTable[key] = bucket
+	else
+		local elapsed = math.max(0, now - bucket.UpdatedAt)
+		bucket.Tokens = math.min(capacity, bucket.Tokens + elapsed * refillPerSecond)
+		bucket.UpdatedAt = now
+	end
+
+	if bucket.Tokens < cost then return false end
+	bucket.Tokens -= cost
+	return true
+end
+
+local function getKey(player, action)
+	return tostring(player.UserId) .. ":" .. tostring(action)
+end
+
+function RateLimiter.Allow(player, action, capacity, refillPerSecond, cost)
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return false
+	end
+
+	local key = getKey(player, action)
+	return allowBucket(buckets, key, capacity, refillPerSecond, cost)
+end
+
+function RateLimiter.AllowGlobal(action, capacity, refillPerSecond, cost)
+	return allowBucket(globalBuckets, tostring(action), capacity, refillPerSecond, cost)
+end
+
+function RateLimiter.ClearPlayer(player)
+	local prefix = tostring(player.UserId) .. ":"
+	for key in pairs(buckets) do
+		if string.sub(key, 1, #prefix) == prefix then
+			buckets[key] = nil
+		end
+	end
+end
+
+Players.PlayerRemoving:Connect(RateLimiter.ClearPlayer)
+
+return RateLimiter
