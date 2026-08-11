@@ -23,13 +23,6 @@ local function register(productId, info)
 		return
 	end
 
-	if productsById[productId] then
-		error(("[GiftProductRegistry] Duplicate Developer Product id %d (%s and %s)"):format(
-			productId,
-			tostring(productsById[productId].DisplayName),
-			tostring(info.DisplayName or info.Name)
-		), 0)
-	end
 	local entry = table.clone(info)
 	entry.ProductId = productId
 	entry.DisplayName = tostring(entry.DisplayName or entry.Name or ("Product " .. tostring(productId)))
@@ -176,7 +169,6 @@ if GamePassConfig and type(GamePassConfig.Passes) == "table" then
 				DisplayName = passInfo.GiftDisplayName or passKey,
 				PassKey = passKey,
 				OwnershipAttribute = passInfo.Attribute,
-				WalletReward = passInfo.DuplicateGiftWalletReward,
 			})
 		end
 	end
@@ -226,7 +218,6 @@ function Registry.RegisterGamePassGift(productId, passKey, passInfo)
 		DisplayName = passInfo.GiftDisplayName or passKey,
 		PassKey = passKey,
 		OwnershipAttribute = passInfo.Attribute,
-		WalletReward = passInfo.DuplicateGiftWalletReward,
 	})
 	return Registry.IsGiftable(productId)
 end

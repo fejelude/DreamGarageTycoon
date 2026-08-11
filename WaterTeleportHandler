@@ -82,36 +82,41 @@ local function onWaterTouched(hit)
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
 	local returnPart = Workspace:FindFirstChild(TARGET_PART_NAME)
 
-	if not rootPart or not returnPart then return end
+	if not returnPart then return end
 
 	-- 🛑 DEBOUNCE
 	if teleportingPlayers[player.UserId] then return end
 	teleportingPlayers[player.UserId] = true 
 
-	local ok, teleportError = xpcall(function()
-		-- 🛑 SAFETY CHECK
-		if isPlayerSafe(character) then
-			task.wait(0.5)
-			return
-		end
+	-- 🛑 SAFETY CHECK
+	if isPlayerSafe(character) then
+		task.wait(0.5) 
+		teleportingPlayers[player.UserId] = nil
+		return 
+	end
 
-		local sound = Instance.new("Sound")
-		sound.Name = "SplashSFX"
-		sound.SoundId = SPLASH_SOUND_ID
-		sound.Volume = SOUND_VOLUME
-		sound.Parent = rootPart
-		sound:Play()
-		Debris:AddItem(sound, 3)
+	-- ✅ NOT SAFE - EXECUTE TELEPORT SEQUENCE
+	
+	-- 1. Sound
+	local sound = Instance.new("Sound")
+	sound.Name = "SplashSFX"
+	sound.SoundId = SPLASH_SOUND_ID
+	sound.Volume = SOUND_VOLUME
+	sound.Parent = rootPart
+	sound:Play()
+	Debris:AddItem(sound, 3)
 
-		task.wait(DELAY_TIME)
-		if player.Parent and character.Parent and character:FindFirstChild("HumanoidRootPart") and returnPart.Parent then
-			character:PivotTo(returnPart.CFrame + SAFETY_OFFSET)
-		end
-		task.wait(1)
-	end, debug.traceback)
+	-- 2. Delay
+	task.wait(DELAY_TIME)
 
+	-- 3. Teleport
+	if character and character:FindFirstChild("HumanoidRootPart") then
+		character:PivotTo(returnPart.CFrame + SAFETY_OFFSET)
+	end
+
+	-- 4. Reset
+	task.wait(1)
 	teleportingPlayers[player.UserId] = nil
-	if not ok then warn("[WaterTeleportHandler] Teleport failed: " .. tostring(teleportError)) end
 end
 
 -- ============================================================================
@@ -131,7 +136,3 @@ if waterFolder then
 else
 	warn("Script Error: '" .. WATER_FOLDER_NAME .. "' folder missing in Workspace.")
 end
-
-Players.PlayerRemoving:Connect(function(player)
-	teleportingPlayers[player.UserId] = nil
-end)

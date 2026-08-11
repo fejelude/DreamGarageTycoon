@@ -57,7 +57,6 @@ local skipPromptInFlight = false
 local awaitingRobuxGrant = false
 local pendingRobuxFromRebirth = nil
 local pendingRobuxProductId = nil
-local pendingRobuxIntentId = nil
 local pendingRobuxToken = 0
 
 local OPEN_FOV = 50
@@ -220,7 +219,6 @@ local function clearPendingRobuxState()
 	awaitingRobuxGrant = false
 	pendingRobuxFromRebirth = nil
 	pendingRobuxProductId = nil
-	pendingRobuxIntentId = nil
 	pendingRobuxToken += 1
 end
 
@@ -395,11 +393,10 @@ local function bindOtherMainButtons(container)
 	end)
 end
 
-local function beginRobuxPrompt(productId, fromRebirth, intentId)
+local function beginRobuxPrompt(productId, fromRebirth)
 	pendingRobuxToken += 1
 	pendingRobuxFromRebirth = fromRebirth
 	pendingRobuxProductId = productId
-	pendingRobuxIntentId = intentId
 	skipPromptInFlight = true
 	awaitingRobuxGrant = false
 
@@ -509,16 +506,15 @@ UIButtonUtils.SetupButton(skipRebirthButton, function()
 		return
 	end
 
-	local prepareOk, prepared, productId, intentId, fromRebirth = pcall(function()
-		return requestRebirth:InvokeServer("PrepareRobuxRebirth")
-	end)
-	if not prepareOk or prepared ~= true or not productId or not intentId then
-		showState(failedLabel, tostring(productId or prepared or "Robux rebirth is unavailable for this rebirth."))
+	local productId = RebirthConfig.SkipProductIds[currentRebirth]
+
+	if not productId then
+		showState(failedLabel, "Robux rebirth is unavailable for this rebirth.")
 		refresh()
 		return
 	end
 
-	beginRobuxPrompt(productId, fromRebirth or currentRebirth, intentId)
+	beginRobuxPrompt(productId, currentRebirth)
 end)
 
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
@@ -539,9 +535,6 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 	if wasPurchased then
 		waitForRobuxGrant()
 	else
-		pcall(function()
-			requestRebirth:InvokeServer("CancelRobuxRebirth", productId, pendingRobuxIntentId)
-		end)
 		clearPendingRobuxState()
 		refresh()
 	end

@@ -10,7 +10,6 @@ local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 
 -- ⚙️ CONFIGURATION
 local CONSTANTS = {
@@ -32,12 +31,9 @@ local TycoonFolder = Workspace:WaitForChild("Tycoons")
 local CarStats
 pcall(function() CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5)) end)
 local CarCPSDisplayUtils = require(ReplicatedStorage:WaitForChild("CarCPSDisplayUtils"))
-local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
-local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
 
 -- 🛡️ STATE MANAGEMENT
 local processingTracks = {} 
-local registeredPads = setmetatable({}, { __mode = "k" })
 
 -- ============================================================================
 -- 🛠️ HELPER FUNCTIONS
@@ -46,7 +42,7 @@ local registeredPads = setmetatable({}, { __mode = "k" })
 -- ✅ Helper: Get Pad Number from Name (e.g. "Pad5" -> 5)
 local function getPadNumber(padObject)
 	local num = padObject.Name:match("Pad(%d+)")
-	return tonumber(num)
+	return tonumber(num) or 1 -- Default to 1 if name format is weird
 end
 
 local function safeFindCarTool(targetName)
@@ -105,9 +101,12 @@ local function FindToolFromModelName(modelName)
 	if tool then return tool end
 
 	if CarStats and CarStats.Cars then
-		local _, carId = CarStats.GetCarStats(modelName)
-		local fallbackTool = carId and safeFindCarTool(carId)
-		if fallbackTool then return fallbackTool end
+		for key, stats in pairs(CarStats.Cars) do
+			if stats.Name == modelName then
+				local fallbackTool = safeFindCarTool(key)
+				if fallbackTool then return fallbackTool end
+			end
+		end
 	end
 	return nil
 end
@@ -153,7 +152,7 @@ local function validatePadState(padObject, occupiedVal, linkedCarVal, placePromp
 	if ownerPlayer then
 		local level = ownerPlayer:GetAttribute("HighestUnlockedPad") or 1
 		local padNum = getPadNumber(padObject)
-		if padNum and padNum <= level then isUnlocked = true end
+		if padNum <= level then isUnlocked = true end
 	elseif not ownerName or ownerName == "" then
 		-- No owner? Only unlock Pad 1 (or lock all to be safe)
 		if getPadNumber(padObject) == 1 then isUnlocked = true end
@@ -193,13 +192,22 @@ end
 -- ============================================================================
 -- 📦 TRANSACTION FUNCTIONS
 -- ============================================================================
-local function removeToolFromPlayer(player, tool)
-	if not tool or (tool.Parent ~= player.Character and tool.Parent ~= player:FindFirstChild("Backpack")) then
-		return false
+local function removeToolFromPlayer(player, toolName)
+	local found = false
+	local charTool = player.Character and player.Character:FindFirstChild(toolName)
+	if charTool then
+		charTool:Destroy()
+		found = true
+	else
+		local backpackTool = player.Backpack:FindFirstChild(toolName)
+		if backpackTool then
+			backpackTool:Destroy()
+			found = true
+		end
 	end
-	local itemId = tool:GetAttribute("ItemId")
-	if type(itemId) ~= "string" or itemId == "" then return false end
-	return TycoonAdminAPI:Invoke("RemoveToolInstance", player, itemId, true) == true
+	local gearTool = player.StarterGear:FindFirstChild(toolName)
+	if gearTool then gearTool:Destroy() end
+	return found
 end
 
 local function spawnCarOnPad(padPart, carModel, plot, player)
@@ -209,8 +217,8 @@ local function spawnCarOnPad(padPart, carModel, plot, player)
 
 	local carFolder = plot:FindFirstChild("PlacedCars")
 	if not carFolder then
-		placedCar:Destroy()
-		return nil, "Missing PlacedCars folder"
+		carFolder = Instance.new("Folder", plot)
+		carFolder.Name = "PlacedCars"
 	end
 	placedCar.Parent = carFolder
 
@@ -244,14 +252,13 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 	-- Double Check: Is it unlocked? (Security Layer)
 	local padNum = getPadNumber(padObject)
 	local level = player:GetAttribute("HighestUnlockedPad") or 1
-	if not padNum or padNum > level then return end
+	if padNum > level then return end
 
 	local thisPlot = getPlotFolder(padObject)
-	local owner = thisPlot and thisPlot:FindFirstChild("Owner")
-	if not thisPlot or not owner or owner.Value ~= player.Name or player:GetAttribute("OccupiedPlot") ~= thisPlot.Name then return end
+	if not thisPlot or player:GetAttribute("OccupiedPlot") ~= thisPlot.Name then return end
 	if not isCloseEnough(player, padPart) then return end
 
-	local tool = player.Character and player.Character:FindFirstChildWhichIsA("Tool")
+	local tool = player.Character:FindFirstChildWhichIsA("Tool")
 	if not tool then return end
 
 	-- 🛡️ SECURITY FIX: PREVENT SPOOFING
@@ -260,8 +267,7 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 
 	-- 2. Get the Secure ID (Server Authority)
 	local secureToolId = tool:GetAttribute("ToolId")
-	local itemId = tool:GetAttribute("ItemId")
-	if not secureToolId or type(itemId) ~= "string" or itemId == "" then
+	if not secureToolId then 
 		warn("⚠️ Security: Tool missing ID attribute: " .. tool.Name)
 		return 
 	end
@@ -274,19 +280,20 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 	local realCar = realModelName and safeFindCarModel(realModelName)
 
 	if realCar then
-		local success, result = pcall(function()
-			return spawnCarOnPad(padPart, realCar, thisPlot, player)
-		end)
+		-- Fix 8b: Close `removeToolFromPlayer` Security Gap
+		-- Use secureToolId for removal, not tool.Name (which could be spoofed to steal another item)
+		local removed = removeToolFromPlayer(player, secureToolId)
 
-		if success and result then
-			result:SetAttribute("OwnerUserId", player.UserId)
-			result:SetAttribute("ItemId", itemId)
-			result:SetAttribute("CarGUID", itemId)
-			result:SetAttribute("ToolId", secureToolId)
+		if removed then
+			local success, result = pcall(function()
+				return spawnCarOnPad(padPart, realCar, thisPlot, player)
+			end)
 
-			if removeToolFromPlayer(player, tool) then
+			if success and result then
 				occupiedVal.Value = true
 				linkedCarVal.Value = result
+				result:SetAttribute("OwnerUserId", player.UserId)
+				result:SetAttribute("CarGUID", tostring(player.UserId) .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000,9999)))
 
 				-- Update State immediately and refresh every placed car display because
 				-- Mythical CPS can depend on the best non-Mythical car on the base.
@@ -300,10 +307,6 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 					player.Character:PivotTo(lookAtCar)
 				end
 				playSound("PlaceSound", padPart)
-				pcall(function()
-					TycoonAdminAPI:Invoke("MarkDirty", player)
-					TycoonAdminAPI:Invoke("QueueSaveSoon", player, 3)
-				end)
 
 				-- Report only after the authoritative placement and pad state commit.
 				if padObject.Name == "Pad1" then
@@ -313,11 +316,26 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 					end
 				end
 			else
-				result:Destroy()
-				warn("⚠️ Placement aborted because the exact owned tool was no longer available.")
+				warn("⚠️ Spawn Failed! Refunding item to " .. player.Name)
+				-- Refund using the SECURE ID, not the tool name
+				local originalTool = safeFindCarTool(secureToolId)
+
+				if originalTool then
+					local backpackClone = originalTool:Clone()
+					local gearClone = originalTool:Clone()
+					for _, clone in ipairs({backpackClone, gearClone}) do
+						clone:SetAttribute("IssuedByServer", true)
+						clone:SetAttribute("IssuedAt", os.time())
+						clone:SetAttribute("IssuedId", HttpService:GenerateGUID(false))
+						clone:SetAttribute("ToolId", originalTool.Name)
+						clone.CanBeDropped = false
+					end
+					backpackClone.Parent = player.Backpack
+					gearClone.Parent = player.StarterGear
+				else
+					warn("❌ CRITICAL: Could not find original tool to refund: " .. tostring(secureToolId))
+				end
 			end
-		else
-			warn("⚠️ Spawn Failed for " .. player.Name .. ": " .. tostring(result))
 		end
 	else
 		warn("⚠️ Security Alert: Player " .. player.Name .. " tried to use invalid ToolId: " .. tostring(secureToolId))
@@ -326,8 +344,7 @@ end
 
 local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
 	local thisPlot = getPlotFolder(padObject)
-	local owner = thisPlot and thisPlot:FindFirstChild("Owner")
-	if not thisPlot or not owner or owner.Value ~= player.Name or player:GetAttribute("OccupiedPlot") ~= thisPlot.Name then return end
+	if not thisPlot or player:GetAttribute("OccupiedPlot") ~= thisPlot.Name then return end
 	if not isCloseEnough(player, padPart) then return end
 
 	local carToRemove = linkedCarVal.Value
@@ -343,32 +360,20 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 	end
 
 	local carName = carToRemove.Name
-	local persistedToolId = carToRemove:GetAttribute("ToolId")
-	local foundTool = type(persistedToolId) == "string" and safeFindCarTool(persistedToolId)
-		or FindToolFromModelName(carName)
+	local foundTool = FindToolFromModelName(carName)
 
 	if foundTool then
-		local canAdd = TycoonAdminAPI:Invoke("CanAddCar", player, 1)
-		if canAdd ~= true then return end
-		local backpack = player:FindFirstChild("Backpack")
-		local starterGear = player:FindFirstChild("StarterGear")
-		if not backpack or not starterGear then return end
-		local itemId = carToRemove:GetAttribute("ItemId")
-		if type(itemId) ~= "string" or itemId == "" then
-			itemId = tostring(player.UserId) .. ":" .. HttpService:GenerateGUID(false)
-		end
 		local backpackClone = foundTool:Clone()
 		local gearClone = foundTool:Clone()
 		for _, clone in ipairs({backpackClone, gearClone}) do
 			clone:SetAttribute("IssuedByServer", true)
 			clone:SetAttribute("IssuedAt", os.time())
-			clone:SetAttribute("IssuedId", itemId)
-			clone:SetAttribute("ItemId", itemId)
+			clone:SetAttribute("IssuedId", HttpService:GenerateGUID(false))
 			clone:SetAttribute("ToolId", foundTool.Name)
 			clone.CanBeDropped = false
 		end
-		backpackClone.Parent = backpack
-		gearClone.Parent = starterGear
+		backpackClone.Parent = player.Backpack
+		gearClone.Parent = player.StarterGear 
 
 		carToRemove:Destroy()
 
@@ -379,10 +384,6 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 		-- Mythical CPS can depend on the best non-Mythical car on the base.
 		validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
 		CarCPSDisplayUtils.RefreshPlotCPSDisplays(thisPlot, player)
-		pcall(function()
-			TycoonAdminAPI:Invoke("MarkDirty", player)
-			TycoonAdminAPI:Invoke("QueueSaveSoon", player, 3)
-		end)
 
 		playSound("EquipSound", padPart)
 	else
@@ -394,7 +395,6 @@ end
 -- 🚀 SETUP
 -- ============================================================================
 local function setupPad(padObject)
-	if registeredPads[padObject] then return end
 	local padPart = getMainPart(padObject)
 	if not padPart then return end
 
@@ -417,32 +417,8 @@ local function setupPad(padObject)
 	pickupPrompt.MaxActivationDistance = CONSTANTS.PROMPT_RANGE; pickupPrompt.RequiresLineOfSight = false
 	pickupPrompt.HoldDuration = CONSTANTS.HOLD_DURATION; pickupPrompt.Enabled = false
 
-	local connections = {}
-	local function refreshPad()
-		if not padObject.Parent then return end
-		local ok, refreshError = pcall(function()
-			validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
-		end)
-		if not ok then warn("[PadController] Pad refresh failed for " .. padObject.Name .. ": " .. tostring(refreshError)) end
-	end
-	registeredPads[padObject] = refreshPad
-
-	-- Refresh immediately and on authoritative state changes. A slow safety pass
-	-- below remains for malformed hierarchy changes, without scanning every plot.
-	refreshPad()
-	table.insert(connections, occupiedVal.Changed:Connect(refreshPad))
-	table.insert(connections, linkedCarVal.Changed:Connect(refreshPad))
-	local plot = getPlotFolder(padObject)
-	local ownerValue = plot and plot:FindFirstChild("Owner")
-	if ownerValue and ownerValue:IsA("ValueBase") then
-		table.insert(connections, ownerValue.Changed:Connect(refreshPad))
-	end
-	table.insert(connections, padObject.Destroying:Connect(function()
-		registeredPads[padObject] = nil
-		for _, connection in ipairs(connections) do
-			if connection.Connected then connection:Disconnect() end
-		end
-	end))
+	-- Initial Validation
+	validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
 
 	-- Fix 3: PadController processingTracks deadlocks on error
 	-- Use a pcall wrapper so state is always released regardless of internal errors.
@@ -450,9 +426,8 @@ local function setupPad(padObject)
 		local userId = player.UserId
 		if processingTracks[userId] then return end
 		processingTracks[userId] = true
-		PlayerTransactionCoordinator.Run(player, "PadPlace", function()
+		pcall(function()
 			AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
-			return true
 		end)
 		task.wait(CONSTANTS.RETRY_DELAY)
 		processingTracks[userId] = nil
@@ -462,9 +437,8 @@ local function setupPad(padObject)
 		local userId = player.UserId
 		if processingTracks[userId] then return end
 		processingTracks[userId] = true
-		PlayerTransactionCoordinator.Run(player, "PadPickup", function()
+		pcall(function()
 			AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
-			return true
 		end)
 		task.wait(CONSTANTS.RETRY_DELAY)
 		processingTracks[userId] = nil
@@ -489,56 +463,40 @@ local function setupPlot(plot)
 	if storedPlot then initPadsFolder(storedPlot:FindFirstChild("Pads")) end
 end
 
-local function setupStoredPlot(storedPlot)
-	if not storedPlot then return end
-	initPadsFolder(storedPlot:FindFirstChild("Pads"))
-	storedPlot.ChildAdded:Connect(function(child)
-		if child.Name == "Pads" then initPadsFolder(child) end
-	end)
-end
-
 for _, plot in pairs(TycoonFolder:GetChildren()) do
 	setupPlot(plot)
 end
 
-local function watchDedicatedStorage(folder)
-	for _, storedPlot in ipairs(folder:GetChildren()) do setupStoredPlot(storedPlot) end
-	folder.ChildAdded:Connect(setupStoredPlot)
-end
-local existingDedicatedStorage = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
-if existingDedicatedStorage then watchDedicatedStorage(existingDedicatedStorage) end
-ReplicatedStorage.ChildAdded:Connect(function(child)
-	if child.Name == "TycoonLevelStorage" then watchDedicatedStorage(child) end
-end)
-
-local function refreshPadsForPlayer(player)
-	for padObject, refreshPad in pairs(registeredPads) do
-		local plot = getPlotFolder(padObject)
-		local owner = plot and plot:FindFirstChild("Owner")
-		if plot and (player:GetAttribute("OccupiedPlot") == plot.Name or (owner and owner.Value == player.Name)) then
-			refreshPad()
+-- 🔄 MAINTENANCE LOOP (Updated to check visual state constantly)
+task.spawn(function()
+	-- Fix 10: Maintenance Loop Scans All Pads Unconditionally
+	-- Optimize to only check occupied pads (this catches both active cars AND ghost locks since occ is true for both).
+	local function checkPadsInFolder(padsFolder)
+		if not padsFolder then return end
+		for _, padObject in pairs(padsFolder:GetChildren()) do
+			local padPart = getMainPart(padObject)
+			if padPart then
+				local occ = padPart:FindFirstChild("IsOccupied")
+				local lnk = padPart:FindFirstChild("LinkedCar")
+				local pl = padPart:FindFirstChild("PlacePrompt")
+				local pk = padPart:FindFirstChild("PickupPrompt")
+				if occ and lnk and pl and pk then
+					-- Fix 10 Correction: We MUST validate ALL pads (even empty ones)
+					-- so their PlacePrompts get enabled when a player claims a plot/unlocks a pad!
+					validatePadState(padObject, occ, lnk, pl, pk)
+				end
+			end
 		end
 	end
-end
 
-local function watchPlayerProgression(player)
-	player:GetAttributeChangedSignal("HighestUnlockedPad"):Connect(function()
-		refreshPadsForPlayer(player)
-	end)
-	player:GetAttributeChangedSignal("OccupiedPlot"):Connect(function()
-		refreshPadsForPlayer(player)
-	end)
-end
-for _, player in ipairs(Players:GetPlayers()) do watchPlayerProgression(player) end
-Players.PlayerAdded:Connect(watchPlayerProgression)
-Players.PlayerRemoving:Connect(function(player) processingTracks[player.UserId] = nil end)
-
--- 🔄 Low-frequency defensive validation for unexpected hierarchy edits.
-task.spawn(function()
 	while true do
-		task.wait(60)
-		for padObject, refreshPad in pairs(registeredPads) do
-			if padObject.Parent then refreshPad() else registeredPads[padObject] = nil end
+		task.wait(5) -- Runs every 5 seconds to keep states valid
+		for _, plot in pairs(TycoonFolder:GetChildren()) do
+			local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
+
+			checkPadsInFolder(plot:FindFirstChild("Pads"))
+			local storedPlot = dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name)
+			if storedPlot then checkPadsInFolder(storedPlot:FindFirstChild("Pads")) end
 		end
 	end
 end)

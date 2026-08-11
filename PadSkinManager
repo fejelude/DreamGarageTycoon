@@ -195,42 +195,25 @@ local function PaintPlot(plot, skinName)
 end
 
 -- 🔄 PLAYER MONITOR
-local playerStates = {}
-
-local function disconnect(connection)
-	if connection and connection.Connected then connection:Disconnect() end
-end
-
-local function bindPlayerPlot(player)
-	local state = playerStates[player]
-	if not state or not player.Parent then return end
-
-	local plotName = player:GetAttribute("OccupiedPlot")
-	local plot = plotName and TycoonFolder:FindFirstChild(plotName) or nil
-	if not plot then return end
-	if state.Plot == plot and state.SkinConnection then return end
-
-	if state.Plot and state.Plot ~= plot and state.Plot.Parent then
-		PaintPlot(state.Plot, "Default")
-	end
-	disconnect(state.SkinConnection)
-	state.Plot = plot
-	PaintPlot(plot, player:GetAttribute("EquippedSkin") or "Default")
-	state.SkinConnection = player:GetAttributeChangedSignal("EquippedSkin"):Connect(function()
-		if playerStates[player] == state and plot.Parent then
-			PaintPlot(plot, player:GetAttribute("EquippedSkin") or "Default")
-		end
-	end)
-end
-
 local function SetupPlayer(player)
-	if playerStates[player] then return end
-	local state = {}
-	playerStates[player] = state
-	state.PlotConnection = player:GetAttributeChangedSignal("OccupiedPlot"):Connect(function()
-		bindPlayerPlot(player)
+	task.spawn(function()
+		local plotName = player:GetAttribute("OccupiedPlot")
+		while not plotName do
+			player:GetAttributeChangedSignal("OccupiedPlot"):Wait()
+			plotName = player:GetAttribute("OccupiedPlot")
+		end
+
+		local plot = TycoonFolder:WaitForChild(plotName, 10)
+		if not plot then return end
+
+		local currentSkin = player:GetAttribute("EquippedSkin") or "Default"
+		PaintPlot(plot, currentSkin)
+
+		player:GetAttributeChangedSignal("EquippedSkin"):Connect(function()
+			local newSkin = player:GetAttribute("EquippedSkin")
+			PaintPlot(plot, newSkin)
+		end)
 	end)
-	bindPlayerPlot(player)
 end
 
 Players.PlayerAdded:Connect(SetupPlayer)
@@ -238,24 +221,12 @@ for _, p in pairs(Players:GetPlayers()) do SetupPlayer(p) end
 
 -- 🧹 CLEANUP: Revert skin to default when player leaves
 Players.PlayerRemoving:Connect(function(player)
-	local state = playerStates[player]
-	playerStates[player] = nil
-	if state then
-		disconnect(state.PlotConnection)
-		disconnect(state.SkinConnection)
-		if state.Plot and state.Plot.Parent then
-			print("🧹 PadSkinManager: Restoring " .. state.Plot.Name .. " to Default")
-			PaintPlot(state.Plot, "Default")
-		end
-	end
-end)
-
--- A plot can be inserted after OccupiedPlot is assigned. Re-check only players
--- waiting for that exact plot instead of leaving an unbounded waiting task.
-TycoonFolder.ChildAdded:Connect(function(plot)
-	for player, state in pairs(playerStates) do
-		if not state.Plot and player:GetAttribute("OccupiedPlot") == plot.Name then
-			bindPlayerPlot(player)
+	local plotName = player:GetAttribute("OccupiedPlot")
+	if plotName then
+		local plot = TycoonFolder:FindFirstChild(plotName)
+		if plot then
+			print("🧹 PadSkinManager: Restoring " .. plotName .. " to Default")
+			PaintPlot(plot, "Default")
 		end
 	end
 end)

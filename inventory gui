@@ -75,12 +75,6 @@ local camera    = Workspace.CurrentCamera
 -- Utility
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
-local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
-local HotbarPersistenceEvent = ReplicatedStorage:WaitForChild("HotbarPersistenceEvent", 10)
-if not HotbarPersistenceEvent or not HotbarPersistenceEvent:IsA("RemoteEvent") then
-	warn("[Inventory] Missing ReplicatedStorage > HotbarPersistenceEvent RemoteEvent; hotbar changes will not persist")
-	HotbarPersistenceEvent = nil
-end
 
 -- Controls
 local PlayerModule = require(player.PlayerScripts:WaitForChild("PlayerModule"))
@@ -144,55 +138,19 @@ local hotbarScrollFrame = slotsFolder and slotsFolder:FindFirstChildWhichIsA("Sc
 
 -- 💾 HOTBAR PERSISTENCE
 local function loadHotbarFromAttributes()
-	local function resolveSaved(value)
-		if type(value) ~= "string" or value == "" then return nil end
-		for _, container in ipairs({ player:FindFirstChild("Backpack"), player.Character }) do
-			if container then
-				for _, tool in ipairs(container:GetChildren()) do
-					if tool:IsA("Tool") and tool:GetAttribute("ItemId") == value then
-						local toolId = tool:GetAttribute("ToolId") or tool.Name
-						local clean = tostring(toolId):gsub(" Item$", "")
-						return CarStats.Cars[clean] and clean or nil
-					end
-				end
-			end
-		end
-		-- One-time compatibility with old ToolId-authored slots. The next save
-		-- replaces it with an exact server-validated ItemId.
-		local clean = value:gsub(" Item$", "")
-		return CarStats.Cars[clean] and clean or nil
-	end
 	for i = 1, SLOT_COUNT do
 		local saved = player:GetAttribute("HotbarSlot" .. i)
-		hotbarData[i] = resolveSaved(saved)
+		if saved and saved ~= "" and CarStats and CarStats.Cars[saved] then
+			hotbarData[i] = saved
+		else
+			hotbarData[i] = nil
+		end
 	end
 end
 
 local function saveHotbarToAttributes()
-	if not HotbarPersistenceEvent then return end
-	local availableByCar = {}
-	for _, container in ipairs({ player:FindFirstChild("Backpack"), player.Character }) do
-		if container then
-			for _, tool in ipairs(container:GetChildren()) do
-				local itemId = tool:IsA("Tool") and tool:GetAttribute("ItemId")
-				local toolId = tool:IsA("Tool") and (tool:GetAttribute("ToolId") or tool.Name)
-				local clean = type(toolId) == "string" and toolId:gsub(" Item$", "") or nil
-				if type(itemId) == "string" and itemId ~= "" and clean and CarStats.Cars[clean] then
-					availableByCar[clean] = availableByCar[clean] or {}
-					table.insert(availableByCar[clean], itemId)
-				end
-			end
-		end
-	end
-	for _, itemIds in pairs(availableByCar) do table.sort(itemIds) end
-	local nextIndexByCar = {}
 	for i = 1, SLOT_COUNT do
-		local carName = hotbarData[i]
-		local itemIds = carName and availableByCar[carName] or nil
-		local nextIndex = carName and ((nextIndexByCar[carName] or 0) + 1) or 1
-		local itemId = itemIds and itemIds[nextIndex] or ""
-		if carName then nextIndexByCar[carName] = nextIndex end
-		HotbarPersistenceEvent:FireServer(i, itemId)
+		player:SetAttribute("HotbarSlot" .. i, hotbarData[i] or "")
 	end
 end
 
@@ -232,6 +190,12 @@ local savedFOV   = camera.FieldOfView
 local hiddenGuis = {}
 local isOpen     = false
 player:SetAttribute("InventoryUIOpen", false)
+
+-- CarStats
+local CarStats = nil
+pcall(function()
+	CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5))
+end)
 
 local RankConfig = nil
 pcall(function()

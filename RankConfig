@@ -62,7 +62,7 @@ local RankConfig = {
 		PreviousRank = "VIP+",
 		Requirements = {
 			{ Id = "Requirement1", Type = "Buy", Car = "Stuttgart", Shop = "Rare", Amount = 1 },
-			{ Id = "Requirement2", Type = "Buy", Car = "Vapid", Shop = "Uncommon", Amount = 2 },
+			{ Id = "Requirement2", Type = "Buy", Car = "Vapid", Shop = "Rare", Amount = 2 },
 			{ Id = "Requirement3", Type = "Buy", Car = "Camara", Shop = "Rare", Amount = 1 },
 			{ Id = "Requirement4", Type = "Buy", Car = "Corvo", Shop = "Rare", Amount = 1 },
 			{ Id = "Requirement5", Type = "Pad", PadNumber = 12, Amount = 1 },

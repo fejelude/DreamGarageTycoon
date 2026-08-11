@@ -16,8 +16,10 @@ local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
 -- 🔗 SYNC EVENT (Communication with TycoonDataHandler)
 local SaveEvent = ServerStorage:FindFirstChild("TycoonSaveCompleted")
-if not SaveEvent or not SaveEvent:IsA("BindableEvent") then
-	error("[TycoonHandler] Missing required ServerStorage > TycoonSaveCompleted BindableEvent", 0)
+if not SaveEvent then
+	SaveEvent = Instance.new("BindableEvent")
+	SaveEvent.Name = "TycoonSaveCompleted"
+	SaveEvent.Parent = ServerStorage
 end
 
 -- 🧹 HELPER: Completely reset a plot
@@ -47,7 +49,6 @@ local function wipePlot(plot)
 
 	-- Clear Saved CPS Attribute
 	plot:SetAttribute("CurrentCPS", 0)
-	plot:SetAttribute("PermanentCPS", 0)
 
 	-- Clean Entities
 	if plot:FindFirstChild("PlacedCars") then plot.PlacedCars:ClearAllChildren() end
@@ -151,13 +152,10 @@ local function assignPlot(player)
 				local spawnPart = plot:WaitForChild("SpawnPoint", 10)
 				local hrp = character:WaitForChild("HumanoidRootPart", 10)
 				if spawnPart and hrp then
-					hrp.Anchored = true
-					local ok, err = xpcall(function()
-						character:PivotTo(spawnPart.CFrame + Vector3.new(0, 10, 0))
-						task.wait(1.5)
-					end, debug.traceback)
-					if hrp.Parent then hrp.Anchored = false end
-					if not ok then warn("[TycoonHandler] Character placement failed: " .. tostring(err)) end
+					hrp.Anchored = true 
+					character:PivotTo(spawnPart.CFrame + Vector3.new(0, 10, 0))
+					task.wait(1.5) 
+					hrp.Anchored = false
 				end
 			end
 
@@ -181,39 +179,38 @@ Players.PlayerRemoving:Connect(function(player)
 			-- Clearing it now allows a new player to claim/wipe it while data is still saving!
 
 			-- ⏳ EVENT LISTENER (The Senior Fix)
-			local didSave = player:GetAttribute("TycoonDataPhase") == "Saved"
-			local saveFinished = didSave
+			local didSave = false
 			local listener
 			local waitStart = os.clock()
 
-			listener = SaveEvent.Event:Connect(function(savedUserId, _generation, success)
-				if savedUserId == player.UserId then
-					saveFinished = true
-					didSave = success == true
-				end
-			end)
+			-- 1. Check if ALREADY saved (Attribute Check)
+			if player:GetAttribute("DataSaved") then
+				didSave = true
+			else
+				-- 2. Listen for TycoonDataHandler to fire "TycoonSaveCompleted"
+				listener = SaveEvent.Event:Connect(function(savedName)
+					if savedName == player.Name then
+						didSave = true
+					end
+				end)
+			end
 
-			-- A timeout is not evidence that destructive cleanup is safe.
+			-- WAIT LOOP: Wait until Saved OR Timeout (8 Seconds Failsafe)
 			repeat 
 				task.wait(0.1)
-				if player:GetAttribute("TycoonDataPhase") == "Saved" then
-					saveFinished = true
-					didSave = true
-				end
-			until saveFinished or (os.clock() - waitStart > 30)
+				if player:GetAttribute("DataSaved") then didSave = true end
+			until didSave or (os.clock() - waitStart > 8)
 
 			if listener then listener:Disconnect() end
 
+			-- ✅ NOW we safely release + clean the plot
+			wipePlot(plot)
+			print("🔓 Released + wiped " .. plotName)
+
 			if didSave then
-				-- Verify this is still the departing player's plot before cleanup.
-				if plot.Owner.Value == player.Name then
-					wipePlot(plot)
-					print("🔓 Released + wiped " .. plotName)
-				end
 				print("✅ Data Saved for " .. player.Name .. ". Plot released safely.")
 			else
-				warn("⚠️ Final save did not succeed for " .. player.Name .. ". " .. plotName .. " remains locked to preserve unsaved state.")
-				return
+				warn("⚠️ Save Timeout for " .. player.Name .. ". Forcing release of " .. plotName .. " (Data might be risky).")
 			end
 
 			-- QUEUE CHECK: Give to someone waiting

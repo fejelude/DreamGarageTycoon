@@ -4,9 +4,8 @@
 -- Purpose: Shared configuration for the Roblox-compliant rewarded-video grant.
 --
 -- Roblox rewarded-video ads must grant a disclosed, non-random developer
--- product reward. Set DEV_PRODUCT_ID to a dedicated $25,000 Wallet Cash
--- developer product. The same product may also be exposed through a normal
--- purchase button, but its ID must not be reused by another receipt route.
+-- product reward. Set DEV_PRODUCT_ID to the ID of a $25,000 Wallet Cash
+-- developer product that is also normally available to purchase in-game.
 -- ============================================================================
 
 local AdRewardsConfig = {}

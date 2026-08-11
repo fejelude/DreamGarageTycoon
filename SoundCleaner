@@ -11,27 +11,11 @@ local BAD_IDS = {
 	["rbxassetid://201887209"] = true, 
 }
 
-local BLANK_SOUND_GRACE_SECONDS = 3
-local REMOVE_BLANK_ATTRIBUTE = "SoundCleanerRemoveIfBlank"
-
-local function shouldRemove(sound)
-	if BAD_IDS[sound.SoundId] or sound.SoundId == "0" then return true end
-	return sound.SoundId == "" and sound:GetAttribute(REMOVE_BLANK_ATTRIBUTE) == true
-end
-
 local function checkObject(obj)
-	if not obj:IsA("Sound") then return end
-	if BAD_IDS[obj.SoundId] or obj.SoundId == "0" then
-		obj:Destroy()
-		return
-	end
-
-	-- Sounds are commonly parented before SoundId is configured. Blank sounds
-	-- are removed only when explicitly marked, and only after a grace period.
-	if obj.SoundId == "" and obj:GetAttribute(REMOVE_BLANK_ATTRIBUTE) == true then
-		task.delay(BLANK_SOUND_GRACE_SECONDS, function()
-			if obj.Parent and shouldRemove(obj) then obj:Destroy() end
-		end)
+	if obj:IsA("Sound") then
+		if BAD_IDS[obj.SoundId] or obj.SoundId == "0" or obj.SoundId == "" then
+			obj:Destroy()
+		end
 	end
 end
 

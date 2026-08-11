@@ -6,8 +6,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage     = game:GetService("ServerStorage")
 local Players           = game:GetService("Players")
 local HttpService       = game:GetService("HttpService")
-local ServerScriptService = game:GetService("ServerScriptService")
-local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
 
 -- =========================
 -- EPIC CONFIG
@@ -104,11 +102,19 @@ local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 -- REMOTES
 -- =========================
 local Remotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
-if not Remotes or not Remotes:IsA("Folder") then error("[EpicShopService] Missing ReplicatedStorage > ShopRemotes Folder", 0) end
+if not Remotes then
+	Remotes        = Instance.new("Folder")
+	Remotes.Name   = "ShopRemotes"
+	Remotes.Parent = ReplicatedStorage
+end
 
 local function getRemote(name, className)
 	local r = Remotes:FindFirstChild(name)
-	if not r or not r:IsA(className) then error("[EpicShopService] Missing ShopRemotes > " .. name .. " " .. className, 0) end
+	if not r then
+		r        = Instance.new(className)
+		r.Name   = name
+		r.Parent = Remotes
+	end
 	return r
 end
 
@@ -122,13 +128,25 @@ local RayWFeedback  = getRemote("RayWPurchaseFeedback",   "RemoteEvent")
 -- BINDABLES
 -- =========================
 local RerollBindable = ServerStorage:FindFirstChild("EpicShopRerollFunction")
-if not RerollBindable or not RerollBindable:IsA("BindableFunction") then error("[EpicShopService] Missing ServerStorage > EpicShopRerollFunction", 0) end
+if not RerollBindable then
+	RerollBindable        = Instance.new("BindableFunction")
+	RerollBindable.Name   = "EpicShopRerollFunction"
+	RerollBindable.Parent = ServerStorage
+end
 
 local PersistenceBindable = ServerStorage:FindFirstChild("EpicShopPersistenceFunction")
-if not PersistenceBindable or not PersistenceBindable:IsA("BindableFunction") then error("[EpicShopService] Missing ServerStorage > EpicShopPersistenceFunction", 0) end
+if not PersistenceBindable then
+	PersistenceBindable        = Instance.new("BindableFunction")
+	PersistenceBindable.Name   = "EpicShopPersistenceFunction"
+	PersistenceBindable.Parent = ServerStorage
+end
 
 local AdminRestockEvent = ServerStorage:FindFirstChild("AdminRestockEvent")
-if not AdminRestockEvent or not AdminRestockEvent:IsA("BindableEvent") then error("[EpicShopService] Missing ServerStorage > AdminRestockEvent", 0) end
+if not AdminRestockEvent then
+	AdminRestockEvent = Instance.new("BindableEvent")
+	AdminRestockEvent.Name = "AdminRestockEvent"
+	AdminRestockEvent.Parent = ServerStorage
+end
 
 -- =========================
 -- STATE
@@ -153,24 +171,33 @@ end
 -- =========================
 local function safeInvoke(bindable, timeout, ...)
 	local args     = table.pack(...)
-	local result = table.pack(pcall(function()
-		return bindable:Invoke(table.unpack(args, 1, args.n))
-	end))
+	local result   = nil
+	local finished = false
+
+	task.spawn(function()
+		result = table.pack(pcall(function()
+			return bindable:Invoke(table.unpack(args, 1, args.n))
+		end))
+		finished = true
+	end)
+
+	local start = os.clock()
+	while not finished and (os.clock() - start) < timeout do
+		task.wait()
+	end
+
+	if not finished  then return false, "Timeout" end
 	if not result[1] then return false, result[2] end
 	return true, table.unpack(result, 2, result.n)
 end
 
-local function recordRankPurchase(player, carName, operationId)
+local function recordRankPurchase(player, carName)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
-	if not rankApi or not rankApi:IsA("BindableFunction") then return false end
-	local ok, result = pcall(function()
-		return rankApi:Invoke("CarObtained", player, carName, "Buy", "Epic", operationId)
-	end)
-	if not ok or result ~= true then
-		warn("[EpicShopService] Rank progress failed for operation " .. tostring(operationId))
-		return false
+	if rankApi then
+		task.spawn(function()
+			pcall(function() rankApi:Invoke("CarObtained", player, carName, "Buy", "Epic") end)
+		end)
 	end
-	return true
 end
 
 local REQUIRED_RANK = RankConfig.GetRequiredRankForShop("Epic")
@@ -196,11 +223,7 @@ local function generateStockConfiguration(seedValue)
 
 	local luckMultiplier = GlobalLuckService.GetMultiplier()
 	local luckAdjustedWeights = GlobalLuckUtil.ApplyToWeights(CAR_WEIGHTS, luckMultiplier)
-	local sortedCarNames = {}
-	for name in pairs(luckAdjustedWeights) do table.insert(sortedCarNames, name) end
-	table.sort(sortedCarNames)
-	for _, name in ipairs(sortedCarNames) do
-		local weight = luckAdjustedWeights[name]
+	for name, weight in pairs(luckAdjustedWeights) do
 		table.insert(poolKeys, name)
 		poolWeights[name] = weight
 		totalWeight += weight
@@ -287,7 +310,6 @@ local function getSession(player)
 			Purchased   = {},
 			Cache       = nil,
 			LuckGeneration = GlobalLuckService.GetGeneration(),
-			RerollOperations = {},
 		}
 	end
 
@@ -420,7 +442,6 @@ end)
 
 FuncBuyCar.OnServerInvoke = function(player, carName)
 	if typeof(carName) ~= "string"     then return false, "Invalid Car"      end
-	if #carName > 80                   then return false, "Invalid Car"      end
 	if not player or not player.Parent then return false, "Player missing"   end
 
 	local char = player.Character
@@ -455,7 +476,6 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 	PurchaseLocks[uid] = true
 
 	local pOk, logicOk, msg = pcall(function()
-		return PlayerTransactionCoordinator.Run(player, "EpicShopPurchase", function()
 		local session, didReset = getSession(player)
 		if didReset then pushUpdate(player, session, "Auto") end
 
@@ -495,12 +515,8 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		end
 
 		wallet.Value -= carData.Price
+		recordRankPurchase(player, carName)
 		session.Purchased[carName] = bought + 1
-		local rankOperationId = string.format(
-			"ShopPurchase:Epic:%d:%s:%s:%d",
-			player.UserId, tostring(session.LocalSeed or session.SeedVersion), carName, bought + 1
-		)
-		recordRankPurchase(player, carName, rankOperationId)
 		pushUpdate(player, session, "Purchase")
 
 		RayWFeedback:FireClient(player, carName)
@@ -510,7 +526,6 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		end)
 
 		return true, "Success"
-		end)
 	end)
 
 	PurchaseLocks[uid] = nil
@@ -527,17 +542,12 @@ end
 -- =========================
 -- REROLL & ROTATION
 -- =========================
-function RerollBindable.OnInvoke(player, purchaseId)
+function RerollBindable.OnInvoke(player)
 	if not player or not player.Parent then return false end
-	purchaseId = type(purchaseId) == "string" and purchaseId or ""
-	if purchaseId == "" then return false, "Missing reroll receipt identity" end
 	local session         = getSession(player)
-	session.RerollOperations = session.RerollOperations or {}
-	if session.RerollOperations[purchaseId] then return true, "Already rerolled" end
 	session.LocalSeed     = math.random(1, 999999999)
 	session.Purchased     = {}
 	session.Cache         = generateStockConfiguration(session.LocalSeed)
-	session.RerollOperations[purchaseId] = true
 	pushUpdate(player, session, "Reroll")
 	return true
 end

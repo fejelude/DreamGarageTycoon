@@ -7,24 +7,19 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
-local ServerStorage = game:GetService("ServerStorage")
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local BaseSkinStats = require(ReplicatedStorage:WaitForChild("BaseSkinStats")) -- ✅ Added Module
 local ServerScriptService = game:GetService("ServerScriptService")
 local GlobalMoneyFrenzyService = require(ServerScriptService:WaitForChild("GlobalMoneyFrenzyService"))
 local GamePassOwnershipService = require(ServerScriptService:WaitForChild("GamePassOwnershipService"))
-local PlayerTransactionCoordinator = require(ServerScriptService:WaitForChild("PlayerTransactionCoordinator"))
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
 local dedicatedFolder = ReplicatedStorage:FindFirstChild("TycoonLevelStorage")
 
 local PAY_INTERVAL = 1
-local profitAccumulator = {}
-local profitPayoutInFlight = {}
+local profitAccumulator = {} 
 local FriendCache = {} -- [UserId] = { [FriendId] = true }
-local lastDirtyAtByUserId = {}
-local TycoonAdminAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
 
 -- ============================================================================
 -- 🏎️ CAR STATS LOOKUP CACHE (O(1) Access)
@@ -36,56 +31,8 @@ for id, stats in pairs(CarStats.Cars) do
 	CarLookup[id] = stats
 end
 
-local function resolveCarStats(carName)
-	if type(carName) ~= "string" or carName == "" then
-		return nil, nil
-	end
-
-	local direct = CarLookup[carName]
-	if direct then
-		return direct, carName
-	end
-
-	if CarStats.GetCarStats then
-		local stats, canonicalId = CarStats.GetCarStats(carName)
-		return stats, canonicalId
-	end
-
-	return nil, nil
-end
-
-local function getCarStats(carOrName)
-	if typeof(carOrName) ~= "Instance" then
-		return resolveCarStats(carOrName)
-	end
-
-	local persistedToolId = carOrName:GetAttribute("ToolId")
-	local stats = nil
-	local canonicalId = nil
-
-	if type(persistedToolId) == "string" and persistedToolId ~= "" then
-		stats, canonicalId = resolveCarStats(persistedToolId)
-	end
-
-	if stats then
-		return stats, canonicalId
-	end
-
-	-- Older or manually placed models can carry a stale/empty ToolId. The model
-	-- name is still server-owned, so use it as a migration fallback and repair
-	-- the attribute for later saving/economy passes.
-	stats, canonicalId = resolveCarStats(carOrName.Name)
-	if stats and canonicalId then
-		carOrName:SetAttribute("ToolId", canonicalId)
-		warn(string.format(
-			"⚠️ [TycoonEconomy] Repaired invalid ToolId '%s' on %s to '%s'.",
-			tostring(persistedToolId),
-			carOrName:GetFullName(),
-			canonicalId
-		))
-	end
-
-	return stats, canonicalId
+local function getCarStats(carName)
+	return CarLookup[carName] or (CarStats.GetCarStats and CarStats.GetCarStats(carName))
 end
 
 -- ============================================================================
@@ -128,12 +75,7 @@ local function onPlayerAdded(player)
 		for _, other in ipairs(Players:GetPlayers()) do
 			if other ~= player then
 				local oid = other.UserId
-				local success, isFriend
-				for attempt = 1, 3 do
-					success, isFriend = pcall(function() return player:IsFriendsWith(oid) end)
-					if success then break end
-					task.wait(0.25 * attempt)
-				end
+				local success, isFriend = pcall(function() return player:IsFriendsWith(oid) end)
 
 				if success and isFriend then
 					-- Add to BOTH caches
@@ -161,7 +103,6 @@ local function onPlayerRemoving(player)
 		end
 		FriendCache[uid] = nil
 	end
-	lastDirtyAtByUserId[uid] = nil
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
@@ -193,7 +134,7 @@ local function getPositiveMultiplierContribution(multiplier, noBoostMultiplier)
 		return 0
 	end
 
-	return multiplier - noBoostMultiplier
+	return multiplier
 end
 
 local function getRebirthMultiplierContribution(player, rebirthMultiplier)
@@ -203,10 +144,10 @@ local function getRebirthMultiplierContribution(player, rebirthMultiplier)
 	end
 
 	-- Rebirth 18 should add +18x, not multiply another source by 18.
-	return math.max(0, (tonumber(rebirthMultiplier) or (1 + rebirth)) - 1)
+	return tonumber(rebirthMultiplier) or rebirth
 end
 
-local function GetPermanentEarningsMultiplier(player)
+local function GetActualEarningsMultiplier(player)
 	if not player then return 1 end
 
 	local friendMultiplier = tonumber(player:GetAttribute("FriendMultiplier")) or 1
@@ -215,7 +156,7 @@ local function GetPermanentEarningsMultiplier(player)
 	local rankMultiplier = tonumber(player:GetAttribute("RankResourceMultiplier")) or 1
 	local rebirthMultiplier = tonumber(player:GetAttribute("RebirthMultiplier")) or 1
 
-	local totalMultiplier = 1
+	local totalMultiplier = 0
 	totalMultiplier += getPositiveMultiplierContribution(friendMultiplier, 1)
 	totalMultiplier += getPositiveMultiplierContribution(premiumMultiplier, 1)
 	totalMultiplier += getPositiveMultiplierContribution(skinMultiplier, 1)
@@ -223,12 +164,9 @@ local function GetPermanentEarningsMultiplier(player)
 	totalMultiplier += getRebirthMultiplierContribution(player, rebirthMultiplier)
 
 	local normalMultiplier = math.max(1, totalMultiplier)
+	local globalMoneyFrenzyMultiplier = GlobalMoneyFrenzyService.GetMultiplier()
 	local gamePassMultiplier = GamePassOwnershipService.GetGarageIncomeMultiplier(player)
-	return normalMultiplier * gamePassMultiplier
-end
-
-local function GetActualEarningsMultiplier(player)
-	return GetPermanentEarningsMultiplier(player) * GlobalMoneyFrenzyService.GetMultiplier()
+	return normalMultiplier * gamePassMultiplier * globalMoneyFrenzyMultiplier
 end
 
 local function RefreshActualEarningsMultiplier(player)
@@ -340,7 +278,7 @@ local function getBestPlacedBaseCPS(placedCars)
 	local bestBaseCPS = 0
 
 	for _, placed in ipairs(placedCars) do
-		local stats = getCarStats(placed.Car)
+		local stats = getCarStats(placed.Car.Name)
 		if stats and not CarStats.IsMythicalCar(stats) then
 			bestBaseCPS = math.max(bestBaseCPS, tonumber(stats.CPS) or 0)
 		end
@@ -358,7 +296,7 @@ local function processPadsInFolder(padsFolder)
 
 	for _, placed in ipairs(placedCars) do
 		local linkedCar = placed.Car
-		local stats = getCarStats(linkedCar)
+		local stats = getCarStats(linkedCar.Name)
 
 		if stats then
 			folderCPS = folderCPS + CarStats.CalculateEffectiveBaseCPS(stats, bestPlacedBaseCPS)
@@ -374,100 +312,85 @@ local function processPadsInFolder(padsFolder)
 	return folderCPS
 end
 
-local function processPlot(plot, elapsedSeconds)
-	local pendingValue = plot:FindFirstChild("PendingEarnings")
-	local ownerValue = plot:FindFirstChild("Owner")
-	if not pendingValue or not ownerValue or ownerValue.Value == "" then
-		profitAccumulator[plot] = nil
-		plot:SetAttribute("CurrentCPS", 0)
-		plot:SetAttribute("PermanentCPS", 0)
-		return
-	end
-
-	local player = Players:FindFirstChild(ownerValue.Value)
-	if not player then
-		profitAccumulator[plot] = nil
-		return
-	end
-
-	local playerBaseLevel = math.floor(tonumber(player:GetAttribute("BaseLevel")) or 1)
-	local activeLevelFolder
-	if playerBaseLevel == 1 then
-		activeLevelFolder = plot:FindFirstChild("NormalLevel1")
-		if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-			activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("NormalLevel1")
-		end
-	elseif playerBaseLevel == 2 then
-		activeLevelFolder = plot:FindFirstChild("NormalLevel2")
-		if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
-			activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("NormalLevel2")
-		end
-	else
-		warn("⚠️ TycoonEconomy: Unhandled BaseLevel " .. tostring(playerBaseLevel) .. " for plot " .. plot.Name)
-	end
-
-	local baseCPS = 0
-	if activeLevelFolder then
-		baseCPS = processPadsInFolder(activeLevelFolder.Parent:FindFirstChild("Pads"))
-	end
-
-	local permanentCPS = baseCPS * GetPermanentEarningsMultiplier(player)
-	local plotTotalCPS = permanentCPS * GlobalMoneyFrenzyService.GetMultiplier()
-	player:SetAttribute("ActualEarningsMultiplier", GetActualEarningsMultiplier(player))
-	plot:SetAttribute("PermanentCPS", permanentCPS)
-	plot:SetAttribute("CurrentCPS", plotTotalCPS)
-
-	local payoutCPS = plotTotalCPS
-	if plot:GetAttribute("IsAFK") == true then
-		payoutCPS *= GetAFKPayoutMultiplier()
-	end
-
-	local accumulator = profitAccumulator[plot]
-	if not accumulator or accumulator.OwnerUserId ~= player.UserId then
-		accumulator = { OwnerUserId = player.UserId, Amount = 0 }
-		profitAccumulator[plot] = accumulator
-	end
-	accumulator.Amount += payoutCPS * elapsedSeconds
-
-	local payout = math.floor(accumulator.Amount)
-	if payout > 0 and not profitPayoutInFlight[plot] then
-		profitPayoutInFlight[plot] = true
-		task.spawn(function()
-			local applied = PlayerTransactionCoordinator.Run(player, "AccrueTycoonEarnings", function()
-				if player.Parent ~= Players or ownerValue.Value ~= player.Name then return false end
-				pendingValue.Value = math.max(0, tonumber(pendingValue.Value) or 0) + payout
-				local now = os.clock()
-				if now - (lastDirtyAtByUserId[player.UserId] or 0) >= 15 then
-					lastDirtyAtByUserId[player.UserId] = now
-					pcall(function() TycoonAdminAPI:Invoke("MarkDirty", player) end)
-				end
-				return true
-			end, 2)
-			if applied and profitAccumulator[plot] == accumulator
-				and accumulator.OwnerUserId == player.UserId
-			then
-				accumulator.Amount = math.max(0, accumulator.Amount - payout)
-			end
-			profitPayoutInFlight[plot] = nil
-		end)
-	end
-end
-
 task.spawn(function()
 	print("💰 TycoonEconomy: System Active & Monitoring...")
-	local lastTick = os.clock()
+
 	while true do
 		task.wait(PAY_INTERVAL)
-		local now = os.clock()
-		local elapsedSeconds = math.clamp(now - lastTick, 0, 5)
-		lastTick = now
 
-		for _, plot in ipairs(TycoonFolder:GetChildren()) do
-			local ok, err = xpcall(function()
-				processPlot(plot, elapsedSeconds)
-			end, debug.traceback)
-			if not ok then
-				warn("[TycoonEconomy] Plot calculation failed for " .. plot:GetFullName() .. ": " .. tostring(err))
+		for _, plot in pairs(TycoonFolder:GetChildren()) do
+			local pendingValue = plot:FindFirstChild("PendingEarnings")
+			local ownerValue = plot:FindFirstChild("Owner") -- Needed to find the player
+
+			if pendingValue then
+				local plotTotalCPS = 0
+
+				-- 1. Calculate Base Income from ACTIVE Level Only
+				local playerBaseLevel = 1
+				if ownerValue and ownerValue.Value ~= "" then
+					local player = Players:FindFirstChild(ownerValue.Value)
+					if player then
+						playerBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
+					end
+				end
+
+				local activeLevelFolder = nil
+
+				if playerBaseLevel == 1 then
+					activeLevelFolder = plot:FindFirstChild("NormalLevel1")
+					if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("NormalLevel1")
+					end
+				elseif playerBaseLevel == 2 then
+					activeLevelFolder = plot:FindFirstChild("NormalLevel2")
+					if not activeLevelFolder and dedicatedFolder and dedicatedFolder:FindFirstChild(plot.Name) then
+						activeLevelFolder = dedicatedFolder[plot.Name]:FindFirstChild("NormalLevel2")
+					end
+				else
+					warn("⚠️ TycoonEconomy: Unhandled BaseLevel " .. tostring(playerBaseLevel) .. " for plot " .. plot.Name)
+				end
+
+				if activeLevelFolder then
+					local activePadsFolder = activeLevelFolder.Parent:FindFirstChild("Pads")
+					plotTotalCPS = plotTotalCPS + processPadsInFolder(activePadsFolder)
+				end
+
+				-- 2. Apply the player's actual earnings multiplier.
+				-- Multiplier order is centralized in GetActualEarningsMultiplier so map displays and payouts stay in sync.
+				local actualEarningsMultiplier = 1
+
+				if ownerValue and ownerValue.Value ~= "" then
+					local player = Players:FindFirstChild(ownerValue.Value)
+					if player then
+						actualEarningsMultiplier = GetActualEarningsMultiplier(player)
+						player:SetAttribute("ActualEarningsMultiplier", actualEarningsMultiplier)
+					end
+				end
+
+				plotTotalCPS = plotTotalCPS * actualEarningsMultiplier
+
+				-- Update attribute so TabletHandler sees the Boosted CPS (before AFK)
+				plot:SetAttribute("CurrentCPS", plotTotalCPS)
+
+				-- 3. AFK Bonus & Accumulate
+				-- Normal AFK remains 2x. During Global Money Frenzy, AFK adds only +0.5x total
+				-- on top of the global 2x instead of doubling again to 4x.
+				local payoutCPS = plotTotalCPS
+				if plot:GetAttribute("IsAFK") == true then
+					payoutCPS = payoutCPS * GetAFKPayoutMultiplier()
+				end
+
+				if not profitAccumulator[plot] then profitAccumulator[plot] = 0 end
+				profitAccumulator[plot] = profitAccumulator[plot] + payoutCPS
+
+				local payout = math.floor(profitAccumulator[plot])
+
+				if payout > 0 then
+					pendingValue.Value = pendingValue.Value + payout
+					profitAccumulator[plot] = profitAccumulator[plot] - payout
+				end
+			else
+				if profitAccumulator[plot] then profitAccumulator[plot] = nil end
 			end
 		end
 	end

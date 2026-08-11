@@ -77,7 +77,6 @@ local hiddenGuis = {}
 local hiddenObjects = {} -- Tracks GuiObjects (e.g. FriendBoost labels) hidden during shop focus
 local currentBlur = nil 
 local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
-local lastShopReceiptFeedbackSerial = 0
 
 -- 🛑 UI REFERENCES
 local function getUI()
@@ -95,25 +94,6 @@ local function showFeedback(text, color)
 		shopFeedback:Failed(text, color)
 	end
 end
-
-local function replayCommittedRobuxFeedback()
-	local serial = math.max(0, math.floor(tonumber(player:GetAttribute("ShopReceiptFeedbackSerial")) or 0))
-	if serial <= lastShopReceiptFeedbackSerial then return end
-	lastShopReceiptFeedbackSerial = serial
-	local productId = tonumber(player:GetAttribute("ShopReceiptFeedbackProductId"))
-	local relevant = productId == REROLL_PRODUCT_ID
-	for _, configuredId in pairs(ROBUX_PRODUCTS) do
-		if configuredId == productId then relevant = true; break end
-	end
-	if not relevant then return end
-	UIAudioConfig.HidePurchaseLoading()
-	Kit.Sound:Play("BuySuccess")
-	showFeedback(player:GetAttribute("ShopReceiptFeedbackKind") == "Reroll"
-		and "Restock Successful" or "Purchase Success", FEEDBACK_COLORS.Success)
-end
-
-player:GetAttributeChangedSignal("ShopReceiptFeedbackSerial"):Connect(replayCommittedRobuxFeedback)
-task.defer(replayCommittedRobuxFeedback)
 
 -- ============================================================================
 -- 👁️ FOCUS MODE (BLUR + HIDE UI)
@@ -185,9 +165,9 @@ local function setFocusMode(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
 
-	-- Resolve the current character at use time; the old implementation closed
-	-- over an undefined `char` and could leave focus cleanup incomplete.
-	player:SetAttribute("MovementLock", active and player.Character ~= nil)
+	if char then
+		player:SetAttribute("MovementLock", active)
+	end
 end
 
 local function cleanupShopFocus()
@@ -291,17 +271,9 @@ local function AttemptBuy(carName, scrollFrame)
 	UpdateDisplay(scrollFrame)
 
 	task.spawn(function()
-		local invokeOk, success, msg = pcall(function()
-			return FuncBuyCar:InvokeServer(carName)
-		end)
+		local success, msg = FuncBuyCar:InvokeServer(carName)
 		purchaseDebounce[carName] = false
 		isProcessingPurchase = false 
-		if not invokeOk then
-			Kit.Sound:Play("BuyFail")
-			showFeedback("Shop temporarily unavailable", FEEDBACK_COLORS.FailCash)
-			UpdateDisplay(scrollFrame)
-			return
-		end
 
 		if success then
 			Kit.Sound:Play("BuySuccess")
@@ -437,13 +409,13 @@ local function init()
 		if not isRelevant then return end
 
 		if isPurchased then
-			if tonumber(player:GetAttribute("ShopReceiptFeedbackProductId")) == productId
-				and (tonumber(player:GetAttribute("ShopReceiptFeedbackSerial")) or 0) <= lastShopReceiptFeedbackSerial
-			then return end
 			if productId == REROLL_PRODUCT_ID then
-				showFeedback("Restock submitted — processing", FEEDBACK_COLORS.TooFast)
+				-- ✅ REROLL SUCCESS
+				showFeedback("Successfully Restocked", FEEDBACK_COLORS.Success)
+				Kit.Sound:Play("PaidReroll")
 			else
-				showFeedback("Purchase submitted — processing", FEEDBACK_COLORS.TooFast)
+				-- ✅ CAR PURCHASE SUCCESS
+				showFeedback("Purchase Success", FEEDBACK_COLORS.Success)
 			end
 		else
 			-- ❌ ROBUX FAIL/CANCEL
@@ -487,12 +459,8 @@ local function init()
 		currentState = {Featured = {}, Stock = {}, StockLimit = {}, Purchased = {}}
 		UpdateDisplay(scrollFrame)
 
-		local stateOk, realState = pcall(function() return FuncGetState:InvokeServer() end)
-		if stateOk and type(realState) == "table" then
-			currentState = realState
-		else
-			showFeedback("Shop state unavailable — try again", FEEDBACK_COLORS.FailCash)
-		end
+		local realState = FuncGetState:InvokeServer()
+		currentState = realState
 		UpdateDisplay(scrollFrame)
 	end)
 
@@ -504,3 +472,6 @@ local function init()
 end
 
 if player.Character then init() else player.CharacterAdded:Wait(); init() end
+
+
+

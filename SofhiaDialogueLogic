@@ -628,10 +628,26 @@ local function handleSellEverything(dialogueLabel)
 		end
 
 		task.spawn(function()
-			-- A client timeout cannot cancel an already-running server mutation.
-			-- Wait for the authoritative committed result so the UI never reports
-			-- failure while a sale is still able to complete.
-			local success, msg, serverSellAmount, serverCarCount = SellFunction:InvokeServer("SellAllCars")
+			local success, msg, serverSellAmount, serverCarCount
+			local invokeCompleted = false
+
+			local invokeThread = task.spawn(function()
+				success, msg, serverSellAmount, serverCarCount = SellFunction:InvokeServer("SellAllCars")
+				invokeCompleted = true
+			end)
+
+			local elapsed = 0
+			local timeoutLimit = 10
+			while not invokeCompleted and elapsed < timeoutLimit do
+				elapsed += task.wait()
+			end
+
+			if not invokeCompleted then
+				pcall(task.cancel, invokeThread)
+				warn("⚠️ SofhiaSellFunction InvokeServer timed out.")
+				success = false
+				msg = "The server is taking too long to respond."
+			end
 
 			if not isInteracting then return end
 
@@ -715,7 +731,27 @@ local function handleSell(dialogueLabel)
 				return
 			end
 
-			local success, msg = SellFunction:InvokeServer(equippedCarId)
+			local success, msg
+			local invokeCompleted = false
+
+			local invokeThread = task.spawn(function()
+				success, msg = SellFunction:InvokeServer(equippedCarId)
+				invokeCompleted = true
+			end)
+
+			-- Timeout mechanism (No artificial waiting, immediately breaks once invokeCompleted)
+			local elapsed = 0
+			local timeoutLimit = 10
+			while not invokeCompleted and elapsed < timeoutLimit do
+				elapsed += task.wait()
+			end
+
+			if not invokeCompleted then
+				pcall(task.cancel, invokeThread)
+				warn("⚠️ SofhiaSellFunction InvokeServer timed out.")
+				success = false
+				msg = "The server is taking too long to respond."
+			end
 
 			if not isInteracting then return end
 
