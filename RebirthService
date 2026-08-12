@@ -3,6 +3,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 
@@ -11,6 +12,13 @@ local requestRebirth = remotes:WaitForChild("RequestRebirth")
 local refreshEvent = remotes:WaitForChild("RefreshRebirthUI")
 
 local rebirthLocks = {}
+
+local function forceSave(player)
+	local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not admin or not admin:IsA("BindableFunction") then return false end
+	local ok, saved = pcall(function() return admin:Invoke("SaveNow", player) end)
+	return ok and saved == true
+end
 
 local function getWalletValue(player)
 	local leaderstats = player:FindFirstChild("leaderstats")
@@ -85,6 +93,9 @@ requestRebirth.OnServerInvoke = function(player, action)
 	if action ~= "CashRebirth" then
 		return false, "Invalid action."
 	end
+	if player:GetAttribute("TycoonDataLoaded") ~= true then
+		return false, "Your data is still loading. Please try again."
+	end
 
 	return withRebirthLock(player, function()
 		local rebirth = getRebirth(player)
@@ -108,6 +119,12 @@ requestRebirth.OnServerInvoke = function(player, action)
 		walletValue.Value -= required
 
 		local newRebirth = setRebirth(player, rebirth + 1)
+		if not forceSave(player) then
+			walletValue.Value += required
+			setRebirth(player, rebirth)
+			forceSave(player)
+			return false, "Rebirth could not be saved. Please try again."
+		end
 		local snapshot = getSnapshot(player)
 
 		return true, buildSuccessMessage(newRebirth), snapshot

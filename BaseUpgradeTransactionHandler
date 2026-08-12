@@ -147,11 +147,14 @@ end
 
 -- 💰 UNIFIED TRANSACTION & EQUIP FUNCTION
 TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
+	if player:GetAttribute("TycoonDataLoaded") ~= true then
+		return false, "Your data is still loading. Please try again."
+	end
 	-- Prevent remote spam & race conditions
 	if activeTransactions[player.UserId] then
 		return false, "Transaction in progress. Please wait."
 	end
-	activeTransactions[player.UserId] = true
+	activeTransactions[player.UserId] = player
 
 	-- Use a wrapper to ensure the lock is ALWAYS released, even if the script errors
 	local success, result, msg = pcall(function()
@@ -189,7 +192,7 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 			end
 
 			local now = os.time()
-			local nextAllowed = baseEquipCooldowns[player.UserId] or 0
+			local nextAllowed = baseEquipCooldowns[player] or 0
 			if now < nextAllowed then
 				return false, formatBaseSwitchCooldownMessage(nextAllowed - now)
 			end
@@ -204,7 +207,7 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 				return false, migrateMessage or "Base switch failed."
 			end
 
-			baseEquipCooldowns[player.UserId] = now + BASE_SWITCH_COOLDOWN_SECONDS
+			baseEquipCooldowns[player] = now + BASE_SWITCH_COOLDOWN_SECONDS
 			player:SetAttribute("BaseLevel", targetLevel)
 			local saveOk = forceSave(player)
 			if not saveOk then
@@ -316,7 +319,7 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 	end)
 
 	-- Release Lock
-	activeTransactions[player.UserId] = nil
+	if activeTransactions[player.UserId] == player then activeTransactions[player.UserId] = nil end
 
 	if not success then
 		warn("⚠️ Transaction Error for " .. player.Name .. ": " .. tostring(result))
@@ -328,6 +331,8 @@ end
 
 -- Cleanup locks if a player leaves mid-transaction
 Players.PlayerRemoving:Connect(function(player)
-	activeTransactions[player.UserId] = nil
-	baseEquipCooldowns[player.UserId] = nil
+	if activeTransactions[player.UserId] == player then
+		activeTransactions[player.UserId] = nil
+	end
+	baseEquipCooldowns[player] = nil
 end)

@@ -8,6 +8,7 @@ local Config = require(ReplicatedStorage:WaitForChild("GlobalLuckConfig"))
 local REQUIRED_WAIT_SECONDS = 15
 local PUBLISH_RETRY_DELAYS = { 0, 1, 3, 7 }
 local SUBSCRIBE_RETRY_DELAYS = { 0, 2, 5, 10, 20 }
+local MAX_PROCESSED_RECEIPTS = 100
 
 local function requireChild(parent, childName, className, fullPath)
 	local child = parent:WaitForChild(childName, REQUIRED_WAIT_SECONDS)
@@ -34,18 +35,34 @@ local generation = 0
 local expireToken = 0
 
 local function now() return os.time() end
-local function inactiveState()
-	return { Active = false, Multiplier = Config.BaseMultiplier, ActivatedAt = 0, ExpiresAt = 0, PurchaserUserId = 0, PurchaserUsername = "", ReceiptKey = "" }
+local function sanitizeProcessedReceipts(raw)
+	local entries = {}
+	for receiptKey, processedAt in pairs(type(raw) == "table" and raw or {}) do
+		if type(receiptKey) == "string" and receiptKey ~= "" then
+			table.insert(entries, { Key = receiptKey, At = math.max(0, math.floor(tonumber(processedAt) or 0)) })
+		end
+	end
+	table.sort(entries, function(a, b) return a.At > b.At end)
+	local result = {}
+	for index, entry in ipairs(entries) do
+		if index > MAX_PROCESSED_RECEIPTS then break end
+		result[entry.Key] = entry.At
+	end
+	return result
+end
+local function inactiveState(processedReceipts)
+	return { Active = false, Multiplier = Config.BaseMultiplier, ActivatedAt = 0, ExpiresAt = 0, PurchaserUserId = 0, PurchaserUsername = "", ReceiptKey = "", ProcessedReceipts = sanitizeProcessedReceipts(processedReceipts) }
 end
 local function sanitize(raw)
 	local s = type(raw) == "table" and raw or inactiveState()
-	if (tonumber(s.ExpiresAt) or 0) <= now() then return inactiveState() end
-	return { Active = true, Multiplier = math.max(Config.BaseMultiplier, tonumber(s.Multiplier) or 2), ActivatedAt = tonumber(s.ActivatedAt) or now(), ExpiresAt = tonumber(s.ExpiresAt), PurchaserUserId = tonumber(s.PurchaserUserId) or 0, PurchaserUsername = tostring(s.PurchaserUsername or ""), ReceiptKey = tostring(s.ReceiptKey or ""), BoostPurchaseNotification = type(s.BoostPurchaseNotification) == "table" and s.BoostPurchaseNotification or nil }
+	local processedReceipts = sanitizeProcessedReceipts(s.ProcessedReceipts)
+	if (tonumber(s.ExpiresAt) or 0) <= now() then return inactiveState(processedReceipts) end
+	return { Active = true, Multiplier = math.max(Config.BaseMultiplier, tonumber(s.Multiplier) or 2), ActivatedAt = tonumber(s.ActivatedAt) or now(), ExpiresAt = tonumber(s.ExpiresAt), PurchaserUserId = tonumber(s.PurchaserUserId) or 0, PurchaserUsername = tostring(s.PurchaserUsername or ""), ReceiptKey = tostring(s.ReceiptKey or ""), ProcessedReceipts = processedReceipts, BoostPurchaseNotification = type(s.BoostPurchaseNotification) == "table" and s.BoostPurchaseNotification or nil }
 end
 local function buildPurchaseNotification(s)
 	if not s.Active then return nil end
 	return {
-		Id = "GlobalLuck_" .. tostring(s.PurchaserUserId) .. "_" .. tostring(s.ActivatedAt),
+		Id = "GlobalLuck_" .. tostring(s.ReceiptKey),
 		Username = s.PurchaserUsername,
 		BoostName = "Global " .. Config.FormatMultiplier(s.Multiplier) .. " Luck",
 	}
@@ -107,28 +124,45 @@ function Service.ProcessReceipt(receiptInfo)
 	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
 	if not player then return false, "Player unavailable", false end
 	local activated = false
+	local alreadyProcessed = false
 	local activatedState = nil
 	local ok, err = pcall(function()
 		stateStore:UpdateAsync(Config.StateKey, function(old)
+			activated = false
+			alreadyProcessed = false
 			local s = sanitize(old)
-			if s.Active then
-				activated = (s.ReceiptKey == receiptKey)
+			if s.ProcessedReceipts[receiptKey] then
+				alreadyProcessed = true
 				activatedState = s
 				return s
 			end
+
 			activated = true
-			activatedState = { Active = true, Multiplier = Config.GetNextMultiplier(Config.BaseMultiplier), ActivatedAt = now(), ExpiresAt = now() + Config.DurationSeconds, PurchaserUserId = player.UserId, PurchaserUsername = player.Name, ReceiptKey = receiptKey }
+			s.ProcessedReceipts[receiptKey] = now()
+			s.ProcessedReceipts = sanitizeProcessedReceipts(s.ProcessedReceipts)
+			activatedState = {
+				Active = true,
+				Multiplier = s.Active and s.Multiplier or Config.GetNextMultiplier(Config.BaseMultiplier),
+				ActivatedAt = now(),
+				ExpiresAt = (s.Active and s.ExpiresAt or now()) + Config.DurationSeconds,
+				PurchaserUserId = player.UserId,
+				PurchaserUsername = player.Name,
+				ReceiptKey = receiptKey,
+				ProcessedReceipts = s.ProcessedReceipts,
+			}
 			activatedState.BoostPurchaseNotification = buildPurchaseNotification(activatedState)
 			return activatedState
 		end)
 	end)
 	if not ok then return false, "Global Luck save failed", false end
 	setLocalState(activatedState, activated, activated and activatedState.BoostPurchaseNotification or nil)
-	if not activated then
-		pcall(function() receiptStore:SetAsync(receiptKey, true) end)
-		return true, "Global Luck is already active", true
-	end
+	-- Backfill the per-receipt store even when the atomic state record already
+	-- contains this receipt. This keeps old retries safe after the bounded state
+	-- history eventually evicts the entry.
 	pcall(function() receiptStore:SetAsync(receiptKey, true) end)
+	if alreadyProcessed then
+		return true, "Already granted", true
+	end
 	return true, "Global Luck activated", false
 end
 

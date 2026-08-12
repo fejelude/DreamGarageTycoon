@@ -20,6 +20,7 @@ local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local OFFLINE_RATE = 0.30
 local MAX_OFFLINE_SECONDS = 8 * 60 * 60
 local PREMIUM_PRODUCT_ID = 3598967453
+local PREMIUM_PROMPT_COOLDOWN_SECONDS = 3
 
 local function requireChild(parent, childName, expectedClass)
 	local child = parent:FindFirstChild(childName)
@@ -87,14 +88,30 @@ local sessions = {}
 
 local tycoonAdminApi = ServerStorage:FindFirstChild("TycoonAdminAPI")
 
+local function getAdminApi()
+	if tycoonAdminApi and tycoonAdminApi.Parent and tycoonAdminApi:IsA("BindableFunction") then
+		return tycoonAdminApi
+	end
+	tycoonAdminApi = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	return tycoonAdminApi
+end
+
+local function forceSave(player)
+	local admin = getAdminApi()
+	if not admin or not admin:IsA("BindableFunction") then return false end
+	local ok, saved = pcall(function() return admin:Invoke("SaveNow", player) end)
+	return ok and saved == true
+end
+
 local function getTabletCarry(player)
 	return math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
 end
 
 local function clearTabletCarry(player)
 	player:SetAttribute("OfflineTabletCarry", 0)
-	if tycoonAdminApi and tycoonAdminApi:IsA("BindableFunction") then
-		pcall(function() tycoonAdminApi:Invoke("MarkDirty", player) end)
+	local admin = getAdminApi()
+	if admin and admin:IsA("BindableFunction") then
+		pcall(function() admin:Invoke("MarkDirty", player) end)
 	end
 end
 
@@ -202,14 +219,17 @@ local function ensureSession(player)
 		return session
 	end
 
+	local persistedPremiumAmount = math.max(0, math.floor(tonumber(player:GetAttribute("OfflinePremiumPendingAmount")) or 0))
 	session = {
-		baseAmount = 0,
-		prepared = false,
+		baseAmount = persistedPremiumAmount,
+		prepared = persistedPremiumAmount > 0,
 		claimed = false,
-		premiumPending = false,
+		premiumPending = persistedPremiumAmount > 0,
 		premiumPurchaseId = nil,
 		lastPremiumGrantedPurchaseId = nil,
 		claimInProgress = false,
+		lastPremiumPromptAt = 0,
+		premiumPurchaseSubmitted = false,
 	}
 
 	sessions[player] = session
@@ -298,9 +318,22 @@ local function claimPreparedSession(player, session)
 		success, message = grant(player, amount)
 
 		if success then
+			local hiddenStats = player:FindFirstChild("HiddenStats")
+			local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
+			local originalBank = bank and (bank.Value - amount) or nil
+			local originalCarry = getTabletCarry(player)
 			session.claimed = true
 			clearTabletCarry(player)
-			message = "Claimed"
+			if forceSave(player) then
+				message = "Claimed"
+			else
+				if bank and originalBank ~= nil then bank.Value = originalBank end
+				player:SetAttribute("OfflineTabletCarry", originalCarry)
+				session.claimed = false
+				success = false
+				amount = 0
+				message = "Could not save your claim. Please try again."
+			end
 		else
 			amount = 0
 		end
@@ -331,6 +364,19 @@ end
 
 beginPremium.OnServerInvoke = function(player)
 	local session = ensureSession(player)
+	local promptNow = os.clock()
+
+	if session.claimInProgress then
+		return false, "Claim already in progress."
+	end
+
+	if session.premiumPurchaseSubmitted then
+		return false, "Premium purchase is currently processing."
+	end
+
+	if promptNow - (session.lastPremiumPromptAt or 0) < PREMIUM_PROMPT_COOLDOWN_SECONDS then
+		return false, "Please wait before trying again."
+	end
 
 	if not prepareSession(player, session) then
 		return false, "Offline earnings still loading. Please wait."
@@ -341,55 +387,63 @@ beginPremium.OnServerInvoke = function(player)
 	end
 
 	if session.premiumPending then
-		return false, "Premium purchase already in progress."
+		session.lastPremiumPromptAt = promptNow
+		return true, "Prompt"
 	end
 
 	if session.baseAmount <= 0 then
 		return false, "No offline earnings available."
 	end
 
+	session.claimInProgress = true
+	local originalCarry = getTabletCarry(player)
+	player:SetAttribute("OfflinePremiumPendingAmount", session.baseAmount)
+	clearTabletCarry(player)
 	session.premiumPending = true
 	session.premiumPurchaseId = nil
+	if not forceSave(player) then
+		player:SetAttribute("OfflinePremiumPendingAmount", 0)
+		player:SetAttribute("OfflineTabletCarry", originalCarry)
+		session.premiumPending = false
+		session.claimInProgress = false
+		return false, "Could not reserve your earnings. Please try again."
+	end
 
+	session.claimInProgress = false
+	session.lastPremiumPromptAt = promptNow
 	return true, "Prompt"
 end
 
 function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
-	local session = sessions[player]
-
-	if not session then
-		return false, 0, "You have already claimed your offline earnings."
-	end
+	local session = ensureSession(player)
 
 	if purchaseId and session.lastPremiumGrantedPurchaseId == purchaseId then
 		return true, session.baseAmount * 10, "Claimed"
 	end
 
-	if not session.premiumPending or session.claimed or session.baseAmount <= 0 then
-		return false, 0, "You have already claimed your offline earnings."
+	local reservedAmount = math.max(0, math.floor(tonumber(player:GetAttribute("OfflinePremiumPendingAmount")) or 0))
+	if not session.premiumPending or session.claimed or reservedAmount <= 0 then
+		return false, 0, "No reserved offline earnings were found."
 	end
 
 	if purchaseId and session.premiumPurchaseId and session.premiumPurchaseId ~= purchaseId then
 		return false, 0, "Purchase mismatch."
 	end
 
-	local payout = session.baseAmount * 10
+	local payout = reservedAmount * 10
 	local success, message = grant(player, payout)
 
 	if not success then
-		session.premiumPending = false
-		session.premiumPurchaseId = nil
-
 		return false, 0, message
 	end
 
 	session.claimed = true
 	clearTabletCarry(player)
+	player:SetAttribute("OfflinePremiumPendingAmount", 0)
 	session.premiumPending = false
 	session.premiumPurchaseId = purchaseId
 	session.lastPremiumGrantedPurchaseId = purchaseId
-
-	premiumResult:FireClient(player, true, "Claimed", payout)
+	session.premiumPurchaseSubmitted = false
 
 	return true, payout, "Claimed"
 end
@@ -411,12 +465,25 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 		return
 	end
 
-	if not wasPurchased then
-		session.premiumPending = false
-		session.premiumPurchaseId = nil
-
-		premiumResult:FireClient(player, false, "Purchase failed or cancelled.", 0)
+	if wasPurchased then
+		session.premiumPurchaseSubmitted = true
+		return
 	end
+
+	session.claimInProgress = true
+	local reservedAmount = math.max(0, math.floor(tonumber(player:GetAttribute("OfflinePremiumPendingAmount")) or 0))
+	if reservedAmount > 0 then
+		player:SetAttribute("OfflineTabletCarry", getTabletCarry(player) + reservedAmount)
+		player:SetAttribute("OfflinePremiumPendingAmount", 0)
+		forceSave(player)
+	end
+	session.premiumPending = false
+	session.premiumPurchaseId = nil
+	session.premiumPurchaseSubmitted = false
+	session.lastPremiumPromptAt = 0
+	session.claimInProgress = false
+
+	premiumResult:FireClient(player, false, "Purchase failed or cancelled.", 0)
 end)
 
 Players.PlayerRemoving:Connect(function(player)

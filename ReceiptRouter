@@ -12,7 +12,6 @@
 local MarketplaceService = game:GetService("MarketplaceService")
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
 local ServerStorage = game:GetService("ServerStorage")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
@@ -56,6 +55,11 @@ local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"
 
 local BANK_TRANSFER_USED_ATTR = "BankTransferLimitUsed"
 local BANK_TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
+local REBIRTH_SKIP_TARGET_BY_PRODUCT = {}
+for fromRebirth, productId in pairs(RebirthConfig.SkipProductIds) do
+	productId = math.floor(tonumber(productId) or 0)
+	if productId > 0 then REBIRTH_SKIP_TARGET_BY_PRODUCT[productId] = math.floor(tonumber(fromRebirth) or 0) + 1 end
+end
 
 local CAR_PRODUCT_IDS = {
 	[3524326648] = "Delta",
@@ -130,8 +134,6 @@ end
 local LEGENDARY_SKIP_CRAFT_ID = 3573930334
 local MYTHICAL_SKIP_CRAFT_ID = 3573933156
 
-local TycoonFolder = Workspace:WaitForChild("Tycoons")
-
 -- Bindable Functions Reference Setup
 local ShopRerollFunc = ServerStorage:WaitForChild("ShopRerollFunction", 30)
 local UncommonShopRerollFunc = ServerStorage:WaitForChild("UncommonShopRerollFunction", 30)
@@ -161,26 +163,12 @@ end)
 -- ============================================================================
 -- ⏱️ TIMEOUT UTILITY
 -- ============================================================================
-local function safeInvoke(bindable, timeout, ...)
+local function safeInvoke(bindable, _timeout, ...)
 	local args = table.pack(...)
-	local result = nil
-	local finished = false
-
-	task.spawn(function()
-		result = table.pack(pcall(function()
-			return bindable:Invoke(table.unpack(args, 1, args.n))
-		end))
-		finished = true
-	end)
-
-	local start = os.clock()
-	while not finished and (os.clock() - start) < timeout do
-		task.wait()
-	end
-
-	if not finished then return false, "Timeout" end
+	local result = table.pack(pcall(function()
+		return bindable:Invoke(table.unpack(args, 1, args.n))
+	end))
 	if not result[1] then return false, result[2] end
-
 	return true, table.unpack(result, 2, result.n)
 end
 
@@ -202,6 +190,48 @@ local function savePlayerNow(player, timeout)
 	end
 
 	return true
+end
+
+local function hasProfileReceiptGrant(player, purchaseId)
+	local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not admin then return nil end
+	local invokeOk, granted, _, receiptData = safeInvoke(admin, 12, "HasReceiptGrant", player, purchaseId)
+	if not invokeOk then return nil end
+	return granted, receiptData
+end
+
+local function commitProfileReceipt(player, receiptInfo, action, grantHash)
+	local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not admin then return false end
+	local invokeOk, committed = safeInvoke(
+		admin,
+		20,
+		"CommitReceiptGrant",
+		player,
+		receiptInfo.PurchaseId,
+		receiptInfo.ProductId,
+		action,
+		player.UserId,
+		grantHash
+	)
+	return invokeOk and committed == true
+end
+
+local function getProfileReceiptAction(pid, appearanceFound, skinFound)
+	if AdRewardsConfig.IsConfigured() and pid == AdRewardsConfig.DEV_PRODUCT_ID then return "RewardedAdCash" end
+	if pid == BANK_TRANSFER_SKIP_ID then return "BankTransferReset" end
+	if pid == OFFLINE_10X_CLAIM_ID then return "OfflineEarnings10x" end
+	if pid == TABLET_2X_ID then return "TabletEarnings2x" end
+	if pid == SHOP_REROLL_ID then return "CommonShopReroll" end
+	if pid == UNCOMMON_SHOP_REROLL_ID then return "UncommonShopReroll" end
+	if pid == RARE_SHOP_REROLL_ID then return "RareShopReroll" end
+	if pid == EPIC_SHOP_REROLL_ID then return "EpicShopReroll" end
+	if pid == LEGENDARY_SKIP_CRAFT_ID then return "LegendaryCraftSkip" end
+	if pid == MYTHICAL_SKIP_CRAFT_ID then return "MythicalCraftSkip" end
+	if REBIRTH_SKIP_TARGET_BY_PRODUCT[pid] then return "RebirthSkip" end
+	if appearanceFound then return "BaseAppearance" end
+	if skinFound then return "BaseSkin" end
+	return nil
 end
 
 local function getPurchaseHistoryStore()
@@ -230,7 +260,15 @@ local function wasPurchaseProcessed(purchaseKey)
 
 	for attempt = 1, 3 do
 		local success, result = pcall(function() return store:GetAsync(purchaseKey) end)
-		if success then return result == true end
+		if success then
+			if result == true then
+				return true, { State = "Granted" }
+			end
+			if type(result) == "table" then
+				return result.State == "Granted", result
+			end
+			return false, nil
+		end
 
 		if isDeletedStoreError(result) then
 			local fallbackOk, fallbackStore = pcall(function() return DataStoreService:GetDataStore("PurchaseHistory_V2") end)
@@ -247,12 +285,58 @@ local function wasPurchaseProcessed(purchaseKey)
 	return nil
 end
 
+local function bindPurchaseTarget(purchaseKey, receiptInfo, targetUserId)
+	local store = getPurchaseHistoryStore()
+	if not store then return false end
+
+	local boundRecord = nil
+	local success = pcall(function()
+		store:UpdateAsync(purchaseKey, function(current)
+			boundRecord = nil
+			if current == true then
+				boundRecord = { State = "Granted", TargetUserId = targetUserId }
+				return current
+			end
+
+			if type(current) == "table" then
+				-- PurchaseId is globally unique. Once a receipt starts processing, keep
+				-- its original recipient even if a client cancels/replaces a gift intent
+				-- while a later DataStore or profile save is retrying.
+				if current.TargetUserId == nil and current.State ~= "Granted" then
+					current.TargetUserId = targetUserId
+				end
+				current.ProductId = current.ProductId or receiptInfo.ProductId
+				current.PlayerId = current.PlayerId or receiptInfo.PlayerId
+				boundRecord = current
+				return current
+			end
+
+			boundRecord = {
+				State = "Processing",
+				PlayerId = receiptInfo.PlayerId,
+				ProductId = receiptInfo.ProductId,
+				TargetUserId = targetUserId,
+				StartedAt = os.time(),
+			}
+			return boundRecord
+		end)
+	end)
+
+	return success and type(boundRecord) == "table", boundRecord
+end
+
 local function markPurchaseProcessed(purchaseKey)
 	local store = getPurchaseHistoryStore()
 	if not store then return false end
 
 	local success, err = pcall(function()
-		store:UpdateAsync(purchaseKey, function(current) return true end)
+		store:UpdateAsync(purchaseKey, function(current)
+			if current == true then return true end
+			current = type(current) == "table" and current or {}
+			current.State = "Granted"
+			current.GrantedAt = os.time()
+			return current
+		end)
 	end)
 
 	if not success then return false end
@@ -377,19 +461,22 @@ local function hasStarterPackDataGrant(player)
 	return isGranted == true
 end
 
-local function recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, rarity)
+local function saveRankReceiptGrant(buyerPlayer, targetPlayer, isGift, carName, rarity, purchaseId)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
-	if not rankApi then return end
+	if not rankApi or not rankApi:IsA("BindableFunction") then return false end
 
-	if isGift then
-		pcall(function()
-			rankApi:Invoke("CarGiftSent", buyerPlayer, targetPlayer, carName)
-		end)
-	else
-		pcall(function()
-			rankApi:Invoke("CarObtained", targetPlayer, carName, "Buy", rarity)
-		end)
-	end
+	local ok, saved = pcall(function()
+		return rankApi:Invoke(
+			"ReceiptCarGranted",
+			buyerPlayer,
+			tostring(purchaseId or ""),
+			targetPlayer,
+			carName,
+			rarity,
+			isGift == true
+		)
+	end)
+	return ok and saved == true
 end
 
 -- ============================================================================
@@ -421,8 +508,6 @@ local function runCarPostCommit(postCommit)
 	local carName = postCommit.CarName
 	local rarity = postCommit.Rarity
 	local isGift = postCommit.IsGift == true
-
-	recordRankRobuxGrant(buyerPlayer, targetPlayer, isGift, carName, rarity)
 
 	local ShopRemotes = ReplicatedStorage:FindFirstChild("ShopRemotes")
 	local feedbackRemote = ShopRemotes and postCommit.FeedbackRemoteName and ShopRemotes:FindFirstChild(postCommit.FeedbackRemoteName)
@@ -481,7 +566,7 @@ end
 -- ============================================================================
 -- 🧾 MAIN RECEIPT PROCESSOR
 -- ============================================================================
-MarketplaceService.ProcessReceipt = function(receiptInfo)
+local function processReceipt(receiptInfo)
 	local buyerId = receiptInfo.PlayerId
 	local buyerPlayer = Players:GetPlayerByUserId(buyerId)
 
@@ -511,40 +596,19 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	local giftFallbackMessage = nil
 	local giftIntentStatus = nil
 
-	if isGiftableProduct and _G.GetGiftIntent then
-		local giftIntent = nil
-		giftIntent, giftIntentStatus = _G.GetGiftIntent(buyerId, pid, false)
-		if giftIntent then
-			giftReceiverId = giftIntent.ReceiverUserId
-			local receiver = Players:GetPlayerByUserId(giftReceiverId)
-			if receiver and receiver ~= buyerPlayer then
-				targetPlayer = receiver
-				isGift = true
-			else
-				-- Never redirect a paid gift to the purchaser. Holding the receipt lets
-				-- Roblox retry safely when the original recipient rejoins.
-				return Enum.ProductPurchaseDecision.NotProcessedYet
-			end
-		elseif giftIntentStatus == "ProductMismatch" then
-			consumeStaleGiftIntentAfterGrant = true
-		end
-	elseif not isGiftableProduct and _G.GetGiftReceiver then
-		giftReceiverId = _G.GetGiftReceiver(buyerId, false)
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
-	end
-
 	local purchaseKey = buyerId .. "_" .. receiptInfo.PurchaseId
 	if activeReceiptLocks[purchaseKey] then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
-	activeReceiptLocks[purchaseKey] = true
+	local receiptLock = {}
+	activeReceiptLocks[purchaseKey] = receiptLock
 	local function finish(decision)
-		activeReceiptLocks[purchaseKey] = nil
+		if activeReceiptLocks[purchaseKey] == receiptLock then activeReceiptLocks[purchaseKey] = nil end
 		return decision
 	end
 
-	local alreadyProcessed = wasPurchaseProcessed(purchaseKey)
+	local alreadyProcessed, purchaseRecord = wasPurchaseProcessed(purchaseKey)
 
 	if alreadyProcessed == nil then
 		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
@@ -554,11 +618,88 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 	end
 
+	local function useBoundTarget(targetUserId)
+		targetUserId = math.floor(tonumber(targetUserId) or 0)
+		if targetUserId <= 0 then return false end
+		if targetUserId ~= buyerId and not isGiftableProduct then
+			warn("[ReceiptRouter] Refusing non-gift receipt with a different bound target: " .. purchaseKey)
+			return false
+		end
+
+		local boundPlayer = Players:GetPlayerByUserId(targetUserId)
+		if not boundPlayer then return false end
+		targetPlayer = boundPlayer
+		isGift = targetUserId ~= buyerId
+		giftReceiverId = isGift and targetUserId or nil
+		return true
+	end
+
+	local boundTargetUserId = type(purchaseRecord) == "table" and tonumber(purchaseRecord.TargetUserId) or nil
+	if boundTargetUserId then
+		if purchaseRecord.ProductId and tonumber(purchaseRecord.ProductId) ~= tonumber(pid) then
+			warn("[ReceiptRouter] PurchaseId/ProductId mismatch for " .. purchaseKey)
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+		if not useBoundTarget(boundTargetUserId) then
+			-- The original recipient may simply be in another server/offline. Never
+			-- redirect an already-started paid grant to whoever a later client names.
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+	else
+		if isGiftableProduct and _G.GetGiftIntent then
+			local giftIntent = nil
+			giftIntent, giftIntentStatus = _G.GetGiftIntent(buyerId, pid, false)
+			if giftIntent then
+				giftReceiverId = giftIntent.ReceiverUserId
+				local receiver = Players:GetPlayerByUserId(giftReceiverId)
+				if receiver and receiver ~= buyerPlayer then
+					targetPlayer = receiver
+					isGift = true
+				else
+					-- Never redirect a paid gift to the purchaser. Holding the receipt lets
+					-- Roblox retry safely when the original recipient rejoins.
+					return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+				end
+			elseif giftIntentStatus == "ProductMismatch" then
+				consumeStaleGiftIntentAfterGrant = true
+			end
+		elseif not isGiftableProduct and _G.GetGiftReceiver then
+			giftReceiverId = _G.GetGiftReceiver(buyerId, false)
+			consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
+		end
+
+		-- Gift-only products must retain their original server intent. A missing
+		-- intent is not permission to bind the paid receipt back to its purchaser.
+		if registeredGiftProduct and registeredGiftProduct.Kind == "GamePassGift" and not isGift then
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+
+		local boundOk, newRecord = bindPurchaseTarget(purchaseKey, receiptInfo, targetPlayer.UserId)
+		if not boundOk or type(newRecord) ~= "table" then
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+		if newRecord.State == "Granted" then
+			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
+		end
+		if newRecord.ProductId and tonumber(newRecord.ProductId) ~= tonumber(pid) then
+			warn("[ReceiptRouter] Purchase target bind found a product mismatch for " .. purchaseKey)
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+		if tonumber(newRecord.TargetUserId) ~= targetPlayer.UserId
+			and not useBoundTarget(newRecord.TargetUserId)
+		then
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+	end
+
 	local limitedCarProductInfo = LimitedCarsConfig.GetProductByProductId(pid)
 	if limitedCarProductInfo and limitedCarProductInfo.ProductId > 0 then
 		local ok, message, alreadyGranted = LimitedCarsService.ProcessReceipt(receiptInfo, isGift and targetPlayer or nil)
-		LimitedCarsService.NotifyClient(buyerPlayer, ok and not alreadyGranted, message)
+		if not alreadyGranted then LimitedCarsService.NotifyClient(buyerPlayer, ok, message) end
 		if ok then
+			if not saveRankReceiptGrant(buyerPlayer, targetPlayer, isGift, limitedCarProductInfo.CarId, "Legendary", receiptInfo.PurchaseId) then
+				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+			end
 			if not markPurchaseProcessed(purchaseKey) then
 				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 			end
@@ -574,7 +715,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	if pid == GlobalLuckConfig.ProductId and GlobalLuckConfig.ProductId > 0 then
 		local ok, message, alreadyGranted = GlobalLuckService.ProcessReceipt(receiptInfo)
-		GlobalLuckService.NotifyClient(buyerPlayer, ok and not alreadyGranted, message)
+		if not alreadyGranted then GlobalLuckService.NotifyClient(buyerPlayer, ok, message) end
 		if ok then
 			if not markPurchaseProcessed(purchaseKey) then
 				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
@@ -586,7 +727,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	if pid == GlobalMoneyFrenzyConfig.ProductId and GlobalMoneyFrenzyConfig.ProductId > 0 then
 		local ok, message, alreadyGranted = GlobalMoneyFrenzyService.ProcessReceipt(receiptInfo)
-		GlobalMoneyFrenzyService.NotifyClient(buyerPlayer, ok and not alreadyGranted, message)
+		if not alreadyGranted then GlobalMoneyFrenzyService.NotifyClient(buyerPlayer, ok, message) end
 		if ok then
 			if not markPurchaseProcessed(purchaseKey) then
 				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
@@ -597,6 +738,29 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	end
 
 	local purchaseSuccess = false
+	local profileReceiptAction = getProfileReceiptAction(pid, appearanceFound, skinFound)
+	local profileGrantHash = tostring(pid)
+	if profileReceiptAction then
+		local profileGranted, receiptData = hasProfileReceiptGrant(targetPlayer, receiptInfo.PurchaseId)
+		if profileGranted == nil then
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		elseif profileGranted == true then
+			if not markPurchaseProcessed(purchaseKey) then
+				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+			end
+			if profileReceiptAction == "OfflineEarnings10x" then
+				local folder = ReplicatedStorage:FindFirstChild("OfflineEarningsRemotes")
+				local resultEvent = folder and folder:FindFirstChild("OfflinePremiumClaimResult")
+				if resultEvent then resultEvent:FireClient(buyerPlayer, true, "Claimed", tonumber(receiptData and receiptData.GrantHash) or 0) end
+			elseif profileReceiptAction == "BankTransferReset" and BankTimerResetFeedback then
+				BankTimerResetFeedback:FireClient(buyerPlayer, true, "Timer Reset Successful")
+			elseif profileReceiptAction == "RewardedAdCash" then
+				local receiptGranted = ServerStorage:FindFirstChild("AdRewardReceiptGranted")
+				if receiptGranted then receiptGranted:Fire(buyerPlayer, AdRewardsConfig.SUCCESS_REWARD_NAME, AdRewardsConfig.SUCCESS_REWARD_COLOR) end
+			end
+			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
+		end
+	end
 	local cashPackInfo = CashPackConfig.GetPackByProductId(pid)
 	local bankResetFeedback = nil
 	local offlinePremiumClientResult = nil
@@ -655,6 +819,7 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 		if wallet then
 			wallet.Value += AdRewardsConfig.WALLET_CASH_AMOUNT
+			profileGrantHash = tostring(AdRewardsConfig.WALLET_CASH_AMOUNT)
 			purchaseSuccess = true
 			adRewardClientResult = {
 				rewardName = AdRewardsConfig.SUCCESS_REWARD_NAME,
@@ -696,7 +861,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 		if _G.OfflineEarningsService and _G.OfflineEarningsService.TryGrantPremium then
 			local ok, payout, msg = _G.OfflineEarningsService.TryGrantPremium(buyerPlayer, receiptInfo.PurchaseId)
-			purchaseSuccess = ok or (msg == "You have already claimed your offline earnings.")
+			purchaseSuccess = ok
+			if ok then profileGrantHash = tostring(payout) end
 			offlinePremiumClientResult = {
 				success = ok,
 				message = ok and "Claimed" or (msg or "You have already claimed your offline earnings."),
@@ -715,32 +881,26 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		purchaseSuccess = grantStarterPackRewards(buyerPlayer, receiptInfo.PurchaseId)
 
 		-- ─── REBIRTH SKIP PRODUCTS ────────────────────────────────────────────────
-	elseif RebirthConfig.SkipProductIds[math.floor(tonumber(targetPlayer:GetAttribute("Rebirth")) or 0)] == pid then
+	elseif REBIRTH_SKIP_TARGET_BY_PRODUCT[pid] then
 		local currentRebirth = math.floor(tonumber(targetPlayer:GetAttribute("Rebirth")) or 0)
-		if currentRebirth < RebirthConfig.MAX_REBIRTH then
-			targetPlayer:SetAttribute("Rebirth", currentRebirth + 1)
-			targetPlayer:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(currentRebirth + 1))
-			purchaseSuccess = true
+		local targetRebirth = math.min(RebirthConfig.MAX_REBIRTH, REBIRTH_SKIP_TARGET_BY_PRODUCT[pid])
+		if currentRebirth < targetRebirth then
+			local grantedRebirth = math.max(currentRebirth, targetRebirth)
+			targetPlayer:SetAttribute("Rebirth", grantedRebirth)
+			targetPlayer:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(grantedRebirth))
 		end
+		profileGrantHash = tostring(targetRebirth)
+		purchaseSuccess = true
 
 		-- ─── 2X TABLET ───────────────────────────────────────────────────────────
 	elseif pid == TABLET_2X_ID then
-		local myPlotName = targetPlayer:GetAttribute("OccupiedPlot")
-		local plot = myPlotName and TycoonFolder:FindFirstChild(myPlotName)
-
-		if plot and plot:FindFirstChild("PendingEarnings") then
-			local pendingVal = plot.PendingEarnings
-			local amount = pendingVal.Value
-
-			if amount > 0 then
-				pendingVal.Value = 0
-
-				local hs = targetPlayer:FindFirstChild("HiddenStats")
-				if hs and hs:FindFirstChild("Cash") then
-					hs.Cash.Value += amount * 2
-				end
-			end
-
+		local amount = math.max(0, math.floor(tonumber(targetPlayer:GetAttribute("TabletDoublePendingAmount")) or 0))
+		local hs = targetPlayer:FindFirstChild("HiddenStats")
+		local bank = hs and hs:FindFirstChild("Cash")
+		if amount > 0 and bank then
+			bank.Value += amount * 2
+			targetPlayer:SetAttribute("TabletDoublePendingAmount", 0)
+			profileGrantHash = tostring(amount * 2)
 			purchaseSuccess = true
 		end
 
@@ -905,6 +1065,19 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	-- ─── FINALIZE ─────────────────────────────────────────────────────────────
 	if purchaseSuccess then
+		if profileReceiptAction and not commitProfileReceipt(targetPlayer, receiptInfo, profileReceiptAction, profileGrantHash) then
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+		if carPostCommit and not saveRankReceiptGrant(
+			carPostCommit.BuyerPlayer,
+			carPostCommit.TargetPlayer,
+			carPostCommit.IsGift,
+			carPostCommit.CarName,
+			carPostCommit.Rarity,
+			receiptInfo.PurchaseId
+		) then
+			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
 		if not markPurchaseProcessed(purchaseKey) then
 			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 		end
@@ -974,4 +1147,17 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	end
 
 	return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+end
+
+MarketplaceService.ProcessReceipt = function(receiptInfo)
+	-- Catch unexpected handler errors so a receipt is retried instead of leaving
+	-- its in-memory lock stuck forever. Deliberately do not time out a running
+	-- grant: abandoning it would let a late side effect race a second grant.
+	local ok, decision = pcall(processReceipt, receiptInfo)
+	if ok then return decision end
+
+	local purchaseKey = tostring(receiptInfo.PlayerId) .. "_" .. tostring(receiptInfo.PurchaseId)
+	activeReceiptLocks[purchaseKey] = nil
+	warn("[ReceiptRouter] Unexpected receipt error for " .. purchaseKey .. ": " .. tostring(decision))
+	return Enum.ProductPurchaseDecision.NotProcessedYet
 end

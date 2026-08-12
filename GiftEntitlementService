@@ -22,6 +22,7 @@ function Service.Grant(player, passKey, receiptInfo)
 	local wasNew = false
 	local ok, err = pcall(function()
 		store:UpdateAsync(key(player.UserId), function(old)
+			wasNew = false
 			old = type(old) == "table" and old or {}
 			if old[passKey] ~= true then wasNew = true end
 			old[passKey] = true

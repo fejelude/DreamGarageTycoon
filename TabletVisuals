@@ -262,13 +262,14 @@ local function setupClientTablet(plot)
 				return
 			end
 
-			if pendingVal and pendingVal.Value <= 0 then
+			local reservedAmount = math.max(0, math.floor(tonumber(player:GetAttribute("TabletDoublePendingAmount")) or 0))
+			if pendingVal and pendingVal.Value <= 0 and reservedAmount <= 0 then
 				local s = Instance.new("Sound"); s.SoundId = FAIL_SOUND_ID; s.Parent = SoundService; s:Play(); game.Debris:AddItem(s,1)
 				spawnFloatingText(claimPart, "No Earnings!", Color3.fromRGB(255, 80, 80))
 				return
 			end
 
-			lastProjectedAmount = pendingVal.Value * 2
+			lastProjectedAmount = (reservedAmount > 0 and reservedAmount or pendingVal.Value) * 2
 			TabletEvent:FireServer("Prompt2X", plot.Name)
 		end)
 	end

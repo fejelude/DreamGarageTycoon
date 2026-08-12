@@ -180,54 +180,19 @@ local function sellEquippedCar(player, requestedCarId)
 		return false, "Invalid sell amount."
 	end
 
-	-- Execution: Remove item via TycoonAdminAPI & clean up all instances
-	-- TycoonDataHandler's `RemoveTool` scans Backpack → StarterGear → Character
-	-- and stops after destroying `requestedAmount` matches.
-	-- We request 1 removal, then manually clean up any remaining instances
-	-- (the held tool in Character, or a lingering StarterGear clone).
-	local removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, cleanActualId, 1)
-	if not removeSuccess then
-		-- Fallback: try removing with exact `actualCarId` just in case the API strictly needs the raw name
-		removeSuccess = TycoonAdminAPI:Invoke("RemoveTool", player, actualCarId, 1)
-	end
-
-	-- CRITICAL: If both attempts to remove the tool fail, abort the transaction completely.
-	-- Do not give the player cash if we could not guarantee the car was removed from their data.
-	if not removeSuccess then
-		return false, "Failed to remove the car from your inventory. Transaction aborted."
-	end
-
-	-- FIX (Double Removal): Only destroy the held tool if RemoveTool didn't already get it.
-	-- RemoveTool scans Backpack first, so it usually destroys a Backpack/StarterGear clone
-	-- and leaves the Character tool alive. We clean it up here without double-counting.
-	if actualTool and actualTool.Parent then
-		actualTool:Destroy()
-	end
-
-	-- FIX: Also clean up any remaining StarterGear clone so the sold car
-	-- doesn't respawn into the player's inventory on death.
-	local starterGear = player:FindFirstChild("StarterGear")
-	if starterGear then
-		for _, child in ipairs(starterGear:GetChildren()) do
-			if child:IsA("Tool") then
-				local childId = child:GetAttribute("ToolId") or child.Name
-				local cleanChildId = CarSellPrices.CleanId(childId)
-				if cleanChildId == cleanActualId then
-					child:Destroy()
-					break
-				end
-			end
-		end
-	end
-
-	-- Execution: Add Funds
 	local leaderstats = player:FindFirstChild("leaderstats")
 	local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
-
 	if not wallet then
-		-- Highly unlikely, but refund if leaderstats is suddenly missing
-		TycoonAdminAPI:Invoke("GiveTool", player, actualCarId)
 		return false, "Could not locate wallet."
+	end
+
+	-- Remove the exact server-owned instance the player is holding. Removing by
+	-- car type can delete a second identical Backpack copy and then destroy the
+	-- equipped copy too, paying once for two cars.
+	local removeSuccess = TycoonAdminAPI:Invoke("RemoveExactTool", player, actualTool)
+
+	if not removeSuccess then
+		return false, "Failed to remove the car from your inventory. Transaction aborted."
 	end
 
 	wallet.Value += sellAmount
@@ -246,7 +211,7 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 	if activeTransactions[player.UserId] then
 		return false, "Transaction in progress. Please wait."
 	end
-	activeTransactions[player.UserId] = true
+	activeTransactions[player.UserId] = player
 
 	local success, result, msg, sellAmount, soldCount = pcall(function()
 		-- 3. Validation: Verify character and distance to Sofhia
@@ -267,12 +232,12 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 	-- immediate release in the error path, and blocked legitimate retries too long.
 	if not success then
 		warn("⚠️ Sofhia Transaction Error for " .. player.Name .. ": " .. tostring(result))
-		activeTransactions[player.UserId] = nil
+		if activeTransactions[player.UserId] == player then activeTransactions[player.UserId] = nil end
 		return false, "System Error"
 	end
 
 	task.delay(1, function()
-		activeTransactions[player.UserId] = nil
+		if activeTransactions[player.UserId] == player then activeTransactions[player.UserId] = nil end
 	end)
 
 	return result, msg, sellAmount, soldCount
@@ -280,5 +245,5 @@ end
 
 -- Cleanup locks on leave
 Players.PlayerRemoving:Connect(function(player)
-	activeTransactions[player.UserId] = nil
+	if activeTransactions[player.UserId] == player then activeTransactions[player.UserId] = nil end
 end)

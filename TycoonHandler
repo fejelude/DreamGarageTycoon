@@ -13,6 +13,7 @@ local Workspace = game:GetService("Workspace")
 local ServerStorage = game:GetService("ServerStorage")
 
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
+local FINAL_SAVE_WAIT_SECONDS = 60
 
 -- 🔗 SYNC EVENT (Communication with TycoonDataHandler)
 local SaveEvent = ServerStorage:FindFirstChild("TycoonSaveCompleted")
@@ -179,27 +180,35 @@ Players.PlayerRemoving:Connect(function(player)
 			-- Clearing it now allows a new player to claim/wipe it while data is still saving!
 
 			-- ⏳ EVENT LISTENER (The Senior Fix)
+			local saveFinished = false
 			local didSave = false
 			local listener
 			local waitStart = os.clock()
 
 			-- 1. Check if ALREADY saved (Attribute Check)
-			if player:GetAttribute("DataSaved") then
-				didSave = true
+			if player:GetAttribute("DataSaveFinished") == true then
+				saveFinished = true
+				didSave = player:GetAttribute("DataSaved") == true
 			else
 				-- 2. Listen for TycoonDataHandler to fire "TycoonSaveCompleted"
-				listener = SaveEvent.Event:Connect(function(savedName)
-					if savedName == player.Name then
-						didSave = true
+				listener = SaveEvent.Event:Connect(function(savedUserId, saveSucceeded)
+					if savedUserId == player.UserId then
+						saveFinished = true
+						didSave = saveSucceeded == true
 					end
 				end)
 			end
 
-			-- WAIT LOOP: Wait until Saved OR Timeout (8 Seconds Failsafe)
-			repeat 
+			-- A final save can first wait for an in-flight inventory transfer/save and
+			-- then perform its own UpdateAsync retries. Keep the plot intact for the
+			-- whole bounded transaction window instead of only the save-lock timeout.
+			repeat
 				task.wait(0.1)
-				if player:GetAttribute("DataSaved") then didSave = true end
-			until didSave or (os.clock() - waitStart > 8)
+				if player:GetAttribute("DataSaveFinished") == true then
+					saveFinished = true
+					didSave = player:GetAttribute("DataSaved") == true
+				end
+			until saveFinished or (os.clock() - waitStart > FINAL_SAVE_WAIT_SECONDS)
 
 			if listener then listener:Disconnect() end
 
@@ -210,7 +219,7 @@ Players.PlayerRemoving:Connect(function(player)
 			if didSave then
 				print("✅ Data Saved for " .. player.Name .. ". Plot released safely.")
 			else
-				warn("⚠️ Save Timeout for " .. player.Name .. ". Forcing release of " .. plotName .. " (Data might be risky).")
+				warn("⚠️ Final save failed or timed out for " .. player.Name .. ". Releasing " .. plotName .. " after the full save window.")
 			end
 
 			-- QUEUE CHECK: Give to someone waiting

@@ -428,7 +428,12 @@ local function saveProfileAsync(player, flag)
 	markRenderDirty()
 
 	local ok, err = pcall(function()
-		profileStore:SetAsync(tostring(player.UserId), data)
+		profileStore:UpdateAsync(tostring(player.UserId), function(current)
+			if type(current) == "table" and (tonumber(current.UpdatedAt) or 0) > data.UpdatedAt then
+				return current
+			end
+			return data
+		end)
 	end)
 
 	if not ok then
@@ -446,6 +451,10 @@ end
 local function savePlayerCash(player, bypassThrottle)
 	local state = playerStates[player]
 	if not state then return end
+	-- Plot/leaderstat objects are created before the session-locked profile has
+	-- loaded. Never overwrite a valid leaderboard score with those temporary
+	-- zeroes when a player is kicked because their data could not be acquired.
+	if player:GetAttribute("TycoonDataLoaded") ~= true then return end
 
 	local now = os.clock()
 	if not bypassThrottle and now - state.lastSavedAt < SAVE_INTERVAL_SECONDS then

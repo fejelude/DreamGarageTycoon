@@ -7,6 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local DataStoreService = game:GetService("DataStoreService")
 local StarterGui = game:GetService("StarterGui")
+local HttpService = game:GetService("HttpService")
 local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
 local GamePassConfig = require(ReplicatedStorage:WaitForChild("GamePassConfig"))
 
@@ -55,18 +56,59 @@ local INTENT_COOLDOWN = 0.75
 local INTENT_TTL = 30 * 60
 local function intentKey(userId) return "Buyer_" .. tostring(userId) end
 
+local function isStoredIntent(value)
+	return type(value) == "table"
+		and value.State ~= "Cleared"
+		and tonumber(value.ReceiverUserId) ~= nil
+		and tonumber(value.ProductId) ~= nil
+end
+
+local function sameIntent(a, b)
+	if not isStoredIntent(a) or not isStoredIntent(b) then return false end
+	if a.Token and b.Token then return a.Token == b.Token end
+	return tonumber(a.ReceiverUserId) == tonumber(b.ReceiverUserId)
+		and tonumber(a.ProductId) == tonumber(b.ProductId)
+		and tonumber(a.CreatedAt) == tonumber(b.CreatedAt)
+end
+
 local function loadIntent(buyerUserId)
 	if pendingGifts[buyerUserId] then return pendingGifts[buyerUserId] end
 	local ok, stored = pcall(function() return intentStore:GetAsync(intentKey(buyerUserId)) end)
-	if ok and type(stored) == "table" then pendingGifts[buyerUserId] = stored end
+	if ok and isStoredIntent(stored) then pendingGifts[buyerUserId] = stored end
 	return pendingGifts[buyerUserId]
+end
+
+local function clearPersistedIntent(buyerUserId, expectedIntent)
+	if not expectedIntent then return false end
+	local cleared = false
+	local ok, result = pcall(function()
+		return intentStore:UpdateAsync(intentKey(buyerUserId), function(current)
+			cleared = false
+			if sameIntent(current, expectedIntent) then
+				cleared = true
+				return {
+					State = "Cleared",
+					Token = current.Token,
+					ClearedAt = os.time(),
+					ExpiresAt = 0,
+				}
+			end
+			return current
+		end)
+	end)
+
+	if ok then
+		pendingGifts[buyerUserId] = isStoredIntent(result) and result or nil
+	end
+	return ok and cleared
 end
 
 local function pruneExpiredIntent(buyerUserId)
 	local intent = loadIntent(buyerUserId)
 	if intent and (tonumber(intent.ExpiresAt) or 0) <= os.time() then
-		pendingGifts[buyerUserId] = nil
-		pcall(function() intentStore:RemoveAsync(intentKey(buyerUserId)) end)
+		clearPersistedIntent(buyerUserId, intent)
+		local current = pendingGifts[buyerUserId]
+		if current and (tonumber(current.ExpiresAt) or 0) > os.time() then return current end
 		return nil
 	end
 	return intent
@@ -75,6 +117,9 @@ end
 local function validateIntentRequest(buyer, productId, receiverUserId)
 	if not buyer or not buyer.Parent then
 		return false, "Buyer left the server"
+	end
+	if buyer:GetAttribute("TycoonDataLoaded") ~= true then
+		return false, "Your data is still loading"
 	end
 
 	if typeof(productId) ~= "number" or productId <= 0 or productId ~= productId then
@@ -103,6 +148,9 @@ local function validateIntentRequest(buyer, productId, receiverUserId)
 	if not receiverPlayer then
 		return false, "Player left the server"
 	end
+	if receiverPlayer:GetAttribute("TycoonDataLoaded") ~= true then
+		return false, "This player's data is still loading"
+	end
 	local product = GiftProductRegistry.GetByProductId(productId)
 	if product and product.OwnershipAttribute and receiverPlayer:GetAttribute(product.OwnershipAttribute) == true then
 		return false, receiverPlayer.Name .. " already owns this perk"
@@ -117,29 +165,41 @@ local function setIntent(buyer, productId, receiverUserId)
 		return false, message
 	end
 
-	local existing = pruneExpiredIntent(buyer.UserId)
-	if existing then
-		if existing.ProductId == math.floor(productId) and existing.ReceiverUserId == receiverUserId then
-			return true, "Gift ready"
-		end
-		return false, "Another gift purchase is already pending"
-	end
-
 	local now = os.time()
-	pendingGifts[buyer.UserId] = {
+	local candidate = {
+		State = "Pending",
+		Token = HttpService:GenerateGUID(false),
 		ReceiverUserId = receiverUserId,
 		ProductId = math.floor(productId),
 		CreatedAt = now,
 		ExpiresAt = now + INTENT_TTL,
 	}
-	local saved, saveErr = pcall(function()
-		intentStore:SetAsync(intentKey(buyer.UserId), pendingGifts[buyer.UserId])
+	local accepted = false
+	local conflict = false
+	local saved, result = pcall(function()
+		return intentStore:UpdateAsync(intentKey(buyer.UserId), function(current)
+			accepted = false
+			conflict = false
+			if isStoredIntent(current) and (tonumber(current.ExpiresAt) or 0) > now then
+				if tonumber(current.ProductId) == candidate.ProductId
+					and tonumber(current.ReceiverUserId) == candidate.ReceiverUserId
+				then
+					accepted = true
+					return current
+				end
+				conflict = true
+				return current
+			end
+			accepted = true
+			return candidate
+		end)
 	end)
-	if not saved then
-		pendingGifts[buyer.UserId] = nil
-		return false, "Unable to securely save gift intent: " .. tostring(saveErr)
+	if not saved or not accepted or not isStoredIntent(result) then
+		return false, conflict and "Another gift purchase is already pending"
+			or ("Unable to securely save gift intent: " .. tostring(result))
 	end
 
+	pendingGifts[buyer.UserId] = result
 	return true, "Gift ready"
 end
 
@@ -157,7 +217,7 @@ SetIntentEvent.OnServerEvent:Connect(function(buyer, receiverUserId, productId)
 end)
 
 CancelIntentEvent.OnServerEvent:Connect(function(buyer, productId)
-	local intent = pendingGifts[buyer.UserId]
+	local intent = pruneExpiredIntent(buyer.UserId)
 	if not intent then
 		return
 	end
@@ -166,14 +226,23 @@ CancelIntentEvent.OnServerEvent:Connect(function(buyer, productId)
 		return
 	end
 
-	pendingGifts[buyer.UserId] = nil
-	pcall(function() intentStore:RemoveAsync(intentKey(buyer.UserId)) end)
+	clearPersistedIntent(buyer.UserId, intent)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
 	-- Do not discard an accepted intent here. Roblox may deliver the receipt after
 	-- the purchaser disconnects; keeping it prevents a retry from changing target.
-	lastIntentTime[player.UserId] = nil
+	local userId = player.UserId
+	lastIntentTime[userId] = nil
+	local intent = pendingGifts[userId]
+	if intent then
+		local cleanupDelay = math.max(1, (tonumber(intent.ExpiresAt) or os.time()) - os.time() + 1)
+		task.delay(cleanupDelay, function()
+			if pendingGifts[userId] == intent and (tonumber(intent.ExpiresAt) or 0) <= os.time() then
+				pruneExpiredIntent(userId)
+			end
+		end)
+	end
 end)
 
 -- ReceiptRouter API. Intents are consumed only after the receipt is fully
@@ -189,23 +258,21 @@ _G.GetGiftIntent = function(buyerUserId, productId, consume)
 	end
 
 	if consume then
-		pendingGifts[buyerUserId] = nil
+		clearPersistedIntent(buyerUserId, intent)
 	end
 
 	return intent, nil
 end
 
 _G.ClearGiftIntent = function(buyerUserId, productId)
-	local intent = pendingGifts[buyerUserId]
+	local intent = pruneExpiredIntent(buyerUserId)
 	if not intent then return false end
 
 	if typeof(productId) == "number" and intent.ProductId ~= math.floor(productId) then
 		return false
 	end
 
-	pendingGifts[buyerUserId] = nil
-	pcall(function() intentStore:RemoveAsync(intentKey(buyerUserId)) end)
-	return true
+	return clearPersistedIntent(buyerUserId, intent)
 end
 
 -- Backwards-compatible API for older scripts.
@@ -214,7 +281,7 @@ _G.GetGiftReceiver = function(buyerUserId, consume)
 	local receiverId = intent and intent.ReceiverUserId
 
 	if receiverId and consume then
-		pendingGifts[buyerUserId] = nil
+		clearPersistedIntent(buyerUserId, intent)
 	end
 
 	return receiverId

@@ -32,7 +32,9 @@ local RankAnnouncement = requireChild(RankRemotes, "RankAnnouncement", "RemoteEv
 local Sessions = {}
 local PlayerConnections = {}
 local PendingSessionCleanup = {}
+local RankClaimLocks = {}
 local PLAYER_REMOVING_SESSION_GRACE_SECONDS = 120
+local MAX_PROCESSED_RECEIPT_GRANTS = 300
 
 local function newProgress()
 	return {
@@ -96,6 +98,26 @@ local function sanitizePlayerSet(raw)
 	end
 
 	return set
+end
+
+local function sanitizeProcessedReceiptGrants(raw)
+	local entries = {}
+	for purchaseId, processedAt in pairs(type(raw) == "table" and raw or {}) do
+		if type(purchaseId) == "string" and purchaseId ~= "" then
+			table.insert(entries, {
+				PurchaseId = purchaseId,
+				ProcessedAt = math.max(0, math.floor(tonumber(processedAt) or 0)),
+			})
+		end
+	end
+	table.sort(entries, function(a, b) return a.ProcessedAt > b.ProcessedAt end)
+
+	local result = {}
+	for index, entry in ipairs(entries) do
+		if index > MAX_PROCESSED_RECEIPT_GRANTS then break end
+		result[entry.PurchaseId] = entry.ProcessedAt
+	end
+	return result
 end
 
 local function sanitizeProgress(raw)
@@ -182,6 +204,7 @@ local function normalizeLoadedData(data)
 	end
 
 	data.Progress = normalizeProgressByRank(data.Progress, data)
+	data.ProcessedReceiptGrants = sanitizeProcessedReceiptGrants(data.ProcessedReceiptGrants)
 
 	return data
 end
@@ -202,6 +225,13 @@ local function requestSave(player)
 			pcall(function() api:Invoke("SaveNow", player) end)
 		end)
 	end
+end
+
+local function forceSave(player)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not api then return false end
+	local ok, saved = pcall(function() return api:Invoke("SaveNow", player) end)
+	return ok and saved == true
 end
 
 local function trackConnection(player, connection)
@@ -553,11 +583,25 @@ local function claimRank(player, rankName)
 		end
 	end
 
-	local granted, message = grantRank(player, rankName, true)
+	local previousRank = session.CurrentRank
+	local previousCompleted = table.clone(session.CompletedRanks)
+	local previousRewards = table.clone(session.ClaimedRewards)
+	local granted, message = grantRank(player, rankName, false)
+	if granted and not forceSave(player) then
+		session.CurrentRank = previousRank
+		session.CompletedRanks = previousCompleted
+		session.ClaimedRewards = previousRewards
+		applyBenefits(player)
+		markDirty(player)
+		pushState(player)
+		forceSave(player)
+		return false, "Rank could not be saved. Please try again.", buildState(player)
+	end
+	if granted and previousRank ~= rankName then announceRank(player, rankName) end
 	return granted, message, buildState(player)
 end
 
-local function recordCarObtained(player, carName, source, shopName)
+local function recordCarObtained(player, carName, source, shopName, suppressSave)
 	local session = getSession(player)
 	local activeRank = getActiveRankName(session)
 	local rankData = activeRank and RankConfig.Ranks[activeRank]
@@ -588,11 +632,11 @@ local function recordCarObtained(player, carName, source, shopName)
 
 	markDirty(player)
 	pushState(player)
-	requestSave(player)
+	if not suppressSave then requestSave(player) end
 	return true
 end
 
-local function recordGiftProgress(player, otherPlayer, isSender)
+local function recordGiftProgress(player, otherPlayer, isSender, suppressSave)
 	local session = getSession(player)
 	local activeRank = getActiveRankName(session)
 	local rankData = activeRank and RankConfig.Ranks[activeRank]
@@ -618,7 +662,7 @@ local function recordGiftProgress(player, otherPlayer, isSender)
 	if changed then
 		markDirty(player)
 		pushState(player)
-		requestSave(player)
+		if not suppressSave then requestSave(player) end
 	end
 
 	return changed
@@ -644,6 +688,49 @@ RankProgressAPI.OnInvoke = function(action, player, ...)
 			recordCarObtained(receiver, carName, "Gift", nil)
 		end
 		return true
+	elseif action == "ReceiptCarGranted" then
+		local purchaseId, receiver, carName, shopName, isGift = ...
+		purchaseId = tostring(purchaseId or "")
+		if purchaseId == "" or type(carName) ~= "string" or carName == "" then
+			return false, "Invalid receipt rank grant"
+		end
+
+		local function applyOnce(target, callback)
+			local session = getSession(target)
+			session.ProcessedReceiptGrants = sanitizeProcessedReceiptGrants(session.ProcessedReceiptGrants)
+			if session.ProcessedReceiptGrants[purchaseId] then return false end
+
+			session.ProcessedReceiptGrants[purchaseId] = os.time()
+			session.ProcessedReceiptGrants = sanitizeProcessedReceiptGrants(session.ProcessedReceiptGrants)
+			callback()
+			markDirty(target)
+			return true
+		end
+
+		if isGift == true then
+			if not receiver or receiver == player then return false, "Invalid gift receiver" end
+			applyOnce(player, function()
+				recordGiftProgress(player, receiver, true, true)
+			end)
+			applyOnce(receiver, function()
+				recordGiftProgress(receiver, player, false, true)
+				recordCarObtained(receiver, carName, "Gift", nil, true)
+			end)
+
+			-- Each marker and its quest mutation share that player's profile save.
+			-- A partial two-profile failure is safe to retry because the marker only
+			-- suppresses the side that already committed.
+			local buyerSaved = forceSave(player)
+			local receiverSaved = forceSave(receiver)
+			if not buyerSaved or not receiverSaved then return false, "Rank receipt save failed" end
+			return true
+		end
+
+		applyOnce(player, function()
+			recordCarObtained(player, carName, "Buy", shopName, true)
+		end)
+		if not forceSave(player) then return false, "Rank receipt save failed" end
+		return true
 	elseif action == "Refresh" then
 		applyBenefits(player)
 		pushState(player)
@@ -667,6 +754,7 @@ RankPersistenceFunction.OnInvoke = function(action, player, data)
 			CompletedRanks = session.CompletedRanks,
 			ClaimedRewards = session.ClaimedRewards,
 			Progress = session.Progress,
+			ProcessedReceiptGrants = session.ProcessedReceiptGrants,
 		}
 	elseif action == "Close" then
 		disconnectPlayer(player)
@@ -686,7 +774,15 @@ GetRankState.OnServerInvoke = function(player)
 end
 
 ClaimRank.OnServerInvoke = function(player, rankName)
-	return claimRank(player, rankName)
+	if RankClaimLocks[player] then return false, "Rank claim already in progress", buildState(player) end
+	RankClaimLocks[player] = true
+	local ok, granted, message, state = pcall(claimRank, player, rankName)
+	RankClaimLocks[player] = nil
+	if not ok then
+		warn("[RankService] Rank claim failed safely for " .. player.Name .. ": " .. tostring(granted))
+		return false, "Rank claim failed. Please try again.", buildState(player)
+	end
+	return granted, message, state
 end
 
 local function hookPlayer(player)
@@ -744,6 +840,7 @@ end
 
 Players.PlayerAdded:Connect(hookPlayer)
 Players.PlayerRemoving:Connect(function(player)
+	RankClaimLocks[player] = nil
 	schedulePlayerSessionCleanup(player)
 end)
 

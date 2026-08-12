@@ -143,6 +143,9 @@ end
 
 -- [[ MAIN HANDLER ]]
 withdrawFunc.OnServerInvoke = function(player, amount, actionType)
+	if player:GetAttribute("TycoonDataLoaded") ~= true then
+		return false, "Your data is still loading. Please try again."
+	end
 	-- 1. Strict Type & Bound Validation
 	if type(actionType) ~= "string" then return false, "Invalid Action Type" end
 	if type(amount) ~= "number" or amount <= 0 or amount ~= amount or amount == math.huge then
@@ -159,7 +162,7 @@ withdrawFunc.OnServerInvoke = function(player, amount, actionType)
 	if activeTransactions[player.UserId] then
 		return false, "Transaction in progress. Please wait."
 	end
-	activeTransactions[player.UserId] = true
+	activeTransactions[player.UserId] = player
 
 	-- 3. Route Request Safely via pcall
 	local success, result, msg = pcall(function()
@@ -174,7 +177,7 @@ withdrawFunc.OnServerInvoke = function(player, amount, actionType)
 	end)
 
 	-- 4. Release Lock reliably
-	activeTransactions[player.UserId] = nil
+	if activeTransactions[player.UserId] == player then activeTransactions[player.UserId] = nil end
 
 	if not success then
 		warn("⚠️ Transaction Error for " .. player.Name .. ": " .. tostring(result))
@@ -204,5 +207,5 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 Players.PlayerRemoving:Connect(function(player)
-	activeTransactions[player.UserId] = nil
+	if activeTransactions[player.UserId] == player then activeTransactions[player.UserId] = nil end
 end)
