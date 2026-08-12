@@ -598,7 +598,23 @@ local function tagIssued(tool, originalName)
 	tool:SetAttribute("ToolId", originalName)
 end
 
+local function normalizeStoredToolId(value)
+	if type(value) == "string" then
+		return value
+	end
+
+	-- Compatibility with the short-lived inventory schema that stored exact
+	-- item records as { ToolId = string, ItemId = string }. The current schema
+	-- stores ToolId strings, but live DataStores may still contain those records.
+	if type(value) == "table" and type(value.ToolId) == "string" then
+		return value.ToolId
+	end
+
+	return nil
+end
+
 local function safeFindCarTool(targetName)
+	targetName = normalizeStoredToolId(targetName)
 	if not targetName then return nil end
 	local cleanName = targetName:gsub(" Item", ""):gsub("Item", "")
 
@@ -616,6 +632,7 @@ local function safeFindCarTool(targetName)
 end
 
 local function safeFindCarModel(targetName)
+	targetName = normalizeStoredToolId(targetName)
 	if not targetName then return nil end
 	local cleanName = targetName:gsub(" Item", ""):gsub("Item", "")
 
@@ -2339,16 +2356,19 @@ save = function(player, isClosing, force)
 						return nil
 					end
 
+					local storedInventory = type(oldData.Inventory) == "table" and oldData.Inventory or {}
+					local storedLayout = type(oldData.Layout) == "table" and oldData.Layout or {}
 					local finalInventory = inventory
 
 					if #inventory == 0
-						and (oldData.Inventory and #oldData.Inventory > 0)
+						and #storedInventory > 0
 						and not explicitClear
 						and not sacrificeOccurredThisSession
 					then
 						warn("⚠️ Anti-Wipe (Inventory): Preserving for " .. player.Name)
 						finalInventory = {}
-						for _, oldId in pairs(oldData.Inventory) do
+						for _, storedItem in pairs(storedInventory) do
+							local oldId = normalizeStoredToolId(storedItem)
 							if safeFindCarTool(oldId) then
 								table.insert(finalInventory, oldId)
 							end
@@ -2356,11 +2376,11 @@ save = function(player, isClosing, force)
 					end
 
 					local finalLayout = layout
-					local isSuspiciousLayoutWipe = (#layout == 0) and (oldData.Layout and #oldData.Layout > 0)
+					local isSuspiciousLayoutWipe = (#layout == 0) and (#storedLayout > 0)
 
 					-- Fix 5: SacrificeOccurred Does Not Gate the Layout Anti-Wipe
 					if isSuspiciousLayoutWipe and not explicitClear then
-						local oldInvCount = oldData.Inventory and #oldData.Inventory or 0
+						local oldInvCount = #storedInventory
 						local newInvCount = #finalInventory
 
 						if newInvCount > oldInvCount then
@@ -2370,8 +2390,13 @@ save = function(player, isClosing, force)
 							warn("⚠️ Anti-Wipe (Layout): Preserving for " .. player.Name)
 							finalLayout = {}
 							local seenPads = {}
-							for _, oldEntry in pairs(oldData.Layout) do
-								if FindModelNameFromTool(oldEntry.Tool) and not seenPads[oldEntry.Pad] then
+							for _, oldEntry in pairs(storedLayout) do
+								if type(oldEntry) == "table"
+									and type(oldEntry.Tool) == "string"
+									and type(oldEntry.Pad) == "string"
+									and FindModelNameFromTool(oldEntry.Tool)
+									and not seenPads[oldEntry.Pad]
+								then
 									seenPads[oldEntry.Pad] = true
 									table.insert(finalLayout, oldEntry)
 								end
@@ -2804,9 +2829,10 @@ local function InitializePlayer(player)
 
 	do
 		local sanitizedInventory = {}
-		for _, toolName in pairs(type(data.Inventory) == "table" and data.Inventory or {}) do
+		for _, storedItem in pairs(type(data.Inventory) == "table" and data.Inventory or {}) do
 			if #sanitizedInventory >= MAX_INVENTORY_SIZE then break end
-			if type(toolName) == "string" and safeFindCarTool(toolName) then
+			local toolName = normalizeStoredToolId(storedItem)
+			if toolName and safeFindCarTool(toolName) then
 				table.insert(sanitizedInventory, toolName)
 			end
 		end
