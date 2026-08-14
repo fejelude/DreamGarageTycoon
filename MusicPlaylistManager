@@ -28,8 +28,8 @@ local MUSIC_STATE = {
 }
 
 local THEME_VOLUME = 0.5
-local DISCO_VOLUME = 0.5
-local DISCO_RADIUS = 500
+local DEFAULT_DISCO_VOLUME = 0.5
+local DEFAULT_DISCO_RADIUS = 500
 local FADE_DURATION = 2
 local MUTE_FADE_DURATION = 0.45
 local DISTANCE_CHECK_INTERVAL = 0.25
@@ -58,6 +58,8 @@ local currentState = nil
 local currentTrackId = nil
 local lastWasDaytime = nil
 local trackTransitionToken = 0
+local discoVolume = DEFAULT_DISCO_VOLUME
+local discoRadius = DEFAULT_DISCO_RADIUS
 
 local function isMuted()
 	return SoundService:GetAttribute("MusicMuted") == true
@@ -115,10 +117,46 @@ local function registerDiscoSound(instance)
 	end)
 end
 
+local function synchronizeDiscoTrack()
+	if not discoEmitter or not discoAttachment then
+		return
+	end
+
+	local trackName = discoEmitter:GetAttribute("DiscoTrackName")
+	local startedAt = discoEmitter:GetAttribute("DiscoTrackStartedAt")
+	if type(trackName) ~= "string" or type(startedAt) ~= "number" then
+		return
+	end
+
+	local activeSound = discoAttachment:FindFirstChild(trackName)
+	if not activeSound or not activeSound:IsA("Sound") then
+		return
+	end
+
+	-- Sound:Play normally replicates from the server. This is a recovery path
+	-- for late joins or delayed playback replication, not a second playlist.
+	local expectedPosition = math.max(0, Workspace:GetServerTimeNow() - startedAt)
+	if activeSound.TimeLength > 0 then
+		expectedPosition = math.min(expectedPosition, math.max(0, activeSound.TimeLength - 0.05))
+	end
+
+	if not activeSound.IsPlaying or math.abs(activeSound.TimePosition - expectedPosition) > 1 then
+		for sound in pairs(discoSounds) do
+			if sound ~= activeSound and sound.IsPlaying then
+				sound:Stop()
+			end
+		end
+		activeSound.TimePosition = expectedPosition
+		activeSound:Play()
+	end
+end
+
 local function cacheDiscoReferences()
 	local disco = Workspace:WaitForChild(DISCO_MODEL_NAME)
 	discoEmitter = disco:WaitForChild(DISCO_EMITTER_NAME)
 	discoAttachment = discoEmitter:WaitForChild(DISCO_ATTACHMENT_NAME)
+	discoRadius = discoEmitter:GetAttribute("DiscoRadius") or DEFAULT_DISCO_RADIUS
+	discoVolume = discoEmitter:GetAttribute("DiscoVolume") or DEFAULT_DISCO_VOLUME
 
 	for _, child in ipairs(discoAttachment:GetChildren()) do
 		registerDiscoSound(child)
@@ -127,9 +165,11 @@ local function cacheDiscoReferences()
 		registerDiscoSound(child)
 		-- Newly inserted playlist tracks must immediately inherit the current mix.
 		if child:IsA("Sound") then
-			fadeSound(child, currentState == MUSIC_STATE.DISCO and DISCO_VOLUME or 0, MUTE_FADE_DURATION)
+			fadeSound(child, currentState == MUSIC_STATE.DISCO and discoVolume or 0, MUTE_FADE_DURATION)
 		end
 	end)
+	discoEmitter:GetAttributeChangedSignal("DiscoTrackSequence"):Connect(synchronizeDiscoTrack)
+	synchronizeDiscoTrack()
 end
 
 local function isInsideDisco()
@@ -143,7 +183,7 @@ local function isInsideDisco()
 		return false
 	end
 
-	return (rootPart.Position - discoEmitter.Position).Magnitude <= DISCO_RADIUS
+	return (rootPart.Position - discoEmitter.Position).Magnitude <= discoRadius
 end
 
 local function desiredState()
@@ -162,7 +202,7 @@ local function applyMusicState(force, fadeDuration)
 	currentState = nextState
 	local duration = fadeDuration or FADE_DURATION
 	local themeTarget = nextState == MUSIC_STATE.NORMAL and THEME_VOLUME or 0
-	local discoTarget = nextState == MUSIC_STATE.DISCO and DISCO_VOLUME or 0
+	local discoTarget = nextState == MUSIC_STATE.DISCO and discoVolume or 0
 
 	if not shouldHoldForLoading() and not musicObject.IsPlaying then
 		musicObject:Play()
