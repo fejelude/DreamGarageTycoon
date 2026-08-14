@@ -13,13 +13,14 @@ local SoundService = game:GetService("SoundService")
 local Lighting = game:GetService("Lighting")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
+local ContentProvider = game:GetService("ContentProvider")
 
 local player = Players.LocalPlayer
 
 local GAME_THEME_NAME = "GameTheme"
-local DISCO_MODEL_NAME = "Disco"
-local DISCO_EMITTER_NAME = "DiscoMusicEmitter"
 local DISCO_ATTACHMENT_NAME = "MusicAttachment"
+local DISCO_EMITTER_TAG = "DiscoMusicEmitter"
 
 local MUSIC_STATE = {
 	NORMAL = "NormalGameMusic",
@@ -60,6 +61,9 @@ local lastWasDaytime = nil
 local trackTransitionToken = 0
 local discoVolume = DEFAULT_DISCO_VOLUME
 local discoRadius = DEFAULT_DISCO_RADIUS
+local discoBindingToken = 0
+local discoConnections = {}
+local applyMusicState
 
 local function isMuted()
 	return SoundService:GetAttribute("MusicMuted") == true
@@ -117,6 +121,25 @@ local function registerDiscoSound(instance)
 	end)
 end
 
+local function clearDiscoBinding()
+	discoBindingToken += 1
+	for _, connection in ipairs(discoConnections) do
+		connection:Disconnect()
+	end
+	table.clear(discoConnections)
+
+	for sound in pairs(discoSounds) do
+		cancelSoundTween(sound)
+		sound.Volume = 0
+		discoSounds[sound] = nil
+	end
+
+	discoEmitter = nil
+	discoAttachment = nil
+	discoVolume = DEFAULT_DISCO_VOLUME
+	discoRadius = DEFAULT_DISCO_RADIUS
+end
+
 local function synchronizeDiscoTrack()
 	if not discoEmitter or not discoAttachment then
 		return
@@ -151,25 +174,60 @@ local function synchronizeDiscoTrack()
 	end
 end
 
-local function cacheDiscoReferences()
-	local disco = Workspace:WaitForChild(DISCO_MODEL_NAME)
-	discoEmitter = disco:WaitForChild(DISCO_EMITTER_NAME)
-	discoAttachment = discoEmitter:WaitForChild(DISCO_ATTACHMENT_NAME)
+local function bindDiscoEmitter(emitter)
+	if emitter == discoEmitter or not emitter:IsA("BasePart") then
+		return
+	end
+
+	clearDiscoBinding()
+	local bindingToken = discoBindingToken
+	local attachment = emitter:WaitForChild(DISCO_ATTACHMENT_NAME, 10)
+	if bindingToken ~= discoBindingToken or not attachment or not attachment:IsA("Attachment") then
+		return
+	end
+
+	discoEmitter = emitter
+	discoAttachment = attachment
 	discoRadius = discoEmitter:GetAttribute("DiscoRadius") or DEFAULT_DISCO_RADIUS
 	discoVolume = discoEmitter:GetAttribute("DiscoVolume") or DEFAULT_DISCO_VOLUME
 
 	for _, child in ipairs(discoAttachment:GetChildren()) do
 		registerDiscoSound(child)
 	end
-	discoAttachment.ChildAdded:Connect(function(child)
+	table.insert(discoConnections, discoAttachment.ChildAdded:Connect(function(child)
 		registerDiscoSound(child)
 		-- Newly inserted playlist tracks must immediately inherit the current mix.
 		if child:IsA("Sound") then
 			fadeSound(child, currentState == MUSIC_STATE.DISCO and discoVolume or 0, MUTE_FADE_DURATION)
 		end
-	end)
-	discoEmitter:GetAttributeChangedSignal("DiscoTrackSequence"):Connect(synchronizeDiscoTrack)
+	end))
+	table.insert(discoConnections, discoEmitter:GetAttributeChangedSignal("DiscoTrackSequence"):Connect(synchronizeDiscoTrack))
+	table.insert(discoConnections, discoEmitter.AncestryChanged:Connect(function(_, parent)
+		if parent == nil and discoEmitter == emitter then
+			clearDiscoBinding()
+			applyMusicState(true, MUTE_FADE_DURATION)
+		end
+	end))
+
 	synchronizeDiscoTrack()
+	applyMusicState(true, MUTE_FADE_DURATION)
+
+	-- Streaming may deliver Sound instances after their server-side Play call.
+	-- Proactively load the streamed playlist, then re-apply the authoritative
+	-- server timestamp so the first audible frame uses the current track.
+	task.spawn(function()
+		local soundsToLoad = {}
+		for sound in pairs(discoSounds) do
+			table.insert(soundsToLoad, sound)
+		end
+		pcall(function()
+			ContentProvider:PreloadAsync(soundsToLoad)
+		end)
+		if bindingToken == discoBindingToken then
+			synchronizeDiscoTrack()
+			applyMusicState(true, MUTE_FADE_DURATION)
+		end
+	end)
 end
 
 local function isInsideDisco()
@@ -193,7 +251,7 @@ local function desiredState()
 	return isInsideDisco() and MUSIC_STATE.DISCO or MUSIC_STATE.NORMAL
 end
 
-local function applyMusicState(force, fadeDuration)
+applyMusicState = function(force, fadeDuration)
 	local nextState = desiredState()
 	if not force and nextState == currentState then
 		return
@@ -273,11 +331,23 @@ local function bootstrap()
 	musicObject.TimePosition = 0
 	musicObject.Volume = 0
 
+	-- Tagged discovery works both for an emitter already streamed at startup and
+	-- for the distant city streaming in later. The one permanent distance loop
+	-- survives stream-out/re-stream and character respawns without duplication.
+	for _, emitter in ipairs(CollectionService:GetTagged(DISCO_EMITTER_TAG)) do
+		task.spawn(bindDiscoEmitter, emitter)
+	end
+	CollectionService:GetInstanceAddedSignal(DISCO_EMITTER_TAG):Connect(function(emitter)
+		task.spawn(bindDiscoEmitter, emitter)
+	end)
+	CollectionService:GetInstanceRemovedSignal(DISCO_EMITTER_TAG):Connect(function(emitter)
+		if emitter == discoEmitter then
+			clearDiscoBinding()
+			applyMusicState(true, MUTE_FADE_DURATION)
+		end
+	end)
 	task.spawn(function()
-		cacheDiscoReferences()
-		applyMusicState(true, MUTE_FADE_DURATION)
-
-		while discoEmitter and discoEmitter.Parent do
+		while true do
 			applyMusicState(false)
 			task.wait(DISTANCE_CHECK_INTERVAL)
 		end

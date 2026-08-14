@@ -28,6 +28,8 @@
 	- Modify any other game system
 ]]
 
+local CollectionService = game:GetService("CollectionService")
+
 local emitterPart = script.Parent
 
 --------------------------------------------------
@@ -96,6 +98,10 @@ end
 emitterPart:SetAttribute("DiscoRadius", DISCO_RADIUS)
 emitterPart:SetAttribute("DiscoVolume", VOLUME)
 emitterPart:SetAttribute("DiscoTrackSequence", 0)
+-- CollectionService tags replicate when this distant instance streams into a
+-- client, so the music controller does not depend on the Disco model already
+-- existing under Workspace when the player spawns.
+CollectionService:AddTag(emitterPart, "DiscoMusicEmitter")
 
 --------------------------------------------------
 -- BUILD PLAYLIST
