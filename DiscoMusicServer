@@ -1,0 +1,296 @@
+--[[
+	DiscoMusicServer
+	Server-side positional disco playlist.
+
+	Parent:
+	Workspace
+	└── Disco
+	    └── DiscoMusicEmitter
+	        ├── MusicAttachment
+	        │   ├── Track1
+	        │   ├── Track2
+	        │   ├── Track3
+	        │   └── Track4
+	        └── DiscoMusicServer
+
+	This script is intentionally isolated.
+	It does NOT:
+	- Access player data
+	- Access DataStores
+	- Use RemoteEvents
+	- Modify SoundService
+	- Use RunService
+	- Scan players
+	- Modify any other game system
+]]
+
+local emitterPart = script.Parent
+
+--------------------------------------------------
+-- CONFIGURATION
+--------------------------------------------------
+
+local VOLUME = 0.5
+
+-- Music is basically full volume inside this distance.
+local MIN_DISTANCE = 15
+
+-- Music becomes inaudible past this distance.
+local MAX_DISTANCE = 500
+
+-- Small gap between tracks.
+local TIME_BETWEEN_TRACKS = 1
+
+-- How long we'll allow an audio asset to load
+-- before skipping it.
+local LOAD_TIMEOUT = 12
+
+local TRACK_CONFIG = {
+	{
+		Name = "Track1",
+		SoundId = "rbxassetid://142376088", -- Raining Tacos
+	},
+
+	{
+		Name = "Track2",
+		SoundId = "rbxassetid://95131770144654",
+	},
+
+	{
+		Name = "Track3",
+		SoundId = "rbxassetid://129098116998483",
+	},
+
+	{
+		Name = "Track4",
+		SoundId = "rbxassetid://138178180069464",
+	},
+}
+
+--------------------------------------------------
+-- VALIDATION
+--------------------------------------------------
+
+if not emitterPart:IsA("BasePart") then
+	warn("[DiscoMusic] Script must be parented to DiscoMusicEmitter.")
+	return
+end
+
+local attachment = emitterPart:FindFirstChild("MusicAttachment")
+
+if not attachment or not attachment:IsA("Attachment") then
+	warn("[DiscoMusic] MusicAttachment is missing.")
+	return
+end
+
+--------------------------------------------------
+-- BUILD PLAYLIST
+--------------------------------------------------
+
+local playlist = {}
+
+for _, config in ipairs(TRACK_CONFIG) do
+	local sound = attachment:FindFirstChild(config.Name)
+
+	if sound and sound:IsA("Sound") then
+
+		-- Audio
+		sound.SoundId = config.SoundId
+		sound.Volume = VOLUME
+
+		-- Playlist controls looping ourselves.
+		sound.Looped = false
+		sound.Playing = false
+
+		-- Positional audio settings
+		sound.RollOffMinDistance = MIN_DISTANCE
+		sound.RollOffMaxDistance = MAX_DISTANCE
+		sound.RollOffMode = Enum.RollOffMode.InverseTapered
+
+		-- Normal playback speed
+		sound.PlaybackSpeed = 1
+
+		table.insert(playlist, sound)
+	else
+		warn(
+			string.format(
+				"[DiscoMusic] Missing Sound: %s",
+				config.Name
+			)
+		)
+	end
+end
+
+if #playlist == 0 then
+	warn("[DiscoMusic] No valid tracks were found.")
+	return
+end
+
+--------------------------------------------------
+-- UTILITIES
+--------------------------------------------------
+
+local function stopOtherTracks(currentSound)
+	for _, sound in ipairs(playlist) do
+		if sound ~= currentSound and sound.IsPlaying then
+			sound:Stop()
+		end
+	end
+end
+
+local function waitUntilLoaded(sound)
+	if sound.IsLoaded then
+		return true
+	end
+
+	local startedWaiting = os.clock()
+
+	while not sound.IsLoaded do
+
+		if os.clock() - startedWaiting >= LOAD_TIMEOUT then
+			return false
+		end
+
+		-- Script/model was removed.
+		if not script.Parent then
+			return false
+		end
+
+		task.wait(0.1)
+	end
+
+	return true
+end
+
+--------------------------------------------------
+-- PLAY TRACK
+--------------------------------------------------
+
+local function playTrack(sound)
+
+	stopOtherTracks(sound)
+
+	sound:Stop()
+	sound.TimePosition = 0
+
+	-- Calling Play also begins loading the asset.
+	sound:Play()
+
+	--------------------------------------------------
+	-- WAIT FOR AUDIO TO LOAD
+	--------------------------------------------------
+
+	local loaded = waitUntilLoaded(sound)
+
+	if not loaded then
+		warn(
+			string.format(
+				"[DiscoMusic] %s failed to load. Skipping track.",
+				sound.Name
+			)
+		)
+
+		sound:Stop()
+
+		return
+	end
+
+	--------------------------------------------------
+	-- SAFETY CHECK
+	--------------------------------------------------
+
+	if sound.TimeLength <= 0 then
+		warn(
+			string.format(
+				"[DiscoMusic] %s has an invalid TimeLength. Skipping.",
+				sound.Name
+			)
+		)
+
+		sound:Stop()
+
+		return
+	end
+
+	--------------------------------------------------
+	-- WAIT FOR TRACK
+	--------------------------------------------------
+
+	local finished = false
+
+	local endedConnection
+	local stoppedConnection
+
+	endedConnection = sound.Ended:Connect(function()
+		finished = true
+	end)
+
+	stoppedConnection = sound.Stopped:Connect(function()
+		finished = true
+	end)
+
+	-- Backup timeout.
+	--
+	-- This prevents a broken audio asset/event from
+	-- permanently freezing the entire playlist.
+	local expectedDuration =
+		(sound.TimeLength / math.max(sound.PlaybackSpeed, 0.01))
+
+	local deadline =
+		os.clock() + expectedDuration + 10
+
+	while not finished do
+
+		if os.clock() >= deadline then
+			warn(
+				string.format(
+					"[DiscoMusic] %s exceeded expected duration. Moving on.",
+					sound.Name
+				)
+			)
+
+			break
+		end
+
+		if not script.Parent then
+			break
+		end
+
+		task.wait(0.25)
+	end
+
+	--------------------------------------------------
+	-- CLEANUP
+	--------------------------------------------------
+
+	if endedConnection then
+		endedConnection:Disconnect()
+	end
+
+	if stoppedConnection then
+		stoppedConnection:Disconnect()
+	end
+
+	if sound.IsPlaying then
+		sound:Stop()
+	end
+end
+
+--------------------------------------------------
+-- PLAYLIST LOOP
+--------------------------------------------------
+
+while script.Parent do
+
+	for _, sound in ipairs(playlist) do
+
+		if not script.Parent then
+			break
+		end
+
+		playTrack(sound)
+
+		task.wait(TIME_BETWEEN_TRACKS)
+	end
+
+end
