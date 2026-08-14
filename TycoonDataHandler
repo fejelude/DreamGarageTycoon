@@ -129,9 +129,16 @@ local MIN_SAVE_INTERVAL = 60
 local MAX_RETRIES = 3
 local SAVE_LOCK_WAIT_SECONDS = 12
 local CLOSING_SAVE_LOCK_WAIT_SECONDS = 25
-local PROFILE_LEASE_SECONDS = 180
-local PROFILE_LEASE_RENEW_INTERVAL = 45
-local PROFILE_LEASE_LOAD_RETRIES = 5
+-- A lease prevents two servers from writing the same profile. Loading does not
+-- immediately fail when a lease is present: orderly leaves need time to finish
+-- their final save, and crashed servers need time for their heartbeat to become
+-- stale. The load path below waits and retries, then only takes over a lease
+-- whose owner has stopped renewing it.
+local PROFILE_LEASE_SECONDS = 90
+local PROFILE_LEASE_RENEW_INTERVAL = 20
+local PROFILE_LEASE_STALE_SECONDS = 90
+local PROFILE_LEASE_LOAD_TIMEOUT_SECONDS = 110
+local PROFILE_LEASE_RETRY_INTERVAL_SECONDS = 2
 local PROFILE_LEASE_FIELD = "_SessionLease"
 local PROFILE_LEASE_VERSION_FIELD = "_SessionLeaseVersion"
 local SERVER_SESSION_TOKEN = game.JobId .. ":" .. HttpService:GenerateGUID(false)
@@ -2738,7 +2745,10 @@ local function InitializePlayer(player)
 	local loadSuccess = false
 	local loadErr = nil
 	local leaseDenied = false
-	for attempt = 1, PROFILE_LEASE_LOAD_RETRIES do
+	local loadStartedAt = os.clock()
+	local attempt = 0
+	while player.Parent == Players and os.clock() - loadStartedAt < PROFILE_LEASE_LOAD_TIMEOUT_SECONDS do
+		attempt += 1
 		leaseDenied = false
 		loadSuccess, loadErr = pcall(function()
 			local now = os.time()
@@ -2746,12 +2756,21 @@ local function InitializePlayer(player)
 				leaseDenied = false
 				current = type(current) == "table" and current or {}
 				local lease = type(current[PROFILE_LEASE_FIELD]) == "table" and current[PROFILE_LEASE_FIELD] or nil
-				if lease
-					and lease.Token ~= session.LeaseToken
+				local heartbeatAt = lease and math.max(
+					math.floor(tonumber(lease.UpdatedAt) or 0),
+					math.floor(tonumber(lease.AcquiredAt) or 0)
+				) or 0
+				local leaseIsFresh = lease
 					and (tonumber(lease.ExpiresAt) or 0) > now
-				then
+					and (heartbeatAt <= 0 or now - heartbeatAt < PROFILE_LEASE_STALE_SECONDS)
+				if lease and lease.Token ~= session.LeaseToken and leaseIsFresh then
 					leaseDenied = true
 					return nil
+				end
+
+				if lease and lease.Token ~= session.LeaseToken then
+					warn("[TycoonDataHandler] Recovering stale profile lease for " .. player.Name
+						.. " (previous job " .. tostring(lease.JobId) .. ")")
 				end
 
 				local sameLease = lease and lease.Token == session.LeaseToken
@@ -2775,26 +2794,31 @@ local function InitializePlayer(player)
 			end)
 		end)
 
-		if leaseDenied then
-			if attempt < PROFILE_LEASE_LOAD_RETRIES then
-				-- Give an orderly teleport/rejoin enough time to finish its old
-				-- server's final save and lease release without hammering DataStore.
-				task.wait(math.min(4, 1.25 * attempt))
-				continue
-			end
-			break
-		end
 		if loadSuccess and data ~= nil then
 			break
 		end
 
-		warn("⚠️ [TycoonDataHandler] Data load attempt " .. tostring(attempt) .. " failed for " .. player.Name .. ": " .. tostring(loadErr))
-		task.wait(0.5 * attempt)
+		if leaseDenied then
+			-- A quick reconnect normally lands here while PlayerRemoving is still
+			-- saving in the old server. Keep the player in the loading state rather
+			-- than kicking them into a rejoin loop. A healthy owner refreshes its
+			-- heartbeat, while an abandoned lease eventually becomes recoverable.
+			player:SetAttribute("ProfileSessionRecovering", true)
+		else
+			warn("⚠️ [TycoonDataHandler] Data load attempt " .. tostring(attempt) .. " failed for " .. player.Name .. ": " .. tostring(loadErr))
+		end
+		task.wait(PROFILE_LEASE_RETRY_INTERVAL_SECONDS)
 	end
 
+	player:SetAttribute("ProfileSessionRecovering", false)
 	if leaseDenied then
 		SessionData[player] = nil
-		player:Kick("Your data is active in another server. Please wait a moment, then rejoin.")
+		-- Reaching the deadline while the heartbeat is still fresh means another
+		-- server really is using the profile. Taking it over would permit two
+		-- writers, so this remains the one necessary active-session kick path.
+		if player.Parent == Players then
+			player:Kick("Your account is currently active in another server. Please leave that server before joining again.")
+		end
 		return
 	end
 	if not loadSuccess or data == nil then
