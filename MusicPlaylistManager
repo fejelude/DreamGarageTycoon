@@ -1,36 +1,47 @@
 -- ============================================================
--- GameThemeController.client.lua
--- Purpose:
---   - Plays day/night game music after the loading screen releases control.
---   - Does NOT play during the loading menu.
---   - Responds to SoundService attributes:
---       MusicMuted = true/false
---       LoadingMusicActive = true/false
+-- GameMusicController.client.lua
+-- Location: StarterPlayer/StarterPlayerScripts
 --
--- IMPORTANT:
---   This must be a LocalScript, ideally inside StarterPlayerScripts.
+-- Owns the local player's music environment. The server keeps the existing
+-- disco playlist in sync; this controller only mixes that playlist against
+-- the local day/night theme according to proximity and the saved music
+-- setting exposed through SoundService.MusicMuted.
 -- ============================================================
 
+local Players = game:GetService("Players")
 local SoundService = game:GetService("SoundService")
 local Lighting = game:GetService("Lighting")
 local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
+local ContentProvider = game:GetService("ContentProvider")
+
+local player = Players.LocalPlayer
 
 local GAME_THEME_NAME = "GameTheme"
+local DISCO_ATTACHMENT_NAME = "MusicAttachment"
+local DISCO_EMITTER_TAG = "DiscoMusicEmitter"
 
-local MASTER_VOLUME = 0.5
-local FADE_DURATION = 2.0
+local MUSIC_STATE = {
+	NORMAL = "NormalGameMusic",
+	DISCO = "DiscoMusic",
+	DISABLED = "MusicDisabled",
+}
+
+local THEME_VOLUME = 0.5
+local DEFAULT_DISCO_VOLUME = 0.5
+local DEFAULT_DISCO_RADIUS = 500
+local FADE_DURATION = 2
 local MUTE_FADE_DURATION = 0.45
+local DISTANCE_CHECK_INTERVAL = 0.25
 
 local DAY_TRACK_ID = "rbxassetid://1846088038"
 local NIGHT_TRACK_ID = "rbxassetid://9045766377"
-
 local DAY_START_HOUR = 6
 local NIGHT_START_HOUR = 18
-
-local CHECK_INTERVAL = 2
+local TIME_OF_DAY_CHECK_INTERVAL = 2
 
 local musicObject = SoundService:FindFirstChild(GAME_THEME_NAME)
-
 if not musicObject then
 	musicObject = Instance.new("Sound")
 	musicObject.Name = GAME_THEME_NAME
@@ -40,150 +51,335 @@ end
 musicObject.Looped = true
 musicObject.Volume = 0
 
+local discoEmitter = nil
+local discoAttachment = nil
+local discoSounds = {}
+local soundTweens = {}
+local currentState = nil
 local currentTrackId = nil
 local lastWasDaytime = nil
-local transitionToken = 0
-local activeTween = nil
+local trackTransitionToken = 0
+local discoVolume = DEFAULT_DISCO_VOLUME
+local discoRadius = DEFAULT_DISCO_RADIUS
+local discoBindingToken = 0
+local discoConnections = {}
+local applyMusicState
 
 local function isMuted()
 	return SoundService:GetAttribute("MusicMuted") == true
 end
 
 local function shouldHoldForLoading()
-	-- Hold unless loading has explicitly released the main music.
-	-- This prevents the game theme from starting before the loading script is ready.
 	return SoundService:GetAttribute("LoadingMusicActive") ~= false
 end
 
-local function targetVolume()
-	if isMuted() or shouldHoldForLoading() then
-		return 0
-	end
-
-	return MASTER_VOLUME
-end
-
-local function cancelTween()
-	if activeTween then
-		activeTween:Cancel()
-		activeTween = nil
+local function cancelSoundTween(sound)
+	local tween = soundTweens[sound]
+	if tween then
+		tween:Cancel()
+		soundTweens[sound] = nil
 	end
 end
 
-local function fadeTo(volume, duration)
-	cancelTween()
+local function fadeSound(sound, targetVolume, duration)
+	if not sound or not sound.Parent then
+		return
+	end
 
-	activeTween = TweenService:Create(
-		musicObject,
+	cancelSoundTween(sound)
+	if math.abs(sound.Volume - targetVolume) < 0.001 then
+		sound.Volume = targetVolume
+		return
+	end
+
+	local tween = TweenService:Create(
+		sound,
 		TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-		{ Volume = volume }
+		{ Volume = targetVolume }
 	)
+	soundTweens[sound] = tween
 
-	activeTween:Play()
+	tween.Completed:Connect(function()
+		if soundTweens[sound] == tween then
+			soundTweens[sound] = nil
+		end
+	end)
+	tween:Play()
+end
+
+local function registerDiscoSound(instance)
+	if not instance:IsA("Sound") or discoSounds[instance] then
+		return
+	end
+
+	discoSounds[instance] = true
+	-- Suppress the server playlist locally until the central state is applied.
+	instance.Volume = 0
+	instance.Destroying:Connect(function()
+		cancelSoundTween(instance)
+		discoSounds[instance] = nil
+	end)
+end
+
+local function clearDiscoBinding()
+	discoBindingToken += 1
+	for _, connection in ipairs(discoConnections) do
+		connection:Disconnect()
+	end
+	table.clear(discoConnections)
+
+	for sound in pairs(discoSounds) do
+		cancelSoundTween(sound)
+		sound.Volume = 0
+		discoSounds[sound] = nil
+	end
+
+	discoEmitter = nil
+	discoAttachment = nil
+	discoVolume = DEFAULT_DISCO_VOLUME
+	discoRadius = DEFAULT_DISCO_RADIUS
+end
+
+local function synchronizeDiscoTrack()
+	if not discoEmitter or not discoAttachment then
+		return
+	end
+
+	local trackName = discoEmitter:GetAttribute("DiscoTrackName")
+	local startedAt = discoEmitter:GetAttribute("DiscoTrackStartedAt")
+	if type(trackName) ~= "string" or type(startedAt) ~= "number" then
+		return
+	end
+
+	local activeSound = discoAttachment:FindFirstChild(trackName)
+	if not activeSound or not activeSound:IsA("Sound") then
+		return
+	end
+
+	-- Sound:Play normally replicates from the server. This is a recovery path
+	-- for late joins or delayed playback replication, not a second playlist.
+	local expectedPosition = math.max(0, Workspace:GetServerTimeNow() - startedAt)
+	if activeSound.TimeLength > 0 then
+		expectedPosition = math.min(expectedPosition, math.max(0, activeSound.TimeLength - 0.05))
+	end
+
+	if not activeSound.IsPlaying or math.abs(activeSound.TimePosition - expectedPosition) > 1 then
+		for sound in pairs(discoSounds) do
+			if sound ~= activeSound and sound.IsPlaying then
+				sound:Stop()
+			end
+		end
+		activeSound.TimePosition = expectedPosition
+		activeSound:Play()
+	end
+end
+
+local function bindDiscoEmitter(emitter)
+	if emitter == discoEmitter or not emitter:IsA("BasePart") then
+		return
+	end
+
+	clearDiscoBinding()
+	local bindingToken = discoBindingToken
+	local attachment = emitter:WaitForChild(DISCO_ATTACHMENT_NAME, 10)
+	if bindingToken ~= discoBindingToken or not attachment or not attachment:IsA("Attachment") then
+		return
+	end
+
+	discoEmitter = emitter
+	discoAttachment = attachment
+	discoRadius = discoEmitter:GetAttribute("DiscoRadius") or DEFAULT_DISCO_RADIUS
+	discoVolume = discoEmitter:GetAttribute("DiscoVolume") or DEFAULT_DISCO_VOLUME
+
+	for _, child in ipairs(discoAttachment:GetChildren()) do
+		registerDiscoSound(child)
+	end
+	table.insert(discoConnections, discoAttachment.ChildAdded:Connect(function(child)
+		registerDiscoSound(child)
+		-- Newly inserted playlist tracks must immediately inherit the current mix.
+		if child:IsA("Sound") then
+			fadeSound(child, currentState == MUSIC_STATE.DISCO and discoVolume or 0, MUTE_FADE_DURATION)
+		end
+	end))
+	table.insert(discoConnections, discoEmitter:GetAttributeChangedSignal("DiscoTrackSequence"):Connect(synchronizeDiscoTrack))
+	table.insert(discoConnections, discoEmitter.AncestryChanged:Connect(function(_, parent)
+		if parent == nil and discoEmitter == emitter then
+			clearDiscoBinding()
+			applyMusicState(true, MUTE_FADE_DURATION)
+		end
+	end))
+
+	synchronizeDiscoTrack()
+	applyMusicState(true, MUTE_FADE_DURATION)
+
+	-- Streaming may deliver Sound instances after their server-side Play call.
+	-- Proactively load the streamed playlist, then re-apply the authoritative
+	-- server timestamp so the first audible frame uses the current track.
+	task.spawn(function()
+		local soundsToLoad = {}
+		for sound in pairs(discoSounds) do
+			table.insert(soundsToLoad, sound)
+		end
+		pcall(function()
+			ContentProvider:PreloadAsync(soundsToLoad)
+		end)
+		if bindingToken == discoBindingToken then
+			synchronizeDiscoTrack()
+			applyMusicState(true, MUTE_FADE_DURATION)
+		end
+	end)
+end
+
+local function isInsideDisco()
+	if not discoEmitter or not discoEmitter.Parent then
+		return false
+	end
+
+	local character = player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then
+		return false
+	end
+
+	return (rootPart.Position - discoEmitter.Position).Magnitude <= discoRadius
+end
+
+local function desiredState()
+	if isMuted() or shouldHoldForLoading() then
+		return MUSIC_STATE.DISABLED
+	end
+	return isInsideDisco() and MUSIC_STATE.DISCO or MUSIC_STATE.NORMAL
+end
+
+applyMusicState = function(force, fadeDuration)
+	local nextState = desiredState()
+	if not force and nextState == currentState then
+		return
+	end
+
+	currentState = nextState
+	local duration = fadeDuration or FADE_DURATION
+	local themeTarget = nextState == MUSIC_STATE.NORMAL and THEME_VOLUME or 0
+	local discoTarget = nextState == MUSIC_STATE.DISCO and discoVolume or 0
+
+	if not shouldHoldForLoading() and not musicObject.IsPlaying then
+		musicObject:Play()
+	end
+	fadeSound(musicObject, themeTarget, duration)
+
+	for sound in pairs(discoSounds) do
+		fadeSound(sound, discoTarget, duration)
+	end
 end
 
 local function isDaytime()
-	local t = Lighting.ClockTime
-	return t >= DAY_START_HOUR and t < NIGHT_START_HOUR
+	local hour = Lighting.ClockTime
+	return hour >= DAY_START_HOUR and hour < NIGHT_START_HOUR
 end
 
 local function getTrackForTime()
 	return isDaytime() and DAY_TRACK_ID or NIGHT_TRACK_ID
 end
 
-local function stopForLoading()
-	cancelTween()
+local function stopThemeForLoading()
+	cancelSoundTween(musicObject)
 	musicObject.Volume = 0
-
 	if musicObject.IsPlaying then
 		musicObject:Stop()
 	end
 end
 
-local function ensureTrackForCurrentTime()
-	local newTrackId = getTrackForTime()
-
-	if currentTrackId ~= newTrackId then
-		currentTrackId = newTrackId
-		musicObject.SoundId = newTrackId
-		musicObject.TimePosition = 0
-	end
-end
-
-local function switchTrack(newTrackId)
+local function switchThemeTrack(newTrackId)
 	if currentTrackId == newTrackId then
 		return
 	end
 
-	transitionToken += 1
-
-	local myToken = transitionToken
+	trackTransitionToken += 1
+	local token = trackTransitionToken
 	currentTrackId = newTrackId
 
-	fadeTo(0, FADE_DURATION * 0.5)
+	-- While disco (or mute) owns the mix, replace the silent theme without
+	-- disturbing the disco playlist. Otherwise retain the original theme fade.
+	local audibleTheme = currentState == MUSIC_STATE.NORMAL
+	if audibleTheme then
+		fadeSound(musicObject, 0, FADE_DURATION * 0.5)
+	end
 
-	task.delay(FADE_DURATION * 0.5, function()
-		if myToken ~= transitionToken then
+	task.delay(audibleTheme and FADE_DURATION * 0.5 or 0, function()
+		if token ~= trackTransitionToken then
 			return
 		end
 
 		musicObject.SoundId = newTrackId
 		musicObject.TimePosition = 0
-
 		if shouldHoldForLoading() then
-			stopForLoading()
+			stopThemeForLoading()
 			return
 		end
 
 		if not musicObject.IsPlaying then
 			musicObject:Play()
 		end
-
-		fadeTo(targetVolume(), FADE_DURATION * 0.5)
+		applyMusicState(true, audibleTheme and FADE_DURATION * 0.5 or MUTE_FADE_DURATION)
 	end)
-end
-
-local function applyGlobalMusicState()
-	ensureTrackForCurrentTime()
-
-	if shouldHoldForLoading() then
-		stopForLoading()
-		return
-	end
-
-	if not musicObject.IsPlaying then
-		musicObject:Play()
-	end
-
-	fadeTo(targetVolume(), MUTE_FADE_DURATION)
 end
 
 local function bootstrap()
 	currentTrackId = getTrackForTime()
 	lastWasDaytime = isDaytime()
-
 	musicObject.SoundId = currentTrackId
 	musicObject.TimePosition = 0
 	musicObject.Volume = 0
 
-	applyGlobalMusicState()
+	-- Tagged discovery works both for an emitter already streamed at startup and
+	-- for the distant city streaming in later. The one permanent distance loop
+	-- survives stream-out/re-stream and character respawns without duplication.
+	for _, emitter in ipairs(CollectionService:GetTagged(DISCO_EMITTER_TAG)) do
+		task.spawn(bindDiscoEmitter, emitter)
+	end
+	CollectionService:GetInstanceAddedSignal(DISCO_EMITTER_TAG):Connect(function(emitter)
+		task.spawn(bindDiscoEmitter, emitter)
+	end)
+	CollectionService:GetInstanceRemovedSignal(DISCO_EMITTER_TAG):Connect(function(emitter)
+		if emitter == discoEmitter then
+			clearDiscoBinding()
+			applyMusicState(true, MUTE_FADE_DURATION)
+		end
+	end)
+	task.spawn(function()
+		while true do
+			applyMusicState(false)
+			task.wait(DISTANCE_CHECK_INTERVAL)
+		end
+	end)
+
+	if shouldHoldForLoading() then
+		stopThemeForLoading()
+	else
+		applyMusicState(true, MUTE_FADE_DURATION)
+	end
 end
 
-task.wait(1.5)
 bootstrap()
 
-SoundService:GetAttributeChangedSignal("MusicMuted"):Connect(applyGlobalMusicState)
-SoundService:GetAttributeChangedSignal("LoadingMusicActive"):Connect(applyGlobalMusicState)
+SoundService:GetAttributeChangedSignal("MusicMuted"):Connect(function()
+	applyMusicState(true, MUTE_FADE_DURATION)
+end)
+
+SoundService:GetAttributeChangedSignal("LoadingMusicActive"):Connect(function()
+	if shouldHoldForLoading() then
+		stopThemeForLoading()
+	end
+	applyMusicState(true, MUTE_FADE_DURATION)
+end)
 
 task.spawn(function()
 	while true do
-		task.wait(CHECK_INTERVAL)
-
+		task.wait(TIME_OF_DAY_CHECK_INTERVAL)
 		local nowDay = isDaytime()
-
 		if lastWasDaytime ~= nowDay then
 			lastWasDaytime = nowDay
-			switchTrack(getTrackForTime())
+			switchThemeTrack(getTrackForTime())
 		end
 	end
 end)

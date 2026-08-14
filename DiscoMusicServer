@@ -13,7 +13,11 @@
 	        │   └── Track4
 	        └── DiscoMusicServer
 
-	This script is intentionally isolated.
+	This script owns playlist timing and publishes that timing on the emitter so
+	each client can recover the currently playing track if Sound:Play replication
+	arrives late (or the client joins during a track).
+
+	It remains intentionally isolated from player/settings state.
 	It does NOT:
 	- Access player data
 	- Access DataStores
@@ -24,6 +28,8 @@
 	- Modify any other game system
 ]]
 
+local CollectionService = game:GetService("CollectionService")
+
 local emitterPart = script.Parent
 
 --------------------------------------------------
@@ -32,11 +38,15 @@ local emitterPart = script.Parent
 
 local VOLUME = 0.5
 
--- Music is basically full volume inside this distance.
-local MIN_DISTANCE = 15
+-- The client music controller activates this source throughout the whole zone.
+-- Keeping the positional sound at full strength within the same radius avoids
+-- applying a second distance fade on top of the controller's crossfade.
+local DISCO_RADIUS = 500
+local MIN_DISTANCE = DISCO_RADIUS
 
--- Music becomes inaudible past this distance.
-local MAX_DISTANCE = 500
+-- A small falloff beyond the controller boundary prevents audio leaking if a
+-- client has not initialized its local mixer yet.
+local MAX_DISTANCE = DISCO_RADIUS + 25
 
 -- Small gap between tracks.
 local TIME_BETWEEN_TRACKS = 1
@@ -82,6 +92,16 @@ if not attachment or not attachment:IsA("Attachment") then
 	warn("[DiscoMusic] MusicAttachment is missing.")
 	return
 end
+
+-- Replicated configuration and playback metadata are kept on the cached
+-- emitter itself; no RemoteEvent or per-player server loop is necessary.
+emitterPart:SetAttribute("DiscoRadius", DISCO_RADIUS)
+emitterPart:SetAttribute("DiscoVolume", VOLUME)
+emitterPart:SetAttribute("DiscoTrackSequence", 0)
+-- CollectionService tags replicate when this distant instance streams into a
+-- client, so the music controller does not depend on the Disco model already
+-- existing under Workspace when the player spawns.
+CollectionService:AddTag(emitterPart, "DiscoMusicEmitter")
 
 --------------------------------------------------
 -- BUILD PLAYLIST
@@ -173,7 +193,9 @@ local function playTrack(sound)
 	sound:Stop()
 	sound.TimePosition = 0
 
-	-- Calling Play also begins loading the asset.
+	-- Calling Play begins loading the asset and remains the authoritative
+	-- server-side playlist playback.
+	local playbackStartedAt = workspace:GetServerTimeNow()
 	sound:Play()
 
 	--------------------------------------------------
@@ -211,6 +233,15 @@ local function playTrack(sound)
 
 		return
 	end
+
+	-- Publish a monotonically changing sequence after the track is validated.
+	-- This lets joining clients and clients that missed Sound:Play synchronize
+	-- using server time, including when the playlist later loops to the same
+	-- named track.
+	local sequence = (emitterPart:GetAttribute("DiscoTrackSequence") or 0) + 1
+	emitterPart:SetAttribute("DiscoTrackName", sound.Name)
+	emitterPart:SetAttribute("DiscoTrackStartedAt", playbackStartedAt)
+	emitterPart:SetAttribute("DiscoTrackSequence", sequence)
 
 	--------------------------------------------------
 	-- WAIT FOR TRACK
