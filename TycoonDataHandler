@@ -129,6 +129,12 @@ local MIN_SAVE_INTERVAL = 60
 local MAX_RETRIES = 3
 local SAVE_LOCK_WAIT_SECONDS = 12
 local CLOSING_SAVE_LOCK_WAIT_SECONDS = 25
+local PROFILE_LEASE_SECONDS = 180
+local PROFILE_LEASE_RENEW_INTERVAL = 45
+local PROFILE_LEASE_LOAD_RETRIES = 5
+local PROFILE_LEASE_FIELD = "_SessionLease"
+local PROFILE_LEASE_VERSION_FIELD = "_SessionLeaseVersion"
+local SERVER_SESSION_TOKEN = game.JobId .. ":" .. HttpService:GenerateGUID(false)
 
 local MAX_INVENTORY_SIZE = 500
 local MAX_ROBUX_RECEIPT_HISTORY = 300
@@ -254,6 +260,9 @@ local function sanitizeRobuxReceiptHistory(raw)
 					ProductId = tonumber(receiptData.ProductId),
 					GrantedAt = math.max(0, math.floor(tonumber(receiptData.GrantedAt) or 0)),
 					Source = type(receiptData.Source) == "string" and receiptData.Source or nil,
+					Action = type(receiptData.Action) == "string" and string.sub(receiptData.Action, 1, 80) or nil,
+					TargetUserId = math.max(0, math.floor(tonumber(receiptData.TargetUserId) or 0)),
+					GrantHash = type(receiptData.GrantHash) == "string" and string.sub(receiptData.GrantHash, 1, 200) or nil,
 				}
 			elseif receiptData == true then
 				history[receiptId] = { GrantedAt = 0 }
@@ -397,7 +406,9 @@ local SessionData = {}
 local PadLocks = {}
 local FreeRewardsClaimLocks = {}
 local PendingCriticalSaveTasks = {}
+local FinalSaveStates = {}
 local save
+local releaseProfileLeaseWithoutSave
 
 -- ----------------------------------------------------------------------------
 -- 🛡️ HELPER FUNCTIONS
@@ -426,13 +437,12 @@ local function queueCriticalSave(player, delaySeconds)
 
 	markDirty(player)
 
-	local userId = player.UserId
-	if PendingCriticalSaveTasks[userId] then
+	if PendingCriticalSaveTasks[player] then
 		return true
 	end
 
-	PendingCriticalSaveTasks[userId] = task.delay(math.max(1, tonumber(delaySeconds) or 8), function()
-		PendingCriticalSaveTasks[userId] = nil
+	PendingCriticalSaveTasks[player] = task.delay(math.max(1, tonumber(delaySeconds) or 8), function()
+		PendingCriticalSaveTasks[player] = nil
 		local session = SessionData[player]
 		if session and session.DataLoaded and session.IsDirty then
 			save(player, false, true)
@@ -588,7 +598,23 @@ local function tagIssued(tool, originalName)
 	tool:SetAttribute("ToolId", originalName)
 end
 
+local function normalizeStoredToolId(value)
+	if type(value) == "string" then
+		return value
+	end
+
+	-- Compatibility with the short-lived inventory schema that stored exact
+	-- item records as { ToolId = string, ItemId = string }. The current schema
+	-- stores ToolId strings, but live DataStores may still contain those records.
+	if type(value) == "table" and type(value.ToolId) == "string" then
+		return value.ToolId
+	end
+
+	return nil
+end
+
 local function safeFindCarTool(targetName)
+	targetName = normalizeStoredToolId(targetName)
 	if not targetName then return nil end
 	local cleanName = targetName:gsub(" Item", ""):gsub("Item", "")
 
@@ -606,6 +632,7 @@ local function safeFindCarTool(targetName)
 end
 
 local function safeFindCarModel(targetName)
+	targetName = normalizeStoredToolId(targetName)
 	if not targetName then return nil end
 	local cleanName = targetName:gsub(" Item", ""):gsub("Item", "")
 
@@ -767,6 +794,8 @@ end
 
 local function giveTool(player, toolName, customAttributes)
 	if not player or not player.Parent then return false, "Player missing" end
+	local backpack = player:FindFirstChild("Backpack") or player:WaitForChild("Backpack", 5)
+	if not backpack or player.Parent ~= Players then return false, "Backpack not loaded" end
 	local receiptId = nil
 	local receiptProductId = nil
 	local receiptSource = nil
@@ -785,10 +814,6 @@ local function giveTool(player, toolName, customAttributes)
 		if not session or not session.DataLoaded then
 			return false, "Player data not loaded"
 		end
-		if not player:FindFirstChild("Backpack") then
-			return false, "Backpack not loaded"
-		end
-
 		session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
 		if session.RobuxProductReceipts[receiptId] then
 			return true, "Already granted", nil, nil, true
@@ -821,26 +846,13 @@ local function giveTool(player, toolName, customAttributes)
 			end
 		end
 
-		if player:FindFirstChild("Backpack") then
-			backpackTool.Parent = player.Backpack
-		else
-			warn("⚠️ Receiver dead/respawning. Item added to StarterGear only.")
-			backpackTool:Destroy()
-		end
+		backpackTool.Parent = backpack
 
 		if player:FindFirstChild("StarterGear") then
-			local exists = false
-			for _, child in ipairs(player.StarterGear:GetChildren()) do
-				if child:GetAttribute("ToolId") == sourceTool.Name then
-					exists = true
-					break
-				end
-			end
-			if not exists then
-				gearTool.Parent = player.StarterGear
-			else
-				gearTool:Destroy()
-			end
+			-- StarterGear is a one-for-one respawn mirror, not a set of unique car
+			-- types. Keep one mirror for every owned copy so duplicate cars survive
+			-- death without ever being counted again by persistence.
+			gearTool.Parent = player.StarterGear
 		else
 			gearTool:Destroy()
 		end
@@ -848,6 +860,7 @@ local function giveTool(player, toolName, customAttributes)
 		if not (type(customAttributes) == "table" and customAttributes.SuppressDirty == true) then
 			markDirty(player)
 		end
+		if session then session.IntentionalEmptyInventory = false end
 		if not (type(customAttributes) == "table" and customAttributes.SuppressIndexMark == true) then
 			markIndexDiscovered(player, sourceTool.Name)
 		end
@@ -903,13 +916,14 @@ local function releasePadLock(lockId)
 end
 
 local function RestoreLayout(player, plot, layoutData)
-	if not layoutData or not plot then return end
-	if #layoutData > MAX_LAYOUT_SIZE then return end
+	if type(layoutData) ~= "table" or not plot then return false end
+	if #layoutData > MAX_LAYOUT_SIZE then return false end
+	if #layoutData == 0 then return true end
 
 	local placedCarsFolder = plot:FindFirstChild("PlacedCars")
 	if not placedCarsFolder or not placedCarsFolder:IsA("Folder") then
 		warn("⚠️ [TycoonDataHandler] Missing required Folder: " .. plot:GetFullName() .. " > PlacedCars. Layout restore skipped; this script will not create it automatically.")
-		return
+		return false
 	end
 
 	local validPads = {}
@@ -928,6 +942,7 @@ local function RestoreLayout(player, plot, layoutData)
 			for _, p in ipairs(padsFolder:GetChildren()) do validPads[p.Name] = true end
 		end
 	end
+	if not activeLevelFolder or next(validPads) == nil then return false end
 
 	local processedPads = {}
 	local restoredCount = 0
@@ -1003,6 +1018,7 @@ local function RestoreLayout(player, plot, layoutData)
 		markDirty(player)
 		print("🏗️ Restored " .. restoredCount .. " cars for " .. player.Name)
 	end
+	return restoredCount == #layoutData
 end
 
 local function toolMatchesId(tool, targetToolId)
@@ -1128,6 +1144,34 @@ local function removeMatchingTools(player, targetToolId, requestedAmount)
 	return removedOwnedCount
 end
 
+local function removeExactOwnedTool(player, tool)
+	if not player or not validateTool(tool) then return false end
+	local backpack = player:FindFirstChild("Backpack")
+	if tool.Parent ~= backpack and tool.Parent ~= player.Character then return false end
+
+	local toolId = tool:GetAttribute("ToolId")
+	if type(toolId) ~= "string" or toolId == "" then return false end
+	tool:Destroy()
+
+	local starterGear = player:FindFirstChild("StarterGear")
+	if starterGear then
+		for _, mirror in ipairs(starterGear:GetChildren()) do
+			if toolMatchesId(mirror, toolId) then
+				mirror:Destroy()
+				break
+			end
+		end
+	end
+
+	local session = SessionData[player]
+	if session then
+		session.SacrificeOccurred = true
+		session.IntentionalEmptyInventory = true
+	end
+	markDirty(player)
+	return true, toolId
+end
+
 
 local function transferToolBetweenPlayers(giver, receiver, tool)
 	if not giver or not receiver or not tool then
@@ -1179,68 +1223,123 @@ local function transferToolBetweenPlayers(giver, receiver, tool)
 	if not receiverBackpack then
 		return false, "Gift failed: Could not transfer car.", "Gift failed: Could not receive car."
 	end
+	if giverSession.CriticalTransferToken or receiverSession.CriticalTransferToken then
+		return false, "Gift failed: Another inventory transfer is running.", "Gift failed: Another inventory transfer is running."
+	end
 
-	local starterClone = tool:Clone()
+	local transferToken = HttpService:GenerateGUID(false)
+	giverSession.CriticalTransferToken = transferToken
+	receiverSession.CriticalTransferToken = transferToken
+	local function finishTransfer(...)
+		if giverSession.CriticalTransferToken == transferToken then giverSession.CriticalTransferToken = nil end
+		if receiverSession.CriticalTransferToken == transferToken then receiverSession.CriticalTransferToken = nil end
+		return ...
+	end
+
+	local starterClone = nil
 	local receiverStarterClone = nil
-
-	-- Clean the respawn mirror manually so the moved car does not come back on giver respawn.
+	local giverWasIntentionalEmpty = giverSession.IntentionalEmptyInventory == true
+	local receiverWasIntentionalEmpty = receiverSession.IntentionalEmptyInventory == true
 	local giverStarterGear = giver:FindFirstChild("StarterGear")
-	if giverStarterGear then
-		for _, child in ipairs(giverStarterGear:GetChildren()) do
-			if toolMatchesId(child, toolId) then
-				child:Destroy()
-				break
-			end
-		end
-	end
+	local giverMirrorRemoved = false
 
-	tool.Parent = receiverBackpack
+	local transferOk, transferResult, giverMessage, receiverMessage = xpcall(function()
+		starterClone = tool:Clone()
 
-	local receiverStarterGear = receiver:FindFirstChild("StarterGear")
-	if receiverStarterGear then
-		starterClone.Parent = receiverStarterGear
-		receiverStarterClone = starterClone
-	else
-		starterClone:Destroy()
-	end
-
-	markDirty(giver)
-	markDirty(receiver)
-	markIndexDiscovered(receiver, toolId)
-
-	local giverSaveOk = save and save(giver, false, true)
-	local receiverSaveOk = save and save(receiver, false, true)
-	if not giverSaveOk or not receiverSaveOk then
-		warn("[TycoonDataHandler] Player gift transfer save failed; rolling back transfer.")
-		if receiverStarterClone and receiverStarterClone.Parent then
-			receiverStarterClone:Destroy()
-		end
-
-		local giverBackpack = giver:FindFirstChild("Backpack")
-		if giverBackpack and tool and tool.Parent == receiverBackpack then
-			tool.Parent = giverBackpack
-		end
-
-		if giverStarterGear and tool and tool.Parent then
-			local hasMirror = false
+		-- Clean the respawn mirror manually so the moved car does not come back on giver respawn.
+		if giverStarterGear then
 			for _, child in ipairs(giverStarterGear:GetChildren()) do
 				if toolMatchesId(child, toolId) then
-					hasMirror = true
+					child:Destroy()
+					giverMirrorRemoved = true
 					break
 				end
 			end
-			if not hasMirror then
-				local mirror = tool:Clone()
-				mirror.Parent = giverStarterGear
-			end
+		end
+
+		tool.Parent = receiverBackpack
+
+		local receiverStarterGear = receiver:FindFirstChild("StarterGear")
+		if receiverStarterGear then
+			starterClone.Parent = receiverStarterGear
+			receiverStarterClone = starterClone
+		else
+			starterClone:Destroy()
 		end
 
 		markDirty(giver)
+		giverSession.SacrificeOccurred = true
+		giverSession.IntentionalEmptyInventory = true
+		receiverSession.IntentionalEmptyInventory = false
 		markDirty(receiver)
-		return false, "Gift failed: Could not save transfer.", "Gift failed: Could not save received car."
+
+		local giverSaveOk = save and save(giver, false, true)
+		local receiverSaveOk = save and save(receiver, false, true)
+		if not giverSaveOk or not receiverSaveOk then
+			warn("[TycoonDataHandler] Player gift transfer save failed; rolling back transfer.")
+			if receiverStarterClone and receiverStarterClone.Parent then
+				receiverStarterClone:Destroy()
+			end
+
+			local giverBackpack = giver:FindFirstChild("Backpack")
+			if giverBackpack and tool and tool.Parent == receiverBackpack then
+				tool.Parent = giverBackpack
+			end
+
+			if giverStarterGear and giverMirrorRemoved and tool and tool.Parent then
+				local mirror = tool:Clone()
+				mirror.Parent = giverStarterGear
+				giverMirrorRemoved = false
+			end
+
+			markDirty(giver)
+			markDirty(receiver)
+			giverSession.IntentionalEmptyInventory = giverWasIntentionalEmpty
+			receiverSession.IntentionalEmptyInventory = receiverWasIntentionalEmpty
+			-- If the receiver's first saved copy was this gift, explicitly allow the
+			-- compensation save to remove it. Otherwise inventory anti-wipe would
+			-- preserve the rolled-back car and duplicate it across the two profiles.
+			receiverSession.SacrificeOccurred = true
+			-- A transfer spans two DataStore keys, so Roblox cannot commit it as one
+			-- transaction. Persist the compensation immediately on both profiles; this
+			-- closes the partial-save duplicate/loss window after a failed transfer.
+			local giverRollbackSaved = save and save(giver, false, true)
+			local receiverRollbackSaved = save and save(receiver, false, true)
+			if not giverRollbackSaved or not receiverRollbackSaved then
+				warn("[TycoonDataHandler] Gift rollback remains dirty and will retry on final/autosave.")
+			end
+			return false, "Gift failed: Could not save transfer.", "Gift failed: Could not save received car."
+		end
+
+		-- The saved inventory is the durable source of truth. Mark the index only
+		-- after both profile writes succeed; load-time index repair also derives it
+		-- from inventory if the server stops before the follow-up autosave.
+		markIndexDiscovered(receiver, toolId)
+		return true
+	end, debug.traceback)
+
+	if not transferOk then
+		warn("[TycoonDataHandler] Unexpected gift transfer error: " .. tostring(transferResult))
+		if receiverStarterClone and receiverStarterClone.Parent then receiverStarterClone:Destroy() end
+		local giverBackpack = giver:FindFirstChild("Backpack")
+		if giverBackpack and tool and tool.Parent == receiverBackpack then tool.Parent = giverBackpack end
+		if giverStarterGear and giverMirrorRemoved and tool and tool.Parent then
+			local mirror = tool:Clone()
+			mirror.Parent = giverStarterGear
+		end
+		giverSession.IntentionalEmptyInventory = giverWasIntentionalEmpty
+		receiverSession.IntentionalEmptyInventory = receiverWasIntentionalEmpty
+		receiverSession.SacrificeOccurred = true
+		markDirty(giver)
+		markDirty(receiver)
+		if save then
+			save(giver, false, true)
+			save(receiver, false, true)
+		end
+		return finishTransfer(false, "Gift failed: Could not transfer car.", "Gift failed: Could not receive car.")
 	end
 
-	return true
+	return finishTransfer(transferResult, giverMessage, receiverMessage)
 end
 
 local function removeToolsByAttribute(player, attributeName, attributeValue)
@@ -1375,7 +1474,7 @@ local function redeemPromoCode(player, code, codeInfo)
 	if code == "" or type(codeInfo) ~= "table" then
 		return false, "Invalid code!"
 	end
-	if codeInfo.OncePerPlayer ~= false and codeInfo.Enabled ~= true then
+	if codeInfo.Enabled ~= true then
 		return false, "Code is currently unavailable!"
 	end
 	if codeInfo.RewardType ~= "WalletCash" then
@@ -1413,50 +1512,23 @@ local function redeemPromoCode(player, code, codeInfo)
 		return finish(false, "Unable to redeem the code. Please try again.")
 	end
 
-	local key = "User_V27_" .. player.UserId
-	local redeemedByStore = false
-	local newWalletValue = nil
-	local updateOk, updateErr = pcall(function()
-		PlayerDataStore:UpdateAsync(key, function(oldData)
-			oldData = oldData or {}
-			oldData.PromoCodesRedeemed = sanitizePromoCodeHistory(oldData.PromoCodesRedeemed)
-			if codeInfo.OncePerPlayer ~= false and oldData.PromoCodesRedeemed[code] then
-				redeemedByStore = true
-				return oldData
-			end
-
-			local baseWallet = math.max(math.floor(tonumber(oldData.Wallet) or 0), math.floor(tonumber(wallet.Value) or 0))
-			newWalletValue = baseWallet + amount
-			oldData.Wallet = newWalletValue
-			oldData.PromoCodesRedeemed[code] = {
-				RedeemedAt = os.time(),
-				RewardType = codeInfo.RewardType,
-				RewardAmount = amount,
-			}
-			oldData.LastUpdated = os.time()
-			oldData.LastOfflineAt = os.time()
-			return oldData
-		end)
-	end)
-
-	if not updateOk then
-		warn("[TycoonDataHandler] Promo code UpdateAsync failed for " .. player.Name .. ": " .. tostring(updateErr))
-		return finish(false, "Unable to redeem the code. Please try again.")
-	end
-
-	if redeemedByStore then
-		session.PromoCodesRedeemed[code] = session.PromoCodesRedeemed[code] or { RedeemedAt = os.time(), RewardType = codeInfo.RewardType, RewardAmount = amount }
-		return finish(false, "Code already claimed!")
-	end
-
-	if not newWalletValue then
-		return finish(false, "Unable to redeem the code. Please try again.")
-	end
-
-	wallet.Value = newWalletValue
+	local originalWallet = wallet.Value
+	local previousHistoryEntry = session.PromoCodesRedeemed[code]
+	wallet.Value += amount
 	session.PromoCodesRedeemed[code] = { RedeemedAt = os.time(), RewardType = codeInfo.RewardType, RewardAmount = amount }
 	player:SetAttribute(PROMO_CODE_REDEEMED_ATTRIBUTE, HttpService:JSONEncode(session.PromoCodesRedeemed))
 	markDirty(player)
+
+	-- Persist the wallet delta and redemption marker in the same lease-protected
+	-- profile update. Reading the old stored wallet here used to resurrect cash
+	-- the player had already spent since the previous autosave.
+	if not save(player, false, true) then
+		wallet.Value = originalWallet
+		session.PromoCodesRedeemed[code] = previousHistoryEntry
+		player:SetAttribute(PROMO_CODE_REDEEMED_ATTRIBUTE, HttpService:JSONEncode(session.PromoCodesRedeemed))
+		markDirty(player)
+		return finish(false, "Unable to redeem the code. Please try again.")
+	end
 
 	return finish(true, codeInfo.SuccessMessage or "Code successfully redeemed!")
 end
@@ -1517,6 +1589,50 @@ local function grantWalletCashProduct(player, purchaseId, productId, walletCash)
 	return finish(true)
 end
 
+local function hasReceiptGrant(player, purchaseId)
+	purchaseId = tostring(purchaseId or "")
+	local session = SessionData[player]
+	if purchaseId == "" or not session or not session.DataLoaded then
+		return nil, "Player data not loaded"
+	end
+
+	session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+	local receiptData = session.RobuxProductReceipts[purchaseId]
+	if not receiptData then return false end
+	if save(player, false, true) then return true, nil, receiptData end
+	return nil, "Receipt grant is not durable yet"
+end
+
+local function commitReceiptGrant(player, purchaseId, productId, action, targetUserId, grantHash)
+	purchaseId = tostring(purchaseId or "")
+	productId = math.floor(tonumber(productId) or 0)
+	if purchaseId == "" or productId <= 0 then return false, "Invalid receipt" end
+
+	local session = SessionData[player]
+	if not session or not session.DataLoaded then return false, "Player data not loaded" end
+	session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+	local existing = session.RobuxProductReceipts[purchaseId]
+	if type(existing) ~= "table" then
+		session.RobuxProductReceipts[purchaseId] = {
+			ProductId = productId,
+			GrantedAt = os.time(),
+			Source = "ReceiptRouter",
+			Action = type(action) == "string" and string.sub(action, 1, 80) or nil,
+			TargetUserId = math.max(0, math.floor(tonumber(targetUserId) or player.UserId)),
+			GrantHash = type(grantHash) == "string" and string.sub(grantHash, 1, 200) or nil,
+		}
+	else
+		existing.ProductId = existing.ProductId or productId
+		existing.GrantedAt = math.max(tonumber(existing.GrantedAt) or 0, os.time())
+	end
+
+	markDirty(player)
+	-- Keep the in-memory receipt on failure. The associated mutation is still
+	-- live, so Roblox can retry and force-save both together without duplicating.
+	if not save(player, false, true) then return false, "Receipt save failed" end
+	return true
+end
+
 -- 🔄 ADMIN API (BindableFunction)
 -- ----------------------------------------------------------------------------
 local AdminAPI = getRequiredChild(ServerStorage, "TycoonAdminAPI", "BindableFunction", "ServerStorage > TycoonAdminAPI", REQUIRED_WAIT_SECONDS)
@@ -1530,6 +1646,7 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		SessionData[player].StarterPackSaveConfirmed = false
 		SessionData[player].StarterPackClearRequested = true
 		SessionData[player].Tutorial = sanitizeTutorialData(nil)
+		SessionData[player].IntentionalEmptyInventory = false
 		applyTutorialAttributes(player, SessionData[player].Tutorial)
 		if player:FindFirstChild("StarterGear") then player.StarterGear:ClearAllChildren() end
 		if player:FindFirstChild("Backpack") then player.Backpack:ClearAllChildren() end
@@ -1577,6 +1694,14 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	elseif action == "GrantWalletCashProduct" and player then
 		local purchaseId, productId, walletCash = ...
 		return grantWalletCashProduct(player, purchaseId, productId, walletCash)
+
+	elseif action == "HasReceiptGrant" and player then
+		local purchaseId = ...
+		return hasReceiptGrant(player, purchaseId)
+
+	elseif action == "CommitReceiptGrant" and player then
+		local purchaseId, productId, receiptAction, targetUserId, grantHash = ...
+		return commitReceiptGrant(player, purchaseId, productId, receiptAction, targetUserId, grantHash)
 
 	elseif action == "GrantStarterPack" and player then
 		if not save then
@@ -1704,13 +1829,18 @@ AdminAPI.OnInvoke = function(action, player, ...)
 			return false, removedCount
 		end
 
-		local session = SessionData[player]
-		if session then
-			session.SacrificeOccurred = true
+			local session = SessionData[player]
+			if session then
+				session.SacrificeOccurred = true
+				session.IntentionalEmptyInventory = true
 		end
 
 		markDirty(player)
 		return true, removedCount
+
+	elseif action == "RemoveExactTool" and player then
+		local tool = ...
+		return removeExactOwnedTool(player, tool)
 
 	elseif action == "MarkDirty" and player then
 		markDirty(player)
@@ -1728,9 +1858,10 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		return queueCriticalSave(player, delaySeconds)
 
 	elseif action == "MarkInventoryCleared" and player then
-		local session = SessionData[player]
-		if session then
-			session.SacrificeOccurred = true
+			local session = SessionData[player]
+			if session then
+				session.SacrificeOccurred = true
+				session.IntentionalEmptyInventory = true
 		end
 		markDirty(player)
 		return true
@@ -1765,9 +1896,10 @@ LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 			return false, removedCount
 		end
 
-		local session = SessionData[player]
-		if session then
-			session.SacrificeOccurred = true
+			local session = SessionData[player]
+			if session then
+				session.SacrificeOccurred = true
+				session.IntentionalEmptyInventory = true
 		end
 
 		markDirty(player)
@@ -1822,9 +1954,10 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 			return false, removedCount
 		end
 
-		local session = SessionData[player]
-		if session then
-			session.SacrificeOccurred = true
+			local session = SessionData[player]
+			if session then
+				session.SacrificeOccurred = true
+				session.IntentionalEmptyInventory = true
 		end
 
 		markDirty(player)
@@ -2018,6 +2151,8 @@ save = function(player, isClosing, force)
 		local currentTransferUsed = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitUsed")) or 0))
 		local currentTransferResetAt = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitResetAt")) or 0))
 		local currentRebirth = math.max(0, math.floor(tonumber(player:GetAttribute("Rebirth")) or 0))
+		local currentOfflinePremiumPendingAmount = math.max(0, math.floor(tonumber(player:GetAttribute("OfflinePremiumPendingAmount")) or 0))
+		local currentTabletDoublePendingAmount = math.max(0, math.floor(tonumber(player:GetAttribute("TabletDoublePendingAmount")) or 0))
 		local currentIndexDiscovered = {}
 		local starterPackPurchased = session.StarterPackPurchased == true
 		local starterPackPurchaseId = session.StarterPackPurchaseId
@@ -2038,8 +2173,9 @@ save = function(player, isClosing, force)
 				local ok, decoded = pcall(function() return HttpService:JSONDecode(raw) end)
 				if ok and type(decoded) == "table" then
 					local dedupe = {}
-					for _, name in ipairs(decoded) do
-						if type(name) == "string" then
+					for key, value in pairs(decoded) do
+						local name = type(value) == "string" and value or (value == true and type(key) == "string" and key or nil)
+						if name then
 							local normalized = name:gsub(" Item$", "")
 							if CarStats and CarStats.Cars and CarStats.Cars[normalized] then
 								dedupe[normalized] = true
@@ -2094,11 +2230,21 @@ save = function(player, isClosing, force)
 		if not characterRef and session.HeldToolId then
 			local id = session.HeldToolId
 			if safeFindCarTool(id) and invCount < MAX_INVENTORY_SIZE then
-				local alreadySaved = false
+				local backpackCopies = 0
 				for _, savedId in ipairs(inventory) do
-					if savedId == id then alreadySaved = true; break end
+					if savedId == id then backpackCopies += 1 end
 				end
-				if not alreadySaved then
+				local mirrorCopies = 0
+				local starterGear = player:FindFirstChild("StarterGear")
+				if starterGear then
+					for _, mirror in ipairs(starterGear:GetChildren()) do
+						if validateTool(mirror) and mirror:GetAttribute("ToolId") == id then mirrorCopies += 1 end
+					end
+				end
+				-- StarterGear is a one-for-one ownership mirror. Only add the cached
+				-- equipped copy when it is not already back in the Backpack; comparing
+				-- counts preserves multiple identical cars instead of deduplicating by id.
+				if mirrorCopies > backpackCopies then
 					table.insert(inventory, id)
 					invCount += 1
 				end
@@ -2181,22 +2327,48 @@ save = function(player, isClosing, force)
 		local currentMythicalShopDataAvailable, currentMythicalShopData = safeShopGet("MythicalShopPersistenceFunction", mythicalShopBindable, player)
 
 		local sacrificeOccurredThisSession = session.SacrificeOccurred == true
+		local intentionalEmptyInventory = session.IntentionalEmptyInventory == true
+		local explicitClear = session.ExplicitClear == true
+		local snapshotBank = MoneyManager.GetBalance(player, "Cash")
+		local snapshotWallet = MoneyManager.GetBalance(player, "Wallet")
+		local snapshotATM = MoneyManager.GetBalance(player, "ATMBalance")
+		local snapshotOfflineTabletCarry = math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
+		local profileKey = session.ProfileKey
+		local leaseToken = session.LeaseToken
+		local leaseVersion = session.LeaseVersion
+		local leaseAcquiredAt = session.LeaseAcquiredAt
+		local savedAt = os.time()
+		local staleWriterRejected = false
 
 		for attempt = 1, MAX_RETRIES do
+			staleWriterRejected = false
 			local updateSuccess, updateResult = pcall(function()
-				return PlayerDataStore:UpdateAsync("User_V27_" .. player.UserId, function(oldData)
-					oldData = oldData or {}
+				return PlayerDataStore:UpdateAsync(profileKey, function(oldData)
+					staleWriterRejected = false
+					oldData = type(oldData) == "table" and oldData or {}
+					local storedLease = type(oldData[PROFILE_LEASE_FIELD]) == "table" and oldData[PROFILE_LEASE_FIELD] or nil
+					if not storedLease
+						or storedLease.Token ~= leaseToken
+						or math.floor(tonumber(storedLease.Version) or 0) ~= leaseVersion
+						or math.floor(tonumber(oldData[PROFILE_LEASE_VERSION_FIELD]) or 0) ~= leaseVersion
+					then
+						staleWriterRejected = true
+						return nil
+					end
 
+					local storedInventory = type(oldData.Inventory) == "table" and oldData.Inventory or {}
+					local storedLayout = type(oldData.Layout) == "table" and oldData.Layout or {}
 					local finalInventory = inventory
 
 					if #inventory == 0
-						and (oldData.Inventory and #oldData.Inventory > 0)
-						and not session.ExplicitClear
+						and #storedInventory > 0
+						and not explicitClear
 						and not sacrificeOccurredThisSession
 					then
 						warn("⚠️ Anti-Wipe (Inventory): Preserving for " .. player.Name)
 						finalInventory = {}
-						for _, oldId in pairs(oldData.Inventory) do
+						for _, storedItem in pairs(storedInventory) do
+							local oldId = normalizeStoredToolId(storedItem)
 							if safeFindCarTool(oldId) then
 								table.insert(finalInventory, oldId)
 							end
@@ -2204,11 +2376,11 @@ save = function(player, isClosing, force)
 					end
 
 					local finalLayout = layout
-					local isSuspiciousLayoutWipe = (#layout == 0) and (oldData.Layout and #oldData.Layout > 0)
+					local isSuspiciousLayoutWipe = (#layout == 0) and (#storedLayout > 0)
 
 					-- Fix 5: SacrificeOccurred Does Not Gate the Layout Anti-Wipe
-					if isSuspiciousLayoutWipe and not session.ExplicitClear then
-						local oldInvCount = oldData.Inventory and #oldData.Inventory or 0
+					if isSuspiciousLayoutWipe and not explicitClear then
+						local oldInvCount = #storedInventory
 						local newInvCount = #finalInventory
 
 						if newInvCount > oldInvCount then
@@ -2218,8 +2390,13 @@ save = function(player, isClosing, force)
 							warn("⚠️ Anti-Wipe (Layout): Preserving for " .. player.Name)
 							finalLayout = {}
 							local seenPads = {}
-							for _, oldEntry in pairs(oldData.Layout) do
-								if FindModelNameFromTool(oldEntry.Tool) and not seenPads[oldEntry.Pad] then
+							for _, oldEntry in pairs(storedLayout) do
+								if type(oldEntry) == "table"
+									and type(oldEntry.Tool) == "string"
+									and type(oldEntry.Pad) == "string"
+									and FindModelNameFromTool(oldEntry.Tool)
+									and not seenPads[oldEntry.Pad]
+								then
 									seenPads[oldEntry.Pad] = true
 									table.insert(finalLayout, oldEntry)
 								end
@@ -2229,13 +2406,13 @@ save = function(player, isClosing, force)
 						finalLayout = layout
 					end
 
-					local offlineTabletCarry = math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
-					local finalPending = offlineTabletCarry + currentPendingInTycoon
+					local finalPending = snapshotOfflineTabletCarry + currentPendingInTycoon
 
-					oldData.Bank       = MoneyManager.GetBalance(player, "Cash")
-					oldData.Wallet     = MoneyManager.GetBalance(player, "Wallet")
-					oldData.ATMBalance = MoneyManager.GetBalance(player, "ATMBalance")
+					oldData.Bank       = snapshotBank
+					oldData.Wallet     = snapshotWallet
+					oldData.ATMBalance = snapshotATM
 					oldData.Inventory = finalInventory
+					oldData.IntentionalEmptyInventory = intentionalEmptyInventory
 					oldData.Layout = finalLayout
 					oldData.PendingEarnings = finalPending
 					oldData.OfflineEarningsRate = currentGarageIncomeRate
@@ -2261,6 +2438,8 @@ save = function(player, isClosing, force)
 					oldData.BankTransferLimitUsed = currentTransferUsed
 					oldData.BankTransferLimitResetAt = currentTransferResetAt
 					oldData.Rebirth = currentRebirth
+					oldData.OfflinePremiumPendingAmount = currentOfflinePremiumPendingAmount
+					oldData.TabletDoublePendingAmount = currentTabletDoublePendingAmount
 					oldData.IndexDiscovered = currentIndexDiscovered
 					oldData.DailyRewards = currentDailyRewards
 					oldData.FreeRewardsClaimed = oldData.FreeRewardsClaimed == true or currentFreeRewardsClaimed
@@ -2295,14 +2474,28 @@ save = function(player, isClosing, force)
 					oldData.SettingsVersion = SETTINGS_SCHEMA_VERSION
 					oldData.Tutorial = currentTutorial
 
-					oldData.LastUpdated  = os.time()
-					oldData.LastOfflineAt = os.time()
-					oldData.DataVersion  = "V40_StarterPackReceiptHardened"
+					oldData.LastUpdated  = savedAt
+					oldData.LastOfflineAt = savedAt
+					oldData.DataVersion  = "V41_SessionLocked"
+					oldData[PROFILE_LEASE_VERSION_FIELD] = leaseVersion
+					oldData[PROFILE_LEASE_FIELD] = {
+						Token = leaseToken,
+						JobId = game.JobId,
+						PlaceId = game.PlaceId,
+						AcquiredAt = leaseAcquiredAt,
+						Version = leaseVersion,
+						ExpiresAt = savedAt + PROFILE_LEASE_SECONDS,
+						UpdatedAt = savedAt,
+					}
 
 					return oldData
 				end)
 			end)
 
+			if staleWriterRejected then
+				session.LeaseLost = true
+				error("Profile session lease no longer belongs to this server")
+			end
 			if updateSuccess and updateResult ~= nil then
 				saveSucceeded = true
 				return true
@@ -2320,6 +2513,9 @@ save = function(player, isClosing, force)
 	end
 
 	if saveSucceeded then
+		if not isClosing then
+			session.LeaseExpiresAt = os.time() + PROFILE_LEASE_SECONDS
+		end
 		local hasNewerDirtyState = (session.DirtyVersion or 0) ~= saveDirtyVersion
 		session.IsDirty = hasNewerDirtyState
 		session.LastSave = hasNewerDirtyState and 0 or os.time()
@@ -2336,6 +2532,9 @@ save = function(player, isClosing, force)
 	end
 
 	if isClosing then
+		-- The final attempt has finished, so release subsystem sessions even when
+		-- DataStore was unavailable. Keeping them after the Player leaves leaks one
+		-- full shop/rank state per failed save for the rest of the server's life.
 		local function safeClose(bindableName)
 			local b = ServerStorage:FindFirstChild(bindableName)
 			if not b then return end
@@ -2353,14 +2552,102 @@ save = function(player, isClosing, force)
 		safeClose("MythicalShopPersistenceFunction")
 		safeClose("RankPersistenceFunction")
 	end
+	if isClosing and saveSucceeded then
+		-- Keep the lease through subsystem cleanup. Clearing it inside the profile
+		-- write let a fast rejoin load new shop sessions while the old server was
+		-- still closing those same user-id keyed sessions.
+		releaseProfileLeaseWithoutSave(session)
+	end
 
 	session.IsSaving = false
 
-	local syncEvent = game.ServerStorage:FindFirstChild("TycoonSaveCompleted")
-	if syncEvent then syncEvent:Fire(player.Name) end
-
-	player:SetAttribute("DataSaved", saveSucceeded == true)
+	if isClosing then
+		player:SetAttribute("DataSaved", saveSucceeded == true)
+		player:SetAttribute("DataSaveFinished", true)
+		local syncEvent = game.ServerStorage:FindFirstChild("TycoonSaveCompleted")
+		if syncEvent then syncEvent:Fire(player.UserId, saveSucceeded == true) end
+	end
+	if session.LeaseLost and player.Parent == Players then
+		player:Kick("Your data session could not be kept safe. Please rejoin.")
+	end
 	return saveSucceeded
+end
+
+local function startLeaseRenewal(player)
+	task.spawn(function()
+		while player.Parent == Players do
+			task.wait(PROFILE_LEASE_RENEW_INTERVAL)
+			local session = SessionData[player]
+			if not session or session.Closing or session.LeaseLost then return end
+
+			local now = os.time()
+			local rejected = false
+			local ok, result = pcall(function()
+				return PlayerDataStore:UpdateAsync(session.ProfileKey, function(current)
+					rejected = false
+					current = type(current) == "table" and current or {}
+					local lease = type(current[PROFILE_LEASE_FIELD]) == "table" and current[PROFILE_LEASE_FIELD] or nil
+					if not lease
+						or lease.Token ~= session.LeaseToken
+						or math.floor(tonumber(lease.Version) or 0) ~= session.LeaseVersion
+						or math.floor(tonumber(current[PROFILE_LEASE_VERSION_FIELD]) or 0) ~= session.LeaseVersion
+					then
+						rejected = true
+						return nil
+					end
+
+					lease.ExpiresAt = now + PROFILE_LEASE_SECONDS
+					lease.UpdatedAt = now
+					current[PROFILE_LEASE_FIELD] = lease
+					return current
+				end)
+			end)
+
+			if rejected then
+				session.LeaseLost = true
+				player:Kick("Your data session could not be kept safe. Please rejoin.")
+				return
+			elseif ok and result ~= nil then
+				session.LeaseExpiresAt = now + PROFILE_LEASE_SECONDS
+			elseif now >= (tonumber(session.LeaseExpiresAt) or 0) then
+				session.LeaseLost = true
+				player:Kick("Your data session could not be kept safe. Please rejoin.")
+				return
+			end
+		end
+	end)
+end
+
+releaseProfileLeaseWithoutSave = function(session)
+	if not session or type(session.ProfileKey) ~= "string" or type(session.LeaseToken) ~= "string" then return false end
+	local expectedVersion = math.floor(tonumber(session.LeaseVersion) or 0)
+	for attempt = 1, MAX_RETRIES do
+		local releasedOrNotOwned = false
+		local ok = pcall(function()
+			PlayerDataStore:UpdateAsync(session.ProfileKey, function(current)
+				releasedOrNotOwned = false
+				if type(current) ~= "table" then
+					releasedOrNotOwned = true
+					return current
+				end
+
+				local lease = type(current[PROFILE_LEASE_FIELD]) == "table" and current[PROFILE_LEASE_FIELD] or nil
+				local ownsLease = lease
+					and lease.Token == session.LeaseToken
+					and (expectedVersion <= 0
+						or (math.floor(tonumber(lease.Version) or 0) == expectedVersion
+							and math.floor(tonumber(current[PROFILE_LEASE_VERSION_FIELD]) or 0) == expectedVersion))
+
+				if ownsLease then current[PROFILE_LEASE_FIELD] = nil end
+				releasedOrNotOwned = true
+				return current
+			end)
+		end)
+		if ok and releasedOrNotOwned then return true end
+		task.wait(0.2 * attempt)
+	end
+	warn("[TycoonDataHandler] Could not release profile lease for " .. tostring(session.ProfileKey) .. "; it will expire automatically.")
+	return false
 end
 -- ----------------------------------------------------------------------------
 -- 🚪 PLAYER INITIALIZATION
@@ -2374,6 +2661,18 @@ local function InitializePlayer(player)
 		ExplicitClear     = false,
 		IsSaving          = false,
 		SacrificeOccurred = false,
+		IntentionalEmptyInventory = false,
+		-- A reconnect to the same live server must still be a distinct profile
+		-- session. Reusing a server+user token let a fast rejoin bypass its old
+		-- session's lease while PlayerRemoving was still saving.
+		LeaseToken        = SERVER_SESSION_TOKEN .. ":" .. tostring(player.UserId) .. ":" .. HttpService:GenerateGUID(false),
+		LeaseLost         = false,
+		LeaseExpiresAt    = 0,
+		LeaseVersion      = 0,
+		LeaseAcquiredAt   = 0,
+		ProfileKey        = "User_V27_" .. player.UserId,
+		Closing           = false,
+		CriticalTransferToken = nil,
 		-- ✅ FIX (Held Tool Lost on Disconnect): caches the ToolId of the
 		-- tool the player was holding when their character was removed.
 		-- Used as a fallback in save() if player.Character is already nil.
@@ -2394,6 +2693,8 @@ local function InitializePlayer(player)
 	-- Public ready flag used by DailyRewardsService so rewards cannot be claimed
 	-- before this main data profile has finished loading.
 	player:SetAttribute(DATA_READY_ATTRIBUTE, false)
+	player:SetAttribute("DataSaved", false)
+	player:SetAttribute("DataSaveFinished", false)
 
 	-- ✅ FIX (Held Tool Lost on Disconnect):
 	-- CharacterRemoving fires reliably before the character instance is
@@ -2431,16 +2732,59 @@ local function InitializePlayer(player)
 	wallet.Changed:Connect(setDirty)
 	atm.Changed:Connect(setDirty)
 
-	local key = "User_V27_" .. player.UserId
+	local session = SessionData[player]
+	local key = session.ProfileKey
 	local data
 	local loadSuccess = false
 	local loadErr = nil
-	for attempt = 1, MAX_RETRIES do
+	local leaseDenied = false
+	for attempt = 1, PROFILE_LEASE_LOAD_RETRIES do
+		leaseDenied = false
 		loadSuccess, loadErr = pcall(function()
-			data = PlayerDataStore:GetAsync(key)
+			local now = os.time()
+			data = PlayerDataStore:UpdateAsync(key, function(current)
+				leaseDenied = false
+				current = type(current) == "table" and current or {}
+				local lease = type(current[PROFILE_LEASE_FIELD]) == "table" and current[PROFILE_LEASE_FIELD] or nil
+				if lease
+					and lease.Token ~= session.LeaseToken
+					and (tonumber(lease.ExpiresAt) or 0) > now
+				then
+					leaseDenied = true
+					return nil
+				end
+
+				local sameLease = lease and lease.Token == session.LeaseToken
+				local storedVersion = math.max(
+					math.floor(tonumber(current[PROFILE_LEASE_VERSION_FIELD]) or 0),
+					math.floor(tonumber(lease and lease.Version) or 0)
+				)
+				local leaseVersion = sameLease and math.max(1, storedVersion) or math.max(1, storedVersion + 1)
+				local acquiredAt = sameLease and math.max(0, math.floor(tonumber(lease.AcquiredAt) or now)) or now
+				current[PROFILE_LEASE_FIELD] = {
+					Token = session.LeaseToken,
+					JobId = game.JobId,
+					PlaceId = game.PlaceId,
+					AcquiredAt = acquiredAt,
+					Version = leaseVersion,
+					ExpiresAt = now + PROFILE_LEASE_SECONDS,
+					UpdatedAt = now,
+				}
+				current[PROFILE_LEASE_VERSION_FIELD] = leaseVersion
+				return current
+			end)
 		end)
 
-		if loadSuccess then
+		if leaseDenied then
+			if attempt < PROFILE_LEASE_LOAD_RETRIES then
+				-- Give an orderly teleport/rejoin enough time to finish its old
+				-- server's final save and lease release without hammering DataStore.
+				task.wait(math.min(4, 1.25 * attempt))
+				continue
+			end
+			break
+		end
+		if loadSuccess and data ~= nil then
 			break
 		end
 
@@ -2448,7 +2792,26 @@ local function InitializePlayer(player)
 		task.wait(0.5 * attempt)
 	end
 
-	if not loadSuccess then player:Kick("Data Load Error. Rejoin.") return end
+	if leaseDenied then
+		SessionData[player] = nil
+		player:Kick("Your data is active in another server. Please wait a moment, then rejoin.")
+		return
+	end
+	if not loadSuccess or data == nil then
+		releaseProfileLeaseWithoutSave(session)
+		SessionData[player] = nil
+		player:Kick("Data Load Error. Rejoin.")
+		return
+	end
+	local acquiredLease = type(data[PROFILE_LEASE_FIELD]) == "table" and data[PROFILE_LEASE_FIELD] or {}
+	session.LeaseExpiresAt = math.floor(tonumber(acquiredLease.ExpiresAt) or (os.time() + PROFILE_LEASE_SECONDS))
+	session.LeaseVersion = math.max(1, math.floor(tonumber(acquiredLease.Version) or 1))
+	session.LeaseAcquiredAt = math.max(0, math.floor(tonumber(acquiredLease.AcquiredAt) or os.time()))
+	if player.Parent ~= Players then
+		releaseProfileLeaseWithoutSave(session)
+		SessionData[player] = nil
+		return
+	end
 
 	data = data or {
 		Inventory = {}, Layout = {}, PendingEarnings = 0, HighestUnlockedPad = 1, BaseLevel = 1, OwnedBaseLevel = 1,
@@ -2456,6 +2819,7 @@ local function InitializePlayer(player)
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", OwnedAppearanceSkins = { ["1"] = {}, ["2"] = {} }, EquippedLevel1Skin = BaseAppearanceConfig.DEFAULT_SKIN, EquippedLevel2Skin = BaseAppearanceConfig.DEFAULT_SKIN, Rank = "Player", RankData = {},
 		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {},
+		OfflinePremiumPendingAmount = 0, TabletDoublePendingAmount = 0,
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
 		RobuxProductReceipts = {},
 		PromoCodesRedeemed = {},
@@ -2463,27 +2827,52 @@ local function InitializePlayer(player)
 		Tutorial = sanitizeTutorialData(nil)
 	}
 
-	data.Inventory              = data.Inventory              or {}
-	data.Layout                 = data.Layout                 or {}
-	data.ShopPurchases          = data.ShopPurchases          or {}
-	data.UncommonShopPurchases  = data.UncommonShopPurchases  or {}
-	data.RareShopPurchases      = data.RareShopPurchases      or {}
-	data.EpicShopPurchases      = data.EpicShopPurchases      or {}
-	data.LegendaryShopPurchases = data.LegendaryShopPurchases or {}
-	data.MythicalShopPurchases  = data.MythicalShopPurchases  or {}
-	data.OwnedBaseSkins         = data.OwnedBaseSkins         or { "Default" }
-	data.EquippedSkin           = data.EquippedSkin           or "Default"
+	do
+		local sanitizedInventory = {}
+		for _, storedItem in pairs(type(data.Inventory) == "table" and data.Inventory or {}) do
+			if #sanitizedInventory >= MAX_INVENTORY_SIZE then break end
+			local toolName = normalizeStoredToolId(storedItem)
+			if toolName and safeFindCarTool(toolName) then
+				table.insert(sanitizedInventory, toolName)
+			end
+		end
+		data.Inventory = sanitizedInventory
+
+		local sanitizedLayout, seenPads = {}, {}
+		for _, entry in pairs(type(data.Layout) == "table" and data.Layout or {}) do
+			if #sanitizedLayout >= MAX_LAYOUT_SIZE then break end
+			local toolName = type(entry) == "table" and entry.Tool or nil
+			local padName = type(entry) == "table" and entry.Pad or nil
+			if type(toolName) == "string" and type(padName) == "string"
+				and safeFindCarTool(toolName) and not seenPads[padName]
+			then
+				seenPads[padName] = true
+				table.insert(sanitizedLayout, { Tool = toolName, Pad = padName })
+			end
+		end
+		data.Layout = sanitizedLayout
+	end
+	data.ShopPurchases          = type(data.ShopPurchases) == "table" and data.ShopPurchases or {}
+	data.UncommonShopPurchases  = type(data.UncommonShopPurchases) == "table" and data.UncommonShopPurchases or {}
+	data.RareShopPurchases      = type(data.RareShopPurchases) == "table" and data.RareShopPurchases or {}
+	data.EpicShopPurchases      = type(data.EpicShopPurchases) == "table" and data.EpicShopPurchases or {}
+	data.LegendaryShopPurchases = type(data.LegendaryShopPurchases) == "table" and data.LegendaryShopPurchases or {}
+	data.MythicalShopPurchases  = type(data.MythicalShopPurchases) == "table" and data.MythicalShopPurchases or {}
+	data.OwnedBaseSkins         = type(data.OwnedBaseSkins) == "table" and data.OwnedBaseSkins or { "Default" }
+	data.EquippedSkin           = type(data.EquippedSkin) == "string" and data.EquippedSkin or "Default"
 	data.OwnedAppearanceSkins  = sanitizeOwnedAppearanceSkins(data.OwnedAppearanceSkins)
 	data.EquippedLevel1Skin    = sanitizeEquippedAppearanceSkin(data.EquippedLevel1Skin, data.OwnedAppearanceSkins, 1)
 	data.EquippedLevel2Skin    = sanitizeEquippedAppearanceSkin(data.EquippedLevel2Skin, data.OwnedAppearanceSkins, 2)
 	data.BaseLevel              = normalizeBaseLevel(data.BaseLevel)
 	data.OwnedBaseLevel         = math.max(normalizeBaseLevel(data.OwnedBaseLevel), data.BaseLevel)
-	data.Rank                   = data.Rank                   or "Player"
-	data.RankData               = data.RankData               or {}
+	data.Rank                   = type(data.Rank) == "string" and data.Rank or "Player"
+	data.RankData               = type(data.RankData) == "table" and data.RankData or {}
 	data.BankTransferLimitUsed  = data.BankTransferLimitUsed  or 0
 	data.BankTransferLimitResetAt = data.BankTransferLimitResetAt or 0
 	data.Rebirth = math.max(0, math.floor(tonumber(data.Rebirth) or 0))
-	data.IndexDiscovered = data.IndexDiscovered or {}
+	data.OfflinePremiumPendingAmount = math.max(0, math.floor(tonumber(data.OfflinePremiumPendingAmount) or 0))
+	data.TabletDoublePendingAmount = math.max(0, math.floor(tonumber(data.TabletDoublePendingAmount) or 0))
+	data.IndexDiscovered = type(data.IndexDiscovered) == "table" and data.IndexDiscovered or {}
 	data.SettingsVersion = math.max(0, math.floor(tonumber(data.SettingsVersion) or 0))
 	data.Settings = sanitizeSettings(data.Settings)
 	data.StarterPackPurchased = data.StarterPackPurchased == true
@@ -2491,6 +2880,7 @@ local function InitializePlayer(player)
 	data.StarterPackReceipts = type(data.StarterPackReceipts) == "table" and data.StarterPackReceipts or {}
 	data.RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
 	data.PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
+	data.IntentionalEmptyInventory = data.IntentionalEmptyInventory == true
 	data.DailyRewards = sanitizeDailyRewardsData(data.DailyRewards)
 	data.FreeRewardsClaimed = data.FreeRewardsClaimed == true
 	data.Tutorial = sanitizeTutorialData(data.Tutorial)
@@ -2498,6 +2888,8 @@ local function InitializePlayer(player)
 	data.OfflineEarningsRate = math.max(0, tonumber(data.OfflineEarningsRate) or 0)
 	player:SetAttribute("LastOfflineAt", data.LastOfflineAt)
 	player:SetAttribute("OfflineEarningsRate", data.OfflineEarningsRate)
+	player:SetAttribute("OfflinePremiumPendingAmount", data.OfflinePremiumPendingAmount)
+	player:SetAttribute("TabletDoublePendingAmount", data.TabletDoublePendingAmount)
 
 	-- Migration: older saves could carry CarAnimationEnabled=false as a historical default
 	-- rather than an explicit player choice. On first settings schema upgrade, normalize
@@ -2524,6 +2916,7 @@ local function InitializePlayer(player)
 	SessionData[player].StarterPackReceipts = {}
 	SessionData[player].RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
 	SessionData[player].PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
+	SessionData[player].IntentionalEmptyInventory = data.IntentionalEmptyInventory
 	SessionData[player].Tutorial = data.Tutorial
 	applyTutorialAttributes(player, data.Tutorial)
 	for receiptId, purchased in pairs(data.StarterPackReceipts) do
@@ -2573,8 +2966,9 @@ local function InitializePlayer(player)
 	player:SetAttribute("Rebirth", data.Rebirth)
 	player:SetAttribute("RebirthMultiplier", RebirthConfig.GetMultiplier(data.Rebirth))
 	local discoveredSet = {}
-	for _, toolName in ipairs(data.IndexDiscovered) do
-		if type(toolName) == "string" then
+	for key, value in pairs(data.IndexDiscovered) do
+		local toolName = type(value) == "string" and value or (value == true and type(key) == "string" and key or nil)
+		if toolName then
 			local normalized = toolName:gsub(" Item$", "")
 			if CarStats and CarStats.Cars and CarStats.Cars[normalized] then
 				discoveredSet[normalized] = true
@@ -2587,6 +2981,13 @@ local function InitializePlayer(player)
 			if CarStats and CarStats.Cars and CarStats.Cars[normalized] then
 				discoveredSet[normalized] = true
 			end
+		end
+	end
+	for _, layoutEntry in pairs(data.Layout) do
+		local toolName = type(layoutEntry) == "table" and layoutEntry.Tool or nil
+		if type(toolName) == "string" then
+			local normalized = toolName:gsub(" Item$", "")
+			if CarStats and CarStats.Cars and CarStats.Cars[normalized] then discoveredSet[normalized] = true end
 		end
 	end
 	local discoveredList = {}
@@ -2639,6 +3040,8 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("BankTransferLimitUsed"):Connect(setDirty)
 	player:GetAttributeChangedSignal("BankTransferLimitResetAt"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rebirth"):Connect(setDirty)
+	player:GetAttributeChangedSignal("OfflinePremiumPendingAmount"):Connect(setDirty)
+	player:GetAttributeChangedSignal("TabletDoublePendingAmount"):Connect(setDirty)
 	player:GetAttributeChangedSignal("IndexDiscoveredJson"):Connect(setDirty)
 	player:GetAttributeChangedSignal(DAILY_REWARDS_STATE_ATTRIBUTE):Connect(setDirty)
 	for _, attributeName in pairs(PLAYER_SETTING_ATTRIBUTES) do
@@ -2694,7 +3097,7 @@ local function InitializePlayer(player)
 		end
 	end
 
-	if #data.Inventory == 0 and (not data.Layout or #data.Layout == 0) then
+	if #data.Inventory == 0 and (not data.Layout or #data.Layout == 0) and not data.IntentionalEmptyInventory then
 		giveTool(player, STARTER_CAR_NAME)
 	end
 
@@ -2704,22 +3107,20 @@ local function InitializePlayer(player)
 	player:SetAttribute("OfflineTabletCarry", loadedTabletCarry)
 
 	if data.Layout and #data.Layout > 0 then
-		task.spawn(function()
-			local plotName = player:GetAttribute("OccupiedPlot")
-			if not plotName then
-				player:GetAttributeChangedSignal("OccupiedPlot"):Wait()
-				plotName = player:GetAttribute("OccupiedPlot")
-			end
-			if plotName then
-				local plot = TycoonFolder:FindFirstChild(plotName) or TycoonFolder:WaitForChild(plotName, 10)
-				if plot then
-					task.wait(1)
-					RestoreLayout(player, plot, data.Layout)
-				else
-					warn("⚠️ [TycoonDataHandler] Missing expected plot " .. tostring(plotName) .. " under Workspace > Tycoons for " .. player.Name .. ". Layout restore skipped.")
-				end
-			end
-		end)
+		local deadline = os.clock() + 20
+		local plotName = player:GetAttribute("OccupiedPlot")
+		while player.Parent == Players and not plotName and os.clock() < deadline do
+			task.wait(0.1)
+			plotName = player:GetAttribute("OccupiedPlot")
+		end
+		local plot = plotName and TycoonFolder:FindFirstChild(plotName) or nil
+		if not plot or RestoreLayout(player, plot, data.Layout) ~= true then
+			warn("⚠️ [TycoonDataHandler] Saved layout could not be restored safely for " .. player.Name)
+			releaseProfileLeaseWithoutSave(session)
+			SessionData[player] = nil
+			if player.Parent == Players then player:Kick("Your garage could not be loaded safely. Please rejoin.") end
+			return
+		end
 	end
 
 	local function CheckAndRestorePending()
@@ -2730,25 +3131,93 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("OccupiedPlot"):Connect(CheckAndRestorePending)
 	CheckAndRestorePending()
 
-	player:SetAttribute(DATA_READY_ATTRIBUTE, true)
 	SessionData[player].DataLoaded = true
+	player:SetAttribute(DATA_READY_ATTRIBUTE, true)
+	startLeaseRenewal(player)
 end
 
-Players.PlayerAdded:Connect(InitializePlayer)
+Players.PlayerAdded:Connect(function(player)
+	local ok, err = pcall(InitializePlayer, player)
+	if ok then return end
+	warn("❌ [TycoonDataHandler] Player initialization failed for " .. player.Name .. ": " .. tostring(err))
+	local session = SessionData[player]
+	if session then releaseProfileLeaseWithoutSave(session) end
+	SessionData[player] = nil
+	if player.Parent == Players then player:Kick("Your data could not be loaded safely. Please rejoin.") end
+end)
+
+local function runFinalSave(player)
+	local existing = FinalSaveStates[player]
+	if existing then
+		local startedAt = os.clock()
+		while not existing.Done and os.clock() - startedAt < CLOSING_SAVE_LOCK_WAIT_SECONDS do
+			task.wait(0.05)
+		end
+		return existing.Done and existing.Success == true
+	end
+
+	local state = { Done = false, Success = false }
+	FinalSaveStates[player] = state
+	local session = SessionData[player]
+	if session then session.Closing = true end
+	state.Success = save(player, true, true) == true
+	state.Done = true
+	task.delay(60, function()
+		if FinalSaveStates[player] == state then FinalSaveStates[player] = nil end
+	end)
+	return state.Success
+end
+
 Players.PlayerRemoving:Connect(function(player)
-	local pendingSaveTask = PendingCriticalSaveTasks[player.UserId]
+	local pendingSaveTask = PendingCriticalSaveTasks[player]
 	if pendingSaveTask then
 		task.cancel(pendingSaveTask)
-		PendingCriticalSaveTasks[player.UserId] = nil
+		PendingCriticalSaveTasks[player] = nil
 	end
-	save(player, true)
+	local session = SessionData[player]
+	if session and session.CriticalTransferToken then
+		-- TransferTool spans two profile keys. Let its grant or compensation writes
+		-- finish before this leave handler snapshots and destroys either session.
+		local waitStarted = os.clock()
+		while session.CriticalTransferToken
+			and os.clock() - waitStarted < CLOSING_SAVE_LOCK_WAIT_SECONDS
+		do
+			task.wait(0.05)
+		end
+	end
+	if session and not session.DataLoaded then
+		releaseProfileLeaseWithoutSave(session)
+		player:SetAttribute("DataSaved", false)
+		player:SetAttribute("DataSaveFinished", true)
+		local syncEvent = game.ServerStorage:FindFirstChild("TycoonSaveCompleted")
+		if syncEvent then syncEvent:Fire(player.UserId, false) end
+	else
+		if session then
+			runFinalSave(player)
+		else
+			player:SetAttribute("DataSaved", false)
+			player:SetAttribute("DataSaveFinished", true)
+			local syncEvent = game.ServerStorage:FindFirstChild("TycoonSaveCompleted")
+			if syncEvent then syncEvent:Fire(player.UserId, false) end
+		end
+	end
 	FreeRewardsClaimLocks[player] = nil
 	SessionData[player] = nil
 end)
 
 game:BindToClose(function()
+	local pending = 0
 	for _, player in ipairs(Players:GetPlayers()) do
-		save(player, true)
+		pending += 1
+		task.spawn(function()
+			runFinalSave(player)
+			pending -= 1
+		end)
+	end
+
+	local startedAt = os.clock()
+	while pending > 0 and os.clock() - startedAt < CLOSING_SAVE_LOCK_WAIT_SECONDS do
+		task.wait(0.05)
 	end
 end)
 
@@ -2758,7 +3227,7 @@ task.spawn(function()
 		local now = os.time()
 		for _, player in pairs(Players:GetPlayers()) do
 			local session = SessionData[player]
-			if session and session.DataLoaded and session.IsDirty
+			if session and session.DataLoaded and session.IsDirty and not session.IsSaving
 				and (now - session.LastSave >= AUTOSAVE_INTERVAL) then
 				task.spawn(function() save(player, false) end)
 			end

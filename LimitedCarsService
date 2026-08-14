@@ -114,11 +114,12 @@ function Service.Reserve(player)
 		reserved = true
 		return state
 	end)
-	if reserved then localReservations[player.UserId] = true end
+	if reserved then localReservations[player.UserId] = {} end
 	return ok and reserved, reserved and "Reserved" or "Out Of Stock", Service.GetState()
 end
 
-function Service.ReleaseReservation(userId)
+function Service.ReleaseReservation(userId, expectedToken)
+	if expectedToken and localReservations[userId] ~= expectedToken then return end
 	local key = tostring(userId) .. "_" .. tostring(Product.ProductId)
 	localReservations[userId] = nil
 	updateState(function(state)
@@ -155,24 +156,43 @@ function Service.ProcessReceipt(receiptInfo, giftTarget)
 	if not buyer or not player then return false, "Player unavailable", false end
 	local already = false
 	local finalized = false
+	local targetMismatch = false
 	local ok = updateState(function(state)
-		if state.Receipts[key] and state.Receipts[key].State == "Granted" then already = true; finalized = true; return state end
-		if state.Receipts[key] and state.Receipts[key].State == "Processing" then finalized = true; return state end
+		-- UpdateAsync may rerun this callback after a concurrent write. Never let
+		-- flags from an uncommitted callback authorize a grant on a later retry.
+		already = false
+		finalized = false
+		targetMismatch = false
+		local existingReceipt = state.Receipts[key]
+		if existingReceipt then
+			local storedTargetUserId = tonumber(existingReceipt.TargetUserId)
+			if storedTargetUserId and storedTargetUserId ~= player.UserId then
+				targetMismatch = true
+				return state
+			end
+			-- Backfill legacy in-flight records; all new records bind the recipient
+			-- before granting so a receipt retry cannot be redirected to another user.
+			existingReceipt.TargetUserId = storedTargetUserId or player.UserId
+			if existingReceipt.State == "Granted" then already = true; finalized = true; return state end
+			if existingReceipt.State == "Processing" then finalized = true; return state end
+		end
 		local rKey = tostring(receiptInfo.PlayerId) .. "_" .. tostring(Product.ProductId)
 		local res = state.Reservations[rKey]
 		if not res or res.UserId ~= receiptInfo.PlayerId or res.ProductId ~= Product.ProductId or res.State ~= "Reserved" then return state end
 		state.Reservations[rKey] = nil
 		state.Sold = math.min(Product.MaxGlobalStock, state.Sold + 1)
-		state.Receipts[key] = { State = "Processing", UserId = receiptInfo.PlayerId, Username = player.Name, ProductId = Product.ProductId, CarId = Product.CarId, FinalizedAt = now() }
+		state.Receipts[key] = { State = "Processing", UserId = receiptInfo.PlayerId, TargetUserId = player.UserId, Username = player.Name, ProductId = Product.ProductId, CarId = Product.CarId, FinalizedAt = now() }
 		finalized = true
 		return state
 	end)
+	if targetMismatch then return false, "Receipt recipient mismatch", false end
 	if not ok or not finalized then return false, "Reservation unavailable", false end
 	if already then return true, "Already granted", true end
 	local grantOk, grantMsg = grantCar(player, receiptInfo, buyer)
 	if not grantOk then return false, grantMsg, false end
 	local announceText = nil
 	local markOk = updateState(function(state)
+		announceText = nil
 		local rec = state.Receipts[key]
 		if rec and rec.State == "Processing" then
 			rec.State = "Granted"
@@ -198,7 +218,12 @@ GetStateFunction.OnServerInvoke = function() return Service.GetState() end
 ReserveFunction.OnServerInvoke = function(player) return Service.Reserve(player) end
 PromptClosedEvent.OnServerEvent:Connect(function(player) Service.ReleaseReservation(player.UserId) end)
 Players.PlayerAdded:Connect(function(player) StateEvent:FireClient(player, Service.GetState()) end)
-Players.PlayerRemoving:Connect(function(player) if localReservations[player.UserId] then task.delay(60, function() Service.ReleaseReservation(player.UserId) end) end end)
+Players.PlayerRemoving:Connect(function(player)
+	local reservationToken = localReservations[player.UserId]
+	if reservationToken then
+		task.delay(60, function() Service.ReleaseReservation(player.UserId, reservationToken) end)
+	end
+end)
 task.spawn(function()
 	for _, delaySeconds in ipairs({ 0, 2, 5, 10, 20 }) do
 		if delaySeconds > 0 then task.wait(delaySeconds) end

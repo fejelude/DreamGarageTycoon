@@ -161,31 +161,6 @@ local function getMissingIngredientMessage(ingredient)
 	return "You don't own the required car (" .. getIngredientDisplayName(ingredient) .. ")!"
 end
 
--- =========================
--- TIMEOUT UTILITY
--- =========================
-local function safeInvoke(bindable, timeout, ...)
-	local args     = table.pack(...)
-	local result   = nil
-	local finished = false
-
-	task.spawn(function()
-		result = table.pack(pcall(function()
-			return bindable:Invoke(table.unpack(args, 1, args.n))
-		end))
-		finished = true
-	end)
-
-	local start = os.clock()
-	while not finished and (os.clock() - start) < timeout do
-		task.wait(0.05)
-	end
-
-	if not finished       then return false, "Timeout" end
-	if not result[1]      then return false, result[2] end
-	return true, table.unpack(result, 2, result.n)
-end
-
 local function invokeInventory(action, ...)
 	local args = table.pack(...)
 	local ok, result1, result2, result3 = pcall(function()
@@ -657,9 +632,6 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 			return false, saveMessage or "Save failed. Craft was not started."
 		end
 
-		recordRankCraft(player, recipe.TargetCar)
-		savePlayerNow(player)
-
 		pushUpdate(player, session, "Craft")
 
 		return true, "Success"
@@ -682,9 +654,15 @@ FuncAcknowledge.OnServerInvoke = function(player, carName)
 	if typeof(carName) ~= "string" then return false end
 	local session = getSession(player)
 	if session.CompletedCrafts[carName] then
+		local completedAt = session.CompletedCrafts[carName]
 		session.CompletedCrafts[carName] = nil
 		pushUpdate(player, session, "Acknowledge")
-		savePlayerNow(player)
+		local saveOk = savePlayerNow(player)
+		if not saveOk then
+			session.CompletedCrafts[carName] = completedAt
+			pushUpdate(player, session, "Complete")
+			return false
+		end
 		return true
 	end
 	return false
@@ -758,14 +736,13 @@ SkipCraftFunc.OnInvoke = function(player)
 			local invokeOk, giveResult, giveMessage = grantCraftReward(player, carName, realToolName, "LegendaryCraftSkip")
 
 			if invokeOk and giveResult ~= false then
+				if not alreadyAwarded then
+					recordRankCraft(player, realToolName)
+				end
 				local saveOk, saveMessage = savePlayerNow(player)
 				if not saveOk then
 					warn("[LegendaryShop] Failed to save skipped " .. realToolName .. " for " .. player.Name .. ": " .. tostring(saveMessage))
 					return false, saveMessage or "System error saving item"
-				end
-				if not alreadyAwarded then
-					recordRankCraft(player, realToolName)
-					savePlayerNow(player)
 				end
 				pushUpdate(player, session, "Skipped")
 				foundActive = true

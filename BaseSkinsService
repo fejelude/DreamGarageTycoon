@@ -177,8 +177,11 @@ api.OnInvoke = function(action, player, level, skinId)
 end
 
 transaction.OnServerInvoke = function(player, action, level, skinId)
+	if action ~= "GetState" and player:GetAttribute(DATA_READY_ATTRIBUTE) ~= true then
+		return false, "Your data is still loading.", state(player)
+	end
 	if locks[player.UserId] then return false, "Another skin request is in progress.", state(player) end
-	locks[player.UserId] = true
+	locks[player.UserId] = player
 	local ok, success, message = pcall(function()
 		if action == "GetState" then return true, "Ready" end
 		local entry = Config.Get(level, skinId); if not entry then return false, "Invalid base skin." end
@@ -207,18 +210,18 @@ transaction.OnServerInvoke = function(player, action, level, skinId)
 			local attribute = "EquippedLevel" .. entry.Level .. "Skin"; local current = player:GetAttribute(attribute) or Config.DEFAULT_SKIN
 			if action == "Equip" and current == entry.SkinId then return false, "This skin is already equipped." end
 			if action == "Unequip" and current ~= entry.SkinId then return false, "This skin is not equipped." end
-			local remaining = (cooldowns[player.UserId] or 0) - os.time()
+			local remaining = (cooldowns[player] or 0) - os.time()
 			if remaining > 0 then return false, ("Please wait %d seconds before switching skins."):format(remaining) end
 			player:SetAttribute(attribute, action == "Equip" and entry.SkinId or Config.DEFAULT_SKIN)
 			local applied, applyMessage = apply(player); if not applied then player:SetAttribute(attribute, current); apply(player); return false, applyMessage end
-			cooldowns[player.UserId] = os.time() + Config.SKIN_SWITCH_COOLDOWN; markDirty(player)
+			cooldowns[player] = os.time() + Config.SKIN_SWITCH_COOLDOWN; markDirty(player)
 			local saveOk = forceSave(player)
 			if not saveOk then return false, "Skin changed, but saving is still retrying. Please wait before leaving." end
 			return true, action == "Equip" and "Skin equipped successfully." or "Default base restored successfully."
 		end
 		return false, "Invalid action."
 	end)
-	locks[player.UserId] = nil
+	if locks[player.UserId] == player then locks[player.UserId] = nil end
 	if not ok then warn("[BaseSkinsService] " .. tostring(success)); success, message = false, "An unexpected error occurred. Please try again." end
 	local snapshot = state(player); notify(player, success, message); return success, message, snapshot
 end
@@ -241,7 +244,7 @@ local function setup(player)
 	refresh()
 end
 Players.PlayerAdded:Connect(setup); for _, player in ipairs(Players:GetPlayers()) do setup(player) end
-Players.PlayerRemoving:Connect(function(player) locks[player.UserId] = nil; cooldowns[player.UserId] = nil; if connections[player] then for _, c in ipairs(connections[player]) do c:Disconnect() end end; connections[player] = nil end)
+Players.PlayerRemoving:Connect(function(player) if locks[player.UserId] == player then locks[player.UserId] = nil end; cooldowns[player] = nil; if connections[player] then for _, c in ipairs(connections[player]) do c:Disconnect() end end; connections[player] = nil end)
 
 local npc = Workspace:WaitForChild("NPCS"):WaitForChild("JakeSaron")
 local prompt = npc:WaitForChild("HumanoidRootPart"):WaitForChild("TalkPrompt")

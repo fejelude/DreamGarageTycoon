@@ -30,6 +30,7 @@ local notificationQueue = {}
 local isDisplaying = false
 local seenNotifications = {}
 local originalTransparency = setmetatable({}, { __mode = "k" })
+local originalPositions = setmetatable({}, { __mode = "k" })
 
 local function getUI()
 	local playerGui = player:FindFirstChild("PlayerGui")
@@ -115,7 +116,8 @@ local function processQueue()
 
 	isDisplaying = true
 	local message = table.remove(notificationQueue, 1)
-	local originalPosition = frame.Position
+	local originalPosition = originalPositions[frame] or frame.Position
+	originalPositions[frame] = originalPosition
 	local hiddenPosition = originalPosition - UDim2.fromOffset(0, 24)
 
 	bringNotificationToFront(frame, label)
@@ -132,7 +134,9 @@ local function processQueue()
 		TweenService:Create(frame, TWEEN_IN, { BackgroundTransparency = getOriginalTransparency(frame, "BackgroundTransparency") }):Play()
 	end)
 	for _, inst in ipairs(frame:GetDescendants()) do
-		if inst:IsA("UIStroke") then
+		if inst:IsA("TextLabel") or inst:IsA("TextButton") then
+			TweenService:Create(inst, TWEEN_IN, { TextTransparency = getOriginalTransparency(inst, "TextTransparency") }):Play()
+		elseif inst:IsA("UIStroke") then
 			TweenService:Create(inst, TWEEN_IN, { Transparency = getOriginalTransparency(inst, "Transparency") }):Play()
 		elseif inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
 			TweenService:Create(inst, TWEEN_IN, { ImageTransparency = getOriginalTransparency(inst, "ImageTransparency") }):Play()
@@ -143,9 +147,11 @@ local function processQueue()
 
 	local outTween = TweenService:Create(frame, TWEEN_OUT, { Position = hiddenPosition })
 	outTween:Play()
-	TweenService:Create(label, TWEEN_OUT, { TextTransparency = 1 }):Play()
+	TweenService:Create(frame, TWEEN_OUT, { BackgroundTransparency = 1 }):Play()
 	for _, inst in ipairs(frame:GetDescendants()) do
-		if inst:IsA("UIStroke") then
+		if inst:IsA("TextLabel") or inst:IsA("TextButton") then
+			TweenService:Create(inst, TWEEN_OUT, { TextTransparency = 1 }):Play()
+		elseif inst:IsA("UIStroke") then
 			TweenService:Create(inst, TWEEN_OUT, { Transparency = 1 }):Play()
 		elseif inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
 			TweenService:Create(inst, TWEEN_OUT, { ImageTransparency = 1 }):Play()
@@ -153,10 +159,11 @@ local function processQueue()
 	end
 	outTween.Completed:Wait()
 
-	if #notificationQueue == 0 then
-		frame.Visible = false
-		frame.Position = originalPosition
-	end
+	-- Always restore the canonical position before dequeuing the next boost.
+	-- Previously the second notification used the first one's hidden position as
+	-- its origin, so paired Money + Luck purchases walked the frame up the screen.
+	frame.Visible = false
+	frame.Position = originalPosition
 
 	isDisplaying = false
 	processQueue()
@@ -176,10 +183,13 @@ local function handleState(remote, state)
 	local serverTime = tonumber(state.ServerTime) or os.time()
 	local activatedAt = tonumber(state.ActivatedAt) or serverTime
 	if math.abs(serverTime - activatedAt) > NOTIFICATION_REPLAY_WINDOW then return end
+	for seenId, seenAt in pairs(seenNotifications) do
+		if serverTime - seenAt > NOTIFICATION_REPLAY_WINDOW * 2 then seenNotifications[seenId] = nil end
+	end
 
 	local id = tostring(notification.Id or "")
 	if id == "" or seenNotifications[id] then return end
-	seenNotifications[id] = true
+	seenNotifications[id] = serverTime
 
 	local username = tostring(notification.Username or "")
 	local boostName = tostring(notification.BoostName or "")

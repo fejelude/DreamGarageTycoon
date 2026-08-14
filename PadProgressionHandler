@@ -55,7 +55,9 @@ local playerPurchaseDebounce = {}
 
 -- Clean up memory when a player leaves
 Players.PlayerRemoving:Connect(function(player)
-	playerPurchaseDebounce[player.UserId] = nil
+	if playerPurchaseDebounce[player.UserId] == player then
+		playerPurchaseDebounce[player.UserId] = nil
+	end
 end)
 
 print("🟢 PadProgressionHandler: Loaded & Ready")
@@ -212,7 +214,7 @@ local function setupBuyButton(plot, padModel, padNumber)
 
 		if wallet then
 			-- 🔒 Lock the transaction state
-			playerPurchaseDebounce[player.UserId] = true
+			playerPurchaseDebounce[player.UserId] = player
 
 			if wallet.Value >= cost then
 				-- ✅ SUCCESS: Rich enough!
@@ -249,7 +251,7 @@ local function setupBuyButton(plot, padModel, padNumber)
 
 			-- 🔓 Release the lock after a 0.5 second cooldown
 			task.delay(0.5, function()
-				if playerPurchaseDebounce[player.UserId] then
+				if playerPurchaseDebounce[player.UserId] == player then
 					playerPurchaseDebounce[player.UserId] = nil
 				end
 			end)
@@ -258,7 +260,15 @@ local function setupBuyButton(plot, padModel, padNumber)
 
 	local function onTouch(hit)
 		local player = Players:GetPlayerFromCharacter(hit.Parent)
-		if player then attemptBuy(player) end
+		if player then
+			local ok, err = pcall(attemptBuy, player)
+			if not ok then
+				if playerPurchaseDebounce[player.UserId] == player then
+					playerPurchaseDebounce[player.UserId] = nil
+				end
+				warn("[PadProgressionHandler] Pad purchase failed safely: " .. tostring(err))
+			end
+		end
 	end
 
 	-- Fix 8: PadProgressionHandler Redundant Touched connections
@@ -291,7 +301,7 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 
 		if baseLevel >= 2 then return end
 
-		playerPurchaseDebounce[player.UserId] = true
+		playerPurchaseDebounce[player.UserId] = player
 
 		if currentLevel < 14 then
 			local s = Instance.new("Sound")
@@ -303,7 +313,7 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 			PadUnlockEvent:FireClient(player, false, "Unlock all pads first to upgrade your base!")
 
 			task.delay(1, function()
-				if playerPurchaseDebounce[player.UserId] then
+				if playerPurchaseDebounce[player.UserId] == player then
 					playerPurchaseDebounce[player.UserId] = nil
 				end
 			end)
@@ -372,8 +382,37 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 					wallet.Value = originalWallet
 					player:SetAttribute("OwnedBaseLevel", originalOwnedBaseLevel)
 					player:SetAttribute("BaseLevel", originalBaseLevel)
+					-- Restore occupancy and car placement along with the rolled-back
+					-- attributes; otherwise the failed upgrade leaves cars linked to the
+					-- inactive Level 2 pads and they can disappear from the next save.
+					local rollbackLevel1 = getLevelModel(plot, "Level1")
+					local rollbackLevel2 = getLevelModel(plot, "Level2")
+					local l1Pads = rollbackLevel1 and rollbackLevel1.Parent:FindFirstChild("Pads")
+					local l2Pads = rollbackLevel2 and rollbackLevel2.Parent:FindFirstChild("Pads")
+					if l1Pads and l2Pads then
+						for _, l2PadObj in ipairs(l2Pads:GetChildren()) do
+							local l1PadObj = l1Pads:FindFirstChild(l2PadObj.Name)
+							local l1Primary = l1PadObj and (l1PadObj:IsA("Model") and (l1PadObj.PrimaryPart or l1PadObj:FindFirstChildWhichIsA("BasePart")) or l1PadObj)
+							local l2Primary = l2PadObj:IsA("Model") and (l2PadObj.PrimaryPart or l2PadObj:FindFirstChildWhichIsA("BasePart")) or l2PadObj
+							if l1Primary and l2Primary then
+								local l1Occ, l2Occ = l1Primary:FindFirstChild("IsOccupied"), l2Primary:FindFirstChild("IsOccupied")
+								local l1Link, l2Link = l1Primary:FindFirstChild("LinkedCar"), l2Primary:FindFirstChild("LinkedCar")
+								if l1Occ and l2Occ then l1Occ.Value = l2Occ.Value; l2Occ.Value = false end
+								if l1Link and l2Link then
+									l1Link.Value = l2Link.Value
+									if l1Link.Value and l1Link.Value:IsA("Model") then
+										l1Link.Value:PivotTo(l1Primary.CFrame * CFrame.new(0, (l1Primary.Size.Y / 2) + 5, 0))
+									end
+									l2Link.Value = nil
+								end
+							end
+						end
+					end
 					forceSave(player)
 					warn("⚠️ [PadProgressionHandler] Level 2 base purchase save failed for " .. player.Name .. "; restored previous base attributes.")
+					if playerPurchaseDebounce[player.UserId] == player then
+						playerPurchaseDebounce[player.UserId] = nil
+					end
 					return
 				end
 				updatePadVisuals(plot, currentLevel, 2)
@@ -404,19 +443,29 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 			end
 
 			task.delay(1, function()
-				if playerPurchaseDebounce[player.UserId] then
+				if playerPurchaseDebounce[player.UserId] == player then
 					playerPurchaseDebounce[player.UserId] = nil
 				end
 			end)
 		else
-			playerPurchaseDebounce[player.UserId] = nil
+			if playerPurchaseDebounce[player.UserId] == player then
+				playerPurchaseDebounce[player.UserId] = nil
+			end
 		end
 	end
 
 	local function onTouch(otherPart)
 		local character = otherPart.Parent
 		local player = Players:GetPlayerFromCharacter(character)
-		if player then attemptBuy(player) end
+		if player then
+			local ok, err = pcall(attemptBuy, player)
+			if not ok then
+				if playerPurchaseDebounce[player.UserId] == player then
+					playerPurchaseDebounce[player.UserId] = nil
+				end
+				warn("[PadProgressionHandler] Base upgrade failed safely: " .. tostring(err))
+			end
+		end
 	end
 
 	-- Fix 8: PadProgressionHandler Redundant Touched connections

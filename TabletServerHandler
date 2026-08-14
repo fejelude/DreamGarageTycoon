@@ -9,6 +9,7 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Debris = game:GetService("Debris")
+local ServerStorage = game:GetService("ServerStorage")
 local GlobalMoneyFrenzyService = require(game:GetService("ServerScriptService"):WaitForChild("GlobalMoneyFrenzyService"))
 
 -- ⚙️ CONFIGURATION
@@ -31,12 +32,37 @@ end
 -- 🛡️ STATE MANAGEMENT
 local playerCooldowns          = {}
 local promptCooldowns          = {}
+local purchaseSubmitted        = {}
 local nameToUserIdCache        = {}
 local thumbnailCache           = {}
 local pendingUserIdRequests    = {}
 local pendingThumbnailRequests = {}
 local USER_ID_LOOKUP_MAX_RETRIES = 4
 local USER_ID_LOOKUP_BASE_DELAY = 0.35
+
+local function forceSave(player)
+	local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not admin or not admin:IsA("BindableFunction") then return false end
+	local ok, saved = pcall(function() return admin:Invoke("SaveNow", player) end)
+	return ok and saved == true
+end
+
+local function restoreReservedDouble(player)
+	local reserved = math.max(0, math.floor(tonumber(player:GetAttribute("TabletDoublePendingAmount")) or 0))
+	if reserved <= 0 then return true end
+
+	local plotName = player:GetAttribute("OccupiedPlot")
+	local plot = plotName and TycoonFolder:FindFirstChild(plotName)
+	local pending = plot and plot:FindFirstChild("PendingEarnings")
+	if pending and plot:FindFirstChild("Owner") and plot.Owner.Value == player.Name then
+		pending.Value += reserved
+	else
+		local carry = math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
+		player:SetAttribute("OfflineTabletCarry", carry + reserved)
+	end
+	player:SetAttribute("TabletDoublePendingAmount", 0)
+	return forceSave(player)
+end
 
 local function getUserIdCached(playerName)
 	if not playerName or playerName == "" then return nil end
@@ -259,6 +285,7 @@ TycoonFolder.ChildAdded:Connect(setupTablet)
 -- ============================================================================
 TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 	if type(action) ~= "string" or type(plotName) ~= "string" then return end
+	if player:GetAttribute("TycoonDataLoaded") ~= true then return end
 
 	local function respondClaim(success, payload)
 		TabletEvent:FireClient(player, "ClaimResult", plotName, success, payload, requestId)
@@ -297,7 +324,7 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 	end
 
 	if action == "Claim" then
-		local lastClaim = playerCooldowns[player.UserId] or 0
+		local lastClaim = playerCooldowns[player] or 0
 		if (os.clock() - lastClaim) < CLAIM_COOLDOWN then
 			respondClaim(false, "Cooldown")
 			return
@@ -306,40 +333,78 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 		local amount = pendingVal.Value
 
 		if amount > 0 then
+			local hs = player:FindFirstChild("HiddenStats")
+			local bank = hs and hs:FindFirstChild("Cash")
+			if not bank then respondClaim(false, "MissingState"); return end
 			pendingVal.Value = 0
 			local finalAmount = amount
+			bank.Value += finalAmount
 
-			local hs = player:FindFirstChild("HiddenStats")
-			if hs and hs:FindFirstChild("Cash") then
-				hs.Cash.Value += finalAmount
-			end
-
-			playerCooldowns[player.UserId] = os.clock()
+			playerCooldowns[player] = os.clock()
 			respondClaim(true, finalAmount)
 			local tutorialAPI = game:GetService("ServerStorage"):FindFirstChild("TutorialProgressAPI")
 			if tutorialAPI and tutorialAPI:IsA("BindableFunction") then
 				task.spawn(function() tutorialAPI:Invoke("RecordObjective", player, "EarningsClaimed") end)
 			end
 		else
-			playerCooldowns[player.UserId] = os.clock()
+			playerCooldowns[player] = os.clock()
 			respondClaim(false, "NoEarnings")
 		end
 
 	elseif action == "Prompt2X" then
-		local lastPrompt = promptCooldowns[player.UserId] or 0
-		if (os.clock() - lastPrompt) < PROMPT_COOLDOWN_TIME then return end
-		promptCooldowns[player.UserId] = os.clock()
+		local reservedAmount = math.max(0, math.floor(tonumber(player:GetAttribute("TabletDoublePendingAmount")) or 0))
+		if reservedAmount <= 0 then
+			purchaseSubmitted[player] = nil
+		elseif purchaseSubmitted[player] then
+			return
+		end
 
-		local amount = pendingVal.Value
+		local lastPrompt = promptCooldowns[player] or 0
+		if (os.clock() - lastPrompt) < PROMPT_COOLDOWN_TIME then return end
+		promptCooldowns[player] = os.clock()
+
+		local amount = reservedAmount > 0 and reservedAmount or pendingVal.Value
 		if amount <= 0 then return end
 
-		pcall(function()
+		-- Take the server-side prompt lock before the reservation save yields. This
+		-- prevents a second remote call from opening another product prompt while
+		-- the first reservation is still being persisted.
+		purchaseSubmitted[player] = true
+		if reservedAmount <= 0 then
+			pendingVal.Value = 0
+			player:SetAttribute("TabletDoublePendingAmount", amount)
+			if not forceSave(player) then
+				purchaseSubmitted[player] = nil
+				player:SetAttribute("TabletDoublePendingAmount", 0)
+				pendingVal.Value += amount
+				return
+			end
+		end
+
+		local prompted = pcall(function()
 			MarketplaceService:PromptProductPurchase(player, DEV_PRODUCT_ID)
 		end)
+		if not prompted then
+			purchaseSubmitted[player] = nil
+			restoreReservedDouble(player)
+		end
 	end
 end)
 
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
+	if productId ~= DEV_PRODUCT_ID then return end
+	local player = Players:GetPlayerByUserId(userId)
+	if not player then return end
+	if wasPurchased then
+		purchaseSubmitted[player] = true
+		return
+	end
+	purchaseSubmitted[player] = nil
+	restoreReservedDouble(player)
+end)
+
 Players.PlayerRemoving:Connect(function(player)
-	playerCooldowns[player.UserId] = nil
-	promptCooldowns[player.UserId] = nil
+	playerCooldowns[player] = nil
+	promptCooldowns[player] = nil
+	purchaseSubmitted[player] = nil
 end)

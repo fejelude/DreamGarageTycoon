@@ -169,24 +169,11 @@ end
 -- =========================
 -- TIMEOUT UTILITY
 -- =========================
-local function safeInvoke(bindable, timeout, ...)
-	local args     = table.pack(...)
-	local result   = nil
-	local finished = false
-
-	task.spawn(function()
-		result = table.pack(pcall(function()
-			return bindable:Invoke(table.unpack(args, 1, args.n))
-		end))
-		finished = true
-	end)
-
-	local start = os.clock()
-	while not finished and (os.clock() - start) < timeout do
-		task.wait()
-	end
-
-	if not finished  then return false, "Timeout" end
+local function safeInvoke(bindable, _timeout, ...)
+	local args = table.pack(...)
+	local result = table.pack(pcall(function()
+		return bindable:Invoke(table.unpack(args, 1, args.n))
+	end))
 	if not result[1] then return false, result[2] end
 	return true, table.unpack(result, 2, result.n)
 end
@@ -194,9 +181,7 @@ end
 local function recordRankPurchase(player, carName)
 	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
 	if rankApi then
-		task.spawn(function()
-			pcall(function() rankApi:Invoke("CarObtained", player, carName, "Buy", "Epic") end)
-		end)
+		pcall(function() rankApi:Invoke("CarObtained", player, carName, "Buy", "Epic") end)
 	end
 end
 
@@ -515,8 +500,8 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		end
 
 		wallet.Value -= carData.Price
-		recordRankPurchase(player, carName)
 		session.Purchased[carName] = bought + 1
+		recordRankPurchase(player, carName)
 		pushUpdate(player, session, "Purchase")
 
 		RayWFeedback:FireClient(player, carName)
