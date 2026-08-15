@@ -7,8 +7,8 @@
 -- Dependencies: Workspace.Tycoons,
 --               Workspace.LeaderboardFunction.LeaderboardStand.Leaderboard
 --                   .LeaderboardGui.MainFrame.LeaderboardScrollingFrame.Template
--- DataStores: DreamGarageGlobalEarningsPerSecond_V1 (OrderedDataStore),
---             DreamGarageGlobalEarningsProfiles_V1 (DataStore)
+-- DataStores: DreamGarageGlobalEarningsPerSecond_Production_V1 (OrderedDataStore),
+--             DreamGarageGlobalEarningsProfiles_Production_V1 (DataStore)
 -- Notes: The leaderboard is based on plot.CurrentCPS, which TycoonEconomy sets
 --        from the player's entire active garage after earnings multipliers and
 --        before temporary AFK payout doubling.
@@ -34,8 +34,10 @@ local PROFILE_CACHE_SECONDS = 300
 -- signed 64-bit integer ceiling while still allowing very large CPS values.
 local MAX_ORDERED_VALUE = 9000000000000000000
 
-local EARNINGS_STORE_NAME = "DreamGarageGlobalEarningsPerSecond_V2"
-local PROFILE_STORE_NAME = "DreamGarageGlobalEarningsProfiles_V2"
+-- Production-only leaderboard namespace. These stores intentionally do not
+-- reuse staging scores or cached profile metadata.
+local EARNINGS_STORE_NAME = "DreamGarageGlobalEarningsPerSecond_Production_V1"
+local PROFILE_STORE_NAME = "DreamGarageGlobalEarningsProfiles_Production_V1"
 
 local TOP_THREE_COLORS = {
 	[1] = Color3.fromRGB(0, 255, 255), -- aqua

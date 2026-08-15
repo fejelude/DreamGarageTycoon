@@ -6,8 +6,8 @@
 --          leaderboard stand.
 -- Dependencies: Workspace.LeaderboardFunction.LeaderboardStand.TopCash
 --                   .CashGui.MainFrame.LeaderboardScrollingFrame.Template
--- DataStores: DreamGarageGlobalWalletCash_V1 (OrderedDataStore),
---             DreamGarageGlobalCashProfiles_V1 (DataStore)
+-- DataStores: DreamGarageGlobalWalletCash_Production_V1 (OrderedDataStore),
+--             DreamGarageGlobalCashProfiles_Production_V1 (DataStore)
 -- Notes: The leaderboard is based on leaderstats.Wallet, so spendable cash
 --        increases and decreases are reflected while the player is online.
 -- ============================================================================
@@ -31,8 +31,10 @@ local PROFILE_CACHE_SECONDS = 300
 -- signed 64-bit integer ceiling while still allowing very large cash values.
 local MAX_ORDERED_VALUE = 9000000000000000000
 
-local CASH_STORE_NAME = "DreamGarageGlobalWalletCash_V1"
-local PROFILE_STORE_NAME = "DreamGarageGlobalCashProfiles_V1"
+-- Production-only leaderboard namespace. These stores intentionally do not
+-- reuse staging scores or cached profile metadata.
+local CASH_STORE_NAME = "DreamGarageGlobalWalletCash_Production_V1"
+local PROFILE_STORE_NAME = "DreamGarageGlobalCashProfiles_Production_V1"
 
 local TOP_THREE_COLORS = {
 	[1] = Color3.fromRGB(0, 255, 255), -- aqua

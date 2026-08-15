@@ -17,6 +17,7 @@ local GiftEntitlementService = require(script.Parent:WaitForChild("GiftEntitleme
 local GamePassOwnershipService = {}
 local ownershipCache = {}
 local OWNERSHIP_READY_ATTRIBUTE = "GamePassOwnershipReady"
+local OWNERSHIP_RETRY_DELAYS = { 0, 1, 3 }
 
 local function getCacheForPlayer(player)
 	local userId = player.UserId
@@ -35,16 +36,36 @@ function GamePassOwnershipService.RefreshPass(player, passKey)
 	local passInfo = GamePassConfig.Passes[passKey]
 	if not player or not passInfo then return false end
 
-	local ok, owns = pcall(function()
-		return MarketplaceService:UserOwnsGamePassAsync(player.UserId, passInfo.Id)
-	end)
-
-	if not ok then
-		warn("[GamePassOwnershipService] UserOwnsGamePassAsync failed for", player.UserId, passKey, owns)
-		owns = false
+	local ownsOk, owns = false, nil
+	for attempt, delaySeconds in ipairs(OWNERSHIP_RETRY_DELAYS) do
+		if delaySeconds > 0 then task.wait(delaySeconds) end
+		ownsOk, owns = pcall(function()
+			return MarketplaceService:UserOwnsGamePassAsync(player.UserId, passInfo.Id)
+		end)
+		if ownsOk then break end
+		warn(string.format(
+			"[GamePassOwnershipService] UserOwnsGamePassAsync failed for %d/%s (attempt %d/%d): %s",
+			player.UserId,
+			passKey,
+			attempt,
+			#OWNERSHIP_RETRY_DELAYS,
+			tostring(owns)
+		))
 	end
 
-	local gifted, giftErr = GiftEntitlementService.GetOwned(player.UserId, passKey)
+	local gifted, giftErr = nil, nil
+	for _, delaySeconds in ipairs(OWNERSHIP_RETRY_DELAYS) do
+		if delaySeconds > 0 then task.wait(delaySeconds) end
+		gifted, giftErr = GiftEntitlementService.GetOwned(player.UserId, passKey)
+		if gifted ~= nil then break end
+	end
+
+	-- A failed ownership service call is not proof that a paid perk is unowned.
+	-- Preserve an already-authoritative true value rather than temporarily revoking
+	-- income multipliers when Roblox services have a transient outage.
+	if not ownsOk then
+		owns = player:GetAttribute(passInfo.Attribute) == true
+	end
 	if gifted == nil then
 		warn("[GamePassOwnershipService] Gift entitlement lookup failed for", player.UserId, passKey, giftErr)
 		-- Do not erase a previously loaded true value during a transient outage.
