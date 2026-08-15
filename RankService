@@ -353,7 +353,9 @@ local function getInventoryCarCount(player)
 end
 
 local function getStorageLimit(player)
-	return tonumber(player:GetAttribute("RankStorageLimit")) or RankConfig.GetBenefitsForRank(player:GetAttribute("Rank") or RankConfig.DefaultRankName).StorageSlots
+	return tonumber(player:GetAttribute("RankStorageLimit"))
+		or (RankConfig.GetBenefitsForRank(player:GetAttribute("Rank") or RankConfig.DefaultRankName).StorageSlots
+			+ math.max(0, tonumber(player:GetAttribute("InventorySlotBonus")) or 0))
 end
 
 local function canAddCar(player, amount)
@@ -411,7 +413,7 @@ local function applyBenefits(player)
 	local benefits = RankConfig.GetBenefitsForRank(session.CurrentRank)
 
 	player:SetAttribute("Rank", session.CurrentRank)
-	player:SetAttribute("RankStorageLimit", benefits.StorageSlots)
+	player:SetAttribute("RankStorageLimit", benefits.StorageSlots + math.max(0, tonumber(player:GetAttribute("InventorySlotBonus")) or 0))
 	player:SetAttribute("RankResourceMultiplier", benefits.Multiplier)
 	player:SetAttribute("MaxBankWithdrawal", benefits.WithdrawalLimit)
 	player:SetAttribute("RankChatTag", benefits.ChatTag)

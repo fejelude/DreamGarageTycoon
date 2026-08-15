@@ -8,6 +8,7 @@ local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
 local CashPackConfig = require(ReplicatedStorage:WaitForChild("CashPackConfig"))
 local GamePassConfig = require(ReplicatedStorage:WaitForChild("GamePassConfig"))
 local LimitedCarsConfig = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
+local InventorySlotsConfig = require(ReplicatedStorage:WaitForChild("InventorySlotsConfig"))
 local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 
 local shop = playerGui:WaitForChild("ShopUI")
@@ -45,13 +46,21 @@ local function configuredPassGiftId(buttonName, passInfo)
 end
 bind("GiftExclusive", function() return configuredPassGiftId("GiftExclusive", GamePassConfig.Passes.Exclusive) end)
 bind("Gift2xMoney", function() return configuredPassGiftId("Gift2xMoney", GamePassConfig.Passes.DoubleMoney) end)
-bind("GiftFeaturedCar1", function()
-	local featured = LimitedCarsConfig.GetDefaultProduct()
+local function limitedGiftProduct(productKey)
+	local featured = LimitedCarsConfig.Products[productKey]
 	local remotes = ReplicatedStorage:FindFirstChild("LimitedCarsRemotes")
 	local reserve = remotes and remotes:FindFirstChild("Reserve")
 	if featured and reserve then
-		local ok, reserved = pcall(function() return reserve:InvokeServer() end)
+		local ok, reserved = pcall(function() return reserve:InvokeServer(featured.ProductId) end)
 		if not ok or reserved ~= true then return nil end
 	end
 	return featured and featured.ProductId
-end)
+end
+bind("GiftFeaturedCar1", function() return limitedGiftProduct("NeoPerformante") end)
+bind("GiftFeaturedCar2", function() return limitedGiftProduct("Yamura") end)
+bind("GiftFeaturedCar3", function() return limitedGiftProduct("Centurion") end)
+
+for index = 1, 6 do
+	local product = InventorySlotsConfig.Products["InventoryAdd" .. index]
+	bind("GiftInventoryAdd" .. index, function() return product and product.ProductId end)
+end
