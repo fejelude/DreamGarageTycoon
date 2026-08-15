@@ -45,7 +45,7 @@ local function configuredPassGiftId(buttonName, passInfo)
 end
 bind("GiftExclusive", function() return configuredPassGiftId("GiftExclusive", GamePassConfig.Passes.Exclusive) end)
 bind("Gift2xMoney", function() return configuredPassGiftId("Gift2xMoney", GamePassConfig.Passes.DoubleMoney) end)
-bind("GiftFeaturedCar", function()
+bind("GiftFeaturedCar1", function()
 	local featured = LimitedCarsConfig.GetDefaultProduct()
 	local remotes = ReplicatedStorage:FindFirstChild("LimitedCarsRemotes")
 	local reserve = remotes and remotes:FindFirstChild("Reserve")
