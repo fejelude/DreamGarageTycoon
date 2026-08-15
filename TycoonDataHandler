@@ -121,7 +121,10 @@ end
 -- ----------------------------------------------------------------------------
 -- ⚙️ CONFIGURATION & CONSTANTS
 -- ----------------------------------------------------------------------------
-local DATA_KEY = "Testingv676767676871111"
+-- Production player-profile store. Do not reuse any previous testing store name:
+-- keeping this namespace isolated prevents Studio/test profiles from entering the
+-- live economy, inventory, tycoon, rewards, tutorial, and leaderboard pipeline.
+local DATA_KEY = "DreamGarageTycoon_PlayerProfiles_Production_V1"
 local PlayerDataStore = DataStoreService:GetDataStore(DATA_KEY)
 
 local AUTOSAVE_INTERVAL = 180
