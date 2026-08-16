@@ -144,7 +144,8 @@ for passKey, passInfo in pairs(GamePassConfig.Passes) do
 		local owns = player:GetAttribute(passInfo.Attribute) == true
 		if owns and pendingPassKey == passKey then
 			finishPrompt()
-			shopFeedback:Success(passInfo.SuccessMessage or "Game Pass Owned")
+			shopFeedback:Success(("Successfully purchased %s!"):format(passInfo.PurchaseDisplayName or passKey))
+			Kit.Sound:Play("BuySuccess")
 		else
 			renderPass(passKey, passInfo)
 		end
@@ -159,12 +160,17 @@ MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(gamepassPlaye
 	if not passKey then return end
 
 	local alreadyOwns = player:GetAttribute(passInfo.Attribute) == true
-	finishPrompt()
-	if purchased or alreadyOwns then
-		shopFeedback:Success(passInfo.SuccessMessage or "Game Pass Owned")
-	else
+	UIAudioConfig.HidePurchaseLoading()
+	if alreadyOwns and pendingPassKey == passKey then
+		finishPrompt()
+		shopFeedback:Success(("Successfully purchased %s!"):format(passInfo.PurchaseDisplayName or passKey))
+		Kit.Sound:Play("BuySuccess")
+	elseif not purchased then
+		finishPrompt()
 		shopFeedback:Failed("Purchase Cancelled")
 	end
+	-- A closed prompt is not proof of ownership. Success is emitted above only
+	-- when GamePassOwnershipService publishes its verified ownership attribute.
 end)
 
 renderAll()

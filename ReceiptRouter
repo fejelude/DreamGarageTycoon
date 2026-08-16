@@ -179,6 +179,48 @@ local function fireGiftPurchaseResult(buyerPlayer, payload)
 	end
 end
 
+-- GiftPurchaseResult is the existing server-to-Shop transaction channel.  It is
+-- also used for self purchases now so the Shop's StateLabels only celebrate a
+-- receipt after both the grant and receipt-history commit have succeeded.
+local PRODUCT_DISPLAY_NAMES = {
+	[TABLET_2X_ID] = "2x Tablet Earnings",
+	[SHOP_REROLL_ID] = "Common Shop Reroll",
+	[BANK_TRANSFER_SKIP_ID] = "Bank Transfer Timer Reset",
+	[OFFLINE_10X_CLAIM_ID] = "10x Offline Earnings",
+	[STARTER_PACK_PRODUCT_ID] = "Starter Pack",
+	[UNCOMMON_SHOP_REROLL_ID] = "Uncommon Shop Reroll",
+	[RARE_SHOP_REROLL_ID] = "Rare Shop Reroll",
+	[EPIC_SHOP_REROLL_ID] = "Epic Shop Reroll",
+	[LEGENDARY_SKIP_CRAFT_ID] = "Legendary Craft Skip",
+	[MYTHICAL_SKIP_CRAFT_ID] = "Mythical Craft Skip",
+}
+
+local function getReceiptDisplayName(productId, fallback)
+	local registered = GiftProductRegistry.GetByProductId(productId)
+	if registered then return registered.DisplayName end
+	if productId == GlobalLuckConfig.ProductId then return "Global Luck Boost" end
+	if productId == GlobalMoneyFrenzyConfig.ProductId then return "2x Global Money Frenzy" end
+	if AdRewardsConfig.IsConfigured() and productId == AdRewardsConfig.DEV_PRODUCT_ID then
+		return AdRewardsConfig.SUCCESS_REWARD_NAME
+	end
+	if REBIRTH_SKIP_TARGET_BY_PRODUCT[productId] then
+		return ("Rebirth %d Skip"):format(REBIRTH_SKIP_TARGET_BY_PRODUCT[productId])
+	end
+	return fallback or PRODUCT_DISPLAY_NAMES[productId] or ("Product %d"):format(productId)
+end
+
+local function fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, isGift, targetPlayer, fallbackName)
+	fireGiftPurchaseResult(buyerPlayer, {
+		Success = true,
+		ProductId = receiptInfo.ProductId,
+		PurchaseId = tostring(receiptInfo.PurchaseId),
+		DisplayName = getReceiptDisplayName(receiptInfo.ProductId, fallbackName),
+		IsGift = isGift == true,
+		ReceiverName = isGift and targetPlayer.Name or nil,
+		ReceiverUserId = isGift and targetPlayer.UserId or nil,
+	})
+end
+
 local function savePlayerNow(player, timeout)
 	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 	if not TycoonAdminAPI then
@@ -517,14 +559,6 @@ local function runCarPostCommit(postCommit)
 		local buyerName = buyerPlayer.Name
 		local targetName = targetPlayer.Name
 
-		fireGiftPurchaseResult(buyerPlayer, {
-			Success = true,
-			ProductId = postCommit.ProductId,
-			CarName = carName,
-			Rarity = rarity,
-			ReceiverName = targetName,
-			ReceiverUserId = targetPlayer.UserId,
-		})
 
 		if feedbackRemote then
 			task.delay(0.5, function()
@@ -706,9 +740,9 @@ local function processReceipt(receiptInfo)
 			end
 			if isGift then
 				NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, limitedCarProductInfo.DisplayName)
-				fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
 				if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid) end
 			end
+			fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, isGift, targetPlayer, limitedCarProductInfo.DisplayName)
 			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 		end
 		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
@@ -724,9 +758,9 @@ local function processReceipt(receiptInfo)
 		if not markPurchaseProcessed(purchaseKey) then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
 		if isGift then
 			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, inventorySlotProduct.DisplayName)
-			fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
 			if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid) end
 		end
+		fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, isGift, targetPlayer, inventorySlotProduct.DisplayName)
 		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 	end
 
@@ -737,6 +771,7 @@ local function processReceipt(receiptInfo)
 			if not markPurchaseProcessed(purchaseKey) then
 				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 			end
+			fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, false, buyerPlayer)
 			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 		end
 		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
@@ -749,12 +784,14 @@ local function processReceipt(receiptInfo)
 			if not markPurchaseProcessed(purchaseKey) then
 				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 			end
+			fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, false, buyerPlayer)
 			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 		end
 		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 	end
 
 	local purchaseSuccess = false
+	local suppressConfirmedSuccess = false
 	local profileReceiptAction = getProfileReceiptAction(pid, appearanceFound, skinFound)
 	local profileGrantHash = tostring(pid)
 	if profileReceiptAction then
@@ -775,6 +812,7 @@ local function processReceipt(receiptInfo)
 				local receiptGranted = ServerStorage:FindFirstChild("AdRewardReceiptGranted")
 				if receiptGranted then receiptGranted:Fire(buyerPlayer, AdRewardsConfig.SUCCESS_REWARD_NAME, AdRewardsConfig.SUCCESS_REWARD_COLOR) end
 			end
+			fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, isGift, targetPlayer)
 			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 		end
 	end
@@ -796,12 +834,6 @@ local function processReceipt(receiptInfo)
 		purchaseSuccess = grantCashPackWalletReward(targetPlayer, receiptInfo, cashPackInfo)
 		if purchaseSuccess and isGift then
 			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, registeredGiftProduct.DisplayName or "Wallet Cash")
-			fireGiftPurchaseResult(buyerPlayer, {
-				Success = true,
-				ProductId = pid,
-				ReceiverName = targetPlayer.Name,
-				ReceiverUserId = targetPlayer.UserId,
-			})
 			if GlobalChatBroadcast then
 				GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> <b><font color='#FFD700'>%s</font></b>! 💸"):format(buyerPlayer.Name, targetPlayer.Name, registeredGiftProduct.DisplayName) })
 			end
@@ -817,7 +849,10 @@ local function processReceipt(receiptInfo)
 		if grantOk then
 			local displayName = registeredGiftProduct.DisplayName
 			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, displayName)
-			fireGiftPurchaseResult(buyerPlayer, { Success = wasNew, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId, Message = wasNew and nil or (targetPlayer.Name .. " already owns this perk.") })
+			if not wasNew then
+				suppressConfirmedSuccess = true
+				fireGiftPurchaseResult(buyerPlayer, { Success = false, ProductId = pid, Message = targetPlayer.Name .. " already owns this perk." })
+			end
 			if wasNew and GlobalChatBroadcast then
 				GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> the <b><font color='#FFD700'>%s</font></b>! ✨"):format(buyerPlayer.Name, targetPlayer.Name, displayName) })
 			end
@@ -1030,9 +1065,9 @@ local function processReceipt(receiptInfo)
 				if wasNew then
 					local giftName = registeredGiftProduct and registeredGiftProduct.DisplayName or ("Level %d %s Base Skin"):format(appearanceFound.Level, appearanceFound.DisplayName)
 					NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, giftName)
-					fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
 					if GlobalChatBroadcast then GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> the <b><font color='#FFD700'>%s</font></b>! 💎 Generous friends build dream garages together!"):format(buyerPlayer.Name, targetPlayer.Name, giftName) }) end
 				else
+					suppressConfirmedSuccess = true
 					fireGiftPurchaseResult(buyerPlayer, { Success = false, ProductId = pid, Message = targetPlayer.Name .. " already owns this Base Skin." })
 				end
 			end
@@ -1055,6 +1090,7 @@ local function processReceipt(receiptInfo)
 			warn("🛡️ Security: Blocked purchase! " .. targetPlayer.Name .. " already owns the " .. skinFound .. " pad.")
 			purchaseSuccess = true
 			if isGift then
+				suppressConfirmedSuccess = true
 				fireGiftPurchaseResult(buyerPlayer, {
 					Success = false,
 					ProductId = pid,
@@ -1075,7 +1111,6 @@ local function processReceipt(receiptInfo)
 			if isGift then
 				local giftName = registeredGiftProduct and registeredGiftProduct.DisplayName or skinFound
 				NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, giftName)
-				fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
 			end
 		end
 	end
@@ -1097,6 +1132,12 @@ local function processReceipt(receiptInfo)
 		end
 		if not markPurchaseProcessed(purchaseKey) then
 			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+		end
+		if not suppressConfirmedSuccess then
+			local fallbackName = carPostCommit and carPostCommit.CarName
+				or (appearanceFound and appearanceFound.DisplayName)
+				or skinFound
+			fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, isGift, targetPlayer, fallbackName)
 		end
 
 		runCarPostCommit(carPostCommit)

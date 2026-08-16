@@ -125,13 +125,11 @@ PurchaseResult.OnClientEvent:Connect(function(success, message)
 	local binding
 	for _, candidate in pairs(bindings) do if candidate.Busy then binding = candidate; break end end
 	if binding then finishPrompt(binding) end
-	if success then
-		shopFeedback:Success(message ~= "" and message or "Featured Car Purchased")
-		Kit.Sound:Play("BuySuccess")
-	else
+	if not success then
 		shopFeedback:Failed(message ~= "" and message or "Purchase Failed")
 		Kit.Sound:Play("BuyFail")
 	end
+	-- Successful receipts use the central authoritative, product-named feedback.
 end)
 
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)

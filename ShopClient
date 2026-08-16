@@ -15,6 +15,7 @@ local Workspace = game:GetService("Workspace")
 
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -37,6 +38,42 @@ if not redeemCodeFunction:IsA("RemoteFunction") then
 	error("[ShopClient] ReplicatedStorage > ShopCodeRedemptionFunction must be a RemoteFunction, got " .. redeemCodeFunction.ClassName, 0)
 end
 local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
+local giftRemotes = ReplicatedStorage:WaitForChild("GiftRemotes")
+local purchaseResultEvent = giftRemotes:WaitForChild("GiftPurchaseResult")
+local shownPurchaseIds = {}
+
+local function showAuthoritativePurchaseResult(result)
+	if type(result) ~= "table" then return end
+
+	local purchaseId = result.PurchaseId and tostring(result.PurchaseId) or nil
+	if purchaseId and shownPurchaseIds[purchaseId] then return end
+	if purchaseId then
+		shownPurchaseIds[purchaseId] = true
+		task.delay(120, function() shownPurchaseIds[purchaseId] = nil end)
+	end
+
+	if result.Success ~= true then
+		if result.Message then
+			shopFeedback:Failed(tostring(result.Message))
+			UIAudioConfig.PlayNamed("BuyFail")
+		end
+		return
+	end
+
+	local displayName = tostring(result.DisplayName or GiftProductRegistry.GetDisplayName(result.ProductId))
+	local message
+	if result.IsGift == true then
+		-- ReceiverName comes from the receipt's server-bound target, never from the
+		-- currently selected player in UniversalGiftUI.
+		message = ("Successfully gifted %s to %s!"):format(displayName, tostring(result.ReceiverName or "the recipient"))
+	else
+		message = ("Successfully purchased %s!"):format(displayName)
+	end
+	shopFeedback:Success(message)
+	UIAudioConfig.PlayNamed("BuySuccess")
+end
+
+purchaseResultEvent.OnClientEvent:Connect(showAuthoritativePurchaseResult)
 
 local mainButtonsGui = playerGui:WaitForChild("MainButtons")
 local buttonsContainer = mainButtonsGui:FindFirstChild("Buttons") or mainButtonsGui

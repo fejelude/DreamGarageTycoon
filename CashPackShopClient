@@ -11,7 +11,6 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 local REQUIRED_WAIT_SECONDS = 15
 local CASH_PACK_RECEIPT_SERIAL_ATTRIBUTE = "CashPackReceiptSerial"
-local CASH_PACK_LAST_AMOUNT_ATTRIBUTE = "CashPackLastWalletReward"
 
 local function requireChild(parent, childName, className, fullPath)
 	local child = parent:WaitForChild(childName, REQUIRED_WAIT_SECONDS)
@@ -149,12 +148,8 @@ MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, produc
 end)
 
 player:GetAttributeChangedSignal(CASH_PACK_RECEIPT_SERIAL_ATTRIBUTE):Connect(function()
-	local amount = math.max(0, math.floor(tonumber(player:GetAttribute(CASH_PACK_LAST_AMOUNT_ATTRIBUTE)) or 0))
 	finishPrompt()
-	if amount > 0 then
-		shopFeedback:Success("Cash Pack Purchased")
-		Kit.Sound:Play("BuySuccess")
-	end
+	-- ReceiptRouter emits the named success StateLabel after its durable grant.
 end)
 
 renderAll()

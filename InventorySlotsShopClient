@@ -9,7 +9,9 @@ local Config = require(ReplicatedStorage:WaitForChild("InventorySlotsConfig"))
 local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 local player = Players.LocalPlayer
-local buttons = player:WaitForChild("PlayerGui"):WaitForChild("ShopUI"):WaitForChild("MainFrame")
+local mainFrame = player:WaitForChild("PlayerGui"):WaitForChild("ShopUI"):WaitForChild("MainFrame")
+local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
+local buttons = mainFrame
 	:WaitForChild("ShopUIScrolling"):WaitForChild("ButtonsForBuying"):WaitForChild("Buttons")
 	:WaitForChild("BackPackSlots")
 local busy = false
@@ -27,6 +29,7 @@ for buttonName, product in pairs(Config.Products) do
 		if not ok then
 			busy = false
 			UIAudioConfig.HidePurchaseLoading()
+			shopFeedback:Failed("Purchase Failed")
 			Kit.Sound:Play("BuyFail")
 			warn("[InventorySlotsShopClient] Purchase prompt failed:", err)
 		end
