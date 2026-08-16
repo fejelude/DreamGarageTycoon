@@ -157,6 +157,16 @@ if CashPackConfig and type(CashPackConfig.Packs) == "table" then
 	end
 end
 
+local InventorySlotsConfig = requireOptionalConfig("InventorySlotsConfig")
+if InventorySlotsConfig and type(InventorySlotsConfig.Products) == "table" then
+	for _, productInfo in pairs(InventorySlotsConfig.Products) do
+		register(productInfo.ProductId, {
+			Kind = "InventorySlots", Giftable = true,
+			DisplayName = productInfo.DisplayName, Slots = productInfo.Slots,
+		})
+	end
+end
+
 local GamePassConfig = requireOptionalConfig("GamePassConfig")
 if GamePassConfig and type(GamePassConfig.Passes) == "table" then
 	for passKey, passInfo in pairs(GamePassConfig.Passes) do

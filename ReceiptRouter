@@ -31,6 +31,7 @@ local GlobalLuckConfig = require(ReplicatedStorage:WaitForChild("GlobalLuckConfi
 local GlobalMoneyFrenzyConfig = require(ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyConfig"))
 local CashPackConfig = require(ReplicatedStorage:WaitForChild("CashPackConfig"))
 local LimitedCarsConfig = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
+local InventorySlotsConfig = require(ReplicatedStorage:WaitForChild("InventorySlotsConfig"))
 local BaseAppearanceConfig = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
 local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
 
@@ -697,7 +698,7 @@ local function processReceipt(receiptInfo)
 		local ok, message, alreadyGranted = LimitedCarsService.ProcessReceipt(receiptInfo, isGift and targetPlayer or nil)
 		if not alreadyGranted then LimitedCarsService.NotifyClient(buyerPlayer, ok, message) end
 		if ok then
-			if not saveRankReceiptGrant(buyerPlayer, targetPlayer, isGift, limitedCarProductInfo.CarId, "Legendary", receiptInfo.PurchaseId) then
+			if not saveRankReceiptGrant(buyerPlayer, targetPlayer, isGift, limitedCarProductInfo.CarId, limitedCarProductInfo.Rarity or "Legendary", receiptInfo.PurchaseId) then
 				return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 			end
 			if not markPurchaseProcessed(purchaseKey) then
@@ -711,6 +712,22 @@ local function processReceipt(receiptInfo)
 			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 		end
 		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+	end
+
+	local inventorySlotProduct = InventorySlotsConfig.GetByProductId(pid)
+	if inventorySlotProduct then
+		local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
+		if not admin then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+		local invokeOk, grantOk = safeInvoke(admin, 20, "AddInventorySlots", targetPlayer,
+			inventorySlotProduct.Slots, receiptInfo.PurchaseId, pid)
+		if not invokeOk or grantOk ~= true then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+		if not markPurchaseProcessed(purchaseKey) then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+		if isGift then
+			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, inventorySlotProduct.DisplayName)
+			fireGiftPurchaseResult(buyerPlayer, { Success = true, ProductId = pid, ReceiverName = targetPlayer.Name, ReceiverUserId = targetPlayer.UserId })
+			if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid) end
+		end
+		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 	end
 
 	if pid == GlobalLuckConfig.ProductId and GlobalLuckConfig.ProductId > 0 then

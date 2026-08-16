@@ -15,6 +15,7 @@ LimitedCarsConfig.Products = {
 		CarId = "Neo-Performante",
 		DisplayName = "Neo Performante",
 		MaxGlobalStock = 67,
+		AllowGifting = true,
 		StateStoreName = "LimitedCars_NeoPerformanteState_V1",
 		StateKey = "Current",
 		TopicName = "LimitedCars_NeoPerformanteStock_V1",
@@ -30,6 +31,20 @@ LimitedCarsConfig.Products = {
 			"@%s just secured the Neo Performante. That's a crazy purchase. 👀",
 			"@%s just became the proud owner of the Neo Performante. Bro must be swimming in Robux. 💸",
 		},
+	},
+	Yamura = {
+		ProductId = 3708237092, RobuxPrice = 0, CarId = "Yamura", DisplayName = "Yamura",
+		Rarity = "Legendary", MaxGlobalStock = 33, AllowGifting = true,
+		StateStoreName = "LimitedCars_YamuraState_V1", StateKey = "Current",
+		TopicName = "LimitedCars_YamuraStock_V1",
+		AnnouncementTemplates = { "@%s just secured the Yamura. Legendary choice. 🔥" },
+	},
+	Centurion = {
+		ProductId = 3708236854, RobuxPrice = 0, CarId = "Centurion", DisplayName = "Centurion",
+		Rarity = "Mythical", MaxGlobalStock = 18, AllowGifting = true,
+		StateStoreName = "LimitedCars_CenturionState_V1", StateKey = "Current",
+		TopicName = "LimitedCars_CenturionStock_V1",
+		AnnouncementTemplates = { "@%s just secured the Centurion. Mythical choice. ⚡" },
 	},
 }
 

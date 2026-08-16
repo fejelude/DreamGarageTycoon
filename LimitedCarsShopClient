@@ -1,5 +1,5 @@
 -- LocalScript: StarterGui > ShopUI > LimitedCarsShopClient
--- Purpose: Native ShopUI client binding for the globally limited Neo Performante Developer Product.
+-- Purpose: Native ShopUI client binding for all globally limited featured-car Developer Products.
 -- Security: Reserves stock through the server before prompting. Only ProcessReceipt grants the car.
 
 local Players = game:GetService("Players")
@@ -10,7 +10,6 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 local Config = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
-local Product = Config.GetDefaultProduct()
 local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
@@ -34,13 +33,16 @@ local function findPath(root, names)
 	return obj
 end
 
-local buyButton = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Cars", "BuyButtonV1"})
-local stockLabel = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Important", "StockIndicatorV1"})
-
-local currentState = nil
-local promptBusy = false
-local pendingPrompt = false
-local promptAttemptId = 0
+local bindings = {}
+for index, productKey in ipairs({ "NeoPerformante", "Yamura", "Centurion" }) do
+	local product = Config.Products[productKey]
+	bindings[product.ProductId] = {
+		Product = product,
+		Button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Cars", "BuyButtonV" .. index}),
+		Label = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Important", "StockIndicatorV" .. index}),
+		Busy = false, Pending = false, AttemptId = 0,
+	}
+end
 
 local function setButtonInputLocked(button, locked)
 	if not button then return end
@@ -49,52 +51,52 @@ local function setButtonInputLocked(button, locked)
 	pcall(function() button.Interactable = not locked end)
 end
 
-local function render()
-	local remaining = currentState and tonumber(currentState.Remaining) or Product.MaxGlobalStock
-	if stockLabel then stockLabel.Text = Config.FormatStock(Product, remaining) end
-	setButtonInputLocked(buyButton, promptBusy or remaining <= 0)
+local function render(binding)
+	local remaining = binding.State and tonumber(binding.State.Remaining) or binding.Product.MaxGlobalStock
+	if binding.Label then binding.Label.Text = Config.FormatStock(binding.Product, remaining) end
+	setButtonInputLocked(binding.Button, binding.Busy or remaining <= 0)
 end
 
-local function finishPrompt()
-	promptAttemptId += 1
+local function finishPrompt(binding)
+	binding.AttemptId += 1
 	UIAudioConfig.HidePurchaseLoading()
-	promptBusy = false
-	pendingPrompt = false
-	render()
+	binding.Busy = false
+	binding.Pending = false
+	render(binding)
 end
 
-local function beginPurchase()
-	if promptBusy then return end
-	local remaining = currentState and tonumber(currentState.Remaining) or Product.MaxGlobalStock
+local function beginPurchase(binding)
+	if binding.Busy then return end
+	local remaining = binding.State and tonumber(binding.State.Remaining) or binding.Product.MaxGlobalStock
 	if remaining <= 0 then
 		shopFeedback:Failed("Out Of Stock")
 		Kit.Sound:Play("BuyFail")
 		return
 	end
 
-	promptBusy = true
-	promptAttemptId += 1
-	local thisAttempt = promptAttemptId
-	render()
+	binding.Busy = true
+	binding.AttemptId += 1
+	local thisAttempt = binding.AttemptId
+	render(binding)
 	UIAudioConfig.PlayRobux()
 	UIAudioConfig.ShowPurchaseLoading()
 
-	local ok, reserved, message, state = pcall(function() return Reserve:InvokeServer() end)
-	if ok and type(state) == "table" then currentState = state; render() end
+	local ok, reserved, message, state = pcall(function() return Reserve:InvokeServer(binding.Product.ProductId) end)
+	if ok and type(state) == "table" then binding.State = state; render(binding) end
 	if not ok or reserved ~= true then
-		finishPrompt()
+		finishPrompt(binding)
 		shopFeedback:Failed((type(message) == "string" and message ~= "") and message or "Out Of Stock")
 		Kit.Sound:Play("BuyFail")
 		return
 	end
 
-	pendingPrompt = true
+	binding.Pending = true
 	local promptOk, promptErr = pcall(function()
-		MarketplaceService:PromptProductPurchase(player, Product.ProductId)
+		MarketplaceService:PromptProductPurchase(player, binding.Product.ProductId)
 	end)
 	if not promptOk then
-		pcall(function() PromptClosed:FireServer() end)
-		finishPrompt()
+		pcall(function() PromptClosed:FireServer(binding.Product.ProductId) end)
+		finishPrompt(binding)
 		shopFeedback:Failed("Purchase Failed")
 		Kit.Sound:Play("BuyFail")
 		warn("[LimitedCarsShopClient] PromptProductPurchase failed:", promptErr)
@@ -102,26 +104,29 @@ local function beginPurchase()
 	end
 
 	task.delay(30, function()
-		if promptAttemptId == thisAttempt and promptBusy then
+		if binding.AttemptId == thisAttempt and binding.Busy then
 			UIAudioConfig.HidePurchaseLoading()
-			promptBusy = false
-			render()
+			binding.Busy = false
+			render(binding)
 		end
 	end)
 end
 
-if buyButton then
-	Kit.Tween:SetupButton(buyButton, beginPurchase)
+for _, binding in pairs(bindings) do
+	if binding.Button then Kit.Tween:SetupButton(binding.Button, function() beginPurchase(binding) end) end
 end
 
 StateEvent.OnClientEvent:Connect(function(state)
-	if type(state) == "table" then currentState = state; render() end
+	local binding = type(state) == "table" and bindings[tonumber(state.ProductId)]
+	if binding then binding.State = state; render(binding) end
 end)
 
 PurchaseResult.OnClientEvent:Connect(function(success, message)
-	finishPrompt()
+	local binding
+	for _, candidate in pairs(bindings) do if candidate.Busy then binding = candidate; break end end
+	if binding then finishPrompt(binding) end
 	if success then
-		shopFeedback:Success(message ~= "" and message or "Neo Performante Purchased")
+		shopFeedback:Success(message ~= "" and message or "Featured Car Purchased")
 		Kit.Sound:Play("BuySuccess")
 	else
 		shopFeedback:Failed(message ~= "" and message or "Purchase Failed")
@@ -130,24 +135,29 @@ PurchaseResult.OnClientEvent:Connect(function(success, message)
 end)
 
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
-	if userId ~= player.UserId or productId ~= Product.ProductId then return end
+	local binding = bindings[productId]
+	if userId ~= player.UserId or not binding then return end
 	UIAudioConfig.HidePurchaseLoading()
-	if not wasPurchased and pendingPrompt then
-		pcall(function() PromptClosed:FireServer() end)
-		finishPrompt()
+	if not wasPurchased and binding.Pending then
+		pcall(function() PromptClosed:FireServer(productId) end)
+		finishPrompt(binding)
 	elseif not wasPurchased then
-		finishPrompt()
+		finishPrompt(binding)
 	end
 	-- Do not show Failed for cancellation and do not show Success until PurchaseResult.
 end)
 
 task.spawn(function()
-	local ok, state = pcall(function() return GetState:InvokeServer() end)
-	if ok and type(state) == "table" then currentState = state end
-	render()
+	for productId, binding in pairs(bindings) do
+		local ok, state = pcall(function() return GetState:InvokeServer(productId) end)
+		if ok and type(state) == "table" then binding.State = state end
+		render(binding)
+	end
 	while true do
 		task.wait(30)
-		local refreshOk, fresh = pcall(function() return GetState:InvokeServer() end)
-		if refreshOk and type(fresh) == "table" then currentState = fresh; render() end
+		for productId, binding in pairs(bindings) do
+			local refreshOk, fresh = pcall(function() return GetState:InvokeServer(productId) end)
+			if refreshOk and type(fresh) == "table" then binding.State = fresh; render(binding) end
+		end
 	end
 end)

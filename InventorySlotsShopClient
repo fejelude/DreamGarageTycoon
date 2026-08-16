@@ -1,0 +1,40 @@
+-- Location: StarterGui > ShopUI > InventorySlotsShopClient (LocalScript)
+-- Prompts only; ReceiptRouter is the sole authority that grants capacity.
+
+local MarketplaceService = game:GetService("MarketplaceService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("InventorySlotsConfig"))
+local Kit = require(ReplicatedStorage:WaitForChild("ShopFrontendKit"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local player = Players.LocalPlayer
+local buttons = player:WaitForChild("PlayerGui"):WaitForChild("ShopUI"):WaitForChild("MainFrame")
+	:WaitForChild("ShopUIScrolling"):WaitForChild("ButtonsForBuying"):WaitForChild("Buttons")
+	:WaitForChild("BackPackSlots")
+local busy = false
+
+for buttonName, product in pairs(Config.Products) do
+	local button = buttons:WaitForChild(buttonName)
+	Kit.Tween:SetupButton(button, function()
+		if busy then return end
+		busy = true
+		UIAudioConfig.PlayRobux()
+		UIAudioConfig.ShowPurchaseLoading()
+		local ok, err = pcall(function()
+			MarketplaceService:PromptProductPurchase(player, product.ProductId)
+		end)
+		if not ok then
+			busy = false
+			UIAudioConfig.HidePurchaseLoading()
+			Kit.Sound:Play("BuyFail")
+			warn("[InventorySlotsShopClient] Purchase prompt failed:", err)
+		end
+	end)
+end
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId)
+	if userId ~= player.UserId or not Config.GetByProductId(productId) then return end
+	busy = false
+	UIAudioConfig.HidePurchaseLoading()
+end)

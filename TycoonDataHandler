@@ -82,6 +82,7 @@ local HttpService = game:GetService("HttpService")
 
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 local BaseAppearanceConfig = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 
 local function getIndexProgressionAPI(waitSeconds)
 	local existing = ReplicatedStorage:FindFirstChild("IndexProgressionAPI")
@@ -1830,6 +1831,30 @@ AdminAPI.OnInvoke = function(action, player, ...)
 
 		return true
 
+	elseif action == "AddInventorySlots" and player then
+		local amount, purchaseId, productId = ...
+		amount = math.floor(tonumber(amount) or 0)
+		purchaseId = tostring(purchaseId or "")
+		local session = SessionData[player]
+		if not session or not session.DataLoaded then return false, "Player data not loaded" end
+		if amount < 1 or amount > 6 or purchaseId == "" then return false, "Invalid slot grant" end
+		session.RobuxProductReceipts = type(session.RobuxProductReceipts) == "table" and session.RobuxProductReceipts or {}
+		local existing = session.RobuxProductReceipts[purchaseId]
+		if existing then
+			if not save or save(player, false, true) ~= true then return false, "Slot save retry failed" end
+			return true, "Already granted"
+		end
+		local newBonus = math.max(0, math.floor(tonumber(session.InventorySlotBonus) or tonumber(player:GetAttribute("InventorySlotBonus")) or 0)) + amount
+		session.InventorySlotBonus = newBonus
+		session.RobuxProductReceipts[purchaseId] = { ProductId = tonumber(productId), Action = "InventorySlots", GrantedAt = os.time() }
+		player:SetAttribute("InventorySlotBonus", newBonus)
+		local rankName = player:GetAttribute("Rank") or "Player"
+		local rankBenefits = RankConfig.GetBenefitsForRank(rankName)
+		player:SetAttribute("RankStorageLimit", rankBenefits.StorageSlots + newBonus)
+		markDirty(player)
+		if not save or save(player, false, true) ~= true then return false, "Slot save failed" end
+		return true, newBonus
+
 	elseif action == "RemoveTool" and player then
 		local targetToolId, requestedAmount = ...
 		if not targetToolId then return false end
@@ -2134,6 +2159,7 @@ save = function(player, isClosing, force)
 		local currentEquippedLevel1Skin = sanitizeEquippedAppearanceSkin(player:GetAttribute("EquippedLevel1Skin"), currentOwnedAppearanceSkins, 1)
 		local currentEquippedLevel2Skin = sanitizeEquippedAppearanceSkin(player:GetAttribute("EquippedLevel2Skin"), currentOwnedAppearanceSkins, 2)
 		local currentRank = player:GetAttribute("Rank") or "Player"
+		local currentInventorySlotBonus = math.max(0, math.floor(tonumber(player:GetAttribute("InventorySlotBonus")) or 0))
 		local rankPersistenceBindable = ServerStorage:FindFirstChild("RankPersistenceFunction")
 		local currentRankData = nil
 		local currentRankDataAvailable = false
@@ -2443,6 +2469,7 @@ save = function(player, isClosing, force)
 					oldData.BaseLevel = currentBaseLevel
 					oldData.OwnedBaseLevel = currentOwnedBaseLevel
 					oldData.Rank = currentRank
+					oldData.InventorySlotBonus = currentInventorySlotBonus
 					if currentRankDataAvailable then oldData.RankData = currentRankData end
 					oldData.HotbarSlots = currentHotbar
 					oldData.BankTransferLimitUsed = currentTransferUsed
@@ -2846,7 +2873,7 @@ local function InitializePlayer(player)
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", OwnedAppearanceSkins = { ["1"] = {}, ["2"] = {} }, EquippedLevel1Skin = BaseAppearanceConfig.DEFAULT_SKIN, EquippedLevel2Skin = BaseAppearanceConfig.DEFAULT_SKIN, Rank = "Player", RankData = {},
 		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {},
-		OfflinePremiumPendingAmount = 0, TabletDoublePendingAmount = 0,
+		OfflinePremiumPendingAmount = 0, TabletDoublePendingAmount = 0, InventorySlotBonus = 0,
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
 		RobuxProductReceipts = {},
 		PromoCodesRedeemed = {},
@@ -2893,6 +2920,7 @@ local function InitializePlayer(player)
 	data.BaseLevel              = normalizeBaseLevel(data.BaseLevel)
 	data.OwnedBaseLevel         = math.max(normalizeBaseLevel(data.OwnedBaseLevel), data.BaseLevel)
 	data.Rank                   = type(data.Rank) == "string" and data.Rank or "Player"
+	data.InventorySlotBonus     = math.max(0, math.floor(tonumber(data.InventorySlotBonus) or 0))
 	data.RankData               = type(data.RankData) == "table" and data.RankData or {}
 	data.BankTransferLimitUsed  = data.BankTransferLimitUsed  or 0
 	data.BankTransferLimitResetAt = data.BankTransferLimitResetAt or 0
@@ -2944,6 +2972,8 @@ local function InitializePlayer(player)
 	SessionData[player].RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
 	SessionData[player].PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
 	SessionData[player].IntentionalEmptyInventory = data.IntentionalEmptyInventory
+	SessionData[player].InventorySlotBonus = data.InventorySlotBonus
+	player:SetAttribute("InventorySlotBonus", data.InventorySlotBonus)
 	SessionData[player].Tutorial = data.Tutorial
 	applyTutorialAttributes(player, data.Tutorial)
 	for receiptId, purchased in pairs(data.StarterPackReceipts) do

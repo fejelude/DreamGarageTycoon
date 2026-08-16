@@ -1,0 +1,26 @@
+-- Location: ReplicatedStorage > InventorySlotsConfig (ModuleScript)
+-- Shared, authoritative mapping for permanent inventory-capacity products.
+
+local Config = {}
+
+Config.Products = {
+	InventoryAdd1 = { ProductId = 3708235166, Slots = 1 },
+	InventoryAdd2 = { ProductId = 3708235266, Slots = 2 },
+	InventoryAdd3 = { ProductId = 3708235343, Slots = 3 },
+	InventoryAdd4 = { ProductId = 3708235452, Slots = 4 },
+	InventoryAdd5 = { ProductId = 3708235541, Slots = 5 },
+	InventoryAdd6 = { ProductId = 3708235652, Slots = 6 },
+}
+
+local byProductId = {}
+for buttonName, product in pairs(Config.Products) do
+	product.ButtonName = buttonName
+	product.DisplayName = ("+%d Inventory Slot%s"):format(product.Slots, product.Slots == 1 and "" or "s")
+	byProductId[product.ProductId] = product
+end
+
+function Config.GetByProductId(productId)
+	return byProductId[math.floor(tonumber(productId) or 0)]
+end
+
+return Config
