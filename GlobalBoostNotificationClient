@@ -105,17 +105,25 @@ local function playBoostSound()
 	UIAudioConfig.PlayNamed("GlobalBoostPurchase")
 end
 
-local function processQueue()
-	if isDisplaying or #notificationQueue == 0 then return end
-
-	local _gui, frame, label = getUI()
-	if not (frame and label) then
-		task.delay(1, processQueue)
-		return
+local function waitForTween(tween, timeoutSeconds)
+	local finished = false
+	local connection = tween.Completed:Connect(function()
+		finished = true
+	end)
+	local startedAt = os.clock()
+	while not finished and os.clock() - startedAt < timeoutSeconds do
+		task.wait()
 	end
+	connection:Disconnect()
+	if not finished then
+		pcall(function() tween:Cancel() end)
+	end
+end
 
-	isDisplaying = true
-	local message = table.remove(notificationQueue, 1)
+local function displayNotification(message)
+	local _gui, frame, label = getUI()
+	if not (frame and label) then return false end
+
 	local originalPosition = originalPositions[frame] or frame.Position
 	originalPositions[frame] = originalPosition
 	local hiddenPosition = originalPosition - UDim2.fromOffset(0, 24)
@@ -144,6 +152,7 @@ local function processQueue()
 	end
 
 	task.wait(DISPLAY_TIME)
+	if not frame.Parent then return true end
 
 	local outTween = TweenService:Create(frame, TWEEN_OUT, { Position = hiddenPosition })
 	outTween:Play()
@@ -157,16 +166,32 @@ local function processQueue()
 			TweenService:Create(inst, TWEEN_OUT, { ImageTransparency = 1 }):Play()
 		end
 	end
-	outTween.Completed:Wait()
+	waitForTween(outTween, TWEEN_OUT.Time + 1)
 
-	-- Always restore the canonical position before dequeuing the next boost.
-	-- Previously the second notification used the first one's hidden position as
-	-- its origin, so paired Money + Luck purchases walked the frame up the screen.
-	frame.Visible = false
-	frame.Position = originalPosition
+	if frame.Parent then
+		frame.Visible = false
+		frame.Position = originalPosition
+	end
+	return true
+end
 
+local function processQueue()
+	if isDisplaying or #notificationQueue == 0 then return end
+	isDisplaying = true
+	while #notificationQueue > 0 do
+		local message = notificationQueue[1]
+		local ok, displayed = pcall(displayNotification, message)
+		if not ok then
+			warn("[GlobalBoostNotificationClient] Notification display failed: " .. tostring(displayed))
+			displayed = true -- discard malformed work rather than locking the worker
+		end
+		if displayed then
+			table.remove(notificationQueue, 1)
+		else
+			task.wait(1) -- UI replication is delayed; retain the notification and retry
+		end
+	end
 	isDisplaying = false
-	processQueue()
 end
 
 local function showNotification(message)
