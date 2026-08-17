@@ -221,14 +221,27 @@ local function rememberNotification(state)
 	end
 end
 
-local function handleLiveState(state)
-	if type(state) ~= "table" then return end
+-- Shared freshness test: is the notification embedded in this state actually
+-- something that just happened, as opposed to something that was already
+-- active before we started looking (e.g. before this client joined)?
+-- Both the live-event path and the initial join-time snapshot path need to
+-- agree on this, or a purchase that lands right around join time can be
+-- classified differently depending on which network response wins the race.
+local function isNotificationFresh(state)
+	if type(state) ~= "table" then return false end
 	local notification = state.BoostPurchaseNotification
-	if type(notification) ~= "table" then return end
-
+	if type(notification) ~= "table" then return false end
 	local serverTime = tonumber(state.ServerTime) or os.time()
 	local activatedAt = tonumber(state.ActivatedAt) or serverTime
-	if math.abs(serverTime - activatedAt) > NOTIFICATION_REPLAY_WINDOW then return end
+	return math.abs(serverTime - activatedAt) <= NOTIFICATION_REPLAY_WINDOW
+end
+
+local function handleLiveState(state)
+	if type(state) ~= "table" then return end
+	if not isNotificationFresh(state) then return end
+
+	local notification = state.BoostPurchaseNotification
+	local serverTime = tonumber(state.ServerTime) or os.time()
 	for seenId, seenAt in pairs(seenNotifications) do
 		if serverTime - seenAt > NOTIFICATION_REPLAY_WINDOW * 2 then seenNotifications[seenId] = nil end
 	end
@@ -243,6 +256,27 @@ local function handleLiveState(state)
 
 	boostName = boostName:gsub("^Global%s+", "")
 	showNotification(string.format("@%s activated %s!", username, boostName))
+end
+
+-- Handles the state snapshot fetched via GetState:InvokeServer() at join time.
+-- If the notification riding along with that snapshot is stale (the boost
+-- was already active before we joined), we just remember it as a baseline
+-- and optionally show the ambient "currently active" indicator. If it's
+-- fresh (a purchase landed right as we were joining), we hand it to
+-- handleLiveState instead so it gets the proper "@Username activated X!"
+-- treatment and is correctly marked as seen for dedup purposes.
+local function reconcileInitialState(source, state)
+	if isNotificationFresh(state) then
+		handleLiveState(state)
+		return
+	end
+
+	rememberNotification(state)
+	if state.Active == true then
+		local multiplier = tostring(state.CurrentLuck or state.Multiplier or "2x")
+		if not multiplier:find("x", 1, true) then multiplier ..= "x" end
+		showNotification(string.format("%s %s is currently active!", multiplier, source.StatusSuffix))
+	end
 end
 
 local function reconcileSource(source)
@@ -283,17 +317,17 @@ for _, source in ipairs(BOOST_SOURCES) do
 			end
 		until initialState
 
-		local initialNotificationId = getNotificationId(initialState)
-		rememberNotification(initialState)
-		if initialState.Active == true then
-			local multiplier = tostring(initialState.CurrentLuck or initialState.Multiplier or "2x")
-			if not multiplier:find("x", 1, true) then multiplier ..= "x" end
-			showNotification(string.format("%s %s is currently active!", multiplier, source.StatusSuffix))
-		end
+		reconcileInitialState(source, initialState)
 		source.Initialized = true
+
+		-- Any broadcast that arrived while we were still initializing gets
+		-- replayed through the exact same live-state path used everywhere
+		-- else. handleLiveState's own freshness + dedup checks make this
+		-- safe even if it turns out to be the same purchase we just
+		-- processed above (seenNotifications will simply short-circuit it).
 		local pendingState = source.PendingState
 		source.PendingState = nil
-		if pendingState and getNotificationId(pendingState) ~= initialNotificationId then
+		if pendingState then
 			handleLiveState(pendingState)
 		end
 
