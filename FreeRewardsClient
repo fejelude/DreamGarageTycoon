@@ -45,8 +45,12 @@ local function getRequiredChild(parent, childName, className, pathForMessage, wa
 
 	local child = parent:FindFirstChild(childName)
 
-	if not child and waitSeconds and waitSeconds > 0 then
-		child = parent:WaitForChild(childName, waitSeconds)
+	if not child then
+		if waitSeconds == nil then
+			child = parent:WaitForChild(childName)
+		elseif waitSeconds > 0 then
+			child = parent:WaitForChild(childName, waitSeconds)
+		end
 	end
 
 	local fullPath = pathForMessage or (parent:GetFullName() .. " > " .. childName)
@@ -80,9 +84,13 @@ local UIButtonUtils = safeRequireModule(ReplicatedStorage, "UIButtonUtils")
 local UIAudioConfig = safeRequireModule(ReplicatedStorage, "UIAudioConfig")
 
 local player = Players.LocalPlayer
-local playerGui = getRequiredChild(player, "PlayerGui", "PlayerGui", player.Name .. " > PlayerGui", REQUIRED_WAIT_SECONDS)
-
-local rewardsGui = getRequiredChild(playerGui, "RewardsUi", nil, "PlayerGui > RewardsUi", REQUIRED_WAIT_SECONDS)
+-- This LocalScript is replicated with RewardsUi, so its own ancestry is the
+-- authoritative UI reference and cannot race a timed PlayerGui name lookup.
+local rewardsGui = script:FindFirstAncestor("RewardsUi")
+if not rewardsGui then
+	failSetup("FreeRewardsClient must be a descendant of PlayerGui > RewardsUi.")
+end
+local playerGui = rewardsGui:FindFirstAncestorOfClass("PlayerGui") or player:WaitForChild("PlayerGui")
 local rewardsScreenGui = rewardsGui:IsA("ScreenGui") and rewardsGui or rewardsGui:FindFirstAncestorWhichIsA("ScreenGui")
 
 local mainFrame = getRequiredChild(rewardsGui, "MainFrame", "GuiObject", "PlayerGui > RewardsUi > MainFrame", REQUIRED_WAIT_SECONDS)
@@ -97,14 +105,14 @@ local stateLabels = getRequiredChild(mainFrame, "StateLabels", nil, "RewardsUi >
 local failedLabel = getRequiredChild(stateLabels, "Failed", "TextLabel", "RewardsUi > MainFrame > StateLabels > Failed", REQUIRED_WAIT_SECONDS)
 local successLabel = getRequiredChild(stateLabels, "Success", "TextLabel", "RewardsUi > MainFrame > StateLabels > Success", REQUIRED_WAIT_SECONDS)
 
-local remotes = getRequiredChild(ReplicatedStorage, "FreeRewardsRemotes", "Folder", "ReplicatedStorage > FreeRewardsRemotes", REQUIRED_WAIT_SECONDS)
-local getStateFunction = getRequiredChild(remotes, "GetFreeRewardsState", "RemoteFunction", "ReplicatedStorage > FreeRewardsRemotes > GetFreeRewardsState", REQUIRED_WAIT_SECONDS)
-local acknowledgeLikeEvent = getRequiredChild(remotes, "AcknowledgeFreeRewardLike", "RemoteEvent", "ReplicatedStorage > FreeRewardsRemotes > AcknowledgeFreeRewardLike", REQUIRED_WAIT_SECONDS)
-local claimFunction = getRequiredChild(remotes, "ClaimFreeReward", "RemoteFunction", "ReplicatedStorage > FreeRewardsRemotes > ClaimFreeReward", REQUIRED_WAIT_SECONDS)
-local stateChangedEvent = getRequiredChild(remotes, "FreeRewardsStateChanged", "RemoteEvent", "ReplicatedStorage > FreeRewardsRemotes > FreeRewardsStateChanged", REQUIRED_WAIT_SECONDS)
+local remotes = getRequiredChild(ReplicatedStorage, "FreeRewardsRemotes", "Folder", "ReplicatedStorage > FreeRewardsRemotes")
+local getStateFunction = getRequiredChild(remotes, "GetFreeRewardsState", "RemoteFunction", "ReplicatedStorage > FreeRewardsRemotes > GetFreeRewardsState")
+local acknowledgeLikeEvent = getRequiredChild(remotes, "AcknowledgeFreeRewardLike", "RemoteEvent", "ReplicatedStorage > FreeRewardsRemotes > AcknowledgeFreeRewardLike")
+local claimFunction = getRequiredChild(remotes, "ClaimFreeReward", "RemoteFunction", "ReplicatedStorage > FreeRewardsRemotes > ClaimFreeReward")
+local stateChangedEvent = getRequiredChild(remotes, "FreeRewardsStateChanged", "RemoteEvent", "ReplicatedStorage > FreeRewardsRemotes > FreeRewardsStateChanged")
 
-local rewardsCorner = getRequiredChild(Workspace, "RewardsCorner", nil, "Workspace > RewardsCorner", REQUIRED_WAIT_SECONDS)
-local triggerPart = getRequiredChild(rewardsCorner, "TriggerPart", "BasePart", "Workspace > RewardsCorner > TriggerPart", REQUIRED_WAIT_SECONDS)
+local rewardsCorner = getRequiredChild(Workspace, "RewardsCorner", nil, "Workspace > RewardsCorner")
+local triggerPart = getRequiredChild(rewardsCorner, "TriggerPart", "BasePart", "Workspace > RewardsCorner > TriggerPart")
 
 if rewardsScreenGui then
 	rewardsScreenGui.ResetOnSpawn = false
@@ -587,6 +595,12 @@ local function pointIsInsidePart(part, point)
 end
 
 local function characterIsInTrigger()
+	-- Streaming can remove and later restore the corner. Re-resolve it instead of
+	-- permanently retaining a destroyed part from the first initialization.
+	if not triggerPart or not triggerPart.Parent then
+		rewardsCorner = Workspace:FindFirstChild("RewardsCorner")
+		triggerPart = rewardsCorner and rewardsCorner:FindFirstChild("TriggerPart") or nil
+	end
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 

@@ -10,6 +10,7 @@ local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 local player = Players.LocalPlayer
 
 local DISPLAY_TIME = 6
+local BETWEEN_NOTIFICATIONS_DELAY = 0.2
 local STATE_RECONCILE_INTERVAL = 15
 local NOTIFICATION_REPLAY_WINDOW = 180
 local TWEEN_IN = TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
@@ -19,10 +20,12 @@ local BOOST_SOURCES = {
 	{
 		State = ReplicatedStorage:WaitForChild("GlobalLuckRemotes"):WaitForChild("State"),
 		GetState = ReplicatedStorage:WaitForChild("GlobalLuckRemotes"):WaitForChild("GetState"),
+		StatusSuffix = "Luck",
 	},
 	{
 		State = ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyRemotes"):WaitForChild("State"),
 		GetState = ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyRemotes"):WaitForChild("GetState"),
+		StatusSuffix = "Money",
 	},
 }
 
@@ -105,17 +108,25 @@ local function playBoostSound()
 	UIAudioConfig.PlayNamed("GlobalBoostPurchase")
 end
 
-local function processQueue()
-	if isDisplaying or #notificationQueue == 0 then return end
-
-	local _gui, frame, label = getUI()
-	if not (frame and label) then
-		task.delay(1, processQueue)
-		return
+local function waitForTween(tween, timeoutSeconds)
+	local finished = false
+	local connection = tween.Completed:Connect(function()
+		finished = true
+	end)
+	local startedAt = os.clock()
+	while not finished and os.clock() - startedAt < timeoutSeconds do
+		task.wait()
 	end
+	connection:Disconnect()
+	if not finished then
+		pcall(function() tween:Cancel() end)
+	end
+end
 
-	isDisplaying = true
-	local message = table.remove(notificationQueue, 1)
+local function displayNotification(message)
+	local _gui, frame, label = getUI()
+	if not (frame and label) then return false end
+
 	local originalPosition = originalPositions[frame] or frame.Position
 	originalPositions[frame] = originalPosition
 	local hiddenPosition = originalPosition - UDim2.fromOffset(0, 24)
@@ -144,6 +155,7 @@ local function processQueue()
 	end
 
 	task.wait(DISPLAY_TIME)
+	if not frame.Parent then return true end
 
 	local outTween = TweenService:Create(frame, TWEEN_OUT, { Position = hiddenPosition })
 	outTween:Play()
@@ -157,16 +169,37 @@ local function processQueue()
 			TweenService:Create(inst, TWEEN_OUT, { ImageTransparency = 1 }):Play()
 		end
 	end
-	outTween.Completed:Wait()
+	waitForTween(outTween, TWEEN_OUT.Time + 1)
 
-	-- Always restore the canonical position before dequeuing the next boost.
-	-- Previously the second notification used the first one's hidden position as
-	-- its origin, so paired Money + Luck purchases walked the frame up the screen.
-	frame.Visible = false
-	frame.Position = originalPosition
+	if frame.Parent then
+		frame.Visible = false
+		frame.Position = originalPosition
+	end
+	return true
+end
 
+local function processQueue()
+	if isDisplaying or #notificationQueue == 0 then return end
+	isDisplaying = true
+	while #notificationQueue > 0 do
+		local message = notificationQueue[1]
+		local ok, displayed = pcall(displayNotification, message)
+		if not ok then
+			warn("[GlobalBoostNotificationClient] Notification display failed: " .. tostring(displayed))
+			displayed = false
+		end
+		if displayed then
+			table.remove(notificationQueue, 1)
+			if #notificationQueue > 0 then
+				-- Let the completed notification's visibility/transparency changes
+				-- replicate for a frame before the next queued activation reuses it.
+				task.wait(BETWEEN_NOTIFICATIONS_DELAY)
+			end
+		else
+			task.wait(1) -- retain valid work and retry after transient UI failures
+		end
+	end
 	isDisplaying = false
-	processQueue()
 end
 
 local function showNotification(message)
@@ -175,7 +208,20 @@ local function showNotification(message)
 	task.spawn(processQueue)
 end
 
-local function handleState(remote, state)
+local function getNotificationId(state)
+	local notification = type(state) == "table" and state.BoostPurchaseNotification
+	if type(notification) ~= "table" then return "" end
+	return tostring(notification.Id or "")
+end
+
+local function rememberNotification(state)
+	local id = getNotificationId(state)
+	if id ~= "" then
+		seenNotifications[id] = tonumber(state.ServerTime) or os.time()
+	end
+end
+
+local function handleLiveState(state)
 	if type(state) ~= "table" then return end
 	local notification = state.BoostPurchaseNotification
 	if type(notification) ~= "table" then return end
@@ -195,7 +241,8 @@ local function handleState(remote, state)
 	local boostName = tostring(notification.BoostName or "")
 	if username == "" or boostName == "" then return end
 
-	showNotification(string.format("@%s has bought %s", username, boostName))
+	boostName = boostName:gsub("^Global%s+", "")
+	showNotification(string.format("@%s activated %s!", username, boostName))
 end
 
 local function reconcileSource(source)
@@ -203,17 +250,53 @@ local function reconcileSource(source)
 		return source.GetState:InvokeServer()
 	end)
 	if ok then
-		handleState(source.State, state)
+		handleLiveState(state)
 	end
 end
 
 for _, source in ipairs(BOOST_SOURCES) do
+	source.Initialized = false
 	source.State.OnClientEvent:Connect(function(state)
-		handleState(source.State, state)
+		-- PlayerAdded can send the already-active state before the initial
+		-- authoritative InvokeServer completes. That is join state, not a live sale.
+		if source.Initialized then
+			handleLiveState(state)
+		else
+			source.PendingState = state
+		end
 	end)
+end
 
+for _, source in ipairs(BOOST_SOURCES) do
 	task.spawn(function()
-		reconcileSource(source)
+		-- A failed initial request stays in join-state mode and retries. This avoids
+		-- later reconciling an old activation as if it were a new live purchase.
+		local initialState
+		repeat
+			local ok, state = pcall(function()
+				return source.GetState:InvokeServer()
+			end)
+			if ok and type(state) == "table" then
+				initialState = state
+			else
+				task.wait(2)
+			end
+		until initialState
+
+		local initialNotificationId = getNotificationId(initialState)
+		rememberNotification(initialState)
+		if initialState.Active == true then
+			local multiplier = tostring(initialState.CurrentLuck or initialState.Multiplier or "2x")
+			if not multiplier:find("x", 1, true) then multiplier ..= "x" end
+			showNotification(string.format("%s %s is currently active!", multiplier, source.StatusSuffix))
+		end
+		source.Initialized = true
+		local pendingState = source.PendingState
+		source.PendingState = nil
+		if pendingState and getNotificationId(pendingState) ~= initialNotificationId then
+			handleLiveState(pendingState)
+		end
+
 		while true do
 			task.wait(STATE_RECONCILE_INTERVAL)
 			reconcileSource(source)
