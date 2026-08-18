@@ -323,6 +323,7 @@ local DEFAULT_PLAYER_SETTINGS = {
 	PotatoModeEnabled = false,
 	ReceiveGiftsEnabled = true,
 	AFKModeEnabled = false,
+	EventMessagesEnabled = true,
 }
 
 local PLAYER_SETTING_ATTRIBUTES = {
@@ -334,6 +335,7 @@ local PLAYER_SETTING_ATTRIBUTES = {
 	PotatoModeEnabled = "Setting_PotatoModeEnabled",
 	ReceiveGiftsEnabled = "Setting_ReceiveGiftsEnabled",
 	AFKModeEnabled = "Setting_AFKModeEnabled",
+	EventMessagesEnabled = "Setting_EventMessagesEnabled",
 }
 
 local RECEIVE_GIFTS_DISABLED_SELF_TEXT = "You need to enable Receive Gifts in Settings before you can send a player a car gift."
@@ -1708,6 +1710,25 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		if nextStage == "Completed" then session.Tutorial.Completed = true; session.Tutorial.Active = false; session.Tutorial.Answered = true end
 		if nextStage == "Skipped" then session.Tutorial.Skipped = true; session.Tutorial.Active = false; session.Tutorial.Answered = true end
 		applyTutorialAttributes(player, session.Tutorial)
+		markDirty(player)
+		queueCriticalSave(player, 1)
+		return true
+
+	elseif action == "RestartTutorial" and player then
+		local session = SessionData[player]
+		if not session or not session.DataLoaded then
+			return false, "Tutorial data is not loaded"
+		end
+		local previous = sanitizeTutorialData(session.Tutorial)
+		local restarted = sanitizeTutorialData(nil)
+		-- A manual restart is already an explicit opt-in, so begin at Part1 rather
+		-- than presenting the NewComer opt-in a second time.
+		restarted.Answered = true
+		restarted.Active = true
+		restarted.Stage = "Part1"
+		restarted.Revision = previous.Revision + 1
+		session.Tutorial = restarted
+		applyTutorialAttributes(player, restarted)
 		markDirty(player)
 		queueCriticalSave(player, 1)
 		return true

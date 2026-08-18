@@ -37,6 +37,7 @@ local CarStats                 = require(ReplicatedStorage:WaitForChild("CarStat
 local RestockNotificationEvent = ReplicatedStorage:WaitForChild("RestockNotificationEvent")
 
 local player = Players.LocalPlayer
+local EVENT_MESSAGES_ATTRIBUTE = "Setting_EventMessagesEnabled"
 
 -- ============================================================
 -- HELPERS
@@ -131,6 +132,7 @@ end
 
 local function showNotification(message: string)
 	if not message or message == "" then return end
+	if player:GetAttribute(EVENT_MESSAGES_ATTRIBUTE) == false then return end
 	table.insert(notificationQueue, message)
 	task.spawn(processQueue)
 end
@@ -207,6 +209,13 @@ end
 -- ============================================================
 
 local pendingQueue = {}
+
+player:GetAttributeChangedSignal(EVENT_MESSAGES_ATTRIBUTE):Connect(function()
+	if player:GetAttribute(EVENT_MESSAGES_ATTRIBUTE) == false then
+		table.clear(notificationQueue)
+		table.clear(pendingQueue)
+	end
+end)
 
 local function isLoadingActive(): boolean
 	local playerGui = player:FindFirstChild("PlayerGui")

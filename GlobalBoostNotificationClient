@@ -8,6 +8,7 @@ local TweenService = game:GetService("TweenService")
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local player = Players.LocalPlayer
+local EVENT_MESSAGES_ATTRIBUTE = "Setting_EventMessagesEnabled"
 
 local DISPLAY_TIME = 6
 local BETWEEN_NOTIFICATIONS_DELAY = 0.2
@@ -204,9 +205,16 @@ end
 
 local function showNotification(message)
 	if not message or message == "" then return end
+	if player:GetAttribute(EVENT_MESSAGES_ATTRIBUTE) == false then return end
 	table.insert(notificationQueue, message)
 	task.spawn(processQueue)
 end
+
+player:GetAttributeChangedSignal(EVENT_MESSAGES_ATTRIBUTE):Connect(function()
+	if player:GetAttribute(EVENT_MESSAGES_ATTRIBUTE) == false then
+		table.clear(notificationQueue)
+	end
+end)
 
 local function getNotificationId(state)
 	local notification = type(state) == "table" and state.BoostPurchaseNotification

@@ -1,4 +1,4 @@
--- Purpose:    Settings UI — Music, SFX, LOD, Animation, Real-Time Shadows, Potato Mode, Receive Gifts, AFK Mode
+-- Purpose:    Settings UI — audio, performance, gifts, AFK, event messages, and tutorial restart
 -- Runs on:    Client (LocalScript)
 -- Location:   StarterGui/SettingsGui
 -- Dependencies: ReplicatedStorage.UIButtonUtils, ReplicatedStorage.SettingsPersistenceEvent, ReplicatedStorage.AFKModeEvent
@@ -17,8 +17,11 @@ local UserInputService  = game:GetService("UserInputService")
 -- DEPENDENCIES
 -- ─────────────────────────────────────────────────────────────
 local UIButtonUtils            = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig            = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local TutorialConfig           = require(ReplicatedStorage:WaitForChild("TutorialConfig"))
 local SettingsPersistenceEvent = ReplicatedStorage:WaitForChild("SettingsPersistenceEvent")
 local AFKModeEvent             = ReplicatedStorage:WaitForChild("AFKModeEvent", 10)
+local TutorialAction           = ReplicatedStorage:WaitForChild("TutorialRemotes"):WaitForChild("TutorialAction")
 
 -- ─────────────────────────────────────────────────────────────
 -- PLAYER / GUI REFERENCES
@@ -81,6 +84,13 @@ local afkModeFolder = othersFolder:WaitForChild("AFKMode")
 local btnAFKModeOn  = afkModeFolder:WaitForChild("AFKModeOn")
 local btnAFKModeOff = afkModeFolder:WaitForChild("AFKModeOff")
 
+local eventMessagesFolder = othersFolder:WaitForChild("EventMessages")
+local btnEventMessagesOn  = eventMessagesFolder:WaitForChild("EventMessagesOn")
+local btnEventMessagesOff = eventMessagesFolder:WaitForChild("EventMessagesOff")
+
+local restartTutorialFolder = othersFolder:WaitForChild("RestartTheTutorial")
+local btnRestartTutorial    = restartTutorialFolder:WaitForChild("RestartTutorial")
+
 -- ─────────────────────────────────────────────────────────────
 -- AUDIO / POTATO MODE REFERENCES
 -- ─────────────────────────────────────────────────────────────
@@ -101,6 +111,7 @@ local SETTINGS_ATTRIBUTES = {
 	PotatoModeEnabled      = "Setting_PotatoModeEnabled",
 	ReceiveGiftsEnabled   = "Setting_ReceiveGiftsEnabled",
 	AFKModeEnabled        = "Setting_AFKModeEnabled",
+	EventMessagesEnabled = "Setting_EventMessagesEnabled",
 }
 
 -- Important:
@@ -118,6 +129,7 @@ local DEFAULT_SETTINGS = {
 	PotatoModeEnabled      = false, -- Potato Mode OFF
 	ReceiveGiftsEnabled   = true,  -- Receive Gifts ON
 	AFKModeEnabled        = false, -- AFK Mode OFF
+	EventMessagesEnabled = true,  -- Event Messages ON
 }
 
 local ORIGINAL_SHADOW_ATTR = "OriginalCastShadow"
@@ -218,6 +230,12 @@ local function syncButtonStates()
 		afkModeEnabled = DEFAULT_SETTINGS.AFKModeEnabled
 	end
 	setCurrentStateButtonVisibility(btnAFKModeOn, btnAFKModeOff, afkModeEnabled == true)
+
+	local eventMessagesEnabled = player:GetAttribute(SETTINGS_ATTRIBUTES.EventMessagesEnabled)
+	if eventMessagesEnabled == nil then
+		eventMessagesEnabled = DEFAULT_SETTINGS.EventMessagesEnabled
+	end
+	setCurrentStateButtonVisibility(btnEventMessagesOn, btnEventMessagesOff, eventMessagesEnabled == true)
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -464,6 +482,18 @@ local function setReceiveGiftsEnabled(isEnabled, shouldPersist)
 end
 
 -- ─────────────────────────────────────────────────────────────
+-- EVENT MESSAGES TOGGLE
+-- ─────────────────────────────────────────────────────────────
+local function setEventMessagesEnabled(isEnabled, shouldPersist)
+	isEnabled = isEnabled == true
+	setCurrentStateButtonVisibility(btnEventMessagesOn, btnEventMessagesOff, isEnabled)
+	player:SetAttribute(SETTINGS_ATTRIBUTES.EventMessagesEnabled, isEnabled)
+	if shouldPersist ~= false then
+		persistSetting("EventMessagesEnabled", isEnabled)
+	end
+end
+
+-- ─────────────────────────────────────────────────────────────
 -- AFK MODE TOGGLE / IDLE RECONNECT HANDLING
 -- ─────────────────────────────────────────────────────────────
 local afkReconnectRequested = false
@@ -578,6 +608,119 @@ TeleportService.TeleportInitFailed:Connect(function(failedPlayer)
 end)
 
 -- ─────────────────────────────────────────────────────────────
+-- RESTART TUTORIAL CONFIRMATION
+-- Reuses the shared Confirmation ScreenGui used by destructive shop actions.
+-- The server remains authoritative and performs the tutorial-only reset.
+-- ─────────────────────────────────────────────────────────────
+local restartPromptOpen = false
+local restartRequestBusy = false
+local confirmationConnections = {}
+
+local function clearConfirmationConnections()
+	for _, connection in ipairs(confirmationConnections) do connection:Disconnect() end
+	table.clear(confirmationConnections)
+end
+
+local function findConfirmationButton(root, names)
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if descendant:IsA("GuiButton") then
+			local lowerName = string.lower(descendant.Name)
+			for _, name in ipairs(names) do
+				if lowerName == string.lower(name) then return descendant end
+			end
+		end
+	end
+end
+
+local function setConfirmationButtonEnabled(button, enabled)
+	if not button then return end
+	button.Active = enabled
+	button.Selectable = enabled
+	pcall(function() button.Interactable = enabled end)
+end
+
+local function finishRestartPrompt(confirmationGui, confirmationFrame, reopenSettings)
+	if not restartPromptOpen then return end
+	restartPromptOpen = false
+	clearConfirmationConnections()
+	if confirmationFrame and confirmationFrame:IsA("GuiObject") then confirmationFrame.Visible = false end
+	if confirmationGui then confirmationGui.Enabled = false end
+	if reopenSettings and screenGui.Enabled then
+		window.Visible = true
+		openButton.Visible = false
+		syncButtonStates()
+	else
+		window.Visible = false
+		openButton.Visible = true
+		setOtherGuisEnabled(true)
+	end
+end
+
+local function requestTutorialRestart(confirmationGui, confirmationFrame)
+	if restartRequestBusy then return end
+	restartRequestBusy = true
+	setConfirmationButtonEnabled(findConfirmationButton(confirmationFrame, { "Yes", "Confirm", "Accept", "Okay", "Ok" }), false)
+	local ok, accepted = pcall(function()
+		return TutorialAction:InvokeServer(TutorialConfig.ClientActions.Restart)
+	end)
+	restartRequestBusy = false
+	finishRestartPrompt(confirmationGui, confirmationFrame, not (ok and accepted == true))
+	if not ok or accepted ~= true then
+		warn("[Settings] Tutorial restart request was rejected or unavailable.")
+	end
+end
+
+local function showRestartTutorialConfirmation()
+	if restartPromptOpen or restartRequestBusy then return end
+	local confirmationGui = playerGui:FindFirstChild("Confirmation")
+	local confirmationFrame = confirmationGui and confirmationGui:FindFirstChild("MainFrame")
+	if not confirmationGui or not confirmationFrame then
+		warn("[Settings] PlayerGui > Confirmation > MainFrame is required to restart the tutorial safely.")
+		return
+	end
+	local yesButton = findConfirmationButton(confirmationFrame, { "Yes", "Confirm", "Accept", "Okay", "Ok" })
+	local noButton = findConfirmationButton(confirmationFrame, { "No", "Cancel", "Decline", "Back", "Close" })
+	if not yesButton or not noButton then
+		warn("[Settings] Confirmation Yes/No buttons are missing; tutorial restart was blocked.")
+		return
+	end
+
+	restartPromptOpen = true
+	window.Visible = false
+	local information = confirmationFrame:FindFirstChild("Information", true)
+	if information and (information:IsA("TextLabel") or information:IsA("TextButton")) then
+		information.RichText = true
+		information.TextWrapped = true
+		information.Text = "Are you sure you want to restart the tutorial?"
+	end
+	setConfirmationButtonEnabled(yesButton, true)
+	setConfirmationButtonEnabled(noButton, true)
+	confirmationGui.Enabled = true
+	confirmationGui.DisplayOrder = math.max(confirmationGui.DisplayOrder, 100)
+	confirmationFrame.Visible = true
+	confirmationFrame.Active = true
+
+	local choiceMade = false
+	local function choose(confirmed)
+		if choiceMade or not restartPromptOpen then return end
+		choiceMade = true
+		UIAudioConfig.PlayClick()
+		setConfirmationButtonEnabled(yesButton, false)
+		setConfirmationButtonEnabled(noButton, false)
+		if confirmed then
+			requestTutorialRestart(confirmationGui, confirmationFrame)
+		else
+			finishRestartPrompt(confirmationGui, confirmationFrame, true)
+		end
+	end
+	table.insert(confirmationConnections, yesButton.Activated:Connect(function() choose(true) end))
+	table.insert(confirmationConnections, noButton.Activated:Connect(function() choose(false) end))
+	table.insert(confirmationConnections, screenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if not screenGui.Enabled then finishRestartPrompt(confirmationGui, confirmationFrame, false) end
+	end))
+end
+
+-- ─────────────────────────────────────────────────────────────
 -- WIRE UP ALL BUTTONS
 -- ─────────────────────────────────────────────────────────────
 UIButtonUtils.SetupButton(openButton, function()
@@ -672,6 +815,16 @@ UIButtonUtils.SetupButton(btnAFKModeOff, function()
 	setAFKModeEnabled(true)
 end)
 
+UIButtonUtils.SetupButton(btnEventMessagesOn, function()
+	setEventMessagesEnabled(false)
+end)
+
+UIButtonUtils.SetupButton(btnEventMessagesOff, function()
+	setEventMessagesEnabled(true)
+end)
+
+UIButtonUtils.SetupButton(btnRestartTutorial, showRestartTutorialConfirmation)
+
 -- ─────────────────────────────────────────────────────────────
 -- SAVED SETTINGS LOADER
 -- ─────────────────────────────────────────────────────────────
@@ -696,6 +849,8 @@ local function applySettingValue(settingName, value, shouldPersist)
 		setReceiveGiftsEnabled(v, shouldPersist)
 	elseif settingName == "AFKModeEnabled" then
 		setAFKModeEnabled(v, shouldPersist)
+	elseif settingName == "EventMessagesEnabled" then
+		setEventMessagesEnabled(v, shouldPersist)
 	end
 end
 
@@ -735,6 +890,7 @@ end
 --   Potato Mode OFF
 --   Receive Gifts ON
 --   AFK Mode OFF
+--   Event Messages ON
 -- ─────────────────────────────────────────────────────────────
 window.Visible     = false
 openButton.Visible = true
