@@ -11,6 +11,7 @@ local UserInputService = game:GetService("UserInputService")
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local IndexConfig = require(ReplicatedStorage:WaitForChild("IndexConfig"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -21,6 +22,11 @@ local exitButton = mainFrame:WaitForChild("ExitButton")
 local container = mainFrame:WaitForChild("IndexContainer")
 local template = container:WaitForChild("CarTemplate")
 local indexCountLabel = mainFrame:WaitForChild("TextLabels"):WaitForChild("Important"):WaitForChild("IndexCount")
+local mutations = mainFrame:WaitForChild("Mutations")
+local baseCarsButton = mutations:WaitForChild("BaseCars")
+local exclusiveCarsButton = mutations:WaitForChild("RobuxExclusiveCars")
+local baseCarsStroke = baseCarsButton:WaitForChild("UIStroke")
+local exclusiveCarsStroke = exclusiveCarsButton:WaitForChild("UIStroke")
 
 local mainButtonsGui = playerGui:WaitForChild("MainButtons")
 local buttonsContainer = mainButtonsGui:FindFirstChild("Buttons") or mainButtonsGui
@@ -176,6 +182,8 @@ local function getCamera(waitSeconds)
 end
 
 local sortedCars = {}
+local sortedExclusiveCars = IndexConfig.GetExclusiveEntries()
+local activeCategory = "Base"
 
 for key, car in pairs(CarStats.Cars or {}) do
 	table.insert(sortedCars, {
@@ -206,10 +214,19 @@ table.sort(sortedCars, function(a, b)
 	return a.Key < b.Key
 end)
 
+table.sort(sortedExclusiveCars, function(a, b)
+	local ar = RARITY_ORDER[a.Data.Rarity] or 99
+	local br = RARITY_ORDER[b.Data.Rarity] or 99
+	if ar ~= br then return ar < br end
+	local ap, bp = tonumber(a.Data.Price) or 0, tonumber(b.Data.Price) or 0
+	if ap ~= bp then return ap < bp end
+	return a.Key < b.Key
+end)
+
 local cardMap = {}
 
-local function decodeDiscovered()
-	local raw = player:GetAttribute("IndexDiscoveredJson") or "[]"
+local function decodeDiscovered(attributeName)
+	local raw = player:GetAttribute(attributeName) or "[]"
 	local ok, result = pcall(function()
 		return HttpService:JSONDecode(raw)
 	end)
@@ -299,10 +316,12 @@ local function applyGradientAnimation(gradient, rarity)
 end
 
 local function renderIndex()
-	local discovered = decodeDiscovered()
+	local isExclusive = activeCategory == "Exclusive"
+	local cars = isExclusive and sortedExclusiveCars or sortedCars
+	local discovered = decodeDiscovered(isExclusive and "IndexExclusiveDiscoveredJson" or "IndexDiscoveredJson")
 	local count = 0
 
-	for _, car in ipairs(sortedCars) do
+	for _, car in ipairs(cars) do
 		local card = cardMap[car.Key]
 
 		if card then
@@ -315,7 +334,7 @@ local function renderIndex()
 			local nameLabel = card:WaitForChild("TextLabels"):WaitForChild("CarName")
 			local imageLabel = card:WaitForChild("CarImage")
 
-			nameLabel.Text = discoveredState and car.Key or "???"
+			nameLabel.Text = discoveredState and (isExclusive and (car.Data.Name or car.Key) or car.Key) or "???"
 			imageLabel.Image = car.Data.Image or ""
 			imageLabel.ImageColor3 = discoveredState and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(0, 0, 0)
 		end
@@ -323,8 +342,8 @@ local function renderIndex()
 
 	indexCountLabel.Text = string.format(
 		"(%d/%d)",
-		math.clamp(count, 0, EXPECTED_INDEX_TOTAL),
-		EXPECTED_INDEX_TOTAL
+		math.clamp(count, 0, #cars),
+		#cars
 	)
 end
 
@@ -336,9 +355,10 @@ local function setupCards()
 			child:Destroy()
 		end
 	end
+	table.clear(cardMap)
 
-	for i = 1, math.min(EXPECTED_INDEX_TOTAL, #sortedCars) do
-		local car = sortedCars[i]
+	local cars = activeCategory == "Exclusive" and sortedExclusiveCars or sortedCars
+	for i, car in ipairs(cars) do
 		local card = template:Clone()
 
 		card.Name = "IndexCard_" .. tostring(i)
@@ -356,9 +376,28 @@ local function setupCards()
 	end
 end
 
+local function selectCategory(category)
+	if category ~= "Base" and category ~= "Exclusive" then return end
+	activeCategory = category
+	baseCarsStroke.Enabled = category == "Base"
+	exclusiveCarsStroke.Enabled = category == "Exclusive"
+	container.CanvasPosition = Vector2.zero
+	setupCards()
+	renderIndex()
+end
+
 setMainFrameVisible(false)
-setupCards()
-renderIndex()
+selectCategory("Base")
+
+UIButtonUtils.SetupButton(baseCarsButton, function()
+	UIAudioConfig.PlayClick()
+	if activeCategory ~= "Base" then selectCategory("Base") end
+end)
+
+UIButtonUtils.SetupButton(exclusiveCarsButton, function()
+	UIAudioConfig.PlayClick()
+	if activeCategory ~= "Exclusive" then selectCategory("Exclusive") end
+end)
 
 UIButtonUtils.SetupButton(openButton, function()
 	UIAudioConfig.PlayClick()
@@ -371,6 +410,7 @@ UIButtonUtils.SetupButton(openButton, function()
 
 	hideOtherGuis()
 	setMainFrameVisible(true)
+	selectCategory("Base")
 
 	if camera then
 		TweenService:Create(camera, FOV_TWEEN, {
@@ -396,3 +436,4 @@ end
 
 refreshEvent.OnClientEvent:Connect(renderIndex)
 player:GetAttributeChangedSignal("IndexDiscoveredJson"):Connect(renderIndex)
+player:GetAttributeChangedSignal("IndexExclusiveDiscoveredJson"):Connect(renderIndex)

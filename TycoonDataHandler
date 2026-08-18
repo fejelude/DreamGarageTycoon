@@ -102,7 +102,7 @@ local function getIndexProgressionAPI(waitSeconds)
 	return nil
 end
 
-local function markIndexDiscovered(player, toolName)
+local function markIndexDiscovered(player, toolName, isRobuxExclusive)
 	if not player or type(toolName) ~= "string" or toolName == "" then
 		return false
 	end
@@ -113,7 +113,7 @@ local function markIndexDiscovered(player, toolName)
 	end
 
 	local ok = pcall(function()
-		api:Invoke("MarkDiscovered", player, toolName)
+		api:Invoke("MarkDiscovered", player, { ToolId = toolName, IsRobuxExclusive = isRobuxExclusive == true })
 	end)
 
 	return ok
@@ -411,6 +411,7 @@ local success, err = pcall(function()
 	CarStats = require(carStatsModule)
 end)
 if not success then error("[TycoonDataHandler] Failed to require ReplicatedStorage > CarStats: " .. tostring(err), 0) end
+local IndexConfig = require(ReplicatedStorage:WaitForChild("IndexConfig"))
 
 -- ----------------------------------------------------------------------------
 -- 🔒 STATE MANAGEMENT
@@ -893,7 +894,7 @@ local function giveTool(player, toolName, customAttributes)
 		end
 		if session then session.IntentionalEmptyInventory = false end
 		if not (type(customAttributes) == "table" and customAttributes.SuppressIndexMark == true) then
-			markIndexDiscovered(player, sourceTool.Name)
+			markIndexDiscovered(player, sourceTool.Name, isExclusive)
 		end
 		if receiptId and session then
 			session.RobuxProductReceipts[receiptId] = {
@@ -1348,7 +1349,7 @@ local function transferToolBetweenPlayers(giver, receiver, tool)
 		-- The saved inventory is the durable source of truth. Mark the index only
 		-- after both profile writes succeed; load-time index repair also derives it
 		-- from inventory if the server stops before the follow-up autosave.
-		markIndexDiscovered(receiver, toolId)
+		markIndexDiscovered(receiver, toolId, tool:GetAttribute("IsRobuxExclusive") == true)
 		return true
 	end, debug.traceback)
 
@@ -1682,6 +1683,8 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		SessionData[player].Tutorial = sanitizeTutorialData(nil)
 		SessionData[player].IntentionalEmptyInventory = false
 		applyTutorialAttributes(player, SessionData[player].Tutorial)
+		player:SetAttribute("IndexDiscoveredJson", "[]")
+		player:SetAttribute("IndexExclusiveDiscoveredJson", "[]")
 		if player:FindFirstChild("StarterGear") then player.StarterGear:ClearAllChildren() end
 		if player:FindFirstChild("Backpack") then player.Backpack:ClearAllChildren() end
 		markDirty(player)
@@ -2213,6 +2216,7 @@ save = function(player, isClosing, force)
 		local currentOfflinePremiumPendingAmount = math.max(0, math.floor(tonumber(player:GetAttribute("OfflinePremiumPendingAmount")) or 0))
 		local currentTabletDoublePendingAmount = math.max(0, math.floor(tonumber(player:GetAttribute("TabletDoublePendingAmount")) or 0))
 		local currentIndexDiscovered = {}
+		local currentExclusiveIndexDiscovered = {}
 		local starterPackPurchased = session.StarterPackPurchased == true
 		local starterPackPurchaseId = session.StarterPackPurchaseId
 		local starterPackClearRequested = session.StarterPackClearRequested == true
@@ -2243,6 +2247,22 @@ save = function(player, isClosing, force)
 					end
 					for name in pairs(dedupe) do table.insert(currentIndexDiscovered, name) end
 					table.sort(currentIndexDiscovered)
+				end
+			end
+		end
+		do
+			local raw = player:GetAttribute("IndexExclusiveDiscoveredJson")
+			if type(raw) == "string" and raw ~= "" then
+				local ok, decoded = pcall(function() return HttpService:JSONDecode(raw) end)
+				if ok and type(decoded) == "table" then
+					local dedupe = {}
+					for key, value in pairs(decoded) do
+						local name = type(value) == "string" and value or (value == true and type(key) == "string" and key or nil)
+						local baseId = name and IndexConfig.NormalizeBaseCarId(name)
+						if baseId and IndexConfig.IsSupportedExclusive(baseId) then dedupe[IndexConfig.GetExclusiveId(baseId)] = true end
+					end
+					for name in pairs(dedupe) do table.insert(currentExclusiveIndexDiscovered, name) end
+					table.sort(currentExclusiveIndexDiscovered)
 				end
 			end
 		end
@@ -2501,6 +2521,7 @@ save = function(player, isClosing, force)
 					oldData.OfflinePremiumPendingAmount = currentOfflinePremiumPendingAmount
 					oldData.TabletDoublePendingAmount = currentTabletDoublePendingAmount
 					oldData.IndexDiscovered = currentIndexDiscovered
+					oldData.IndexExclusiveDiscovered = currentExclusiveIndexDiscovered
 					oldData.DailyRewards = currentDailyRewards
 					oldData.FreeRewardsClaimed = oldData.FreeRewardsClaimed == true or currentFreeRewardsClaimed
 					if starterPackClearRequested then
@@ -2895,7 +2916,7 @@ local function InitializePlayer(player)
 		ShopPurchases = {}, UncommonShopPurchases = {}, RareShopPurchases = {},
 		EpicShopPurchases = {}, LegendaryShopPurchases = {}, MythicalShopPurchases = {},
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", OwnedAppearanceSkins = { ["1"] = {}, ["2"] = {} }, EquippedLevel1Skin = BaseAppearanceConfig.DEFAULT_SKIN, EquippedLevel2Skin = BaseAppearanceConfig.DEFAULT_SKIN, Rank = "Player", RankData = {},
-		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {},
+		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {}, IndexExclusiveDiscovered = {},
 		OfflinePremiumPendingAmount = 0, TabletDoublePendingAmount = 0, InventorySlotBonus = 0,
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
 		RobuxProductReceipts = {},
@@ -2952,6 +2973,7 @@ local function InitializePlayer(player)
 	data.OfflinePremiumPendingAmount = math.max(0, math.floor(tonumber(data.OfflinePremiumPendingAmount) or 0))
 	data.TabletDoublePendingAmount = math.max(0, math.floor(tonumber(data.TabletDoublePendingAmount) or 0))
 	data.IndexDiscovered = type(data.IndexDiscovered) == "table" and data.IndexDiscovered or {}
+	data.IndexExclusiveDiscovered = type(data.IndexExclusiveDiscovered) == "table" and data.IndexExclusiveDiscovered or {}
 	data.SettingsVersion = math.max(0, math.floor(tonumber(data.SettingsVersion) or 0))
 	data.Settings = sanitizeSettings(data.Settings)
 	data.StarterPackPurchased = data.StarterPackPurchased == true
@@ -3075,6 +3097,42 @@ local function InitializePlayer(player)
 	for name in pairs(discoveredSet) do table.insert(discoveredList, name) end
 	table.sort(discoveredList)
 	player:SetAttribute("IndexDiscoveredJson", HttpService:JSONEncode(discoveredList))
+	local exclusiveDiscoveredSet = {}
+	for key, value in pairs(data.IndexExclusiveDiscovered) do
+		local name = type(value) == "string" and value or (value == true and type(key) == "string" and key or nil)
+		local baseId = name and IndexConfig.NormalizeBaseCarId(name)
+		if baseId and IndexConfig.IsSupportedExclusive(baseId) then
+			exclusiveDiscoveredSet[IndexConfig.GetExclusiveId(baseId)] = true
+		end
+	end
+	-- Repair historical profiles from authoritative exclusive inventory/layout records.
+	for _, record in pairs(data.Inventory) do
+		if type(record) == "table" and record.IsRobuxExclusive == true then
+			local baseId = IndexConfig.NormalizeBaseCarId(record.ToolId)
+			if baseId and IndexConfig.IsSupportedExclusive(baseId) then
+				exclusiveDiscoveredSet[IndexConfig.GetExclusiveId(baseId)] = true
+				discoveredSet[baseId] = true
+			end
+		end
+	end
+	for _, record in pairs(data.Layout) do
+		if type(record) == "table" and record.IsRobuxExclusive == true then
+			local baseId = IndexConfig.NormalizeBaseCarId(record.Tool)
+			if baseId and IndexConfig.IsSupportedExclusive(baseId) then
+				exclusiveDiscoveredSet[IndexConfig.GetExclusiveId(baseId)] = true
+				discoveredSet[baseId] = true
+			end
+		end
+	end
+	-- Re-encode Base after the exclusive migration may have added its counterpart.
+	discoveredList = {}
+	for name in pairs(discoveredSet) do table.insert(discoveredList, name) end
+	table.sort(discoveredList)
+	player:SetAttribute("IndexDiscoveredJson", HttpService:JSONEncode(discoveredList))
+	local exclusiveDiscoveredList = {}
+	for name in pairs(exclusiveDiscoveredSet) do table.insert(exclusiveDiscoveredList, name) end
+	table.sort(exclusiveDiscoveredList)
+	player:SetAttribute("IndexExclusiveDiscoveredJson", HttpService:JSONEncode(exclusiveDiscoveredList))
 	player:SetAttribute(DAILY_REWARDS_STATE_ATTRIBUTE, HttpService:JSONEncode(data.DailyRewards))
 	player:SetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE, data.FreeRewardsClaimed == true)
 	player:SetAttribute(PROMO_CODE_REDEEMED_ATTRIBUTE, HttpService:JSONEncode(SessionData[player].PromoCodesRedeemed))
@@ -3124,6 +3182,7 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("OfflinePremiumPendingAmount"):Connect(setDirty)
 	player:GetAttributeChangedSignal("TabletDoublePendingAmount"):Connect(setDirty)
 	player:GetAttributeChangedSignal("IndexDiscoveredJson"):Connect(setDirty)
+	player:GetAttributeChangedSignal("IndexExclusiveDiscoveredJson"):Connect(setDirty)
 	player:GetAttributeChangedSignal(DAILY_REWARDS_STATE_ATTRIBUTE):Connect(setDirty)
 	for _, attributeName in pairs(PLAYER_SETTING_ATTRIBUTES) do
 		player:GetAttributeChangedSignal(attributeName):Connect(function()
