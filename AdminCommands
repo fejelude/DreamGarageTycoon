@@ -1,6 +1,6 @@
 -- Purpose: Advanced Minecraft-Style Admin Commands
 -- Runs on: Server (ServerScriptService)
--- Public API: /give, /remove, /clear, /fly, /tp, /wallet, /bank, /rank, /clear events
+-- Public API: /give, /remove, /clear, /fly, /tp, /wallet, /bank, /rank, /expulse event
 -- Security: Strict ID Whitelist, Anti-Duplicate logic, Secure Data Wiping
 -- FIX: /rank command now pulls securely from ServerStorage.RankTags instead of Workspace.
 
@@ -454,12 +454,9 @@ Players.PlayerAdded:Connect(function(player)
 				end
 			end
 
-			-- 🌐 /clear events (clear both authoritative global boosts)
-		elseif command == "/clear" or command == "/wipe" then
-			local selector = args[2]
-			if not selector then return end
-
-			if command == "/clear" and selector:lower() == "events" and args[3] == nil then
+			-- 🌐 /expulse event (clear both authoritative global boosts)
+		elseif command == "/expulse" then
+			if args[2] and args[2]:lower() == "event" and args[3] == nil then
 				local luckOk, luckErr = GlobalLuckService.Clear()
 				local moneyOk, moneyErr = GlobalMoneyFrenzyService.Clear()
 				if luckOk and moneyOk then
@@ -471,10 +468,13 @@ Players.PlayerAdded:Connect(function(player)
 						moneyOk and "cleared" or tostring(moneyErr)
 					))
 				end
-				return
 			end
 
 			-- 💣 /clear [player] (FULL WIPE)
+		elseif command == "/clear" or command == "/wipe" then
+			local selector = args[2]
+			if not selector then return end
+
 			local targets = getTargets(player, selector)
 
 			if TycoonAdminAPI then
