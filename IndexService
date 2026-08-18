@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local IndexConfig = require(ReplicatedStorage:WaitForChild("IndexConfig"))
 
 local EXPECTED_INDEX_TOTAL = 47
 
@@ -54,22 +55,30 @@ local function encode(tbl)
 	return ok and result or "[]"
 end
 
-local function markDiscovered(player, toolId)
+local function markInAttribute(player, attributeName, identity)
+	local discovered = decode(player:GetAttribute(attributeName) or "[]")
+	for _, existing in ipairs(discovered) do
+		if existing == identity then return false end
+	end
+	table.insert(discovered, identity)
+	table.sort(discovered)
+	player:SetAttribute(attributeName, encode(discovered))
+	return true
+end
+
+local function markDiscovered(player, payload)
 	if not player or not player:IsA("Player") then return false end
+	local toolId = type(payload) == "table" and payload.ToolId or payload
+	local isExclusive = type(payload) == "table" and payload.IsRobuxExclusive == true
 	local normalized = normalizeToolId(toolId)
 	if not normalized then return false end
 
-	local discovered = decode(player:GetAttribute("IndexDiscoveredJson") or "[]")
-	for _, existing in ipairs(discovered) do
-		if existing == normalized then
-			return false
-		end
+	local changed = markInAttribute(player, "IndexDiscoveredJson", normalized)
+	if isExclusive and IndexConfig.IsSupportedExclusive(normalized) then
+		changed = markInAttribute(player, "IndexExclusiveDiscoveredJson", IndexConfig.GetExclusiveId(normalized)) or changed
 	end
-
-	table.insert(discovered, normalized)
-	player:SetAttribute("IndexDiscoveredJson", encode(discovered))
-	refreshEvent:FireClient(player)
-	return true
+	if changed then refreshEvent:FireClient(player) end
+	return changed
 end
 
 local indexBindable = ReplicatedStorage:WaitForChild("IndexProgressionAPI")
@@ -87,5 +96,8 @@ end
 Players.PlayerAdded:Connect(function(player)
 	if player:GetAttribute("IndexDiscoveredJson") == nil then
 		player:SetAttribute("IndexDiscoveredJson", "[]")
+	end
+	if player:GetAttribute("IndexExclusiveDiscoveredJson") == nil then
+		player:SetAttribute("IndexExclusiveDiscoveredJson", "[]")
 	end
 end)

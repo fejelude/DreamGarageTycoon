@@ -1,0 +1,54 @@
+-- Purpose: Shared, authoritative identities for the Base and Robux Exclusive Index categories.
+-- Location: ReplicatedStorage > IndexConfig
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local LimitedCarsConfig = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
+
+local IndexConfig = {}
+
+function IndexConfig.NormalizeBaseCarId(value)
+	if type(value) ~= "string" then return nil end
+	local unwrapped = value:match("^Exclusive %((.+)%)$") or value
+	unwrapped = unwrapped:gsub(" Item$", "")
+	return CarStats.GetCarId(unwrapped)
+end
+
+function IndexConfig.GetExclusiveId(baseCarId)
+	local normalized = IndexConfig.NormalizeBaseCarId(baseCarId)
+	return normalized and ("Exclusive (" .. normalized .. ")") or nil
+end
+
+function IndexConfig.GetExclusiveEntries()
+	local entries, seen = {}, {}
+	for _, product in pairs(LimitedCarsConfig.Products or {}) do
+		local baseCarId = IndexConfig.NormalizeBaseCarId(product.CarId)
+		local stats = baseCarId and CarStats.Cars[baseCarId]
+		if stats and not seen[baseCarId] then
+			seen[baseCarId] = true
+			table.insert(entries, {
+				Key = IndexConfig.GetExclusiveId(baseCarId),
+				BaseCarId = baseCarId,
+				Data = {
+					Name = product.ExclusiveDisplayName or IndexConfig.GetExclusiveId(baseCarId),
+					Rarity = product.Rarity or stats.Rarity,
+					Price = product.RobuxPrice or stats.Price,
+					Image = product.ExclusiveImage or stats.Image,
+				},
+			})
+		end
+	end
+	return entries
+end
+
+function IndexConfig.IsSupportedExclusive(baseCarId)
+	local normalized = IndexConfig.NormalizeBaseCarId(baseCarId)
+	if not normalized then return false end
+	for _, entry in ipairs(IndexConfig.GetExclusiveEntries()) do
+		if entry.BaseCarId == normalized then return true end
+	end
+	return false
+end
+
+return IndexConfig
