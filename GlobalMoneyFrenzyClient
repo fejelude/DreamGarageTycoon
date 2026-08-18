@@ -38,8 +38,6 @@ local promptBusy = false
 local promptAttemptId = 0
 local inactiveProfileImage = nil
 local inactiveProfileTransparency = nil
-local inactiveCurrentLuckText = nil
-local inactiveNextLuckText = nil
 
 local function findPath(root, names)
 	local obj = root
@@ -105,12 +103,16 @@ local function render()
 		local username = details:FindFirstChild("UsernameOfTheBooster")
 		local profile = details:FindFirstChild("ProfileofTheBooster")
 
-		if currentLuck and inactiveCurrentLuckText == nil then inactiveCurrentLuckText = currentLuck.Text end
-		if nextLuck and inactiveNextLuckText == nil then inactiveNextLuckText = nextLuck.Text end
-
-		if currentLuck then currentLuck.Text = state.Active and Config.FormatMultiplier(Config.ActiveMultiplier) or inactiveCurrentLuckText end
-		if nextLuck then nextLuck.Text = state.Active and Config.FormatMultiplier(Config.ActiveMultiplier + 1) or inactiveNextLuckText end
-		if username then username.Text = state.Active and (state.PurchaserUsername ~= "" and state.PurchaserUsername or "Unknown") or "Vacant" end
+		if currentLuck then currentLuck.Text = Config.FormatMultiplier(state.Multiplier) end
+		if nextLuck then nextLuck.Text = state.Maxed and "MAX" or (state.NextLuck or "2.00x") end
+		if username then
+			local activatorName = state.PurchaserDisplayName or state.PurchaserUsername
+			if state.Active and state.PurchaserUsername ~= "" and activatorName ~= state.PurchaserUsername then
+				username.Text = string.format("%s (@%s)", activatorName, state.PurchaserUsername)
+			else
+				username.Text = state.Active and (state.PurchaserUsername ~= "" and state.PurchaserUsername or "Unknown") or "Vacant"
+			end
+		end
 		updateProfile(profile, state)
 	end
 	local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "GlobalMoneyFrenzyV1"})
@@ -130,6 +132,10 @@ local function renderHud()
 	panel.Visible = true
 	local timeLeft = panel:FindFirstChild("TimeLeft")
 	if timeLeft then timeLeft.Text = formatTime(remaining) end
+	local multiplierLabel = panel:FindFirstChild("Multiplier", true) or panel:FindFirstChild("MultiplierLabel", true) or panel:FindFirstChild("BoostMultiplier", true)
+	if multiplierLabel and (multiplierLabel:IsA("TextLabel") or multiplierLabel:IsA("TextButton")) then
+		multiplierLabel.Text = Config.FormatMultiplier(state.Multiplier)
+	end
 end
 
 local function setupHudInteractions()
@@ -150,7 +156,7 @@ local function applyState(state)
 end
 
 local function showBlockedPurchase()
-	shopFeedback:Failed("Booster Maxed & Active")
+	shopFeedback:Failed("Booster Maxed and Active x5")
 	Kit.Sound:Play("BuyFail")
 end
 
@@ -160,7 +166,7 @@ if button then
 		if promptBusy then return end
 
 		local state = currentState
-		if state and state.Active then
+		if state and state.Active and state.Maxed then
 			showBlockedPurchase()
 			return
 		end
@@ -185,7 +191,7 @@ if button then
 			render()
 		end
 
-		if state and state.Active then
+		if state and state.Active and state.Maxed then
 			UIAudioConfig.HidePurchaseLoading()
 			promptBusy = false
 			render()

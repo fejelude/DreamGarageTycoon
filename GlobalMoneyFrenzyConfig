@@ -1,25 +1,22 @@
 -- ModuleScript: ReplicatedStorage > GlobalMoneyFrenzyConfig
 local GlobalMoneyFrenzyConfig = {}
+local StackConfig = require(script.Parent:WaitForChild("GlobalBoostStackConfig"))
 
 GlobalMoneyFrenzyConfig.ProductId = 3610446789
 GlobalMoneyFrenzyConfig.DurationSeconds = 2 * 60 * 60
 GlobalMoneyFrenzyConfig.BaseMultiplier = 1
-GlobalMoneyFrenzyConfig.ActiveMultiplier = 2
+GlobalMoneyFrenzyConfig.StackConfig = StackConfig
 GlobalMoneyFrenzyConfig.TopicName = "GlobalMoneyFrenzyStateV1"
 GlobalMoneyFrenzyConfig.StateStoreName = "GlobalMoneyFrenzyState_V1"
 GlobalMoneyFrenzyConfig.ReceiptStoreName = "GlobalMoneyFrenzyReceiptHistory_V1"
 GlobalMoneyFrenzyConfig.StateKey = "Current"
 
 function GlobalMoneyFrenzyConfig.FormatMultiplier(multiplier)
-	multiplier = tonumber(multiplier) or GlobalMoneyFrenzyConfig.BaseMultiplier
-	if multiplier % 1 == 0 then
-		return tostring(multiplier) .. "x"
-	end
-	return string.format("%.2fx", multiplier)
+	return StackConfig.FormatMultiplier(multiplier)
 end
 
-function GlobalMoneyFrenzyConfig.GetActiveMultiplier()
-	return GlobalMoneyFrenzyConfig.ActiveMultiplier
+function GlobalMoneyFrenzyConfig.GetNextMultiplier(stackCount)
+	return StackConfig.GetNextMultiplier(stackCount)
 end
 
 return GlobalMoneyFrenzyConfig
