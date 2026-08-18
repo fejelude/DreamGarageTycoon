@@ -251,11 +251,12 @@ local function handleLiveState(state)
 	seenNotifications[id] = serverTime
 
 	local username = tostring(notification.Username or "")
+	local displayName = tostring(notification.DisplayName or username)
 	local boostName = tostring(notification.BoostName or "")
 	if username == "" or boostName == "" then return end
 
 	boostName = boostName:gsub("^Global%s+", "")
-	showNotification(string.format("@%s activated %s!", username, boostName))
+	showNotification(string.format("%s (@%s) activated %s!", displayName, username, boostName))
 end
 
 -- Handles the state snapshot fetched via GetState:InvokeServer() at join time.

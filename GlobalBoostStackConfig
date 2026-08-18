@@ -1,0 +1,45 @@
+-- ModuleScript: ReplicatedStorage > GlobalBoostStackConfig
+-- Shared source of truth for both community global boost products.
+local Config = {}
+
+Config.Multipliers = {
+	1,
+	2.00, 2.50, 2.90, 3.20, 3.45, 3.65, 3.82, 3.97, 4.10,
+	4.22, 4.32, 4.41, 4.49, 4.56, 4.62, 4.67, 4.72, 4.76,
+	4.80, 4.84, 4.87, 4.90, 4.93, 4.95, 4.97, 4.98, 4.99, 5.00,
+}
+Config.MaxStackCount = #Config.Multipliers - 1
+Config.MaxMultiplier = Config.Multipliers[#Config.Multipliers]
+
+function Config.GetMultiplier(stackCount)
+	stackCount = math.clamp(math.floor(tonumber(stackCount) or 0), 0, Config.MaxStackCount)
+	return Config.Multipliers[stackCount + 1]
+end
+
+function Config.GetStackCount(multiplier)
+	multiplier = tonumber(multiplier) or 1
+	local closestIndex, closestDistance = 1, math.huge
+	for index, value in ipairs(Config.Multipliers) do
+		local distance = math.abs(value - multiplier)
+		if distance < closestDistance then
+			closestIndex, closestDistance = index, distance
+		end
+	end
+	return closestIndex - 1
+end
+
+function Config.GetNextMultiplier(stackCount)
+	stackCount = math.clamp(math.floor(tonumber(stackCount) or 0), 0, Config.MaxStackCount)
+	if stackCount >= Config.MaxStackCount then return nil end
+	return Config.GetMultiplier(stackCount + 1)
+end
+
+function Config.IsMaxed(stackCount)
+	return (tonumber(stackCount) or 0) >= Config.MaxStackCount
+end
+
+function Config.FormatMultiplier(multiplier)
+	return string.format("%.2fx", tonumber(multiplier) or 1)
+end
+
+return Config

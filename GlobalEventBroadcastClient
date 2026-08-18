@@ -27,6 +27,7 @@ local CAR_RARITY_COLORS = {
 -- Fallback/Default Colors
 local DEFAULT_SENDER_COLOR = "#00BFFF" -- Light Blue
 local DEFAULT_RECEIVER_COLOR = "#00BFFF"
+local seenBoostAnnouncements = {}
 
 -- ============================================================================
 -- 💬 PERSONALITY TEMPLATES (Randomized)
@@ -81,6 +82,21 @@ end
 
 local function handleGlobalBroadcast(data)
 	if type(data) ~= "table" or not data.Type then return end
+
+	if data.Type == "BoostStack" then
+		local id = tostring(data.Id or "")
+		if id == "" or seenBoostAnnouncements[id] then return end
+		seenBoostAnnouncements[id] = true
+		local displayName = tostring(data.DisplayName or "Someone")
+		local username = tostring(data.Username or "Someone")
+		local boostName = tostring(data.BoostName or "Global Boost")
+		local multiplier = tostring(data.Multiplier or "")
+		displaySystemMessage(string.format(
+			"<font color='#FFD700'><b>[GLOBAL]</b></font> <b>%s (@%s)</b> boosted %s to <b>%s</b>!",
+			displayName, username, boostName, multiplier
+		))
+		return
+	end
 
 	if data.Type == "System" and type(data.Message) == "string" and data.Message ~= "" then
 		displaySystemMessage(string.format("<font color='#FFD700'><b>[EVENT]</b></font> %s", data.Message))

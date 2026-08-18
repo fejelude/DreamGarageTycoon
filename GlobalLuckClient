@@ -53,6 +53,13 @@ local function formatTime(seconds)
 	return string.format("%d:%02d:%02d", hours, minutes, secs)
 end
 
+local function getRemaining(state)
+	if not state or not state.Active then return 0 end
+	local serverTime = tonumber(state.ServerTime) or os.time()
+	local receivedAt = tonumber(state.LocalReceivedAt) or os.time()
+	return math.max(0, (tonumber(state.ExpiresAt) or 0) - (serverTime + math.max(0, os.time() - receivedAt)))
+end
+
 local function setButtonInputLocked(button, locked)
 	if not button then return end
 	button.Active = not locked
@@ -92,8 +99,15 @@ local function render()
 		local username = details:FindFirstChild("UsernameOfTheBooster")
 		local profile = details:FindFirstChild("ProfileofTheBooster")
 		if currentLuck then currentLuck.Text = Config.FormatMultiplier(state.Multiplier) end
-		if nextLuck then nextLuck.Text = Config.FormatMultiplier(Config.GetNextMultiplier(state.Multiplier)) end
-		if username then username.Text = state.Active and (state.PurchaserUsername ~= "" and state.PurchaserUsername or "Unknown") or "Vacant" end
+		if nextLuck then nextLuck.Text = state.Maxed and "MAX" or (state.NextLuck or "2.00x") end
+		if username then
+			local activatorName = state.PurchaserDisplayName or state.PurchaserUsername
+			if state.Active and state.PurchaserUsername ~= "" and activatorName ~= state.PurchaserUsername then
+				username.Text = string.format("%s (@%s)", activatorName, state.PurchaserUsername)
+			else
+				username.Text = state.Active and (state.PurchaserUsername ~= "" and state.PurchaserUsername or "Unknown") or "Vacant"
+			end
+		end
 		updateProfile(profile, state)
 	end
 	local button = findPath(mainFrame, {"ShopUIScrolling", "ButtonsForBuying", "Buttons", "Featured", "DoubleLuckV1"})
@@ -106,12 +120,15 @@ local function renderHud()
 	if not panel then return end
 	local state = currentState
 	if not state or not state.Active then panel.Visible = false return end
-	local remaining = (state.ExpiresAt or 0) - (os.time() + ((state.ServerTime or os.time()) - os.time()))
-	remaining = math.max(0, (state.ExpiresAt or 0) - os.time())
+	local remaining = getRemaining(state)
 	if remaining <= 0 then panel.Visible = false return end
 	panel.Visible = true
 	local timeLeft = panel:FindFirstChild("TimeLeft")
 	if timeLeft then timeLeft.Text = formatTime(remaining) end
+	local multiplierLabel = panel:FindFirstChild("Multiplier", true) or panel:FindFirstChild("MultiplierLabel", true) or panel:FindFirstChild("BoostMultiplier", true)
+	if multiplierLabel and (multiplierLabel:IsA("TextLabel") or multiplierLabel:IsA("TextButton")) then
+		multiplierLabel.Text = Config.FormatMultiplier(state.Multiplier)
+	end
 end
 
 local function setupHudInteractions()
@@ -124,13 +141,15 @@ local function setupHudInteractions()
 end
 
 local function applyState(state)
+	if type(state) ~= "table" then return end
+	state.LocalReceivedAt = os.time()
 	currentState = state
 	render()
 	renderHud()
 end
 
 local function getActiveBlockedMessage(_state)
-	return "Booster Maxed & Active"
+	return "Booster Maxed and Active x5"
 end
 
 local function showBlockedPurchase(state)
@@ -144,7 +163,7 @@ if button then
 		if promptBusy then return end
 
 		local state = currentState
-		if state and state.Active then
+		if state and state.Active and state.Maxed then
 			showBlockedPurchase(state)
 			return
 		end
@@ -168,7 +187,7 @@ if button then
 			render()
 		end
 
-		if state and state.Active then
+		if state and state.Active and state.Maxed then
 			UIAudioConfig.HidePurchaseLoading()
 			promptBusy = false
 			render()
