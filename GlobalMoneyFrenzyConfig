@@ -3,7 +3,7 @@ local GlobalMoneyFrenzyConfig = {}
 local StackConfig = require(script.Parent:WaitForChild("GlobalBoostStackConfig"))
 
 GlobalMoneyFrenzyConfig.ProductId = 3610446789
-GlobalMoneyFrenzyConfig.DurationSeconds = 6 * 60 * 60
+GlobalMoneyFrenzyConfig.DurationSeconds = 2 * 60 * 60
 GlobalMoneyFrenzyConfig.BaseMultiplier = 1
 GlobalMoneyFrenzyConfig.StackConfig = StackConfig
 GlobalMoneyFrenzyConfig.TopicName = "GlobalMoneyFrenzyStateV1"
