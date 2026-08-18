@@ -120,6 +120,24 @@ function Service.RefreshFromStore(shouldPublish)
 	if ok then setLocalState(data, shouldPublish) end
 	return ok
 end
+
+-- Uses the same inactive-state normalization and client broadcast path as a
+-- natural expiration, while also replacing the authoritative persisted state.
+function Service.Clear()
+	local committed
+	local ok, err = pcall(function()
+		committed = stateStore:UpdateAsync(Config.StateKey, function(old)
+			local s = type(old) == "table" and old or {}
+			return inactiveState(s.ProcessedReceipts)
+		end)
+	end)
+	if not ok or type(committed) ~= "table" then
+		return false, tostring(err or "Global boost clear returned no state")
+	end
+	setLocalState(committed, true)
+	return true
+end
+
 function Service.GetState() if not currentState then Service.RefreshFromStore(false) end return publicState() end
 function Service.GetMultiplier() return Service.GetState().Multiplier end
 function Service.GetGeneration() Service.GetState() return generation end
