@@ -134,7 +134,13 @@ function Service.Clear()
 	if not ok or type(committed) ~= "table" then
 		return false, tostring(err or "Global boost clear returned no state")
 	end
-	setLocalState(committed, true)
+	-- Do not make other servers immediately GetAsync here. Roblox can serve a
+	-- cached pre-clear GetAsync result, which would make a running boost appear
+	-- again until reconciliation. The clear message tells subscribers to apply
+	-- the same inactive state immediately; the DataStore write above remains the
+	-- authoritative durable reset.
+	setLocalState(committed, false)
+	publish({ StateChanged = true, Cleared = true })
 	return true
 end
 
@@ -212,6 +218,11 @@ task.spawn(function()
 		local ok, err = pcall(function()
 			MessagingService:SubscribeAsync(Config.TopicName, function(message)
 				if type(message.Data) ~= "table" then return end
+				if message.Data.Cleared == true then
+					local receipts = currentState and currentState.ProcessedReceipts
+					setLocalState(inactiveState(receipts), false)
+					return
+				end
 				-- The DataStore, never the broadcast payload, remains authoritative.
 				Service.RefreshFromStore(false)
 				fireStackAnnouncement(message.Data.Announcement)
