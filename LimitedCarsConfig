@@ -8,6 +8,13 @@ LimitedCarsConfig.DefaultProductKey = "NeoPerformante"
 LimitedCarsConfig.ReservationSeconds = 15 * 60
 LimitedCarsConfig.MaxUpdateRetries = 5
 
+-- Public-release stock epoch. Limited stock is authoritative in the DataStore
+-- named by each product below; using a fresh epoch starts the release at zero
+-- sold without touching player inventories or the receipt history in the old
+-- testing stores. Do not change these names after release unless another
+-- deliberate, global stock reset is required.
+LimitedCarsConfig.StockEpoch = "PublicRelease_V1"
+
 LimitedCarsConfig.Products = {
 	NeoPerformante = {
 		ProductId = 3610688469,
@@ -16,9 +23,9 @@ LimitedCarsConfig.Products = {
 		DisplayName = "Neo Performante",
 		MaxGlobalStock = 67,
 		AllowGifting = true,
-		StateStoreName = "LimitedCars_NeoPerformanteState_V1",
+		StateStoreName = "LimitedCars_NeoPerformanteState_" .. LimitedCarsConfig.StockEpoch,
 		StateKey = "Current",
-		TopicName = "LimitedCars_NeoPerformanteStock_V1",
+		TopicName = "LimitedCars_NeoPerformanteStock_" .. LimitedCarsConfig.StockEpoch,
 		AnnouncementTemplates = {
 			"@%s just bought the Neo Performante from the shop. Damn... bro is wealthy. 💸",
 			"@%s just purchased the Neo Performante. Bro is absolutely loaded. 💰",
@@ -35,15 +42,15 @@ LimitedCarsConfig.Products = {
 	Yamura = {
 		ProductId = 3708237092, RobuxPrice = 0, CarId = "Yamura", DisplayName = "Yamura",
 		Rarity = "Legendary", MaxGlobalStock = 33, AllowGifting = true,
-		StateStoreName = "LimitedCars_YamuraState_V1", StateKey = "Current",
-		TopicName = "LimitedCars_YamuraStock_V1",
+		StateStoreName = "LimitedCars_YamuraState_" .. LimitedCarsConfig.StockEpoch, StateKey = "Current",
+		TopicName = "LimitedCars_YamuraStock_" .. LimitedCarsConfig.StockEpoch,
 		AnnouncementTemplates = { "@%s just secured the Yamura. Legendary choice. 🔥" },
 	},
 	Centurion = {
 		ProductId = 3708236854, RobuxPrice = 0, CarId = "Centurion", DisplayName = "Centurion",
 		Rarity = "Mythical", MaxGlobalStock = 18, AllowGifting = true,
-		StateStoreName = "LimitedCars_CenturionState_V1", StateKey = "Current",
-		TopicName = "LimitedCars_CenturionStock_V1",
+		StateStoreName = "LimitedCars_CenturionState_" .. LimitedCarsConfig.StockEpoch, StateKey = "Current",
+		TopicName = "LimitedCars_CenturionStock_" .. LimitedCarsConfig.StockEpoch,
 		AnnouncementTemplates = { "@%s just secured the Centurion. Mythical choice. ⚡" },
 	},
 }
