@@ -246,6 +246,6 @@ end
 Players.PlayerAdded:Connect(setup); for _, player in ipairs(Players:GetPlayers()) do setup(player) end
 Players.PlayerRemoving:Connect(function(player) if locks[player.UserId] == player then locks[player.UserId] = nil end; cooldowns[player] = nil; if connections[player] then for _, c in ipairs(connections[player]) do c:Disconnect() end end; connections[player] = nil end)
 
-local npc = Workspace:WaitForChild("NPCS"):WaitForChild("JakeSaron")
+local npc = Workspace:WaitForChild("NPCS"):WaitForChild("JakeDaStallion")
 local prompt = npc:WaitForChild("HumanoidRootPart"):WaitForChild("TalkPrompt")
 prompt.Triggered:Connect(function(player) openEvent:FireClient(player, state(player)) end)
