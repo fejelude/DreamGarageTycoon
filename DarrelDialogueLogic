@@ -10,6 +10,7 @@ local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 
@@ -59,22 +60,8 @@ local TYPING_SOUND_ID = "rbxassetid://4676738150"
 -- ============================================================================
 -- 👑 RANK HELPER
 -- ============================================================================
-local RANK_VALUES = {
-	["VIP"] = 1,
-	["VIP+"] = 2,
-	["MVP"] = 3,
-	["MVP+"] = 4,
-	["MVP++"] = 5
-}
-
-local function getPlayerRankValue()
-	local rank = player:GetAttribute("Rank")
-	return RANK_VALUES[rank] or 0
-end
-
-local function hasRequiredRank(requiredRankName)
-	local requiredValue = RANK_VALUES[requiredRankName] or 0
-	return getPlayerRankValue() >= requiredValue
+local function hasRequiredRank()
+	return RankConfig.PlayerCanAccessShop(player, "Uncommon")
 end
 
 -- ============================================================================
@@ -432,7 +419,7 @@ local function startInteraction(npcModel)
 	setupBtn(buyBtn, function()
 		setButtonsState(false)
 
-		if not hasRequiredRank("VIP") then
+		if not hasRequiredRank() then
 			local responseText = getRandomDialogue("RankGate")
 			typewrite(dialogueLabel, responseText, function()
 				task.wait(DIALOGUE_PAUSE + 1)
