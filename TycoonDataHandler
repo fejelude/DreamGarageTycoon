@@ -394,6 +394,8 @@ end
 -- ----------------------------------------------------------------------------
 local CarTools = getRequiredChild(ServerStorage, "CarTools", "Folder", "ServerStorage > CarTools", REQUIRED_WAIT_SECONDS)
 local CarModels = getRequiredChild(ServerStorage, "CarModels", "Folder", "ServerStorage > CarModels", REQUIRED_WAIT_SECONDS)
+local RobuxExclusiveCarTools = ServerStorage:FindFirstChild("RobuxExclusiveCarTools")
+local RobuxExclusiveCarModels = ServerStorage:FindFirstChild("RobuxExclusiveCarModels")
 local TycoonFolder = getRequiredChild(Workspace, "Tycoons", "Folder", "Workspace > Tycoons", REQUIRED_WAIT_SECONDS)
 local AdminLogEvent = ServerStorage:FindFirstChild("TycoonAdminLog")
 
@@ -624,13 +626,21 @@ local function normalizeStoredToolId(value)
 	return nil
 end
 
-local function safeFindCarTool(targetName)
+local function normalizeStoredCarRecord(value)
+	local toolId = normalizeStoredToolId(value)
+	if not toolId then return nil end
+	return { ToolId = toolId, IsRobuxExclusive = type(value) == "table" and value.IsRobuxExclusive == true or false }
+end
+
+local function safeFindCarTool(targetName, isExclusive)
 	targetName = normalizeStoredToolId(targetName)
 	if not targetName then return nil end
 	local cleanName = targetName:gsub(" Item", ""):gsub("Item", "")
 
-	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}) do
-		local folder = CarTools:FindFirstChild(folderName)
+	local root = isExclusive == true and RobuxExclusiveCarTools or CarTools
+	if not root then return nil end
+	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Mythical"}) do
+		local folder = root:FindFirstChild(folderName)
 		if folder then
 			for _, tool in ipairs(folder:GetChildren()) do
 				if tool.Name == targetName or tool.Name == cleanName .. " Item" or tool.Name == cleanName then
@@ -642,13 +652,15 @@ local function safeFindCarTool(targetName)
 	return nil
 end
 
-local function safeFindCarModel(targetName)
+local function safeFindCarModel(targetName, isExclusive)
 	targetName = normalizeStoredToolId(targetName)
 	if not targetName then return nil end
 	local cleanName = targetName:gsub(" Item", ""):gsub("Item", "")
 
-	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}) do
-		local folder = CarModels:FindFirstChild(folderName)
+	local root = isExclusive == true and RobuxExclusiveCarModels or CarModels
+	if not root then return nil end
+	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Mythical"}) do
+		local folder = root:FindFirstChild(folderName)
 		if folder then
 			for _, model in ipairs(folder:GetChildren()) do
 				if model.Name == targetName or model.Name == cleanName then
@@ -666,7 +678,7 @@ local function validateTool(tool)
 	local id = tool:GetAttribute("ToolId")
 	if not id then return false end
 
-	if safeFindCarTool(id) then return true end
+	if safeFindCarTool(id, tool:GetAttribute("IsRobuxExclusive") == true) then return true end
 
 	return false
 end
@@ -690,7 +702,9 @@ local function sanitizeInventory(player)
 					else
 						if tool.CanBeDropped then tool.CanBeDropped = false end
 						local realId = tool:GetAttribute("ToolId")
-						if realId and tool.Name ~= realId then
+						if realId and tool:GetAttribute("IsRobuxExclusive") == true then
+							tool.Name = tool:GetAttribute("ExclusiveDisplayName") or ("Exclusive (" .. realId:gsub(" Item$", "") .. ")")
+						elseif realId and tool.Name ~= realId then
 							tool.Name = realId
 						end
 					end
@@ -836,17 +850,18 @@ local function giveTool(player, toolName, customAttributes)
 	if not bypassStorageLimit and not canAddCarToStorage(player, 1) then
 		return false, "Car storage full"
 	end
-	local sourceTool = safeFindCarTool(toolName)
+	local isExclusive = type(customAttributes) == "table" and customAttributes.IsRobuxExclusive == true
+	local sourceTool = safeFindCarTool(toolName, isExclusive)
 	if not sourceTool then
 		local rec = FindToolNameFromModel(toolName)
-		if rec then sourceTool = safeFindCarTool(rec) end
+		if rec then sourceTool = safeFindCarTool(rec, isExclusive) end
 	end
 
 	if sourceTool then
 		local backpackTool = sourceTool:Clone()
 		local gearTool = sourceTool:Clone()
-		tagIssued(backpackTool, sourceTool.Name)
-		tagIssued(gearTool, sourceTool.Name)
+		tagIssued(backpackTool, toolName)
+		tagIssued(gearTool, toolName)
 
 		if type(customAttributes) == "table" then
 			for k, v in pairs(customAttributes) do
@@ -855,6 +870,11 @@ local function giveTool(player, toolName, customAttributes)
 					gearTool:SetAttribute(k, v)
 				end
 			end
+		end
+		if isExclusive then
+			local displayName = backpackTool:GetAttribute("ExclusiveDisplayName") or ("Exclusive (" .. toolName:gsub(" Item$", "") .. ")")
+			backpackTool.Name = displayName
+			gearTool.Name = displayName
 		end
 
 		backpackTool.Parent = backpack
@@ -962,6 +982,7 @@ local function RestoreLayout(player, plot, layoutData)
 
 	for _, data in ipairs(layoutData) do
 		local toolName = data.Tool
+		local isExclusive = data.IsRobuxExclusive == true
 		local padName = data.Pad
 		if not validPads[padName] then continue end
 		if processedPads[padName] then continue end
@@ -990,11 +1011,13 @@ local function RestoreLayout(player, plot, layoutData)
 			if isOccupied and not isOccupied.Value then
 				local realModelName = FindModelNameFromTool(toolName)
 				if realModelName then
-					local carModel = safeFindCarModel(realModelName)
+					local carModel = safeFindCarModel(realModelName, isExclusive)
 					if carModel then
 						local newCar = carModel:Clone()
 						newCar:SetAttribute("OwnerUserId", player.UserId)
 						newCar:SetAttribute("CarGUID", generateCarGUID(player))
+						newCar:SetAttribute("BaseCarId", toolName:gsub(" Item$", ""))
+						newCar:SetAttribute("IsRobuxExclusive", isExclusive)
 						for _, p in pairs(newCar:GetDescendants()) do
 							if p:IsA("BasePart") then p.Anchored = true; p.CanCollide = true end
 						end
@@ -2244,7 +2267,7 @@ save = function(player, isClosing, force)
 					if invCount < MAX_INVENTORY_SIZE then
 						local id = tool:GetAttribute("ToolId")
 						if id then
-							table.insert(inventory, id)
+							table.insert(inventory, { ToolId = id, IsRobuxExclusive = tool:GetAttribute("IsRobuxExclusive") == true })
 							invCount += 1
 						end
 					end
@@ -2316,7 +2339,7 @@ save = function(player, isClosing, force)
 								if isOwned then
 									local tName = FindToolNameFromModel(car.Name)
 									if tName then
-										table.insert(layout, { Tool = tName, Pad = padObject.Name })
+										table.insert(layout, { Tool = car:GetAttribute("BaseCarId") or tName, Pad = padObject.Name, IsRobuxExclusive = car:GetAttribute("IsRobuxExclusive") == true })
 									end
 								end
 							end
@@ -2886,8 +2909,9 @@ local function InitializePlayer(player)
 		for _, storedItem in pairs(type(data.Inventory) == "table" and data.Inventory or {}) do
 			if #sanitizedInventory >= MAX_INVENTORY_SIZE then break end
 			local toolName = normalizeStoredToolId(storedItem)
-			if toolName and safeFindCarTool(toolName) then
-				table.insert(sanitizedInventory, toolName)
+			local storedExclusive = type(storedItem) == "table" and storedItem.IsRobuxExclusive == true
+			if toolName and safeFindCarTool(toolName, storedExclusive) then
+				table.insert(sanitizedInventory, type(storedItem) == "table" and { ToolId = toolName, IsRobuxExclusive = storedItem.IsRobuxExclusive == true } or toolName)
 			end
 		end
 		data.Inventory = sanitizedInventory
@@ -2898,10 +2922,10 @@ local function InitializePlayer(player)
 			local toolName = type(entry) == "table" and entry.Tool or nil
 			local padName = type(entry) == "table" and entry.Pad or nil
 			if type(toolName) == "string" and type(padName) == "string"
-				and safeFindCarTool(toolName) and not seenPads[padName]
+				and safeFindCarTool(toolName, entry.IsRobuxExclusive == true) and not seenPads[padName]
 			then
 				seenPads[padName] = true
-				table.insert(sanitizedLayout, { Tool = toolName, Pad = padName })
+				table.insert(sanitizedLayout, { Tool = toolName, Pad = padName, IsRobuxExclusive = entry.IsRobuxExclusive == true })
 			end
 		end
 		data.Layout = sanitizedLayout
@@ -3139,13 +3163,14 @@ local function InitializePlayer(player)
 	if player:FindFirstChild("StarterGear") then player.StarterGear:ClearAllChildren() end
 
 	if data.Inventory then
-		for _, toolName in pairs(data.Inventory) do
-			if type(toolName) == "string" then
+		for _, storedItem in pairs(data.Inventory) do
+			local record = normalizeStoredCarRecord(storedItem)
+			local toolName = record and record.ToolId
+			if toolName then
 				local restoreOk, restoreMessage = giveTool(player, toolName, {
-					BypassStorageLimit = true,
-					Source = "DataLoad",
-					SuppressDirty = true,
-					SuppressIndexMark = true,
+					BypassStorageLimit = true, IsRobuxExclusive = record.IsRobuxExclusive,
+					ExclusiveDisplayName = record.IsRobuxExclusive and ("Exclusive (" .. toolName:gsub(" Item$", "") .. ")") or nil,
+					Source = "DataLoad", SuppressDirty = true, SuppressIndexMark = true,
 				})
 				if not restoreOk then
 					warn("⚠️ [DATA] Failed to restore saved tool for " .. player.Name .. ": " .. tostring(toolName) .. " (" .. tostring(restoreMessage) .. ")")

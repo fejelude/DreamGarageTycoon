@@ -201,74 +201,41 @@ local function getGlobalSeedID()
 end
 
 local function generateStockConfiguration(seedValue)
-	local rng          = Random.new(seedValue)
+	local rng = Random.new(seedValue)
 	local featuredFlags = {}
-	local stockLimits  = {}
-	local poolKeys     = {}
-	local poolWeights  = {}
-	local totalWeight  = 0
+	local stockLimits = {}
+	local poolKeys = {}
+	local poolWeights = {}
+	local totalWeight = 0
 
+	-- Luck changes only selection weights. It never changes the tier's stock-roll count.
 	local luckMultiplier = GlobalLuckService.GetMultiplier()
 	local luckAdjustedWeights = GlobalLuckUtil.ApplyToWeights(CAR_WEIGHTS, luckMultiplier)
 	for name, weight in pairs(luckAdjustedWeights) do
-		table.insert(poolKeys, name)
-		poolWeights[name] = weight
-		totalWeight += weight
+		weight = math.max(0, math.floor(tonumber(weight) or 0))
+		if weight > 0 then
+			table.insert(poolKeys, name)
+			poolWeights[name] = weight
+			totalWeight += weight
+		end
 	end
 
 	if totalWeight <= 0 or #poolKeys == 0 then
 		return { Featured = featuredFlags, Limits = stockLimits }
 	end
 
-	-- Dopamine-driven variable rewards & near-miss mechanics
-	-- Pick 1 to 3 cars to be featured
-	local numToPick = 1
-	local multiRoll = rng:NextNumber()
-	if multiRoll > 0.95 then
-		numToPick = 3
-	elseif multiRoll > 0.80 then
-		numToPick = 2
-	end
-
-	local tempPoolKeys = {}
-	for _, k in ipairs(poolKeys) do table.insert(tempPoolKeys, k) end
-
-	for i = 1, numToPick do
-		if #tempPoolKeys == 0 then break end
-
-		local currentTotalWeight = 0
-		for _, car in ipairs(tempPoolKeys) do
-			currentTotalWeight += poolWeights[car]
-		end
-
-		local roll = rng:NextInteger(1, currentTotalWeight)
-		local current = 0
-		local pickedIdx = nil
-		local picked = nil
-
-		for idx, car in ipairs(tempPoolKeys) do
-			current += poolWeights[car]
-			if roll <= current then
-				picked = car
-				pickedIdx = idx
+	-- Every unit is an independent weighted roll. Repeats stack naturally, while
+	-- low-weight cars remain unlikely both to appear and to win multiple rolls.
+	local stockRollCount = rng:NextInteger(2, 3)
+	for _ = 1, stockRollCount do
+		local roll = rng:NextInteger(1, totalWeight)
+		local cumulative = 0
+		for _, carName in ipairs(poolKeys) do
+			cumulative += poolWeights[carName]
+			if roll <= cumulative then
+				featuredFlags[carName] = true
+				stockLimits[carName] = (stockLimits[carName] or 0) + 1
 				break
-			end
-		end
-
-		if picked then
-			table.remove(tempPoolKeys, pickedIdx)
-			featuredFlags[picked] = true
-
-			-- Variable stock and near-miss
-			local stockRoll = rng:NextNumber()
-			if stockRoll > 0.98 then
-				-- Near miss! Appears sold out immediately
-				stockLimits[picked] = 0
-			elseif stockRoll > 0.90 then
-				-- Jackpot! More stock
-				stockLimits[picked] = MAX_STOCK + rng:NextInteger(1, 2)
-			else
-				stockLimits[picked] = MAX_STOCK
 			end
 		end
 	end

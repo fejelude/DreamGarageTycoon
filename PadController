@@ -25,6 +25,8 @@ local CONSTANTS = {
 -- 📂 ASSETS
 local CarModels = ServerStorage:WaitForChild("CarModels")
 local CarTools = ServerStorage:WaitForChild("CarTools")
+local RobuxExclusiveCarModels = ServerStorage:FindFirstChild("RobuxExclusiveCarModels")
+local RobuxExclusiveCarTools = ServerStorage:FindFirstChild("RobuxExclusiveCarTools")
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
 -- 📚 MODULES
@@ -45,12 +47,14 @@ local function getPadNumber(padObject)
 	return tonumber(num) or 1 -- Default to 1 if name format is weird
 end
 
-local function safeFindCarTool(targetName)
+local function safeFindCarTool(targetName, isExclusive)
 	if not targetName then return nil end
 	local cleanName = targetName:gsub(" Item", ""):gsub("Item", "")
 
-	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}) do
-		local folder = CarTools:FindFirstChild(folderName)
+	local root = isExclusive == true and RobuxExclusiveCarTools or CarTools
+	if not root then return nil end
+	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Mythical"}) do
+		local folder = root:FindFirstChild(folderName)
 		if folder then
 			for _, tool in ipairs(folder:GetChildren()) do
 				if tool.Name == targetName or tool.Name == cleanName .. " Item" or tool.Name == cleanName then
@@ -62,12 +66,13 @@ local function safeFindCarTool(targetName)
 	return nil
 end
 
-local function safeFindCarModel(targetName)
+local function safeFindCarModel(targetName, isExclusive)
 	if not targetName then return nil end
 	local cleanName = targetName:gsub(" Item", ""):gsub("Item", "")
 
-	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}) do
-		local folder = CarModels:FindFirstChild(folderName)
+	local root = isExclusive == true and RobuxExclusiveCarModels or CarModels
+	if not root then return nil end
+	for _, folderName in ipairs({"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Mythical"}) do		local folder = root:FindFirstChild(folderName)
 		if folder then
 			for _, model in ipairs(folder:GetChildren()) do
 				if model.Name == targetName or model.Name == cleanName then
@@ -79,16 +84,16 @@ local function safeFindCarModel(targetName)
 	return nil
 end
 
-local function FindModelNameFromTool(toolName)
+local function FindModelNameFromTool(toolName, isExclusive)
 	if not toolName or typeof(toolName) ~= "string" then return nil end
 
-	local model = safeFindCarModel(toolName)
+	local model = safeFindCarModel(toolName, isExclusive)
 	if model then return model.Name end
 
 	local clean = toolName:gsub(" Item", ""):gsub("Item", "")
 	if CarStats and CarStats.Cars and CarStats.Cars[clean] then
 		local stats = CarStats.Cars[clean]
-		local fallbackModel = safeFindCarModel(stats.Name)
+		local fallbackModel = safeFindCarModel(stats.Name, isExclusive)
 		if fallbackModel then return fallbackModel.Name end
 	end
 	return nil
@@ -276,13 +281,18 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 	-- Note: The check secureToolId ~= tool.Name was circular since a client can spoof both properties.
 	-- The true security layer happens here, where safeFindCarModel strictly validates the given ID
 	-- directly against the real, server-locked ServerStorage hierarchy folders.
-	local realModelName = FindModelNameFromTool(secureToolId)
-	local realCar = realModelName and safeFindCarModel(realModelName)
+	local isExclusive = tool:GetAttribute("IsRobuxExclusive") == true
+	local realModelName = FindModelNameFromTool(secureToolId, isExclusive)
+	local realCar = realModelName and safeFindCarModel(realModelName, isExclusive)
 
 	if realCar then
 		-- Fix 8b: Close `removeToolFromPlayer` Security Gap
 		-- Use secureToolId for removal, not tool.Name (which could be spoofed to steal another item)
-		local removed = removeToolFromPlayer(player, secureToolId)
+		local removed = false
+		if tool.Parent == player.Character or tool.Parent == player.Backpack then tool:Destroy(); removed = true end
+		for _, mirror in ipairs(player.StarterGear:GetChildren()) do
+			if mirror:GetAttribute("ToolId") == secureToolId and mirror:GetAttribute("IsRobuxExclusive") == isExclusive then mirror:Destroy(); break end
+		end
 
 		if removed then
 			local success, result = pcall(function()
@@ -294,6 +304,8 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 				linkedCarVal.Value = result
 				result:SetAttribute("OwnerUserId", player.UserId)
 				result:SetAttribute("CarGUID", tostring(player.UserId) .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000,9999)))
+				result:SetAttribute("BaseCarId", secureToolId:gsub(" Item$", ""))
+				result:SetAttribute("IsRobuxExclusive", isExclusive)
 
 				-- Update State immediately and refresh every placed car display because
 				-- Mythical CPS can depend on the best non-Mythical car on the base.
@@ -318,7 +330,7 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 			else
 				warn("⚠️ Spawn Failed! Refunding item to " .. player.Name)
 				-- Refund using the SECURE ID, not the tool name
-				local originalTool = safeFindCarTool(secureToolId)
+				local originalTool = safeFindCarTool(secureToolId, isExclusive)
 
 				if originalTool then
 					local backpackClone = originalTool:Clone()
@@ -327,7 +339,9 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 						clone:SetAttribute("IssuedByServer", true)
 						clone:SetAttribute("IssuedAt", os.time())
 						clone:SetAttribute("IssuedId", HttpService:GenerateGUID(false))
-						clone:SetAttribute("ToolId", originalTool.Name)
+						clone:SetAttribute("ToolId", secureToolId)
+						clone:SetAttribute("IsRobuxExclusive", isExclusive)
+						if isExclusive then clone:SetAttribute("ExclusiveDisplayName", "Exclusive (" .. secureToolId:gsub(" Item$", "") .. ")"); clone.Name = clone:GetAttribute("ExclusiveDisplayName") end
 						clone.CanBeDropped = false
 					end
 					backpackClone.Parent = player.Backpack
@@ -360,7 +374,9 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 	end
 
 	local carName = carToRemove.Name
-	local foundTool = FindToolFromModelName(carName)
+	local isExclusive = carToRemove:GetAttribute("IsRobuxExclusive") == true
+	local baseCarId = carToRemove:GetAttribute("BaseCarId") or carName
+	local foundTool = isExclusive and safeFindCarTool(baseCarId, true) or FindToolFromModelName(carName)
 
 	if foundTool then
 		local backpackClone = foundTool:Clone()
@@ -369,7 +385,9 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 			clone:SetAttribute("IssuedByServer", true)
 			clone:SetAttribute("IssuedAt", os.time())
 			clone:SetAttribute("IssuedId", HttpService:GenerateGUID(false))
-			clone:SetAttribute("ToolId", foundTool.Name)
+			clone:SetAttribute("ToolId", baseCarId)
+			clone:SetAttribute("IsRobuxExclusive", isExclusive)
+			if isExclusive then clone:SetAttribute("ExclusiveDisplayName", "Exclusive (" .. baseCarId:gsub(" Item$", "") .. ")"); clone.Name = clone:GetAttribute("ExclusiveDisplayName") end
 			clone.CanBeDropped = false
 		end
 		backpackClone.Parent = player.Backpack

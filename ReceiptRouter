@@ -390,45 +390,31 @@ end
 -- 🚗 HELPER: Give a car tool immediately upon purchase
 -- ============================================================================
 local function giveCarTool(targetPlayer, carName, receiptInfo, isGift, buyerPlayer)
-	local CarTools = ServerStorage:FindFirstChild("CarTools")
-	local tool = CarTools and (CarTools:FindFirstChild(carName, true) or CarTools:FindFirstChild(carName .. " Item", true))
-	if not tool then
-		warn("⚠️ Car Tool missing from ServerStorage: " .. carName)
-		return false
+	local exclusiveTools = ServerStorage:FindFirstChild("RobuxExclusiveCarTools")
+	local exclusiveModels = ServerStorage:FindFirstChild("RobuxExclusiveCarModels")
+	local tool = exclusiveTools and (exclusiveTools:FindFirstChild(carName, true) or exclusiveTools:FindFirstChild(carName .. " Item", true))
+	local model = exclusiveModels and (exclusiveModels:FindFirstChild(carName, true) or exclusiveModels:FindFirstChild(carName:gsub(" Item$", ""), true))
+	if not tool or not model then
+		warn(string.format("[ReceiptRouter] Robux Exclusive configuration missing for '%s': %s%s. Expected ServerStorage > RobuxExclusiveCarTools / RobuxExclusiveCarModels.", carName, tool and "" or "Tool ", model and "" or "Model"))
+		return false, "Robux Exclusive assets missing; receipt will retry"
 	end
 
 	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
-	if not TycoonAdminAPI then
-		warn("⚠️ TycoonAdminAPI missing!")
-		return false
-	end
-
+	if not TycoonAdminAPI then return false, "TycoonAdminAPI missing" end
 	local attributes = {
-		IssuedByServer = true,
-		IssuedAt = os.time(),
-		ToolId = tool.Name,
-		BypassStorageLimit = true,
+		IsRobuxExclusive = true, BaseCarId = carName,
+		ExclusiveDisplayName = "Exclusive (" .. carName:gsub(" Item$", "") .. ")",
 		Source = isGift and "RobuxGift" or "RobuxPurchase",
-		ReceiptPurchaseId = receiptInfo.PurchaseId,
-		ReceiptProductId = receiptInfo.ProductId,
+		ReceiptPurchaseId = receiptInfo.PurchaseId, ReceiptProductId = receiptInfo.ProductId,
 	}
-
 	if isGift and buyerPlayer then
 		attributes.GiftSenderUserId = buyerPlayer.UserId
 		attributes.GiftReceiverUserId = targetPlayer.UserId
 	end
-
-	local invokeOk, giveResult, giveMessage = safeInvoke(TycoonAdminAPI, 5, "GiveTool", targetPlayer, tool.Name, attributes)
-	if not invokeOk or giveResult ~= true then
-		return false, giveMessage or giveResult or "GiveTool failed"
-	end
-
+	local invokeOk, giveResult, giveMessage = safeInvoke(TycoonAdminAPI, 5, "GiveTool", targetPlayer, carName, attributes)
+	if not invokeOk or giveResult ~= true then return false, giveMessage or giveResult or "GiveTool failed" end
 	local saveOk, saveMessage = savePlayerNow(targetPlayer, 12)
-	if not saveOk then
-		warn("Robux car save failed for " .. targetPlayer.Name .. ": " .. tostring(saveMessage))
-		return false, "Save failed"
-	end
-
+	if not saveOk then return false, "Save failed: " .. tostring(saveMessage) end
 	return true, giveMessage == "Already granted" and "Already granted" or nil
 end
 

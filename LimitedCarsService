@@ -133,7 +133,7 @@ local function grantCar(product, player, receiptInfo, buyerPlayer)
 	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
 	if not api then return false, "TycoonAdminAPI missing" end
 	local isGift = buyerPlayer and buyerPlayer ~= player
-	local attrs = { IssuedByServer = true, IssuedAt = now(), BypassStorageLimit = true, Source = isGift and "RobuxGift" or "LimitedCarsShop", ReceiptPurchaseId = receiptInfo.PurchaseId, ReceiptProductId = receiptInfo.ProductId }
+	local attrs = { IsRobuxExclusive = true, BaseCarId = product.CarId, ExclusiveDisplayName = "Exclusive (" .. product.CarId .. ")", Source = isGift and "RobuxGift" or "LimitedCarsShop", ReceiptPurchaseId = receiptInfo.PurchaseId, ReceiptProductId = receiptInfo.ProductId }
 	if isGift then
 		attrs.GiftSenderUserId = buyerPlayer.UserId
 		attrs.GiftReceiverUserId = player.UserId
@@ -152,6 +152,14 @@ end
 function Service.ProcessReceipt(receiptInfo, giftTarget)
 	local product = Config.GetProductByProductId(receiptInfo.ProductId)
 	if not product then return false, "Unknown limited product", false end
+	local toolsRoot = ServerStorage:FindFirstChild("RobuxExclusiveCarTools")
+	local modelsRoot = ServerStorage:FindFirstChild("RobuxExclusiveCarModels")
+	local tool = toolsRoot and (toolsRoot:FindFirstChild(product.CarId, true) or toolsRoot:FindFirstChild(product.CarId .. " Item", true))
+	local model = modelsRoot and modelsRoot:FindFirstChild(product.CarId, true)
+	if not tool or not model then
+		warn(string.format("[LimitedCarsService] Robux Exclusive configuration missing for '%s': %s%s. Expected ServerStorage > RobuxExclusiveCarTools / RobuxExclusiveCarModels.", product.CarId, tool and "" or "Tool ", model and "" or "Model"))
+		return false, "Robux Exclusive assets missing; receipt will retry", false
+	end
 	local key = receiptKey(receiptInfo)
 	local buyer = Players:GetPlayerByUserId(receiptInfo.PlayerId)
 	local player = giftTarget or buyer
