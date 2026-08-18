@@ -43,8 +43,11 @@ function IndexConfig.GetExclusiveEntries()
 				Key = IndexConfig.GetExclusiveId(baseCarId),
 				BaseCarId = baseCarId,
 				Data = {
-					Name = (limitedMetadata and limitedMetadata.ExclusiveDisplayName) or IndexConfig.GetExclusiveId(baseCarId),
-					Rarity = product.Rarity or (limitedMetadata and limitedMetadata.Rarity) or stats.Rarity,
+					-- Presentation-only label; the Key remains the persisted Exclusive identity.
+					Name = "🌟 " .. baseCarId,
+					-- CarStats drives the Normal Index styling, so using it here guarantees
+					-- Exclusive variants receive the exact same rarity gradient/background.
+					Rarity = stats.Rarity,
 					Price = (limitedMetadata and limitedMetadata.RobuxPrice) or stats.Price,
 					Image = (limitedMetadata and limitedMetadata.ExclusiveImage) or stats.Image,
 				},
