@@ -636,7 +636,7 @@ local function openRewards()
 	setMainFrameVisible(true)
 
 	promptedForLikeThisOpen = false
-	safePlayNamed("Open")
+	safePlayNamed("RewardsOpen")
 
 	if camera then
 		TweenService:Create(camera, FOV_TWEEN, {

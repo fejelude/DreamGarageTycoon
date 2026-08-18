@@ -453,8 +453,8 @@ local function init()
 		isShopOpen = true
 
 		setFocusMode(true) 
-		Kit.Sound:Play("Open")
 		gui.Enabled = true 
+		UIAudioConfig.PlayNPCShopOpen()
 
 		-- 🛠️ FIX: Mask the ugly Studio placeholder text immediately
 		local _, _, _, timerLbl = getUI()

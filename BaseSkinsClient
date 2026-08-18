@@ -347,7 +347,7 @@ local function setOpen(value)
 			{ Size = 24 }
 		):Play()
 
-		UIAudioConfig.PlayShopOpen()
+		UIAudioConfig.PlayNPCShopOpen()
 	else
 		main.Visible = false
 		gui.Enabled = false

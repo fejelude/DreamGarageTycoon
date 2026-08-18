@@ -91,7 +91,7 @@ end
 -- ============================================================================
 -- PUBLIC: SetupButton — lightweight version, no info frame
 -- ============================================================================
-function UIButtonUtils.SetupButton(button, onClickCallback)
+function UIButtonUtils.SetupButton(button, onClickCallback, options)
 	if not button or not button:IsA("GuiButton") then return end
 	if button:GetAttribute("UIButtonUtilsBound") then return end
 	button:SetAttribute("UIButtonUtilsBound", true)
@@ -103,7 +103,9 @@ function UIButtonUtils.SetupButton(button, onClickCallback)
 	button.Activated:Connect(function()
 		if isDebouncing then return end
 		isDebouncing = true
-		UIAudioConfig.PlayClick()
+		if not (options and options.SuppressClickSound) then
+			UIAudioConfig.PlayClick()
+		end
 		if onClickCallback then onClickCallback() end
 		task.wait(0.3)
 		isDebouncing = false

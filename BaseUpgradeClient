@@ -571,6 +571,7 @@ local function setVisible(isOpen)
 	if not frame then return end
 
 	if isOpen then
+		if gui.Enabled and frame.Visible then return end
 		toggleOtherGuis(true)
 		toggleNamedGuiObjects(true, "FriendBoost") 
 		setBlur(true)                               
@@ -578,7 +579,7 @@ local function setVisible(isOpen)
 		SetupShop()
 		gui.Enabled = true
 		frame.Visible = true
-		if Kit and Kit.Sound then Kit.Sound:Play("Open") end
+		UIAudioConfig.PlayNPCShopOpen()
 	else
 		gui.Enabled = false
 		frame.Visible = false
@@ -620,4 +621,3 @@ task.spawn(function()
 	end
 	SetupShop()
 end)
-

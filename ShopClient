@@ -268,7 +268,9 @@ local function submitCode()
 	end
 end
 
-UIButtonUtils.SetupButton(openButton, openShop)
+-- The shop bell played by openShop is the sole audio response for this action;
+-- suppress the standard button pop that would otherwise overlap it.
+UIButtonUtils.SetupButton(openButton, openShop, { SuppressClickSound = true })
 UIButtonUtils.SetupButton(closeButton, closeShop)
 UIButtonUtils.SetupButton(featuredButton, scrollToFeaturedCars)
 UIButtonUtils.SetupButton(verifyButton, submitCode)
