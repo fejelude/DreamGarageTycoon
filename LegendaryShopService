@@ -76,9 +76,9 @@ local MAX_INTERACTION_DISTANCE     = 20
 local OPEN_REQUEST_COOLDOWN_SECONDS = 1
 
 
-local RANK_VALUES = { Player = 0, VIP = 1, ["VIP+"] = 2, MVP = 3, ["MVP+"] = 4, ["MVP++"] = 5 }
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 local function hasRequiredRank(player)
-	return (RANK_VALUES[player:GetAttribute("Rank") or "Player"] or 0) >= (RANK_VALUES["MVP+"] or 0)
+	return RankConfig.PlayerCanAccessShop(player, "Legendary")
 end
 
 -- =========================

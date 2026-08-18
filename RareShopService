@@ -187,10 +187,8 @@ local function recordRankPurchase(player, carName)
 	end
 end
 
-local REQUIRED_RANK = RankConfig.GetRequiredRankForShop("Rare")
-
 local function hasRequiredRank(player)
-	return RankConfig.PlayerMeetsRank(player:GetAttribute("Rank") or RankConfig.DefaultRankName, REQUIRED_RANK)
+	return RankConfig.PlayerCanAccessShop(player, "Rare")
 end
 
 -- =========================

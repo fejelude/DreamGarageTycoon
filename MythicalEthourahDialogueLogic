@@ -12,6 +12,7 @@ local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig"))
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
@@ -62,22 +63,8 @@ local isLeaving = false
 -- ============================================================================
 -- 👑 RANK HELPER
 -- ============================================================================
-local RANK_VALUES = {
-	["VIP"] = 1,
-	["VIP+"] = 2,
-	["MVP"] = 3,
-	["MVP+"] = 4,
-	["MVP++"] = 5
-}
-
-local function getPlayerRankValue()
-	local rank = player:GetAttribute("Rank")
-	return RANK_VALUES[rank] or 0
-end
-
-local function hasRequiredRank(requiredRankName)
-	local requiredValue = RANK_VALUES[requiredRankName] or 0
-	return getPlayerRankValue() >= requiredValue
+local function hasRequiredRank()
+	return RankConfig.PlayerCanAccessShop(player, "Mythical")
 end
 
 local isOpeningShop = false
@@ -485,7 +472,7 @@ local function startInteraction(npcModel)
 
 			setButtonsState(false)
 
-			if not hasRequiredRank("MVP++") then
+			if not hasRequiredRank() then
 				local msgs = {
 					"Nah bro, you ain't ready for this heat. Hit <font color='#FF4444'><b>MVP++</b></font> or step off.",
 					"Come back when you actually matter on god. <font color='#FF4444'><b>MVP++</b></font> is the baseline here.",

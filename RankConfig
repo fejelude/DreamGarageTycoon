@@ -6,6 +6,7 @@ local RankConfig = {
 	BaseStorageSlots = 5,
 	DefaultResourceMultiplier = 1,
 	DefaultRankName = "Player",
+	ExclusiveAccessAttribute = "OwnsExclusiveGamePass",
 	-- DefaultWithdrawalLimit intentionally stays nil so banking uses its existing default.
 
 	Order = { "VIP", "VIP+", "MVP", "MVP+", "MVP++" },
@@ -120,7 +121,12 @@ function RankConfig.GetRequiredRankForShop(shopName)
 	return RankConfig.ShopRequirements[shopName]
 end
 
-function RankConfig.PlayerCanAccessShop(playerRank, shopName)
+function RankConfig.PlayerCanAccessShop(player, shopName)
+	if player and player:GetAttribute(RankConfig.ExclusiveAccessAttribute) == true then
+		return true
+	end
+
+	local playerRank = player and player:GetAttribute("Rank") or RankConfig.DefaultRankName
 	return RankConfig.PlayerMeetsRank(playerRank, RankConfig.GetRequiredRankForShop(shopName))
 end
 

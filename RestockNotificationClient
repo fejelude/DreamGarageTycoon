@@ -10,6 +10,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players           = game:GetService("Players")
 local UIAudioConfig    = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local RankConfig       = require(ReplicatedStorage:WaitForChild("RankConfig"))
 
 -- ============================================================
 -- CONSTANTS
@@ -24,20 +25,6 @@ local COLORS = {
 	Legendary = "#FFBE0B",
 	Mythic    = "#FF006E",
 	All       = "#FFD700",
-}
-
--- Rank access table
-local RANK_VALUES = {
-	["Player"] = 0, ["VIP"] = 1, ["VIP+"] = 2,
-	["MVP"]    = 3, ["MVP+"] = 4, ["MVP++"] = 5,
-}
-local SHOP_REQUIREMENTS = {
-	Common    = "Player",
-	Uncommon  = "VIP",
-	Rare      = "VIP+",
-	Epic      = "MVP",
-	Legendary = "MVP+",
-	Mythic    = "MVP++",
 }
 
 local DISPLAY_TIME     = 6  -- seconds the notification stays visible
@@ -95,11 +82,8 @@ local function getRarityColor(rarity: string): string
 end
 
 local function hasAccessToShop(shopRarity: string): (boolean, string)
-	local requiredRankName = SHOP_REQUIREMENTS[shopRarity] or "Player"
-	local requiredValue    = RANK_VALUES[requiredRankName]  or 0
-	local playerRankName   = player:GetAttribute("Rank")    or "Player"
-	local playerValue      = RANK_VALUES[playerRankName]    or 0
-	return (playerValue >= requiredValue), requiredRankName
+	local requiredRankName = RankConfig.GetRequiredRankForShop(shopRarity) or RankConfig.DefaultRankName
+	return RankConfig.PlayerCanAccessShop(player, shopRarity), requiredRankName
 end
 
 local function playRestockSound()
