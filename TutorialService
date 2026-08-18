@@ -19,6 +19,8 @@ assert(progressAPI:IsA("BindableFunction"), "TutorialProgressAPI must be a Binda
 
 local locks = {}
 local lastRequest = {}
+local lastRestart = {}
+local RESTART_COOLDOWN_SECONDS = 5
 
 local function snapshot(player)
 	return {
@@ -72,7 +74,22 @@ actionRemote.OnServerInvoke = function(player, action)
 	if now - (lastRequest[player] or 0) < 0.12 then return false, "TooFast", snapshot(player) end
 	lastRequest[player] = now
 	local stage = player:GetAttribute("TutorialStage")
-	if action == Config.ClientActions.Accept then
+	if action == Config.ClientActions.Restart then
+		if locks[player] then return false, "AlreadyProcessing", snapshot(player) end
+		if now - (lastRestart[player] or 0) < RESTART_COOLDOWN_SECONDS then
+			return false, "RestartCooldown", snapshot(player)
+		end
+		lastRestart[player] = now
+		locks[player] = true
+		local ok, changed = pcall(function()
+			return dataAPI:Invoke("RestartTutorial", player)
+		end)
+		locks[player] = nil
+		if not ok or changed ~= true then return false, "SaveUnavailable", snapshot(player) end
+		local restartedState = snapshot(player)
+		stateChanged:FireClient(player, restartedState)
+		return true, restartedState
+	elseif action == Config.ClientActions.Accept then
 		return update(player, Config.Stage.Prompt, Config.Stage.Welcome, { Answered = true, Active = true })
 	elseif action == Config.ClientActions.Skip then
 		return update(player, Config.Stage.Prompt, Config.Stage.Skipped, { Answered = true, Skipped = true, Active = false })
@@ -110,4 +127,4 @@ progressAPI.OnInvoke = function(action, player, detail)
 	return update(player, currentStage, currentStage, fields)
 end
 
-Players.PlayerRemoving:Connect(function(player) locks[player] = nil; lastRequest[player] = nil end)
+Players.PlayerRemoving:Connect(function(player) locks[player] = nil; lastRequest[player] = nil; lastRestart[player] = nil end)

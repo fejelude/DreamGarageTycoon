@@ -4,6 +4,16 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TextChatService = game:GetService("TextChatService")
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+local EVENT_MESSAGES_ATTRIBUTE = "Setting_EventMessagesEnabled"
+
+local function eventMessagesEnabled()
+	-- Missing values belong to pre-migration/loading profiles and intentionally
+	-- default to ON. The server subsequently supplies the persisted attribute.
+	return player:GetAttribute(EVENT_MESSAGES_ATTRIBUTE) ~= false
+end
 
 local Remotes = ReplicatedStorage:WaitForChild("GiftRemotes", 10)
 if not Remotes then return end
@@ -82,6 +92,7 @@ end
 
 local function handleGlobalBroadcast(data)
 	if type(data) ~= "table" or not data.Type then return end
+	if not eventMessagesEnabled() then return end
 
 	if data.Type == "BoostStack" then
 		local id = tostring(data.Id or "")
