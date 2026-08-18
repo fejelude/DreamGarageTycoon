@@ -335,10 +335,10 @@ function CarCPSDisplayUtils.GetEffectiveModelBaseCPS(carModel, cpsLabel, player)
 
 	local stats = carModel and getStatForObjectName(carModel.Name)
 	if stats and CarStats.IsMythicalCar(stats) then
-		return CarStats.CalculateEffectiveBaseCPS(stats, CarCPSDisplayUtils.GetBestPlacedBaseCPSForModel(carModel, player))
+		return CarStats.CalculateOwnedCarBaseCPS(stats, CarCPSDisplayUtils.GetBestPlacedBaseCPSForModel(carModel, player), carModel:GetAttribute("IsRobuxExclusive") == true)
 	end
 
-	return baseCPS
+	return CarStats.ApplyRobuxExclusiveBonus(baseCPS, stats, carModel and carModel:GetAttribute("IsRobuxExclusive") == true)
 end
 
 function CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
@@ -408,6 +408,8 @@ function CarCPSDisplayUtils.UpdateToolCPSDisplay(tool, playersService)
 	if not baseCPS then return end
 
 	local player = getToolOwner(tool, playersService)
+	local stats = getStatForObjectName((tool:GetAttribute("BaseCarId") or tool:GetAttribute("ToolId") or tool.Name):gsub(" Item$", ""))
+	baseCPS = CarStats.ApplyRobuxExclusiveBonus(baseCPS, stats, tool:GetAttribute("IsRobuxExclusive") == true)
 	local multiplier = CarCPSDisplayUtils.GetPlayerEarningsMultiplier(player)
 
 	cpsLabel.Text = CarCPSDisplayUtils.FormatCPS(baseCPS * multiplier)

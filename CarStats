@@ -373,6 +373,28 @@ CarStats.Cars = {
 	}
 }
 
+-- One authoritative mapping for the permanent Robux-exclusive base-income boost.
+CarStats.RobuxExclusiveBonusByRarity = {
+	Common = 0.05,
+	Uncommon = 0.075,
+	Rare = 0.10,
+	Epic = 0.125,
+	Legendary = 0.15,
+	Mythic = 0.20,
+	Mythical = 0.20,
+}
+
+function CarStats.GetRobuxExclusiveBonus(carNameOrStats)
+	local stats = typeof(carNameOrStats) == "table" and carNameOrStats or CarStats.GetCarStats(carNameOrStats)
+	return stats and (CarStats.RobuxExclusiveBonusByRarity[stats.Rarity] or 0) or 0
+end
+
+function CarStats.ApplyRobuxExclusiveBonus(baseCPS, carNameOrStats, isExclusive)
+	baseCPS = tonumber(baseCPS) or 0
+	if isExclusive ~= true then return baseCPS end
+	return baseCPS * (1 + CarStats.GetRobuxExclusiveBonus(carNameOrStats))
+end
+
 local normalizedCarLookup = {}
 
 local function normalizeCarName(name)
@@ -425,6 +447,14 @@ function CarStats.CalculateEffectiveBaseCPS(carNameOrStats, bestPlacedBaseCPS)
 
 	local scaledCPS = (tonumber(bestPlacedBaseCPS) or 0) * mythicalMultiplier
 	return math.max(baseCPS, scaledCPS)
+end
+
+
+function CarStats.CalculateOwnedCarBaseCPS(carNameOrStats, bestPlacedBaseCPS, isExclusive)
+	local stats = typeof(carNameOrStats) == "table" and carNameOrStats or CarStats.GetCarStats(carNameOrStats)
+	if not stats then return nil end
+	local effectiveBase = CarStats.CalculateEffectiveBaseCPS(stats, bestPlacedBaseCPS)
+	return CarStats.ApplyRobuxExclusiveBonus(effectiveBase, stats, isExclusive)
 end
 
 return CarStats

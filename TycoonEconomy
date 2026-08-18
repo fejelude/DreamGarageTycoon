@@ -299,7 +299,7 @@ local function processPadsInFolder(padsFolder)
 		local stats = getCarStats(linkedCar.Name)
 
 		if stats then
-			folderCPS = folderCPS + CarStats.CalculateEffectiveBaseCPS(stats, bestPlacedBaseCPS)
+			folderCPS = folderCPS + CarStats.CalculateOwnedCarBaseCPS(stats, bestPlacedBaseCPS, linkedCar:GetAttribute("IsRobuxExclusive") == true)
 		else
 			local pad = placed.Pad
 			if not pad:GetAttribute("WarnedMissing") then

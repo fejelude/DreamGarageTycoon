@@ -197,6 +197,17 @@ pcall(function()
 	CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5))
 end)
 
+local function baseCarNameFromInventoryKey(key)
+	return tostring(key or ""):match("^Exclusive %((.+)%)$") or key
+end
+
+local function inventoryKeyForTool(tool)
+	local raw = tostring(tool:GetAttribute("ToolId") or tool.Name or "")
+	local base = raw:gsub(" Item$", ""):gsub("Item$", "")
+	if not CarStats or not CarStats.Cars or not CarStats.Cars[base] then return nil end
+	return tool:GetAttribute("IsRobuxExclusive") == true and ("Exclusive (" .. base .. ")") or base
+end
+
 local RankConfig = nil
 pcall(function()
 	RankConfig = require(ReplicatedStorage:WaitForChild("RankConfig", 5))
@@ -422,7 +433,7 @@ end
 
 local function getCarStats(carName)
 	if not carName or not CarStats or not CarStats.Cars then return nil end
-	return (CarStats.GetCarStats and CarStats.GetCarStats(carName)) or CarStats.Cars[carName]
+	return (CarStats.GetCarStats and CarStats.GetCarStats(carName)) or CarStats.Cars[baseCarNameFromInventoryKey(carName)]
 end
 
 local function isMythicalCarStats(stats)
@@ -542,8 +553,9 @@ refreshSlotVisual = function(slotIndex)
 	local slot = slotsFolder:FindFirstChild("Slot" .. slotIndex)
 	if not slot then return end
 	local carName = hotbarData[slotIndex]
-	if carName and CarStats and CarStats.Cars and CarStats.Cars[carName] then
-		local stats = CarStats.Cars[carName]
+	local baseCarName = baseCarNameFromInventoryKey(carName)
+	if carName and CarStats and CarStats.Cars and CarStats.Cars[baseCarName] then
+		local stats = CarStats.Cars[baseCarName]
 		slot.Image              = stats.Image or CONFIG.Images.Default
 		slot.ImageTransparency  = 0
 		slot.BackgroundColor3   = Color3.fromRGB(255, 255, 255)
@@ -586,7 +598,7 @@ function updateHotbarUI()
 		if carName then
 			local count         = counts[carName] or 0
 			local alreadyAssigned = assignedCounts[carName] or 0
-			if count <= 0 or not CarStats or not CarStats.Cars or not CarStats.Cars[carName] or alreadyAssigned >= count then
+			if count <= 0 or not CarStats or not CarStats.Cars or not CarStats.Cars[baseCarNameFromInventoryKey(carName)] or alreadyAssigned >= count then
 				hotbarData[i] = nil
 				changed = true
 			else
@@ -642,8 +654,8 @@ function updateHotbarUI()
 				Instance.new("UICorner", countBadge).CornerRadius = UDim.new(0, 6)
 			end
 
-			if carName and CarStats and CarStats.Cars[carName] then
-				local stats = CarStats.Cars[carName]
+			if carName and CarStats and CarStats.Cars[baseCarNameFromInventoryKey(carName)] then
+				local stats = CarStats.Cars[baseCarNameFromInventoryKey(carName)]
 				slot.Image              = stats.Image or CONFIG.Images.Default
 				slot.ImageTransparency  = 0
 				slot.BackgroundColor3   = Color3.fromRGB(255, 255, 255)
@@ -724,16 +736,15 @@ local function activateSlot(index)
 		for _, child in ipairs(bp:GetChildren()) do
 			if child:IsA("Tool") and child:GetAttribute("ToolId") then
 				local id = child:GetAttribute("ToolId")
-				local clean = id:gsub(" Item$", ""):gsub("Item$", "")
-				if clean == carName or id == carName then tool = child; break end
+				local key = inventoryKeyForTool(child)
+				if key == carName then tool = child; break end
 			end
 		end
 		if not tool then
 			for _, child in ipairs(char:GetChildren()) do
 				if child:IsA("Tool") and child:GetAttribute("ToolId") then
-					local id = child:GetAttribute("ToolId")
-					local clean = id:gsub(" Item$", ""):gsub("Item$", "")
-					if clean == carName or id == carName then tool = child; break end
+					local key = inventoryKeyForTool(child)
+					if key == carName then tool = child; break end
 				end
 			end
 		end
@@ -1259,7 +1270,7 @@ local function adjustCount(tool, delta)
 
 	local clean = toolToCleanName[tool]
 	if not clean then
-		clean = normalizeToolName(tool.Name)
+		clean = inventoryKeyForTool(tool)
 		if not clean then return end
 		toolToCleanName[tool] = clean
 	end
@@ -1520,7 +1531,7 @@ function renderCurrentTab()
 		local displayCount = count - assignedCount
 
 		if displayCount > 0 then
-			local stats = CarStats.Cars[carName]
+			local stats = CarStats.Cars[baseCarNameFromInventoryKey(carName)]
 			if stats and stats.Rarity == currentTab then
 				renderedAny = true
 
@@ -1965,8 +1976,8 @@ if slotsFolder then
 
 						isDragging = true
 						local carName = hotbarData[i]
-						if carName and CarStats and CarStats.Cars and CarStats.Cars[carName] then
-							local stats = CarStats.Cars[carName]
+						if carName and CarStats and CarStats.Cars and CarStats.Cars[baseCarNameFromInventoryKey(carName)] then
+							local stats = CarStats.Cars[baseCarNameFromInventoryKey(carName)]
 							-- FIX #32: do not clear hotbarData here. Only mutate data
 							-- inside the drop handler after success is confirmed.
 							startDrag(
