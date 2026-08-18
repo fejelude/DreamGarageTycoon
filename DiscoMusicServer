@@ -38,12 +38,12 @@ local emitterPart = script.Parent
 
 -- Keep the club present without overpowering the 0.5-volume game theme.
 -- This value is also replicated to the client mixer and is its fade ceiling.
-local VOLUME = 0.3
+local VOLUME = 0.2
 
 -- The client music controller activates this source throughout the whole zone.
 -- Keeping the positional sound at full strength within the same radius avoids
 -- applying a second distance fade on top of the controller's crossfade.
-local DISCO_RADIUS = 500
+local DISCO_RADIUS = 250
 local MIN_DISTANCE = DISCO_RADIUS
 
 -- A small falloff beyond the controller boundary prevents audio leaking if a
