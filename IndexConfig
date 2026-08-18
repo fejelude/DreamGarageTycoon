@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local LimitedCarsConfig = require(ReplicatedStorage:WaitForChild("LimitedCarsConfig"))
+local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
 
 local IndexConfig = {}
 
@@ -22,19 +23,30 @@ end
 
 function IndexConfig.GetExclusiveEntries()
 	local entries, seen = {}, {}
+	local limitedMetadataByCarId = {}
 	for _, product in pairs(LimitedCarsConfig.Products or {}) do
 		local baseCarId = IndexConfig.NormalizeBaseCarId(product.CarId)
+		if baseCarId then limitedMetadataByCarId[baseCarId] = product end
+	end
+
+	-- GiftProductRegistry is also the receipt router's shared source of truth for
+	-- every standard shop Developer Product car. LimitedCarsConfig contributes
+	-- the globally-limited routes registered by that same registry.
+	for _, product in pairs(GiftProductRegistry.GetAllProducts()) do
+		local isCarProduct = product.Kind == "Car" or product.Kind == "LimitedCar"
+		local baseCarId = isCarProduct and IndexConfig.NormalizeBaseCarId(product.CarName) or nil
 		local stats = baseCarId and CarStats.Cars[baseCarId]
 		if stats and not seen[baseCarId] then
+			local limitedMetadata = limitedMetadataByCarId[baseCarId]
 			seen[baseCarId] = true
 			table.insert(entries, {
 				Key = IndexConfig.GetExclusiveId(baseCarId),
 				BaseCarId = baseCarId,
 				Data = {
-					Name = product.ExclusiveDisplayName or IndexConfig.GetExclusiveId(baseCarId),
-					Rarity = product.Rarity or stats.Rarity,
-					Price = product.RobuxPrice or stats.Price,
-					Image = product.ExclusiveImage or stats.Image,
+					Name = (limitedMetadata and limitedMetadata.ExclusiveDisplayName) or IndexConfig.GetExclusiveId(baseCarId),
+					Rarity = product.Rarity or (limitedMetadata and limitedMetadata.Rarity) or stats.Rarity,
+					Price = (limitedMetadata and limitedMetadata.RobuxPrice) or stats.Price,
+					Image = (limitedMetadata and limitedMetadata.ExclusiveImage) or stats.Image,
 				},
 			})
 		end
