@@ -29,7 +29,7 @@ local MUSIC_STATE = {
 }
 
 local THEME_VOLUME = 0.5
-local DEFAULT_DISCO_VOLUME = 0.5
+local DEFAULT_DISCO_VOLUME = 0.3
 local DEFAULT_DISCO_RADIUS = 500
 local FADE_DURATION = 2
 local MUTE_FADE_DURATION = 0.45
@@ -156,6 +156,20 @@ local function synchronizeDiscoTrack()
 		return
 	end
 
+	-- The replicated server playlist publishes timing for every player, but a
+	-- client whose session preference is muted must never use that timing to
+	-- restart a local disco Sound (including after a respawn or stream-in).
+	if isMuted() or shouldHoldForLoading() then
+		for sound in pairs(discoSounds) do
+			cancelSoundTween(sound)
+			sound.Volume = 0
+			if sound.IsPlaying then
+				sound:Stop()
+			end
+		end
+		return
+	end
+
 	-- Sound:Play normally replicates from the server. This is a recovery path
 	-- for late joins or delayed playback replication, not a second playlist.
 	local expectedPosition = math.max(0, Workspace:GetServerTimeNow() - startedAt)
@@ -262,8 +276,30 @@ applyMusicState = function(force, fadeDuration)
 	local themeTarget = nextState == MUSIC_STATE.NORMAL and THEME_VOLUME or 0
 	local discoTarget = nextState == MUSIC_STATE.DISCO and discoVolume or 0
 
-	if not shouldHoldForLoading() and not musicObject.IsPlaying then
+	if nextState == MUSIC_STATE.DISABLED then
+		-- Muting is authoritative and immediate with respect to playback state.
+		-- Cancelling first prevents an older boundary crossfade from restoring
+		-- either source after the setting has changed.
+		cancelSoundTween(musicObject)
+		musicObject.Volume = 0
+		if musicObject.IsPlaying then
+			musicObject:Stop()
+		end
+		for sound in pairs(discoSounds) do
+			cancelSoundTween(sound)
+			sound.Volume = 0
+			if sound.IsPlaying then
+				sound:Stop()
+			end
+		end
+		return
+	end
+
+	if not musicObject.IsPlaying then
 		musicObject:Play()
+	end
+	if nextState == MUSIC_STATE.DISCO then
+		synchronizeDiscoTrack()
 	end
 	fadeSound(musicObject, themeTarget, duration)
 
@@ -317,7 +353,7 @@ local function switchThemeTrack(newTrackId)
 			return
 		end
 
-		if not musicObject.IsPlaying then
+		if desiredState() ~= MUSIC_STATE.DISABLED and not musicObject.IsPlaying then
 			musicObject:Play()
 		end
 		applyMusicState(true, audibleTheme and FADE_DURATION * 0.5 or MUTE_FADE_DURATION)

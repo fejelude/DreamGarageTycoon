@@ -166,6 +166,9 @@ local SHOP_OPEN_VARIANTS = {
 	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.12, Variance = 0.005, Dedupe = 0.18 },
 }
 local NAMED_SFX = {
+	-- Rewards retains its original pop; it is deliberately separate from the
+	-- shop bell so world-triggered interfaces cannot invoke shop audio.
+	RewardsOpen = { Id = "rbxassetid://9083627113", Volume = 0.6, Pitch = 1.0, Variance = 0.03, Dedupe = 0.25 },
 	BuySuccess = { Id = "rbxassetid://140072726814802", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 0.12 },
 	BuyFail = { Id = "rbxassetid://83517496538471", Volume = 0.5, Pitch = 1.0, Variance = 0.03, Dedupe = 0.12 },
 	PaidReroll = { Id = "rbxassetid://140072726814802", Volume = 1.0, Pitch = 4.0, Variance = 0, Dedupe = 0.3 },
@@ -192,7 +195,7 @@ local function playOneShot(id, volume, pitch, variance)
 end
 
 function UIAudioConfig.PlayShopOpen()
-	if not canPlayDedupe("Open", 0.18) then return end
+	if not canPlayDedupe("ShopOpen", 0.18) then return end
 
 	local variantIndex = math.random(1, #SHOP_OPEN_VARIANTS)
 	local data = SHOP_OPEN_VARIANTS[variantIndex]
@@ -200,11 +203,6 @@ function UIAudioConfig.PlayShopOpen()
 end
 
 function UIAudioConfig.PlayNamed(name)
-	if name == "Open" then
-		UIAudioConfig.PlayShopOpen()
-		return
-	end
-
 	local data = NAMED_SFX[name]
 	if not data then return end
 
