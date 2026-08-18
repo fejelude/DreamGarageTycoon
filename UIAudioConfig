@@ -19,6 +19,7 @@ UIAudioConfig.CLICK_VOLUME  = 1.8
 UIAudioConfig.ROBUX_VOLUME  = 1.5
 UIAudioConfig.RANK_QUEST_COMPLETE_VOLUME = 0.8
 UIAudioConfig.SHOP_OPEN_VOLUME = 0.64
+UIAudioConfig.NPC_SHOP_OPEN_VOLUME = 0.6
 
 -- Sound asset IDs
 local HOVER_SFX_ID = "rbxassetid://73899820361873"
@@ -26,6 +27,7 @@ local CLICK_SFX_ID = "rbxassetid://126294184545314"
 local ROBUX_SFX_ID = "rbxassetid://117986449113759"   -- 💎 Robux purchase initiation sound
 local RANK_QUEST_COMPLETE_SFX_ID = "rbxassetid://140350065916052"
 local SHOP_OPEN_SFX_ID = "rbxassetid://127488139302452"
+local NPC_SHOP_OPEN_SFX_ID = "rbxassetid://5021926317"
 
 -- Hover sounds need to overlap during fast mouse movement across many buttons.
 -- A single shared Sound restarts itself when :Play() is called repeatedly, which
@@ -200,6 +202,14 @@ function UIAudioConfig.PlayShopOpen()
 	local variantIndex = math.random(1, #SHOP_OPEN_VARIANTS)
 	local data = SHOP_OPEN_VARIANTS[variantIndex]
 	playOneShot(data.Id, UIAudioConfig.SHOP_OPEN_VOLUME, data.Pitch, data.Variance)
+end
+
+-- Play only after an NPC/shop controller has made its interface visible.
+-- A separate key keeps this cue isolated from the main Shop bell while still
+-- suppressing duplicate remote-open deliveries in the same interaction.
+function UIAudioConfig.PlayNPCShopOpen()
+	if not canPlayDedupe("NPCShopOpen", 0.18) then return end
+	playOneShot(NPC_SHOP_OPEN_SFX_ID, UIAudioConfig.NPC_SHOP_OPEN_VOLUME, 1, 0)
 end
 
 function UIAudioConfig.PlayNamed(name)

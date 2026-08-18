@@ -1381,8 +1381,8 @@ local function init()
 		local sessionId      = beginShopSession()
 		isShopOpen           = true
 		setFocusMode(true)
-		Kit.Sound:Play("Open")
 		gui.Enabled          = true
+		UIAudioConfig.PlayNPCShopOpen()
 		shopFeedback:Clear()
 		mainFrame.Visible    = false
 		activeCarFocus       = nil

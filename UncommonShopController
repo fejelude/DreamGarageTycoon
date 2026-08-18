@@ -445,9 +445,10 @@ local function init()
 	end)
 
 	RemoteOpen.OnClientEvent:Connect(function()
+		if gui.Enabled then return end
 		setFocusMode(true) 
-		Kit.Sound:Play("Open")
 		gui.Enabled = true 
+		UIAudioConfig.PlayNPCShopOpen()
 
 		if timerLabel then
 			timerLabel.Text = "Loading Restock Timer..."
@@ -469,6 +470,5 @@ local function init()
 end
 
 if player.Character then init() else player.CharacterAdded:Wait(); init() end
-
 
 
