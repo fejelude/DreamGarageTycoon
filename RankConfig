@@ -7,7 +7,6 @@ local RankConfig = {
 	DefaultResourceMultiplier = 1,
 	DefaultRankName = "Player",
 	ExclusiveAccessAttribute = "OwnsExclusiveGamePass",
-	-- DefaultWithdrawalLimit intentionally stays nil so banking uses its existing default.
 
 	Order = { "VIP", "VIP+", "MVP", "MVP+", "MVP++" },
 
@@ -40,7 +39,7 @@ local RankConfig = {
 			{ Id = "Requirement4", Type = "Hold", Currency = "Wallet", Amount = 750000 },
 			{ Id = "Requirement5", Type = "GiftSent", Amount = 1 },
 		},
-		Benefits = { Multiplier = 2, ShopAccess = "Uncommon", ChatTag = "VIP", ExtraStorage = 2, WithdrawalLimit = 5000000000 },
+		Benefits = { Multiplier = 2, ShopAccess = "Uncommon", ChatTag = "VIP", ExtraStorage = 2 },
 		Announcement = {
 			Template = "✨ <font color='#5CE1FF'><b>{DisplayName}</b></font> has reached the <font color='#47C7FF'><b>VIP</b></font> milestone! ✨",
 		},
@@ -51,10 +50,10 @@ local RankConfig = {
 			{ Id = "Requirement1", Type = "Buy", Car = "Riva", Shop = "Common", Amount = 1 },
 			{ Id = "Requirement2", Type = "Buy", Car = "Vapid", Shop = "Uncommon", Amount = 2 },
 			{ Id = "Requirement3", Type = "Buy", Car = "BlackHead", Shop = "Uncommon", Amount = 1 },
-			{ Id = "Requirement4", Type = "Hold", Currency = "Bank", Amount = 67000000000 },
+			{ Id = "Requirement4", Type = "Hold", Currency = "Wallet", Amount = 67000000000 },
 			{ Id = "Requirement5", Type = "GiftSent", Amount = 5 },
 		},
-		Benefits = { Multiplier = 3, ShopAccess = "Rare", ChatTag = "VIP+", ExtraStorage = 3, WithdrawalLimit = 100000000000 },
+		Benefits = { Multiplier = 3, ShopAccess = "Rare", ChatTag = "VIP+", ExtraStorage = 3 },
 		Announcement = {
 			Template = "💎 <font color='#58F7D3'><b>{DisplayName}</b></font> ascended to <font color='#00E6A8'><b>VIP+</b></font> — premium status unlocked! 💎",
 		},
@@ -68,7 +67,7 @@ local RankConfig = {
 			{ Id = "Requirement4", Type = "Buy", Car = "Corvo", Shop = "Rare", Amount = 1 },
 			{ Id = "Requirement5", Type = "Pad", PadNumber = 12, Amount = 1 },
 		},
-		Benefits = { Multiplier = 4, ShopAccess = "Epic", ChatTag = "MVP", ExtraStorage = 4, WithdrawalLimit = 1000000000000 },
+		Benefits = { Multiplier = 4, ShopAccess = "Epic", ChatTag = "MVP", ExtraStorage = 4 },
 		Announcement = {
 			Template = "🏆 <font color='#FFD166'><b>{DisplayName}</b></font> has become an <font color='#FFB703'><b>MVP</b></font> — the garage empire is rising! 🏆",
 		},
@@ -79,10 +78,10 @@ local RankConfig = {
 			{ Id = "Requirement1", Type = "Buy", Car = "Sirene", Shop = "Epic", Amount = 1 },
 			{ Id = "Requirement2", Type = "Buy", Car = "Classy", Shop = "Epic", Amount = 1 },
 			{ Id = "Requirement3", Type = "GiftReceivedUnique", Amount = 5, UniquePlayers = 5, Description = "Receive 5 cars as gifts from 5 different players." },
-			{ Id = "Requirement4", Type = "Hold", Currency = "Bank", Amount = 2000000000000 },
+			{ Id = "Requirement4", Type = "Hold", Currency = "Wallet", Amount = 2000000000000 },
 			{ Id = "Requirement5", Type = "GiftSentUnique", UniquePlayers = 8 },
 		},
-		Benefits = { Multiplier = 5, ShopAccess = "Legendary", ChatTag = "MVP+", ExtraStorage = 5, WithdrawalLimit = 10000000000000 },
+		Benefits = { Multiplier = 5, ShopAccess = "Legendary", ChatTag = "MVP+", ExtraStorage = 5 },
 		Announcement = {
 			Template = "🔥🌟 <font color='#FF7AF5'><b>{DisplayName}</b></font> shattered expectations and claimed <font color='#D946EF'><b>MVP+</b></font> glory! The server is witnessing greatness! 🌟🔥",
 		},
@@ -96,7 +95,7 @@ local RankConfig = {
 			{ Id = "Requirement4", Type = "CraftOrObtain", Car = "La Rossa", Amount = 1, Description = "Craft or obtain 1 La Rossa." },
 			{ Id = "Requirement5", Type = "BaseLevel", Level = 2, Amount = 1 },
 		},
-		Benefits = { Multiplier = 6, ShopAccess = "Mythical", ChatTag = "MVP++", ExtraStorage = 6, WithdrawalLimit = 100000000000000 },
+		Benefits = { Multiplier = 6, ShopAccess = "Mythical", ChatTag = "MVP++", ExtraStorage = 6 },
 		Announcement = {
 			Template = "👑⚡ <font color='#FFFFFF'><b>SERVER LEGEND:</b></font> <font color='#FF3D00'><b>{DisplayName}</b></font> has reached <font color='#FFD700'><b>MVP++</b></font>! <font color='#B388FF'><b>The ultimate Dream Garage milestone has been conquered!</b></font> ⚡👑",
 		},
@@ -147,7 +146,6 @@ end
 function RankConfig.GetBenefitsForRank(rankName)
 	local benefits = {
 		Multiplier = RankConfig.DefaultResourceMultiplier,
-		WithdrawalLimit = RankConfig.DefaultWithdrawalLimit,
 		StorageSlots = RankConfig.BaseStorageSlots,
 		ShopAccess = nil,
 		ChatTag = RankConfig.DefaultRankName,
@@ -157,7 +155,6 @@ function RankConfig.GetBenefitsForRank(rankName)
 		local rank = RankConfig.Ranks[orderedRank]
 		if rank and RankConfig.GetRankValue(orderedRank) <= RankConfig.GetRankValue(rankName) then
 			benefits.Multiplier = rank.Benefits.Multiplier or benefits.Multiplier
-			benefits.WithdrawalLimit = rank.Benefits.WithdrawalLimit or benefits.WithdrawalLimit
 			benefits.ShopAccess = rank.Benefits.ShopAccess or benefits.ShopAccess
 			benefits.ChatTag = rank.Benefits.ChatTag or benefits.ChatTag
 		end

@@ -19,11 +19,6 @@
 --   ingredient cars, disconnect, and rejoin with both the sacrifice progress AND
 --   the cars restored in their inventory (free duplication).
 --
--- FIX (Cash resets to 0 on rejoin):
---   MoneyManager.GetBalance now reads Cash from HiddenStats instead of leaderstats.
---   Previously every save wrote 0 for Bank because Cash was no longer in leaderstats,
---   causing the balance to be wiped on every rejoin.
---
 -- FIX (Inventory Doubles on Every Rejoin — CRITICAL):
 --   The save() function previously scanned both Backpack AND StarterGear.
 --   Because giveTool() places a clone in both containers, each tool was recorded
@@ -150,6 +145,10 @@ local SERVER_SESSION_TOKEN = game.JobId .. ":" .. HttpService:GenerateGUID(false
 local MAX_INVENTORY_SIZE = 500
 local MAX_ROBUX_RECEIPT_HISTORY = 300
 local DEFAULT_CAR_STORAGE_LIMIT = 5
+-- Versioned, one-way migration. This marker is written in the same UpdateAsync
+-- that acquires the profile lease, making Bank/ATM -> Wallet conversion atomic
+-- and preventing a reconnect or server crash from crediting legacy funds twice.
+local WALLET_ECONOMY_MIGRATION_VERSION = 1
 local STARTER_PACK_CAR_NAME = "Senator"
 local STARTER_PACK_WALLET_CASH = 800000
 local MAX_LAYOUT_SIZE = 200
@@ -179,6 +178,12 @@ local function sanitizeTutorialData(raw)
 	local stage = VALID_TUTORIAL_STAGES[raw.Stage] and raw.Stage or DEFAULT_TUTORIAL_DATA.Stage
 	local completed, skipped = raw.Completed == true, raw.Skipped == true
 	if completed then stage = "Completed" elseif skipped then stage = "Skipped" end
+	-- Banking tutorial screens no longer have a valid gameplay action. Existing
+	-- saves parked on any of them resume at the purchase introduction instead of
+	-- being soft-locked behind a retired transfer or ATM objective.
+	if stage == "Part5" or stage == "Part6" or stage == "Withdraw" then
+		stage = "Part7"
+	end
 	return {
 		Answered = raw.Answered == true or completed or skipped,
 		Skipped = skipped, Active = raw.Active == true and not completed and not skipped,
@@ -723,19 +728,10 @@ end
 local MoneyManager = {}
 function MoneyManager.GetBalance(player, currencyType)
 	if not player then return 0 end
-
-	-- ✅ FIX: Cash lives in HiddenStats, everything else in leaderstats
-	if currencyType == "Cash" then
-		local hs = player:FindFirstChild("HiddenStats")
-		if not hs then return 0 end
-		local val = hs:FindFirstChild("Cash")
-		return val and val.Value or 0
-	else
-		local ls = player:FindFirstChild("leaderstats")
-		if not ls then return 0 end
-		local val = ls:FindFirstChild(currencyType)
-		return val and val.Value or 0
-	end
+	local ls = player:FindFirstChild("leaderstats")
+	if not ls then return 0 end
+	local val = ls:FindFirstChild(currencyType)
+	return val and val.Value or 0
 end
 
 -- ----------------------------------------------------------------------------
@@ -2231,8 +2227,6 @@ save = function(player, isClosing, force)
 
 		local currentSettings = getSessionSettings(player)
 
-		local currentTransferUsed = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitUsed")) or 0))
-		local currentTransferResetAt = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitResetAt")) or 0))
 		local currentRebirth = math.max(0, math.floor(tonumber(player:GetAttribute("Rebirth")) or 0))
 		local currentOfflinePremiumPendingAmount = math.max(0, math.floor(tonumber(player:GetAttribute("OfflinePremiumPendingAmount")) or 0))
 		local currentTabletDoublePendingAmount = math.max(0, math.floor(tonumber(player:GetAttribute("TabletDoublePendingAmount")) or 0))
@@ -2429,9 +2423,7 @@ save = function(player, isClosing, force)
 		local sacrificeOccurredThisSession = session.SacrificeOccurred == true
 		local intentionalEmptyInventory = session.IntentionalEmptyInventory == true
 		local explicitClear = session.ExplicitClear == true
-		local snapshotBank = MoneyManager.GetBalance(player, "Cash")
 		local snapshotWallet = MoneyManager.GetBalance(player, "Wallet")
-		local snapshotATM = MoneyManager.GetBalance(player, "ATMBalance")
 		local snapshotOfflineTabletCarry = math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
 		local profileKey = session.ProfileKey
 		local leaseToken = session.LeaseToken
@@ -2508,9 +2500,10 @@ save = function(player, isClosing, force)
 
 					local finalPending = snapshotOfflineTabletCarry + currentPendingInTycoon
 
-					oldData.Bank       = snapshotBank
+					oldData.Bank       = 0
 					oldData.Wallet     = snapshotWallet
-					oldData.ATMBalance = snapshotATM
+					oldData.ATMBalance = 0
+					oldData.WalletEconomyMigrationVersion = WALLET_ECONOMY_MIGRATION_VERSION
 					oldData.Inventory = finalInventory
 					oldData.IntentionalEmptyInventory = intentionalEmptyInventory
 					oldData.Layout = finalLayout
@@ -2536,8 +2529,8 @@ save = function(player, isClosing, force)
 					oldData.InventorySlotBonus = currentInventorySlotBonus
 					if currentRankDataAvailable then oldData.RankData = currentRankData end
 					oldData.HotbarSlots = currentHotbar
-					oldData.BankTransferLimitUsed = currentTransferUsed
-					oldData.BankTransferLimitResetAt = currentTransferResetAt
+					oldData.BankTransferLimitUsed = nil
+					oldData.BankTransferLimitResetAt = nil
 					oldData.Rebirth = currentRebirth
 					oldData.OfflinePremiumPendingAmount = currentOfflinePremiumPendingAmount
 					oldData.TabletDoublePendingAmount = currentTabletDoublePendingAmount
@@ -2825,14 +2818,10 @@ local function InitializePlayer(player)
 
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
 	local hs = Instance.new("Folder"); hs.Name = "HiddenStats"; hs.Parent = player
-	local cash   = Instance.new("NumberValue"); cash.Name   = "Cash";       cash.Parent   = hs
 	local wallet = Instance.new("NumberValue"); wallet.Name = "Wallet";     wallet.Parent = ls
-	local atm    = Instance.new("NumberValue"); atm.Name    = "ATMBalance"; atm.Parent    = ls
 
 	local function setDirty() markDirty(player) end
-	cash.Changed:Connect(setDirty)
 	wallet.Changed:Connect(setDirty)
-	atm.Changed:Connect(setDirty)
 
 	local session = SessionData[player]
 	local key = session.ProfileKey
@@ -2885,6 +2874,23 @@ local function InitializePlayer(player)
 					UpdatedAt = now,
 				}
 				current[PROFILE_LEASE_VERSION_FIELD] = leaseVersion
+
+				local migrationVersion = math.max(0, math.floor(tonumber(current.WalletEconomyMigrationVersion) or 0))
+				if migrationVersion < WALLET_ECONOMY_MIGRATION_VERSION then
+					local function legacyMoney(value)
+						value = tonumber(value) or 0
+						if value ~= value or value == math.huge or value == -math.huge then return 0 end
+						return math.max(0, math.floor(value))
+					end
+					current.Wallet = legacyMoney(current.Wallet)
+						+ legacyMoney(current.Bank)
+						+ legacyMoney(current.ATMBalance)
+					current.Bank = 0
+					current.ATMBalance = 0
+					current.BankTransferLimitUsed = nil
+					current.BankTransferLimitResetAt = nil
+					current.WalletEconomyMigrationVersion = WALLET_ECONOMY_MIGRATION_VERSION
+				end
 				return current
 			end)
 		end)
@@ -2988,8 +2994,7 @@ local function InitializePlayer(player)
 	data.Rank                   = type(data.Rank) == "string" and data.Rank or "Player"
 	data.InventorySlotBonus     = math.max(0, math.floor(tonumber(data.InventorySlotBonus) or 0))
 	data.RankData               = type(data.RankData) == "table" and data.RankData or {}
-	data.BankTransferLimitUsed  = data.BankTransferLimitUsed  or 0
-	data.BankTransferLimitResetAt = data.BankTransferLimitResetAt or 0
+	data.WalletEconomyMigrationVersion = math.max(0, math.floor(tonumber(data.WalletEconomyMigrationVersion) or 0))
 	data.Rebirth = math.max(0, math.floor(tonumber(data.Rebirth) or 0))
 	data.OfflinePremiumPendingAmount = math.max(0, math.floor(tonumber(data.OfflinePremiumPendingAmount) or 0))
 	data.TabletDoublePendingAmount = math.max(0, math.floor(tonumber(data.TabletDoublePendingAmount) or 0))
@@ -3027,9 +3032,7 @@ local function InitializePlayer(player)
 		return math.max(0, math.floor(value))
 	end
 
-	cash.Value   = sanitizeMoney(data.Bank)
 	wallet.Value = sanitizeMoney(data.Wallet)
-	atm.Value    = sanitizeMoney(data.ATMBalance)
 
 	SessionData[player].SettingsState = sanitizeSettings(data.Settings)
 	SessionData[player].StarterPackPurchased = data.StarterPackPurchased
@@ -3158,15 +3161,6 @@ local function InitializePlayer(player)
 	player:SetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE, data.FreeRewardsClaimed == true)
 	player:SetAttribute(PROMO_CODE_REDEEMED_ATTRIBUTE, HttpService:JSONEncode(SessionData[player].PromoCodesRedeemed))
 
-	local transferUsed = math.max(0, math.floor(tonumber(data.BankTransferLimitUsed) or 0))
-	local transferResetAt = math.max(0, math.floor(tonumber(data.BankTransferLimitResetAt) or 0))
-	if transferResetAt > 0 and os.time() >= transferResetAt then
-		transferUsed = 0
-		transferResetAt = 0
-	end
-	player:SetAttribute("BankTransferLimitUsed", transferUsed)
-	player:SetAttribute("BankTransferLimitResetAt", transferResetAt)
-
 	local rankPersistenceBindable = ServerStorage:FindFirstChild("RankPersistenceFunction")
 	if rankPersistenceBindable and rankPersistenceBindable:IsA("BindableFunction") then
 		data.RankData.LegacyRank = data.Rank
@@ -3197,8 +3191,6 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
 	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rank"):Connect(setDirty)
-	player:GetAttributeChangedSignal("BankTransferLimitUsed"):Connect(setDirty)
-	player:GetAttributeChangedSignal("BankTransferLimitResetAt"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rebirth"):Connect(setDirty)
 	player:GetAttributeChangedSignal("OfflinePremiumPendingAmount"):Connect(setDirty)
 	player:GetAttributeChangedSignal("TabletDoublePendingAmount"):Connect(setDirty)

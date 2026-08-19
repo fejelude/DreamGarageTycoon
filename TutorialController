@@ -91,8 +91,6 @@ isObjectiveAccessGui = function(gui)
 	local stage = state and state.Stage
 	if stage == Config.Stage.Inventory then
 		return gui.Name == "MainButtons" or gui:FindFirstChild("InventoryWindow", true) ~= nil
-	elseif stage == Config.Stage.Transfer then
-		return gui.Name == "MainButtons" or gui.Name == "BankGui" or gui:FindFirstChild("TransferFrame", true) ~= nil
 	end
 	return false
 end
@@ -196,20 +194,13 @@ local function awaitIndicator(stage, resolver)
 	end)
 end
 
-local function dialogueObstructing()
-	local gui = player.PlayerGui:FindFirstChild("UI_NPC_ATM_AfraiC4t")
-	local container = gui and gui:FindFirstChild("Frame_ATM_Container", true)
-	return gui ~= nil and gui.Enabled and container ~= nil and container.Visible
-end
-
 local function shopObstructing()
 	local gui = player.PlayerGui:FindFirstChild("LocalShopUI")
 	return gui ~= nil and gui.Enabled
 end
 
 local delays = {
-	[Config.Stage.ClaimIntro] = 5, [Config.Stage.Transfer] = 1,
-	[Config.Stage.WithdrawIntro] = 1, [Config.Stage.PurchaseIntro] = 5,
+	[Config.Stage.ClaimIntro] = 5, [Config.Stage.PurchaseIntro] = 5,
 	[Config.Stage.Finished] = 3,
 }
 
@@ -246,7 +237,6 @@ local function render(newState, force)
 	local stage = state and state.Stage
 	if stage == Config.Stage.PlaceCar then awaitIndicator(stage, function() return findTycoonIndicator("Pad") end); return end
 	if stage == Config.Stage.ClaimEarnings then awaitIndicator(stage, function() return findTycoonIndicator("Tablet") end); return end
-	if stage == Config.Stage.Withdraw then awaitIndicator(stage, function() return npcIndicator("AfraiC4t") end); return end
 	if stage == Config.Stage.PurchaseCar then awaitIndicator(stage, function() return npcIndicator("Itsmefeje") end); return end
 	local partName = Config.VisiblePartForStage[stage]
 	if not partName then return end
@@ -254,7 +244,7 @@ local function render(newState, force)
 	task.spawn(function()
 		if not waitForLoadingScreenToFinish(token) then return end
 		if delaySeconds > 0 then task.wait(delaySeconds) end
-		while token == renderToken and ((stage == Config.Stage.PurchaseIntro and dialogueObstructing()) or (stage == Config.Stage.Finished and shopObstructing())) do task.wait(0.2) end
+		while token == renderToken and stage == Config.Stage.Finished and shopObstructing() do task.wait(0.2) end
 		if token ~= renderToken then return end
 		local frame = main:FindFirstChild(partName)
 		if not frame then warn("[Tutorial] Missing " .. partName); return end
@@ -279,7 +269,6 @@ local function send(action)
 		local current = returned or (type(reason) == "table" and reason)
 		if current then state = current end
 		if reason == "InventoryRequired" then feedback.Part2:Failed("Open your Inventory before doing anything else!") end
-		if reason == "TransferRequired" then feedback.Part5:Failed("Transfer your earnings before continuing!") end
 	end
 end
 

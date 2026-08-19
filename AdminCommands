@@ -1,6 +1,6 @@
 -- Purpose: Advanced Minecraft-Style Admin Commands
 -- Runs on: Server (ServerScriptService)
--- Public API: /give, /remove, /clear, /fly, /tp, /wallet, /bank, /rank, /expulse event
+-- Public API: /give, /remove, /clear, /fly, /tp, /wallet, /rank, /expulse event
 -- Security: Strict ID Whitelist, Anti-Duplicate logic, Secure Data Wiping
 -- FIX: /rank command now pulls securely from ServerStorage.RankTags instead of Workspace.
 
@@ -393,39 +393,25 @@ Players.PlayerAdded:Connect(function(player)
 			for _, t in pairs(targets) do Action_SetFlight(t, false) end
 			print("✈️ Flight Disabled")
 
-			-- 💰 /wallet [player] [amount]  →  adds to Wallet (in leaderstats)
-			-- 💰 /bank   [player] [amount]  →  adds to Cash   (in HiddenStats)
-		elseif command == "/wallet" or command == "/bank" then
+			-- 💰 /wallet [player] [amount]  →  adds to the only spendable balance
+		elseif command == "/wallet" then
 			local selector = args[2]
 			local amount = parsePositiveMoney(args[3])
 			if not selector or not amount then
-				print("⚠️ Syntax: /wallet [selector] [positive amount] or /bank [selector] [positive amount]")
+				print("⚠️ Syntax: /wallet [selector] [positive amount]")
 				return
 			end
 
 			local targets = getTargets(player, selector)
 
 			for _, t in pairs(targets) do
-				if command == "/bank" then
-					-- ✅ FIX: Cash lives in HiddenStats, not leaderstats
-					local hs = t:FindFirstChild("HiddenStats")
-					local stat = hs and hs:FindFirstChild("Cash")
-					if stat then
-						local newBalance = addMoneySafely(stat, amount)
-						print(string.format("💰 Added $%.0f to %s's Bank (HiddenStats.Cash). New balance: $%.0f", amount, t.Name, newBalance))
-					else
-						warn("⚠️ HiddenStats.Cash not found for " .. t.Name)
-					end
+				local ls = t:FindFirstChild("leaderstats")
+				local stat = ls and ls:FindFirstChild("Wallet")
+				if stat then
+					local newBalance = addMoneySafely(stat, amount)
+					print(string.format("💰 Added $%.0f to %s's Wallet. New balance: $%.0f", amount, t.Name, newBalance))
 				else
-					-- Wallet stays in leaderstats, no change needed
-					local ls = t:FindFirstChild("leaderstats")
-					local stat = ls and ls:FindFirstChild("Wallet")
-					if stat then
-						local newBalance = addMoneySafely(stat, amount)
-						print(string.format("💰 Added $%.0f to %s's Wallet. New balance: $%.0f", amount, t.Name, newBalance))
-					else
-						warn("⚠️ leaderstats.Wallet not found for " .. t.Name)
-					end
+					warn("⚠️ leaderstats.Wallet not found for " .. t.Name)
 				end
 			end
 
