@@ -2308,11 +2308,6 @@ save = function(player, isClosing, force)
 		local currentFreeRewardsClaimed = player:GetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE) == true
 		local currentTutorial = sanitizeTutorialData(session.Tutorial)
 
-		if currentTransferResetAt > 0 and os.time() >= currentTransferResetAt then
-			currentTransferUsed = 0
-			currentTransferResetAt = 0
-		end
-
 		local inventory = {}
 		local invCount = 0
 		local seenInstances = {}
