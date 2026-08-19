@@ -1,5 +1,0 @@
--- Compatibility cleanup for the retired ATM teleport control.
-if script.Parent:IsA("GuiObject") then
-	script.Parent.Visible = false
-	script.Parent.Active = false
-end
