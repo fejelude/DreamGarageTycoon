@@ -16,7 +16,6 @@ local REMOTE_FUNCTION_NAME = "TeleportToPlaceFunction"
 local TELEPORT_PARTS_FOLDER_NAME = "TeleportParts"
 
 local VALID_DESTINATIONS = {
-	ATMTP = true,
 	CityTP = true,
 	EpicShopTP = true,
 	GarageTP = true,
@@ -31,7 +30,6 @@ local VALID_DESTINATIONS = {
 }
 
 local FALLBACK_DESTINATION_PART_NAMES = {
-	ATMTP = "ATM-teleport-pad",
 }
 
 local teleportFunction = ReplicatedStorage:WaitForChild(REMOTE_FUNCTION_NAME)

@@ -179,11 +179,11 @@ local function resolveOfflineIncomeRate(player, plot)
 end
 
 local function computeBaseOffline(player)
-	local hiddenStats = player:FindFirstChild("HiddenStats")
-	local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
+	local leaderstats = player:FindFirstChild("leaderstats")
+	local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 	local plot = getPlayerPlot(player)
 
-	if not plot or not bank then
+	if not plot or not wallet then
 		return false, 0
 	end
 
@@ -242,14 +242,14 @@ local function grant(player, amount)
 		return false, "No earnings available."
 	end
 
-	local hiddenStats = player:FindFirstChild("HiddenStats")
-	local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
+	local leaderstats = player:FindFirstChild("leaderstats")
+	local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 
-	if not bank then
-		return false, "Bank account not found."
+	if not wallet then
+		return false, "Wallet not found."
 	end
 
-	bank.Value += amount
+	wallet.Value += amount
 
 	return true, "Granted"
 end
@@ -318,16 +318,16 @@ local function claimPreparedSession(player, session)
 		success, message = grant(player, amount)
 
 		if success then
-			local hiddenStats = player:FindFirstChild("HiddenStats")
-			local bank = hiddenStats and hiddenStats:FindFirstChild("Cash")
-			local originalBank = bank and (bank.Value - amount) or nil
+			local leaderstats = player:FindFirstChild("leaderstats")
+			local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
+			local originalWallet = wallet and (wallet.Value - amount) or nil
 			local originalCarry = getTabletCarry(player)
 			session.claimed = true
 			clearTabletCarry(player)
 			if forceSave(player) then
 				message = "Claimed"
 			else
-				if bank and originalBank ~= nil then bank.Value = originalBank end
+				if wallet and originalWallet ~= nil then wallet.Value = originalWallet end
 				player:SetAttribute("OfflineTabletCarry", originalCarry)
 				session.claimed = false
 				success = false
