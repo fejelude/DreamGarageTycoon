@@ -1,4 +1,4 @@
--- Purpose: Gift UI brain with Bank UI flow. Prevents gifting items the target already owns.
+-- Purpose: Gift UI brain. Prevents gifting items the target already owns.
 -- Runs on: Client
 -- Location: StarterPlayerScripts
 -- Dependencies: Players, ReplicatedStorage, MarketplaceService, TweenService, Workspace, Debris, HttpService

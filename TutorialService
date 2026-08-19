@@ -51,16 +51,13 @@ local continueTransitions = {
 	[Config.Stage.Welcome] = Config.Stage.Inventory,
 	[Config.Stage.PlaceIntro] = Config.Stage.PlaceCar,
 	[Config.Stage.ClaimIntro] = Config.Stage.ClaimEarnings,
-	[Config.Stage.WithdrawIntro] = Config.Stage.Withdraw,
 	[Config.Stage.PurchaseIntro] = Config.Stage.PurchaseCar,
 	[Config.Stage.Finished] = Config.Stage.Completed,
 }
 
 local objectiveTransitions = {
 	[Config.Objective.CarPlaced] = { Config.Stage.PlaceCar, Config.Stage.ClaimIntro, "CarPlaced" },
-	[Config.Objective.EarningsClaimed] = { Config.Stage.ClaimEarnings, Config.Stage.Transfer, "EarningsClaimed" },
-	[Config.Objective.BankTransferred] = { Config.Stage.Transfer, Config.Stage.Transfer, "TransferComplete" },
-	[Config.Objective.ATMWithdrawn] = { Config.Stage.Withdraw, Config.Stage.PurchaseIntro, "ATMWithdrawn" },
+	[Config.Objective.EarningsClaimed] = { Config.Stage.ClaimEarnings, Config.Stage.PurchaseIntro, "EarningsClaimed" },
 	[Config.Objective.LocalCarPurchased] = { Config.Stage.PurchaseCar, Config.Stage.Finished, "LocalCarPurchased" },
 }
 
@@ -99,16 +96,15 @@ actionRemote.OnServerInvoke = function(player, action)
 		if stage == Config.Stage.Inventory then
 			if player:GetAttribute("TutorialInventoryOpened") ~= true then return false, "InventoryRequired", snapshot(player) end
 			return update(player, stage, Config.Stage.PlaceIntro)
-		elseif stage == Config.Stage.Transfer then
-			if player:GetAttribute("TutorialTransferComplete") ~= true then return false, "TransferRequired", snapshot(player) end
-			return update(player, stage, Config.Stage.WithdrawIntro)
+		elseif stage == Config.Stage.Transfer or stage == Config.Stage.WithdrawIntro or stage == Config.Stage.Withdraw then
+			-- Backward-compatible escape for an already-loaded legacy tutorial save.
+			return update(player, stage, Config.Stage.PurchaseIntro)
 		elseif stage == Config.Stage.Finished then
 			return update(player, stage, Config.Stage.Completed, { Active = false, Completed = true })
 		end
 		local nextStage = continueTransitions[stage]
 		if stage == Config.Stage.PlaceIntro and player:GetAttribute("TutorialCarPlaced") == true then nextStage = Config.Stage.ClaimIntro end
-		if stage == Config.Stage.ClaimIntro and player:GetAttribute("TutorialEarningsClaimed") == true then nextStage = Config.Stage.Transfer end
-		if stage == Config.Stage.WithdrawIntro and player:GetAttribute("TutorialATMWithdrawn") == true then nextStage = Config.Stage.PurchaseIntro end
+		if stage == Config.Stage.ClaimIntro and player:GetAttribute("TutorialEarningsClaimed") == true then nextStage = Config.Stage.PurchaseIntro end
 		if stage == Config.Stage.PurchaseIntro and player:GetAttribute("TutorialLocalCarPurchased") == true then nextStage = Config.Stage.Finished end
 		if nextStage then return update(player, stage, nextStage) end
 	end

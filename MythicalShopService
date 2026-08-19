@@ -497,7 +497,7 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 			local ls     = player:FindFirstChild("leaderstats")
 			local wallet = ls and ls:FindFirstChild("Wallet")
 			if not wallet               then return false, "Wallet Not Found" end
-			if wallet.Value < cost      then return false, "Insufficient Cash (Withdraw from ATM)" end
+			if wallet.Value < cost      then return false, "Insufficient Wallet funds" end
 
 			local originalWallet = wallet.Value
 			wallet.Value -= cost
