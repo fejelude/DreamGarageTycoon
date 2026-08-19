@@ -333,12 +333,16 @@ TabletEvent.OnServerEvent:Connect(function(player, action, plotName, requestId)
 		local amount = pendingVal.Value
 
 		if amount > 0 then
-			local hs = player:FindFirstChild("HiddenStats")
-			local bank = hs and hs:FindFirstChild("Cash")
-			if not bank then respondClaim(false, "MissingState"); return end
+			local leaderstats = player:FindFirstChild("leaderstats")
+			local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
+			if not wallet then respondClaim(false, "MissingState"); return end
+
+			-- The pending value and wallet live on the server and this handler never yields
+			-- between clearing one and crediting the other. Roblox event handlers cannot
+			-- interleave here, so concurrent/spam requests cannot grant the same amount twice.
 			pendingVal.Value = 0
 			local finalAmount = amount
-			bank.Value += finalAmount
+			wallet.Value += finalAmount
 
 			playerCooldowns[player] = os.clock()
 			respondClaim(true, finalAmount)
