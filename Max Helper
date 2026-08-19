@@ -1,3 +1,0 @@
--- Retired Bank/ATM client component. Kept as a no-op so legacy Studio instances
--- cannot expose or invoke the removed money flow; safe to delete from the place.
-return
