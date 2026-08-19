@@ -295,7 +295,7 @@ local function AttemptBuy(carName, scrollFrame)
 
 			if msg == "Slow down" or msg == "Purchase in progress" then
 				showFeedback("Too Fast!", FEEDBACK_COLORS.TooFast) 
-			elseif msg == "Insufficient Cash (Withdraw from ATM)" or msg == "Wallet Not Found" then
+			elseif msg == "Insufficient Wallet funds" or msg == "Wallet Not Found" then
 				showFeedback("Insufficient money", FEEDBACK_COLORS.FailCash) 
 			elseif msg == "Out of Stock" then
 				showFeedback("Out of Stock!", FEEDBACK_COLORS.FailCash)

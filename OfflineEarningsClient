@@ -146,7 +146,7 @@ local function claimAndClose(showSuccessMessage)
 	if ok and success then
 		baseAmount = 0
 		if showSuccessMessage then
-			setState(true, "$" .. formatMoney(amount) .. " has been transferred to your bank account.")
+			setState(true, "$" .. formatMoney(amount) .. " has been added to your Wallet.")
 			task.delay(1.4, function() closeUi(true) end)
 		else
 			closeUi(true)
@@ -186,7 +186,7 @@ end)
 premiumResult.OnClientEvent:Connect(function(success, msg, amount)
 	if success then
 		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
-		setState(true, "$" .. formatMoney(amount) .. " has been transferred to your bank account.")
+		setState(true, "$" .. formatMoney(amount) .. " has been added to your Wallet.")
 		task.delay(1.4, function() closeUi(true) end)
 	else
 		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
@@ -198,7 +198,7 @@ end)
 
 UIButtonUtils.SetupButton(exitButton, function()
 	-- Exit should still perform the standard 1x offline claim and show the same
-	-- bank-transfer confirmation as the normal Claim button.
+	-- Wallet-credit confirmation as the normal Claim button.
 	claimAndClose(true)
 end)
 
