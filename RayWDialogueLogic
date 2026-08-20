@@ -16,7 +16,7 @@ local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local leaderstats = player:WaitForChild("leaderstats", 10)
+local leaderstats = player:WaitForChild("leaderstats")
 local walletValue = leaderstats and leaderstats:WaitForChild("Wallet", 10)
 
 -- 📡 NETWORKING

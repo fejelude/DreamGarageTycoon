@@ -1757,6 +1757,16 @@ local function runLoadingScreen()
 		markLoadingTimeout()
 	end
 
+	-- game:IsLoaded() only covers replicated instances; it does not mean the
+	-- server has acquired and reconciled this player's DataStore profile. Keep
+	-- gameplay hidden and controls locked until TycoonDataHandler publishes the
+	-- authoritative ready flag. The server owns failure/lease-timeout handling
+	-- and kicks rather than exposing fabricated defaults.
+	while isAlive() and player.Parent and player:GetAttribute("TycoonDataLoaded") ~= true do
+		RunService.Heartbeat:Wait()
+	end
+	if not isAlive() or not player.Parent then return end
+
 	tweenProgressAndWait(PHASE_FINISH_TO, 1.0)
 	updateProgressBar(1)
 

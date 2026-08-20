@@ -2815,13 +2815,6 @@ local function InitializePlayer(player)
 		if session then session.HeldToolId = nil end
 	end)
 
-	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
-	local hs = Instance.new("Folder"); hs.Name = "HiddenStats"; hs.Parent = player
-	local wallet = Instance.new("NumberValue"); wallet.Name = "Wallet";     wallet.Parent = ls
-
-	local function setDirty() markDirty(player) end
-	wallet.Changed:Connect(setDirty)
-
 	local session = SessionData[player]
 	local key = session.ProfileKey
 	player:SetAttribute("DataStoreName", DATA_KEY)
@@ -3036,7 +3029,20 @@ local function InitializePlayer(player)
 		return math.max(0, math.floor(value))
 	end
 
+	-- Do not publish a temporary Wallet=0 while UpdateAsync is pending or a
+	-- previous server lease is being released. Client HUD/leaderboard scripts
+	-- wait for leaderstats, so parenting this folder only after the authoritative
+	-- profile is resolved prevents a slow join from looking like a data reset.
+	local ls = Instance.new("Folder")
+	ls.Name = "leaderstats"
+	local wallet = Instance.new("NumberValue")
+	wallet.Name = "Wallet"
 	wallet.Value = sanitizeMoney(data.Wallet)
+	wallet.Parent = ls
+	ls.Parent = player
+
+	local function setDirty() markDirty(player) end
+	wallet.Changed:Connect(setDirty)
 
 	SessionData[player].SettingsState = sanitizeSettings(data.Settings)
 	SessionData[player].StarterPackPurchased = data.StarterPackPurchased

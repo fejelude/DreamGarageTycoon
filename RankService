@@ -806,7 +806,7 @@ local function hookPlayer(player)
 	end
 
 	task.spawn(function()
-		local leaderstats = player:WaitForChild("leaderstats", 30)
+		local leaderstats = player:WaitForChild("leaderstats")
 		if not player.Parent or not PlayerConnections[player] then
 			return
 		end
