@@ -1159,6 +1159,41 @@ local function countMatchingTools(player, targetToolId)
 	return math.max(0, total - getHotbarReservationCount(player, targetToolId))
 end
 
+-- Resolve one authoritative crafting ingredient while protecting Robux
+-- Exclusive copies whenever a normal copy can satisfy the same base identity.
+-- IssuedId identifies the exact live inventory entry shown in confirmation.
+local function selectPreferredSacrificeTool(player, targetToolId)
+	if not player or type(targetToolId) ~= "string" then return nil end
+	local normal, exclusive = {}, {}
+	local backpack = player:FindFirstChild("Backpack")
+	if backpack then
+		for _, tool in ipairs(backpack:GetChildren()) do
+			if toolMatchesId(tool, targetToolId) and not isProtectedFromSacrifice(player, tool) then
+				table.insert(tool:GetAttribute("IsRobuxExclusive") == true and exclusive or normal, tool)
+			end
+		end
+	end
+
+	-- Hotbar slots store base identity rather than variant. Reserve valuable
+	-- Exclusive copies first so an ambiguous reservation can never force the
+	-- crafting selector to consume an Exclusive while a normal copy is eligible.
+	local reservations = getHotbarReservationCount(player, targetToolId)
+	while reservations > 0 and #exclusive > 0 do table.remove(exclusive); reservations -= 1 end
+	while reservations > 0 and #normal > 0 do table.remove(normal); reservations -= 1 end
+
+	local selected = normal[1] or exclusive[1]
+	if not selected then return nil end
+	local toolId = selected:GetAttribute("ToolId")
+	local isExclusive = selected:GetAttribute("IsRobuxExclusive") == true
+	return {
+		IssuedId = selected:GetAttribute("IssuedId"),
+		ToolId = toolId,
+		IsRobuxExclusive = isExclusive,
+		DisplayName = isExclusive and ("Exclusive (" .. tostring(toolId):gsub(" Item$", "") .. ")")
+			or tostring(toolId):gsub(" Item$", ""),
+	}
+end
+
 local function removeMatchingTools(player, targetToolId, requestedAmount)
 	if not player or not targetToolId then return 0 end
 
@@ -1206,13 +1241,16 @@ local function removeExactOwnedTool(player, tool)
 	if tool.Parent ~= backpack and tool.Parent ~= player.Character then return false end
 
 	local toolId = tool:GetAttribute("ToolId")
+	local isExclusive = tool:GetAttribute("IsRobuxExclusive") == true
 	if type(toolId) ~= "string" or toolId == "" then return false end
 	tool:Destroy()
 
 	local starterGear = player:FindFirstChild("StarterGear")
 	if starterGear then
 		for _, mirror in ipairs(starterGear:GetChildren()) do
-			if toolMatchesId(mirror, toolId) then
+			if toolMatchesId(mirror, toolId)
+				and (mirror:GetAttribute("IsRobuxExclusive") == true) == isExclusive
+			then
 				mirror:Destroy()
 				break
 			end
@@ -1226,6 +1264,25 @@ local function removeExactOwnedTool(player, tool)
 	end
 	markDirty(player)
 	return true, toolId
+end
+
+local function consumePreparedSacrificeTool(player, targetToolId, selection)
+	if type(selection) ~= "table" or type(selection.IssuedId) ~= "string" then return false end
+	local selectedNow = selectPreferredSacrificeTool(player, targetToolId)
+	if not selectedNow
+		or selectedNow.IssuedId ~= selection.IssuedId
+		or selectedNow.IsRobuxExclusive ~= (selection.IsRobuxExclusive == true)
+	then
+		return false
+	end
+
+	local backpack = player:FindFirstChild("Backpack")
+	for _, tool in ipairs(backpack and backpack:GetChildren() or {}) do
+		if tool:GetAttribute("IssuedId") == selection.IssuedId then
+			return removeExactOwnedTool(player, tool)
+		end
+	end
+	return false
 end
 
 
@@ -1986,6 +2043,19 @@ LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 		local ownedCount = countMatchingTools(player, targetToolId)
 		return ownedCount >= requiredAmount, ownedCount
 
+	elseif action == "PrepareSacrificeTool" then
+		local targetToolId = ...
+		local selection = selectPreferredSacrificeTool(player, targetToolId)
+		return selection ~= nil, selection
+
+	elseif action == "ConsumePreparedSacrificeTool" then
+		local targetToolId, selection = ...
+		if not consumePreparedSacrificeTool(player, targetToolId, selection) then return false, 0 end
+		local session = SessionData[player]
+		if session then session.SacrificeOccurred = true; session.IntentionalEmptyInventory = true end
+		markDirty(player)
+		return true, 1
+
 	elseif action == "RemoveTool" then
 		local targetToolId, requestedAmount = ...
 		if not targetToolId then return false, 0 end
@@ -2043,6 +2113,19 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 		requiredAmount = math.max(1, tonumber(requiredAmount) or 1)
 		local ownedCount = countMatchingTools(player, targetToolId)
 		return ownedCount >= requiredAmount, ownedCount
+
+	elseif action == "PrepareSacrificeTool" then
+		local targetToolId = ...
+		local selection = selectPreferredSacrificeTool(player, targetToolId)
+		return selection ~= nil, selection
+
+	elseif action == "ConsumePreparedSacrificeTool" then
+		local targetToolId, selection = ...
+		if not consumePreparedSacrificeTool(player, targetToolId, selection) then return false, 0 end
+		local session = SessionData[player]
+		if session then session.SacrificeOccurred = true; session.IntentionalEmptyInventory = true end
+		markDirty(player)
+		return true, 1
 
 	elseif action == "RemoveTool" then
 		local targetToolId, requestedAmount = ...

@@ -890,11 +890,7 @@ local function AttemptSacrifice(carName, ingredient)
 		return
 	end
 
-	local sacrificeText = ingredient == "Cash"
-		and ("$" .. FormatCommas(requiredAmount - currentAmount))
-		or  ("1 " .. ingredient)
-
-	local prepareOk, prepareSuccess, confirmationTokenOrMessage = pcall(function()
+	local prepareOk, prepareSuccess, confirmationTokenOrMessage, selectedDisplayName = pcall(function()
 		return FuncPrepareSacrifice:InvokeServer(carName, ingredient)
 	end)
 	if not prepareOk or not prepareSuccess then
@@ -903,6 +899,9 @@ local function AttemptSacrifice(carName, ingredient)
 		return
 	end
 	local confirmationToken = confirmationTokenOrMessage
+	local sacrificeText = ingredient == "Cash"
+		and ("$" .. FormatCommas(requiredAmount - currentAmount))
+		or ("1 " .. tostring(selectedDisplayName or ingredient))
 
 	local confirmText = string.format(
 		"<font color='%s'>Are you sure you want to sacrifice </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>%s</font></b><font color='%s'>?</font>",

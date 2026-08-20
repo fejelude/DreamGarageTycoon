@@ -22,6 +22,12 @@ if not AdminRestockEvent then
 	AdminRestockEvent.Name = "AdminRestockEvent"
 	AdminRestockEvent.Parent = ServerStorage
 end
+local AdminRestockResultEvent = ServerStorage:FindFirstChild("AdminRestockResultEvent")
+if not AdminRestockResultEvent then
+	AdminRestockResultEvent = Instance.new("BindableEvent")
+	AdminRestockResultEvent.Name = "AdminRestockResultEvent"
+	AdminRestockResultEvent.Parent = ServerStorage
+end
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RestockNotificationEvent = ReplicatedStorage:FindFirstChild("RestockNotificationEvent")
@@ -160,19 +166,59 @@ end
 -- 🌐 MESSAGING SERVICE HOOKS
 -- ============================================================================
 local RESTOCK_TOPIC = "AdminShopRestock"
+local PendingRestocks = {}
+local ProcessedRestockIds = {}
+
+local function expectedRestockShops(carName)
+	if carName == "all" then return { Common = true, Uncommon = true, Rare = true, Epic = true } end
+	local carData = CarStats.Cars and CarStats.Cars[carName]
+	local rarity = carData and carData.Rarity
+	return rarity and { [rarity] = true } or nil
+end
+
+local function dispatchAdminRestock(carName, requestId)
+	if ProcessedRestockIds[requestId] then return false end
+	local expected = expectedRestockShops(carName)
+	if not expected then return false end
+	ProcessedRestockIds[requestId] = os.clock()
+	PendingRestocks[requestId] = { CarName = carName, Expected = expected, Completed = {} }
+	AdminRestockEvent:Fire(carName, requestId)
+	task.delay(5, function()
+		local pending = PendingRestocks[requestId]
+		if pending then
+			PendingRestocks[requestId] = nil
+			warn("[Admin] Restock did not receive every authoritative shop acknowledgement for " .. carName)
+		end
+		ProcessedRestockIds[requestId] = nil
+	end)
+	return true
+end
+
+AdminRestockResultEvent.Event:Connect(function(requestId, shopName, succeeded, carName)
+	local pending = type(requestId) == "string" and PendingRestocks[requestId]
+	if not pending or succeeded ~= true or pending.CarName ~= carName then return end
+	if pending.Expected[shopName] ~= true or pending.Completed[shopName] then return end
+	pending.Completed[shopName] = true
+	for expectedShop in pairs(pending.Expected) do
+		if not pending.Completed[expectedShop] then return end
+	end
+	PendingRestocks[requestId] = nil
+	RestockNotificationEvent:FireAllClients(carName, nil, nil, true)
+end)
 
 task.spawn(function()
-	pcall(function()
+	local ok, subscribeError = pcall(function()
 		MessagingService:SubscribeAsync(RESTOCK_TOPIC, function(message)
 			local data = message.Data
-			if type(data) == "string" then
-				print("🌐 [Admin] Cross-server Restock Received:", data)
-				AdminRestockEvent:Fire(data)
-				-- Pass true for isAdmin flag (4th argument)
-				RestockNotificationEvent:FireAllClients(data, nil, nil, true)
+			if type(data) == "table" and type(data.CarName) == "string" and type(data.RequestId) == "string"
+				and data.OriginJobId ~= game.JobId
+			then
+				print("🌐 [Admin] Cross-server Restock Received:", data.CarName)
+				dispatchAdminRestock(data.CarName, data.RequestId)
 			end
 		end)
 	end)
+	if not ok then warn("[Admin] Restock subscription failed: " .. tostring(subscribeError)) end
 end)
 
 -- ============================================================================
@@ -496,12 +542,20 @@ local function bindAdminChat(player)
 
 			local targetItem = itemName:lower()
 			if targetItem == "all" then
+				local requestId = HttpService:GenerateGUID(false)
+				if not dispatchAdminRestock("all", requestId) then
+					warn("❌ [Admin] Local restock dispatch failed for all shops.")
+					return
+				end
 				task.spawn(function()
-					pcall(function()
-						MessagingService:PublishAsync(RESTOCK_TOPIC, "all")
+					local ok, publishError = pcall(function()
+						MessagingService:PublishAsync(RESTOCK_TOPIC, {
+							RequestId = requestId, CarName = "all", OriginJobId = game.JobId,
+						})
 					end)
+					if not ok then warn("❌ [Admin] Global restock publish failed: " .. tostring(publishError)) end
 				end)
-				print("🔄 [Admin] Published global restock command for ALL cars.")
+				print("🔄 [Admin] Applied local restock and published global command for ALL cars.")
 			else
 				-- Match car name safely
 				local tool = matchTool(itemName)
@@ -524,12 +578,20 @@ local function bindAdminChat(player)
 					end
 				end
 
+				local requestId = HttpService:GenerateGUID(false)
+				if not dispatchAdminRestock(realCarName, requestId) then
+					warn("❌ [Admin] Local restock dispatch failed for " .. realCarName)
+					return
+				end
 				task.spawn(function()
-					pcall(function()
-						MessagingService:PublishAsync(RESTOCK_TOPIC, realCarName)
+					local ok, publishError = pcall(function()
+						MessagingService:PublishAsync(RESTOCK_TOPIC, {
+							RequestId = requestId, CarName = realCarName, OriginJobId = game.JobId,
+						})
 					end)
+					if not ok then warn("❌ [Admin] Global restock publish failed: " .. tostring(publishError)) end
 				end)
-				print("🔄 [Admin] Published global restock command for:", realCarName)
+				print("🔄 [Admin] Applied local restock and published global command for:", realCarName)
 			end
 		end
 	end)

@@ -329,7 +329,7 @@ local function clearExpiredSacrificeConfirmations(uid)
 	end
 end
 
-local function issueSacrificeConfirmation(player, carName, ingredient)
+local function issueSacrificeConfirmation(player, carName, ingredient, selection)
 	local uid = player.UserId
 	clearExpiredSacrificeConfirmations(uid)
 
@@ -338,6 +338,7 @@ local function issueSacrificeConfirmation(player, carName, ingredient)
 	PendingSacrificeConfirmations[uid][token] = {
 		CarName = carName,
 		Ingredient = ingredient,
+		Selection = selection,
 		ExpiresAt = os.clock() + CONFIRMATION_TOKEN_TTL_SECONDS,
 	}
 
@@ -359,7 +360,8 @@ local function consumeSacrificeConfirmation(player, carName, ingredient, token)
 	end
 
 	confirmations[token] = nil
-	return confirmation.CarName == carName and confirmation.Ingredient == ingredient
+	if confirmation.CarName ~= carName or confirmation.Ingredient ~= ingredient then return nil end
+	return confirmation
 end
 
 -- =========================
@@ -452,12 +454,14 @@ FuncPrepareSacrifice.OnServerInvoke = function(player, carName, ingredient)
 	if session.PendingPremiumCraft then return false, "Premium craft purchase already pending!" end
 
 	if ingredient ~= "Cash" then
-		local hasOk, owns = invokeInventory("HasTool", player, ingredient, 1)
-		if not hasOk then return false, "System error checking inventory." end
-		if not owns then return false, getMissingIngredientMessage(ingredient) end
+		local prepareOk, selected, selection = invokeInventory("PrepareSacrificeTool", player, ingredient)
+		if not prepareOk then return false, "System error checking inventory." end
+		if not selected or type(selection) ~= "table" then return false, getMissingIngredientMessage(ingredient) end
+		local token = issueSacrificeConfirmation(player, carName, ingredient, selection)
+		return true, token, selection.DisplayName
 	end
 
-	return true, issueSacrificeConfirmation(player, carName, ingredient)
+	return true, issueSacrificeConfirmation(player, carName, ingredient, nil), "Cash"
 end
 
 FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmationToken)
@@ -478,7 +482,8 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 	InteractionLocks[uid] = true
 
 	local pOk, logicOk, msg = pcall(function()
-		if not consumeSacrificeConfirmation(player, carName, ingredient, confirmationToken) then
+		local confirmation = consumeSacrificeConfirmation(player, carName, ingredient, confirmationToken)
+		if not confirmation then
 			return false, "Sacrifice confirmation required."
 		end
 
@@ -511,15 +516,11 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 				return false, saveMessage or "Save failed. Sacrifice was not consumed."
 			end
 		else
-			local hasOk, owns = invokeInventory("HasTool", player, ingredient, 1)
-			if not hasOk  then return false, "System error checking inventory." end
-			if not owns   then return false, getMissingIngredientMessage(ingredient) end
-
 			local removeOk, removedOk, removedCount =
-				invokeInventory("RemoveTool", player, ingredient, 1)
+				invokeInventory("ConsumePreparedSacrificeTool", player, ingredient, confirmation.Selection)
 			if not removeOk               then return false, "System error removing car."          end
 			if not removedOk or (removedCount or 0) < 1 then
-				return false, getMissingIngredientMessage(ingredient)
+				return false, "Inventory changed. Review the sacrifice selection again."
 			end
 
 			session.CraftProgress[carName][ingredient] = currentAmount + 1
@@ -530,6 +531,7 @@ FuncSacrifice.OnServerInvoke = function(player, carName, ingredient, confirmatio
 				invokeInventory("GiveTool", player, ingredient, {
 					BypassStorageLimit = true,
 					Source = "SacrificeRollback",
+					IsRobuxExclusive = confirmation.Selection and confirmation.Selection.IsRobuxExclusive == true,
 				})
 				savePlayerNow(player)
 				return false, saveMessage or "Save failed. Sacrifice was not consumed."
