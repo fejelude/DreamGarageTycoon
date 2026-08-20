@@ -1,6 +1,7 @@
 -- Purpose: Advanced Minecraft-Style Admin Commands
 -- Runs on: Server (ServerScriptService)
--- Public API: /give, /remove, /clear, /fly, /tp, /wallet, /rank, /expulse event
+-- Public API: /give, /remove, /clearinventory, /fly, /unfly, /wallet,
+--             /rank, /expulse event, /clear, /list, /restock
 -- Security: Strict ID Whitelist, Anti-Duplicate logic, Secure Data Wiping
 -- FIX: /rank command now pulls securely from ServerStorage.RankTags instead of Workspace.
 
@@ -43,6 +44,7 @@ local MAX_SAFE_BALANCE = 1000000000000000 -- 1 quadrillion; below double precisi
 
 -- 🛡️ STATE
 local AdminDebounces = {}
+local AdminChatConnections = {}
 local ToolCache = nil
 math.randomseed(os.time()) 
 
@@ -285,8 +287,9 @@ end
 -- 💬 CHAT HANDLER
 -- ============================================================================
 
-Players.PlayerAdded:Connect(function(player)
-	player.Chatted:Connect(function(message)
+local function bindAdminChat(player)
+	if AdminChatConnections[player] then return end
+	AdminChatConnections[player] = player.Chatted:Connect(function(message)
 		if not (IS_STUDIO or ADMIN_USER_IDS[player.UserId]) then return end
 
 		-- Debounce
@@ -405,13 +408,17 @@ Players.PlayerAdded:Connect(function(player)
 			local targets = getTargets(player, selector)
 
 			for _, t in pairs(targets) do
-				local ls = t:FindFirstChild("leaderstats")
-				local stat = ls and ls:FindFirstChild("Wallet")
-				if stat then
+				if t:GetAttribute("TycoonDataLoaded") ~= true then
+					warn("⚠️ " .. t.Name .. "'s authoritative profile is still loading; Wallet was not changed.")
+				else
+					local ls = t:FindFirstChild("leaderstats")
+					local stat = ls and ls:FindFirstChild("Wallet")
+					if not stat then
+						warn("⚠️ Authoritative Wallet missing for " .. t.Name)
+						continue
+					end
 					local newBalance = addMoneySafely(stat, amount)
 					print(string.format("💰 Added $%.0f to %s's Wallet. New balance: $%.0f", amount, t.Name, newBalance))
-				else
-					warn("⚠️ leaderstats.Wallet not found for " .. t.Name)
 				end
 			end
 
@@ -526,4 +533,20 @@ Players.PlayerAdded:Connect(function(player)
 			end
 		end
 	end)
+end
+
+-- This script resolves several required services before reaching command setup.
+-- In Studio or during a slow server start, a player can already exist by then
+-- and PlayerAdded will not replay. Bind both future and current players so one
+-- delayed dependency cannot leave an admin without a chat listener for the
+-- remainder of that server session.
+Players.PlayerAdded:Connect(bindAdminChat)
+for _, player in ipairs(Players:GetPlayers()) do
+	bindAdminChat(player)
+end
+Players.PlayerRemoving:Connect(function(player)
+	local connection = AdminChatConnections[player]
+	if connection then connection:Disconnect() end
+	AdminChatConnections[player] = nil
+	AdminDebounces[player.UserId] = nil
 end)
