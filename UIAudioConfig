@@ -168,6 +168,8 @@ local SHOP_OPEN_VARIANTS = {
 	{ Id = SHOP_OPEN_SFX_ID, Pitch = 1.12, Variance = 0.005, Dedupe = 0.18 },
 }
 local NAMED_SFX = {
+	LuckySpinWin1 = { Id = "rbxassetid://134711305341613", Volume = 0.8, Pitch = 1.0, Variance = 0, Dedupe = 0.4, Key = "LuckySpinWin" },
+	LuckySpinWin2 = { Id = "rbxassetid://87339438449663", Volume = 0.8, Pitch = 1.0, Variance = 0, Dedupe = 0.4, Key = "LuckySpinWin" },
 	-- Rewards retains its original pop; it is deliberately separate from the
 	-- shop bell so world-triggered interfaces cannot invoke shop audio.
 	RewardsOpen = { Id = "rbxassetid://9083627113", Volume = 0.6, Pitch = 1.0, Variance = 0.03, Dedupe = 0.25 },
@@ -180,6 +182,10 @@ local NAMED_SFX = {
 	GlobalBoostPurchase = { Id = "rbxassetid://7469511489", Volume = 0.85, Pitch = 1.0, Variance = 0.02, Dedupe = 0.35, Key = "GlobalBoostPurchase" },
 	RankQuestComplete = { Id = RANK_QUEST_COMPLETE_SFX_ID, Volume = UIAudioConfig.RANK_QUEST_COMPLETE_VOLUME, Pitch = 1.0, Variance = 0.03, Dedupe = 0.1 },
 }
+
+function UIAudioConfig.PlayLuckySpinWin()
+	UIAudioConfig.PlayNamed(math.random(1, 2) == 1 and "LuckySpinWin1" or "LuckySpinWin2")
+end
 
 
 local function playOneShot(id, volume, pitch, variance)
