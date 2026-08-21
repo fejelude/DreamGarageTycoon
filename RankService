@@ -415,7 +415,6 @@ local function applyBenefits(player)
 	player:SetAttribute("Rank", session.CurrentRank)
 	player:SetAttribute("RankStorageLimit", benefits.StorageSlots + math.max(0, tonumber(player:GetAttribute("InventorySlotBonus")) or 0))
 	player:SetAttribute("RankResourceMultiplier", benefits.Multiplier)
-	player:SetAttribute("MaxBankWithdrawal", benefits.WithdrawalLimit)
 	player:SetAttribute("RankChatTag", benefits.ChatTag)
 	player:SetAttribute("HighestRankShopAccess", benefits.ShopAccess or "Common")
 
@@ -460,10 +459,6 @@ local function getCurrencyValue(player, currency)
 		local ls = player:FindFirstChild("leaderstats")
 		local wallet = ls and ls:FindFirstChild("Wallet")
 		return wallet and wallet.Value or 0
-	elseif currency == "Bank" then
-		local hs = player:FindFirstChild("HiddenStats")
-		local cash = hs and hs:FindFirstChild("Cash")
-		return cash and cash.Value or 0
 	end
 	return 0
 end
@@ -811,13 +806,11 @@ local function hookPlayer(player)
 	end
 
 	task.spawn(function()
-		local leaderstats = player:WaitForChild("leaderstats", 30)
-		local hiddenStats = player:WaitForChild("HiddenStats", 30)
+		local leaderstats = player:WaitForChild("leaderstats")
 		if not player.Parent or not PlayerConnections[player] then
 			return
 		end
 		hookValue(leaderstats and leaderstats:FindFirstChild("Wallet"))
-		hookValue(hiddenStats and hiddenStats:FindFirstChild("Cash"))
 		if PlayerConnections[player] then
 			pushState(player)
 		end

@@ -443,7 +443,7 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		local ls     = player:FindFirstChild("leaderstats")
 		local wallet = ls and ls:FindFirstChild("Wallet")
 		if not wallet                   then return false, "Wallet Not Found" end
-		if wallet.Value < carData.Price then return false, "Insufficient Cash (Withdraw from ATM)" end
+		if wallet.Value < carData.Price then return false, "Insufficient Wallet funds" end
 
 		local toolsFolder = ServerStorage:FindFirstChild("CarTools")
 		local toolSource = nil
@@ -505,7 +505,7 @@ end
 -- =========================
 -- ADMIN RESTOCK HANDLER
 -- =========================
-AdminRestockEvent.Event:Connect(function(carName)
+AdminRestockEvent.Event:Connect(function(carName, requestId)
 	if type(carName) ~= "string" then return end
 
 	local isAll = (carName == "all")
@@ -532,6 +532,11 @@ AdminRestockEvent.Event:Connect(function(carName)
 		end
 
 		pushUpdate(player, session, "AdminRestock")
+	end
+
+	local resultEvent = type(requestId) == "string" and ServerStorage:FindFirstChild("AdminRestockResultEvent")
+	if resultEvent and resultEvent:IsA("BindableEvent") then
+		resultEvent:Fire(requestId, "Epic", true, carName)
 	end
 end)
 

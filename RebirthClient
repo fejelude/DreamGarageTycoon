@@ -570,7 +570,7 @@ player:GetAttributeChangedSignal("Rebirth"):Connect(function()
 	refresh()
 end)
 
-local leaderstats = player:WaitForChild("leaderstats", 10)
+local leaderstats = player:WaitForChild("leaderstats")
 
 if leaderstats then
 	local wallet = leaderstats:WaitForChild("Wallet", 10)

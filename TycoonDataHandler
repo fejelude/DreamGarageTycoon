@@ -19,11 +19,6 @@
 --   ingredient cars, disconnect, and rejoin with both the sacrifice progress AND
 --   the cars restored in their inventory (free duplication).
 --
--- FIX (Cash resets to 0 on rejoin):
---   MoneyManager.GetBalance now reads Cash from HiddenStats instead of leaderstats.
---   Previously every save wrote 0 for Bank because Cash was no longer in leaderstats,
---   causing the balance to be wiped on every rejoin.
---
 -- FIX (Inventory Doubles on Every Rejoin — CRITICAL):
 --   The save() function previously scanned both Backpack AND StarterGear.
 --   Because giveTool() places a clone in both containers, each tool was recorded
@@ -131,6 +126,7 @@ local PlayerDataStore = DataStoreService:GetDataStore(DATA_KEY)
 local AUTOSAVE_INTERVAL = 180
 local MIN_SAVE_INTERVAL = 60
 local MAX_RETRIES = 3
+local FINAL_SAVE_ATTEMPTS = 3
 local SAVE_LOCK_WAIT_SECONDS = 12
 local CLOSING_SAVE_LOCK_WAIT_SECONDS = 25
 -- A lease prevents two servers from writing the same profile. Loading does not
@@ -150,6 +146,10 @@ local SERVER_SESSION_TOKEN = game.JobId .. ":" .. HttpService:GenerateGUID(false
 local MAX_INVENTORY_SIZE = 500
 local MAX_ROBUX_RECEIPT_HISTORY = 300
 local DEFAULT_CAR_STORAGE_LIMIT = 5
+-- Versioned, one-way migration. This marker is written in the same UpdateAsync
+-- that acquires the profile lease, making Bank/ATM -> Wallet conversion atomic
+-- and preventing a reconnect or server crash from crediting legacy funds twice.
+local WALLET_ECONOMY_MIGRATION_VERSION = 1
 local STARTER_PACK_CAR_NAME = "Senator"
 local STARTER_PACK_WALLET_CASH = 800000
 local MAX_LAYOUT_SIZE = 200
@@ -179,6 +179,12 @@ local function sanitizeTutorialData(raw)
 	local stage = VALID_TUTORIAL_STAGES[raw.Stage] and raw.Stage or DEFAULT_TUTORIAL_DATA.Stage
 	local completed, skipped = raw.Completed == true, raw.Skipped == true
 	if completed then stage = "Completed" elseif skipped then stage = "Skipped" end
+	-- Banking tutorial screens no longer have a valid gameplay action. Existing
+	-- saves parked on any of them resume at the purchase introduction instead of
+	-- being soft-locked behind a retired transfer or ATM objective.
+	if stage == "Part5" or stage == "Part6" or stage == "Withdraw" then
+		stage = "Part7"
+	end
 	return {
 		Answered = raw.Answered == true or completed or skipped,
 		Skipped = skipped, Active = raw.Active == true and not completed and not skipped,
@@ -425,6 +431,28 @@ local PendingCriticalSaveTasks = {}
 local FinalSaveStates = {}
 local save
 local releaseProfileLeaseWithoutSave
+
+local function closePersistenceSessions(player)
+	for _, bindableName in ipairs({
+		"ShopPersistenceFunction",
+		"UncommonShopPersistenceFunction",
+		"RareShopPersistenceFunction",
+		"EpicShopPersistenceFunction",
+		"LegendaryShopPersistenceFunction",
+		"MythicalShopPersistenceFunction",
+		"RankPersistenceFunction",
+	}) do
+		local bindable = ServerStorage:FindFirstChild(bindableName)
+		if bindable and bindable:IsA("BindableFunction") then
+			local ok, closeError = pcall(function()
+				bindable:Invoke("Close", player)
+			end)
+			if not ok then
+				warn("⚠️ Persistence cleanup error (" .. bindableName .. "): " .. tostring(closeError))
+			end
+		end
+	end
+end
 
 -- ----------------------------------------------------------------------------
 -- 🛡️ HELPER FUNCTIONS
@@ -723,19 +751,10 @@ end
 local MoneyManager = {}
 function MoneyManager.GetBalance(player, currencyType)
 	if not player then return 0 end
-
-	-- ✅ FIX: Cash lives in HiddenStats, everything else in leaderstats
-	if currencyType == "Cash" then
-		local hs = player:FindFirstChild("HiddenStats")
-		if not hs then return 0 end
-		local val = hs:FindFirstChild("Cash")
-		return val and val.Value or 0
-	else
-		local ls = player:FindFirstChild("leaderstats")
-		if not ls then return 0 end
-		local val = ls:FindFirstChild(currencyType)
-		return val and val.Value or 0
-	end
+	local ls = player:FindFirstChild("leaderstats")
+	if not ls then return 0 end
+	local val = ls:FindFirstChild(currencyType)
+	return val and val.Value or 0
 end
 
 -- ----------------------------------------------------------------------------
@@ -1140,6 +1159,51 @@ local function countMatchingTools(player, targetToolId)
 	return math.max(0, total - getHotbarReservationCount(player, targetToolId))
 end
 
+-- Resolve one authoritative crafting ingredient while protecting Robux
+-- Exclusive copies whenever a normal copy can satisfy the same base identity.
+-- IssuedId identifies the exact live inventory entry shown in confirmation.
+local function selectPreferredSacrificeTool(player, targetToolId)
+	if not player or type(targetToolId) ~= "string" then return nil end
+	local normal, exclusive = {}, {}
+	local backpack = player:FindFirstChild("Backpack")
+	if backpack then
+		for _, tool in ipairs(backpack:GetChildren()) do
+			if toolMatchesId(tool, targetToolId) and not isProtectedFromSacrifice(player, tool) then
+				table.insert(tool:GetAttribute("IsRobuxExclusive") == true and exclusive or normal, tool)
+			end
+		end
+	end
+
+	-- Hotbar slots store base identity rather than variant. Reserve valuable
+	-- Exclusive copies first so an ambiguous reservation can never force the
+	-- crafting selector to consume an Exclusive while a normal copy is eligible.
+	local reservations = getHotbarReservationCount(player, targetToolId)
+	while reservations > 0 and #exclusive > 0 do table.remove(exclusive); reservations -= 1 end
+	while reservations > 0 and #normal > 0 do table.remove(normal); reservations -= 1 end
+
+	local function firstIssuedTool(tools)
+		for _, tool in ipairs(tools) do
+			if type(tool:GetAttribute("ToolId")) == "string" and type(tool:GetAttribute("IssuedId")) == "string" then
+				return tool
+			end
+		end
+		return nil
+	end
+
+	local selected = firstIssuedTool(normal) or firstIssuedTool(exclusive)
+	if not selected then return nil end
+	local toolId = selected:GetAttribute("ToolId")
+	local issuedId = selected:GetAttribute("IssuedId")
+	local isExclusive = selected:GetAttribute("IsRobuxExclusive") == true
+	return {
+		IssuedId = issuedId,
+		ToolId = toolId,
+		IsRobuxExclusive = isExclusive,
+		DisplayName = isExclusive and ("Exclusive (" .. tostring(toolId):gsub(" Item$", "") .. ")")
+			or tostring(toolId):gsub(" Item$", ""),
+	}
+end
+
 local function removeMatchingTools(player, targetToolId, requestedAmount)
 	if not player or not targetToolId then return 0 end
 
@@ -1187,13 +1251,16 @@ local function removeExactOwnedTool(player, tool)
 	if tool.Parent ~= backpack and tool.Parent ~= player.Character then return false end
 
 	local toolId = tool:GetAttribute("ToolId")
+	local isExclusive = tool:GetAttribute("IsRobuxExclusive") == true
 	if type(toolId) ~= "string" or toolId == "" then return false end
 	tool:Destroy()
 
 	local starterGear = player:FindFirstChild("StarterGear")
 	if starterGear then
 		for _, mirror in ipairs(starterGear:GetChildren()) do
-			if toolMatchesId(mirror, toolId) then
+			if toolMatchesId(mirror, toolId)
+				and (mirror:GetAttribute("IsRobuxExclusive") == true) == isExclusive
+			then
 				mirror:Destroy()
 				break
 			end
@@ -1207,6 +1274,25 @@ local function removeExactOwnedTool(player, tool)
 	end
 	markDirty(player)
 	return true, toolId
+end
+
+local function consumePreparedSacrificeTool(player, targetToolId, selection)
+	if type(selection) ~= "table" or type(selection.IssuedId) ~= "string" then return false end
+	local selectedNow = selectPreferredSacrificeTool(player, targetToolId)
+	if not selectedNow
+		or selectedNow.IssuedId ~= selection.IssuedId
+		or selectedNow.IsRobuxExclusive ~= (selection.IsRobuxExclusive == true)
+	then
+		return false
+	end
+
+	local backpack = player:FindFirstChild("Backpack")
+	for _, tool in ipairs(backpack and backpack:GetChildren() or {}) do
+		if tool:GetAttribute("IssuedId") == selection.IssuedId then
+			return removeExactOwnedTool(player, tool)
+		end
+	end
+	return false
 end
 
 
@@ -1967,6 +2053,19 @@ LegendaryCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 		local ownedCount = countMatchingTools(player, targetToolId)
 		return ownedCount >= requiredAmount, ownedCount
 
+	elseif action == "PrepareSacrificeTool" then
+		local targetToolId = ...
+		local selection = selectPreferredSacrificeTool(player, targetToolId)
+		return selection ~= nil, selection
+
+	elseif action == "ConsumePreparedSacrificeTool" then
+		local targetToolId, selection = ...
+		if not consumePreparedSacrificeTool(player, targetToolId, selection) then return false, 0 end
+		local session = SessionData[player]
+		if session then session.SacrificeOccurred = true; session.IntentionalEmptyInventory = true end
+		markDirty(player)
+		return true, 1
+
 	elseif action == "RemoveTool" then
 		local targetToolId, requestedAmount = ...
 		if not targetToolId then return false, 0 end
@@ -2024,6 +2123,19 @@ MythicalCraftingInventoryAPI.OnInvoke = function(action, player, ...)
 		requiredAmount = math.max(1, tonumber(requiredAmount) or 1)
 		local ownedCount = countMatchingTools(player, targetToolId)
 		return ownedCount >= requiredAmount, ownedCount
+
+	elseif action == "PrepareSacrificeTool" then
+		local targetToolId = ...
+		local selection = selectPreferredSacrificeTool(player, targetToolId)
+		return selection ~= nil, selection
+
+	elseif action == "ConsumePreparedSacrificeTool" then
+		local targetToolId, selection = ...
+		if not consumePreparedSacrificeTool(player, targetToolId, selection) then return false, 0 end
+		local session = SessionData[player]
+		if session then session.SacrificeOccurred = true; session.IntentionalEmptyInventory = true end
+		markDirty(player)
+		return true, 1
 
 	elseif action == "RemoveTool" then
 		local targetToolId, requestedAmount = ...
@@ -2231,8 +2343,6 @@ save = function(player, isClosing, force)
 
 		local currentSettings = getSessionSettings(player)
 
-		local currentTransferUsed = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitUsed")) or 0))
-		local currentTransferResetAt = math.max(0, math.floor(tonumber(player:GetAttribute("BankTransferLimitResetAt")) or 0))
 		local currentRebirth = math.max(0, math.floor(tonumber(player:GetAttribute("Rebirth")) or 0))
 		local currentOfflinePremiumPendingAmount = math.max(0, math.floor(tonumber(player:GetAttribute("OfflinePremiumPendingAmount")) or 0))
 		local currentTabletDoublePendingAmount = math.max(0, math.floor(tonumber(player:GetAttribute("TabletDoublePendingAmount")) or 0))
@@ -2290,11 +2400,6 @@ save = function(player, isClosing, force)
 		local currentDailyRewards = decodeDailyRewardsAttribute(player)
 		local currentFreeRewardsClaimed = player:GetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE) == true
 		local currentTutorial = sanitizeTutorialData(session.Tutorial)
-
-		if currentTransferResetAt > 0 and os.time() >= currentTransferResetAt then
-			currentTransferUsed = 0
-			currentTransferResetAt = 0
-		end
 
 		local inventory = {}
 		local invCount = 0
@@ -2429,9 +2534,7 @@ save = function(player, isClosing, force)
 		local sacrificeOccurredThisSession = session.SacrificeOccurred == true
 		local intentionalEmptyInventory = session.IntentionalEmptyInventory == true
 		local explicitClear = session.ExplicitClear == true
-		local snapshotBank = MoneyManager.GetBalance(player, "Cash")
 		local snapshotWallet = MoneyManager.GetBalance(player, "Wallet")
-		local snapshotATM = MoneyManager.GetBalance(player, "ATMBalance")
 		local snapshotOfflineTabletCarry = math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
 		local profileKey = session.ProfileKey
 		local leaseToken = session.LeaseToken
@@ -2508,9 +2611,10 @@ save = function(player, isClosing, force)
 
 					local finalPending = snapshotOfflineTabletCarry + currentPendingInTycoon
 
-					oldData.Bank       = snapshotBank
+					oldData.Bank       = 0
 					oldData.Wallet     = snapshotWallet
-					oldData.ATMBalance = snapshotATM
+					oldData.ATMBalance = 0
+					oldData.WalletEconomyMigrationVersion = WALLET_ECONOMY_MIGRATION_VERSION
 					oldData.Inventory = finalInventory
 					oldData.IntentionalEmptyInventory = intentionalEmptyInventory
 					oldData.Layout = finalLayout
@@ -2536,8 +2640,8 @@ save = function(player, isClosing, force)
 					oldData.InventorySlotBonus = currentInventorySlotBonus
 					if currentRankDataAvailable then oldData.RankData = currentRankData end
 					oldData.HotbarSlots = currentHotbar
-					oldData.BankTransferLimitUsed = currentTransferUsed
-					oldData.BankTransferLimitResetAt = currentTransferResetAt
+					oldData.BankTransferLimitUsed = nil
+					oldData.BankTransferLimitResetAt = nil
 					oldData.Rebirth = currentRebirth
 					oldData.OfflinePremiumPendingAmount = currentOfflinePremiumPendingAmount
 					oldData.TabletDoublePendingAmount = currentTabletDoublePendingAmount
@@ -2609,12 +2713,20 @@ save = function(player, isClosing, force)
 
 	local ok, saveErr = pcall(executeSave)
 	if not ok then
+		session.LastSaveError = tostring(saveErr)
+		player:SetAttribute("DataSaveError", session.LastSaveError)
 		warn("❌ Save Failed " .. player.Name .. ": " .. tostring(saveErr))
 	elseif isClosing then
+		session.LastSaveError = nil
+		player:SetAttribute("DataSaveError", nil)
 		print("✅ Saved: " .. player.Name)
+	else
+		session.LastSaveError = nil
+		player:SetAttribute("DataSaveError", nil)
 	end
 
 	if saveSucceeded then
+		player:SetAttribute("LastSuccessfulDataSaveAt", os.time())
 		if not isClosing then
 			session.LeaseExpiresAt = os.time() + PROFILE_LEASE_SECONDS
 		end
@@ -2631,34 +2743,6 @@ save = function(player, isClosing, force)
 			end
 			session.StarterPackClearRequested = false
 		end
-	end
-
-	if isClosing then
-		-- The final attempt has finished, so release subsystem sessions even when
-		-- DataStore was unavailable. Keeping them after the Player leaves leaks one
-		-- full shop/rank state per failed save for the rest of the server's life.
-		local function safeClose(bindableName)
-			local b = ServerStorage:FindFirstChild(bindableName)
-			if not b then return end
-			local ok2, err2 = pcall(function() b:Invoke("Close", player) end)
-			if not ok2 then
-				warn("⚠️ Shop cleanup error (" .. bindableName .. "): " .. tostring(err2))
-			end
-		end
-
-		safeClose("ShopPersistenceFunction")
-		safeClose("UncommonShopPersistenceFunction")
-		safeClose("RareShopPersistenceFunction")
-		safeClose("EpicShopPersistenceFunction")
-		safeClose("LegendaryShopPersistenceFunction")
-		safeClose("MythicalShopPersistenceFunction")
-		safeClose("RankPersistenceFunction")
-	end
-	if isClosing and saveSucceeded then
-		-- Keep the lease through subsystem cleanup. Clearing it inside the profile
-		-- write let a fast rejoin load new shop sessions while the old server was
-		-- still closing those same user-id keyed sessions.
-		releaseProfileLeaseWithoutSave(session)
 	end
 
 	session.IsSaving = false
@@ -2775,6 +2859,7 @@ local function InitializePlayer(player)
 		ProfileKey        = "User_V27_" .. player.UserId,
 		Closing           = false,
 		CriticalTransferToken = nil,
+		LastSaveError     = nil,
 		-- ✅ FIX (Held Tool Lost on Disconnect): caches the ToolId of the
 		-- tool the player was holding when their character was removed.
 		-- Used as a fallback in save() if player.Character is already nil.
@@ -2823,19 +2908,11 @@ local function InitializePlayer(player)
 		if session then session.HeldToolId = nil end
 	end)
 
-	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
-	local hs = Instance.new("Folder"); hs.Name = "HiddenStats"; hs.Parent = player
-	local cash   = Instance.new("NumberValue"); cash.Name   = "Cash";       cash.Parent   = hs
-	local wallet = Instance.new("NumberValue"); wallet.Name = "Wallet";     wallet.Parent = ls
-	local atm    = Instance.new("NumberValue"); atm.Name    = "ATMBalance"; atm.Parent    = ls
-
-	local function setDirty() markDirty(player) end
-	cash.Changed:Connect(setDirty)
-	wallet.Changed:Connect(setDirty)
-	atm.Changed:Connect(setDirty)
-
 	local session = SessionData[player]
 	local key = session.ProfileKey
+	player:SetAttribute("DataStoreName", DATA_KEY)
+	player:SetAttribute("DataProfileKey", key)
+	player:SetAttribute("DataLoadState", "Loading")
 	local data
 	local loadSuccess = false
 	local loadErr = nil
@@ -2885,6 +2962,23 @@ local function InitializePlayer(player)
 					UpdatedAt = now,
 				}
 				current[PROFILE_LEASE_VERSION_FIELD] = leaseVersion
+
+				local migrationVersion = math.max(0, math.floor(tonumber(current.WalletEconomyMigrationVersion) or 0))
+				if migrationVersion < WALLET_ECONOMY_MIGRATION_VERSION then
+					local function legacyMoney(value)
+						value = tonumber(value) or 0
+						if value ~= value or value == math.huge or value == -math.huge then return 0 end
+						return math.max(0, math.floor(value))
+					end
+					current.Wallet = legacyMoney(current.Wallet)
+						+ legacyMoney(current.Bank)
+						+ legacyMoney(current.ATMBalance)
+					current.Bank = 0
+					current.ATMBalance = 0
+					current.BankTransferLimitUsed = nil
+					current.BankTransferLimitResetAt = nil
+					current.WalletEconomyMigrationVersion = WALLET_ECONOMY_MIGRATION_VERSION
+				end
 				return current
 			end)
 		end)
@@ -2907,6 +3001,7 @@ local function InitializePlayer(player)
 
 	player:SetAttribute("ProfileSessionRecovering", false)
 	if leaseDenied then
+		player:SetAttribute("DataLoadState", "LeaseDenied")
 		SessionData[player] = nil
 		-- Reaching the deadline while the heartbeat is still fresh means another
 		-- server really is using the profile. Taking it over would permit two
@@ -2917,6 +3012,7 @@ local function InitializePlayer(player)
 		return
 	end
 	if not loadSuccess or data == nil then
+		player:SetAttribute("DataLoadState", "Failed")
 		releaseProfileLeaseWithoutSave(session)
 		SessionData[player] = nil
 		player:Kick("Data Load Error. Rejoin.")
@@ -2988,8 +3084,7 @@ local function InitializePlayer(player)
 	data.Rank                   = type(data.Rank) == "string" and data.Rank or "Player"
 	data.InventorySlotBonus     = math.max(0, math.floor(tonumber(data.InventorySlotBonus) or 0))
 	data.RankData               = type(data.RankData) == "table" and data.RankData or {}
-	data.BankTransferLimitUsed  = data.BankTransferLimitUsed  or 0
-	data.BankTransferLimitResetAt = data.BankTransferLimitResetAt or 0
+	data.WalletEconomyMigrationVersion = math.max(0, math.floor(tonumber(data.WalletEconomyMigrationVersion) or 0))
 	data.Rebirth = math.max(0, math.floor(tonumber(data.Rebirth) or 0))
 	data.OfflinePremiumPendingAmount = math.max(0, math.floor(tonumber(data.OfflinePremiumPendingAmount) or 0))
 	data.TabletDoublePendingAmount = math.max(0, math.floor(tonumber(data.TabletDoublePendingAmount) or 0))
@@ -3027,9 +3122,20 @@ local function InitializePlayer(player)
 		return math.max(0, math.floor(value))
 	end
 
-	cash.Value   = sanitizeMoney(data.Bank)
+	-- Do not publish a temporary Wallet=0 while UpdateAsync is pending or a
+	-- previous server lease is being released. Client HUD/leaderboard scripts
+	-- wait for leaderstats, so parenting this folder only after the authoritative
+	-- profile is resolved prevents a slow join from looking like a data reset.
+	local ls = Instance.new("Folder")
+	ls.Name = "leaderstats"
+	local wallet = Instance.new("NumberValue")
+	wallet.Name = "Wallet"
 	wallet.Value = sanitizeMoney(data.Wallet)
-	atm.Value    = sanitizeMoney(data.ATMBalance)
+	wallet.Parent = ls
+	ls.Parent = player
+
+	local function setDirty() markDirty(player) end
+	wallet.Changed:Connect(setDirty)
 
 	SessionData[player].SettingsState = sanitizeSettings(data.Settings)
 	SessionData[player].StarterPackPurchased = data.StarterPackPurchased
@@ -3158,15 +3264,6 @@ local function InitializePlayer(player)
 	player:SetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE, data.FreeRewardsClaimed == true)
 	player:SetAttribute(PROMO_CODE_REDEEMED_ATTRIBUTE, HttpService:JSONEncode(SessionData[player].PromoCodesRedeemed))
 
-	local transferUsed = math.max(0, math.floor(tonumber(data.BankTransferLimitUsed) or 0))
-	local transferResetAt = math.max(0, math.floor(tonumber(data.BankTransferLimitResetAt) or 0))
-	if transferResetAt > 0 and os.time() >= transferResetAt then
-		transferUsed = 0
-		transferResetAt = 0
-	end
-	player:SetAttribute("BankTransferLimitUsed", transferUsed)
-	player:SetAttribute("BankTransferLimitResetAt", transferResetAt)
-
 	local rankPersistenceBindable = ServerStorage:FindFirstChild("RankPersistenceFunction")
 	if rankPersistenceBindable and rankPersistenceBindable:IsA("BindableFunction") then
 		data.RankData.LegacyRank = data.Rank
@@ -3197,8 +3294,6 @@ local function InitializePlayer(player)
 	player:GetAttributeChangedSignal("OwnedBaseSkins"):Connect(setDirty)
 	player:GetAttributeChangedSignal("EquippedSkin"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rank"):Connect(setDirty)
-	player:GetAttributeChangedSignal("BankTransferLimitUsed"):Connect(setDirty)
-	player:GetAttributeChangedSignal("BankTransferLimitResetAt"):Connect(setDirty)
 	player:GetAttributeChangedSignal("Rebirth"):Connect(setDirty)
 	player:GetAttributeChangedSignal("OfflinePremiumPendingAmount"):Connect(setDirty)
 	player:GetAttributeChangedSignal("TabletDoublePendingAmount"):Connect(setDirty)
@@ -3294,6 +3389,8 @@ local function InitializePlayer(player)
 	CheckAndRestorePending()
 
 	SessionData[player].DataLoaded = true
+	player:SetAttribute("LoadedDataLastUpdatedAt", math.max(0, math.floor(tonumber(data.LastUpdated) or 0)))
+	player:SetAttribute("DataLoadState", "Ready")
 	player:SetAttribute(DATA_READY_ATTRIBUTE, true)
 	startLeaseRenewal(player)
 end
@@ -3315,14 +3412,36 @@ local function runFinalSave(player)
 		while not existing.Done and os.clock() - startedAt < CLOSING_SAVE_LOCK_WAIT_SECONDS do
 			task.wait(0.05)
 		end
-		return existing.Done and existing.Success == true
+		if not existing.Done then return false end
+		if existing.Success == true then return true end
+		-- A previous caller exhausted its attempts. If the session is still alive
+		-- (for example PlayerRemoving raced BindToClose), permit a new retry set.
+		if not SessionData[player] then return false end
+		FinalSaveStates[player] = nil
 	end
 
 	local state = { Done = false, Success = false }
 	FinalSaveStates[player] = state
 	local session = SessionData[player]
 	if session then session.Closing = true end
-	state.Success = save(player, true, true) == true
+	for attempt = 1, FINAL_SAVE_ATTEMPTS do
+		state.Success = save(player, true, true) == true
+		if state.Success then break end
+		if attempt < FINAL_SAVE_ATTEMPTS then
+			warn(string.format("[TycoonDataHandler] Final save retry %d/%d for %s after: %s",
+				attempt + 1, FINAL_SAVE_ATTEMPTS, player.Name,
+				tostring(session and session.LastSaveError or "unknown error")))
+			task.wait(attempt)
+		end
+	end
+	-- Do not close rank/shop sessions between retries: their in-memory state is
+	-- required to build the next complete snapshot. Close only after all attempts.
+	closePersistenceSessions(player)
+	if state.Success and session then
+		-- Keep ownership until the complete snapshot is durable and every subsystem
+		-- has closed. A fast rejoin cannot open a second rank/shop session early.
+		releaseProfileLeaseWithoutSave(session)
+	end
 	state.Done = true
 	task.delay(60, function()
 		if FinalSaveStates[player] == state then FinalSaveStates[player] = nil end

@@ -54,8 +54,6 @@ local STARTER_PACK_WALLET_CASH = 800000
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))
 
-local BANK_TRANSFER_USED_ATTR = "BankTransferLimitUsed"
-local BANK_TRANSFER_RESET_AT_ATTR = "BankTransferLimitResetAt"
 local REBIRTH_SKIP_TARGET_BY_PRODUCT = {}
 for fromRebirth, productId in pairs(RebirthConfig.SkipProductIds) do
 	productId = math.floor(tonumber(productId) or 0)
@@ -154,7 +152,7 @@ local GlobalChatBroadcast = Remotes:WaitForChild("GlobalChatBroadcast", 10)
 local GiftPurchaseResult = Remotes:WaitForChild("GiftPurchaseResult", 10)
 
 -- RemoteEvent must be directly inside ReplicatedStorage.
-local BankTimerResetFeedback = ReplicatedStorage:WaitForChild("BankTimerResetFeedback")
+local BankTimerResetFeedback = ReplicatedStorage:FindFirstChild("BankTimerResetFeedback") -- legacy; safe to remove
 
 local BaseSkinStats
 pcall(function()
@@ -873,24 +871,14 @@ local function processReceipt(receiptInfo)
 		targetPlayer = buyerPlayer
 		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 
-		local resetOk, resetErr = pcall(function()
-			buyerPlayer:SetAttribute(BANK_TRANSFER_USED_ATTR, 0)
-			buyerPlayer:SetAttribute(BANK_TRANSFER_RESET_AT_ATTR, 0)
-		end)
-
-		if resetOk then
-			purchaseSuccess = true
-			bankResetFeedback = {
-				success = true,
-				message = "Timer Reset Successful",
-			}
-		else
-			warn("⚠️ Bank timer reset failed: " .. tostring(resetErr))
-
-			if BankTimerResetFeedback then
-				BankTimerResetFeedback:FireClient(buyerPlayer, false, "Timer Reset Failed")
-			end
-		end
+		-- The product is no longer offered, but historical/pending receipts must be
+		-- acknowledged so Roblox does not retry them forever. No currency or limit
+		-- state is changed.
+		purchaseSuccess = true
+		bankResetFeedback = {
+			success = true,
+			message = "Banking is retired; no transfer timer is required.",
+		}
 
 	elseif pid == OFFLINE_10X_CLAIM_ID then
 		isGift = false
@@ -933,10 +921,10 @@ local function processReceipt(receiptInfo)
 		-- ─── 2X TABLET ───────────────────────────────────────────────────────────
 	elseif pid == TABLET_2X_ID then
 		local amount = math.max(0, math.floor(tonumber(targetPlayer:GetAttribute("TabletDoublePendingAmount")) or 0))
-		local hs = targetPlayer:FindFirstChild("HiddenStats")
-		local bank = hs and hs:FindFirstChild("Cash")
-		if amount > 0 and bank then
-			bank.Value += amount * 2
+		local leaderstats = targetPlayer:FindFirstChild("leaderstats")
+		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
+		if amount > 0 and wallet then
+			wallet.Value += amount * 2
 			targetPlayer:SetAttribute("TabletDoublePendingAmount", 0)
 			profileGrantHash = tostring(amount * 2)
 			purchaseSuccess = true
