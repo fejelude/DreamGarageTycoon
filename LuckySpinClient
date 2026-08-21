@@ -1,0 +1,284 @@
+-- Purpose: Lucky Spin world trigger, UI presentation, purchases, and cosmetic wheel animation.
+-- Location: StarterPlayer > StarterPlayerScripts > LuckySpinClient (LocalScript)
+-- Security: Requests contain no reward data; the server response is already granted and authoritative.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local Config = require(ReplicatedStorage:WaitForChild("LuckySpinConfig"))
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local requestSpin = ReplicatedStorage:WaitForChild("LuckySpinRemotes"):WaitForChild("RequestSpin")
+
+local gui = playerGui:WaitForChild("LuckySpinUI")
+local mainFrame = gui:WaitForChild("MainFrame")
+local buttons = mainFrame:WaitForChild("Buttons")
+local spinButton = buttons:WaitForChild("Spin")
+local buyOneButton = buttons:WaitForChild("Buyx1")
+local buyTenButton = buttons:WaitForChild("Buyx10")
+local indicator = mainFrame:WaitForChild("FhiaTokenIndicator")
+local tokenCounter = indicator:WaitForChild("TokenCounter")
+local tokenButton = indicator:WaitForChild("Token")
+local tokenInfo = tokenButton:WaitForChild("FhiaTokenInfo")
+local wheel = mainFrame:WaitForChild("SpinWheelDecoration"):WaitForChild("Wheel")
+local feedback = UIAudioConfig.CreateStateFeedback(mainFrame)
+
+local spinBusy = false
+local promptBusy = false
+local pendingProductId = nil
+local idleToken = 0
+local triggerConnections = {}
+local boundTrigger = nil
+local lastTriggerOpenAt = 0
+local touchingCharacterParts = {}
+local manuallyClosedUntilExit = false
+local occupancyMonitorToken = 0
+
+local function setButtonEnabled(button, enabled)
+	button.Active = enabled
+	button.Selectable = enabled
+	pcall(function() button.Interactable = enabled end)
+end
+
+local function updateTokenCounter()
+	tokenCounter.Text = tostring(math.max(0, math.floor(tonumber(player:GetAttribute("FhiaTokens")) or 0)))
+end
+player:GetAttributeChangedSignal("FhiaTokens"):Connect(updateTokenCounter)
+updateTokenCounter()
+
+local function setOpen(open)
+	mainFrame.Visible = open
+	SoundService:SetAttribute("LuckySpinMusicActive", open)
+	if not open then tokenInfo.Visible = false end
+	idleToken += 1
+	if open and not spinBusy then
+		local token = idleToken
+		task.spawn(function()
+			while token == idleToken and mainFrame.Visible and not spinBusy do
+				wheel.Rotation = (wheel.Rotation + 0.35) % 360
+				task.wait(0.03)
+			end
+		end)
+	end
+end
+
+local function isCharacterPart(instance)
+	local character = player.Character
+	return character ~= nil and instance:IsA("BasePart") and instance:IsDescendantOf(character)
+end
+
+local function isInsideTrigger()
+	return next(touchingCharacterParts) ~= nil
+end
+
+local function closeManually()
+	-- Keep the UI suppressed until every body part has actually left. Lingering
+	-- Touched events from another limb therefore cannot reopen it immediately.
+	manuallyClosedUntilExit = isInsideTrigger()
+	setOpen(false)
+end
+
+local closeButton = mainFrame:FindFirstChild("ExitButton", true)
+	or mainFrame:FindFirstChild("Close", true)
+	or mainFrame:FindFirstChild("Exit", true)
+	or mainFrame:FindFirstChild("CloseButton", true)
+if closeButton and closeButton:IsA("GuiButton") then
+	UIButtonUtils.SetupButton(closeButton, closeManually)
+else
+	warn("[LuckySpinClient] LuckySpinUI MainFrame needs an ExitButton, Close, Exit, or CloseButton GuiButton")
+end
+
+UIButtonUtils.SetupHoverInfo(tokenButton, tokenInfo)
+local function beginPurchase(productId)
+	if promptBusy then return end
+	promptBusy, pendingProductId = true, productId
+	setButtonEnabled(buyOneButton, false)
+	setButtonEnabled(buyTenButton, false)
+	UIAudioConfig.PlayRobux()
+	UIAudioConfig.ShowPurchaseLoading()
+	local ok = pcall(function() MarketplaceService:PromptProductPurchase(player, productId) end)
+	if not ok then
+		promptBusy, pendingProductId = false, nil
+		UIAudioConfig.HidePurchaseLoading()
+		setButtonEnabled(buyOneButton, true)
+		setButtonEnabled(buyTenButton, true)
+		feedback:Failed("Purchase Failed")
+		UIAudioConfig.PlayNamed("BuyFail")
+	end
+end
+
+UIButtonUtils.SetupButton(buyOneButton, function() beginPurchase(Config.ProductIds.Buyx1) end, { SuppressClickSound = true })
+UIButtonUtils.SetupButton(buyTenButton, function() beginPurchase(Config.ProductIds.Buyx10) end, { SuppressClickSound = true })
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId)
+	if userId ~= player.UserId or productId ~= pendingProductId then return end
+	promptBusy, pendingProductId = false, nil
+	UIAudioConfig.HidePurchaseLoading()
+	setButtonEnabled(buyOneButton, true)
+	setButtonEnabled(buyTenButton, true)
+end)
+
+local giftResult = ReplicatedStorage:WaitForChild("GiftRemotes"):WaitForChild("GiftPurchaseResult")
+giftResult.OnClientEvent:Connect(function(payload)
+	if type(payload) ~= "table" or not Config.ProductTokens[tonumber(payload.ProductId)] then return end
+	promptBusy, pendingProductId = false, nil
+	UIAudioConfig.HidePurchaseLoading()
+	setButtonEnabled(buyOneButton, true)
+	setButtonEnabled(buyTenButton, true)
+	if payload.Success then
+		feedback:Success(payload.Message or "Successfully purchased Fhia Tokens!")
+		UIAudioConfig.PlayNamed("BuySuccess")
+	else
+		feedback:Failed(payload.Message or "Purchase Failed")
+		UIAudioConfig.PlayNamed("BuyFail")
+	end
+end)
+
+local function chooseLanding(segment, wrapped)
+	local margin = 2
+	local first, second = tonumber(segment[1]), tonumber(segment[2])
+	if wrapped then
+		local span = (second + 360) - first
+		local angle = first + margin + math.random() * (span - margin * 2)
+		return angle > 180 and angle - 360 or angle
+	end
+	local low, high = math.min(first, second), math.max(first, second)
+	return low + margin + math.random() * ((high - low) - margin * 2)
+end
+
+local function rewardMessage(result)
+	if result.RewardType == "Wallet" then return "Congratulations! You won " .. result.DisplayName .. "!" end
+	local color = Config.RarityColors[result.Tier] or "#FFFFFF"
+	return ("Congratulations! You won <font color='%s'>%s</font>! It has been added to your inventory."):format(color, result.DisplayName)
+end
+
+local function animateResult(result)
+	idleToken += 1
+	local landing = chooseLanding(result.VisualSegment, result.WrappedSegment)
+	local current = wheel.Rotation
+	local normalizedCurrent = current % 360
+	local normalizedLanding = landing % 360
+	local forwardDelta = (normalizedLanding - normalizedCurrent) % 360
+	local duration = math.clamp(tonumber(result.AnimationDuration) or 4, 3, 5)
+	local turns = math.random(5, 8)
+	local target = current + turns * 360 + forwardDelta
+	local tween = TweenService:Create(wheel, TweenInfo.new(duration, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Rotation = target })
+	tween:Play()
+	tween.Completed:Wait()
+	wheel.Rotation = landing
+	task.wait(0.5)
+	UIAudioConfig.PlayLuckySpinWin()
+	feedback:Success(rewardMessage(result))
+end
+
+UIButtonUtils.SetupButton(spinButton, function()
+	if spinBusy then feedback:Failed("A spin is already in progress!") return end
+	spinBusy = true
+	setButtonEnabled(spinButton, false)
+	idleToken += 1
+	local ok, result = pcall(function() return requestSpin:InvokeServer() end)
+	if ok and type(result) == "table" and result.Success then
+		animateResult(result)
+	else
+		feedback:Failed(type(result) == "table" and result.Message or "Unable to process your spin. Please try again.")
+	end
+	spinBusy = false
+	setButtonEnabled(spinButton, true)
+	if mainFrame.Visible then setOpen(true) end
+end)
+
+local function bindTrigger(trigger)
+	if trigger == boundTrigger or not trigger:IsA("BasePart") then return end
+	for _, connection in ipairs(triggerConnections) do connection:Disconnect() end
+	table.clear(triggerConnections)
+	table.clear(touchingCharacterParts)
+	manuallyClosedUntilExit = false
+	occupancyMonitorToken += 1
+	boundTrigger = trigger
+
+	local function handleFullyExited()
+		if isInsideTrigger() then return end
+		manuallyClosedUntilExit = false
+		if mainFrame.Visible then setOpen(false) end
+	end
+
+	local function reconcileTouchingParts()
+		local current = {}
+		for _, part in ipairs(trigger:GetTouchingParts()) do
+			if isCharacterPart(part) then current[part] = true end
+		end
+		touchingCharacterParts = current
+		handleFullyExited()
+	end
+
+	local function startOccupancyMonitor()
+		occupancyMonitorToken += 1
+		local token = occupancyMonitorToken
+		task.spawn(function()
+			while token == occupancyMonitorToken and boundTrigger == trigger and isInsideTrigger() do
+				task.wait(0.1)
+				if token == occupancyMonitorToken and trigger.Parent then reconcileTouchingParts() end
+			end
+		end)
+	end
+
+	table.insert(triggerConnections, trigger.Touched:Connect(function(hit)
+		local character = player.Character
+		if not character or not isCharacterPart(hit) then return end
+		local wasInside = isInsideTrigger()
+		touchingCharacterParts[hit] = true
+		if not wasInside then startOccupancyMonitor() end
+		if wasInside or manuallyClosedUntilExit or mainFrame.Visible then return end
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if not humanoid or humanoid.Health <= 0 or os.clock() - lastTriggerOpenAt < 0.15 then return end
+		lastTriggerOpenAt = os.clock()
+		setOpen(true)
+	end))
+
+	table.insert(triggerConnections, trigger.TouchEnded:Connect(function(hit)
+		if not touchingCharacterParts[hit] then return end
+		touchingCharacterParts[hit] = nil
+		-- TouchEnded for one limb can arrive while another limb is entering. Defer
+		-- the empty-set decision so all physics callbacks for this step settle.
+		task.defer(reconcileTouchingParts)
+	end))
+
+	table.insert(triggerConnections, trigger.AncestryChanged:Connect(function(_, parent)
+		if not parent and boundTrigger == trigger then
+			for _, connection in ipairs(triggerConnections) do connection:Disconnect() end
+			table.clear(triggerConnections)
+			table.clear(touchingCharacterParts)
+			manuallyClosedUntilExit = false
+			occupancyMonitorToken += 1
+			boundTrigger = nil
+			if mainFrame.Visible then setOpen(false) end
+		end
+	end))
+end
+
+player.CharacterRemoving:Connect(function()
+	table.clear(touchingCharacterParts)
+	manuallyClosedUntilExit = false
+	occupancyMonitorToken += 1
+	if mainFrame.Visible then setOpen(false) end
+end)
+
+local function inspectWorldChild(instance)
+	if instance.Name == "TriggerPart" and instance.Parent and instance.Parent.Name == "SpinWheel" then bindTrigger(instance) end
+end
+local existingWheel = Workspace:FindFirstChild("SpinWheel")
+local existingTrigger = existingWheel and existingWheel:FindFirstChild("TriggerPart")
+if existingTrigger then inspectWorldChild(existingTrigger) end
+Workspace.DescendantAdded:Connect(inspectWorldChild)
+
+mainFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+	SoundService:SetAttribute("LuckySpinMusicActive", mainFrame.Visible)
+	if not mainFrame.Visible then tokenInfo.Visible = false; idleToken += 1 end
+end)
+setOpen(false)
