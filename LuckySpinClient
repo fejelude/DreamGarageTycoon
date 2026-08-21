@@ -17,6 +17,9 @@ local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 local requestSpin = ReplicatedStorage:WaitForChild("LuckySpinRemotes"):WaitForChild("RequestSpin")
 
 local gui = playerGui:WaitForChild("LuckySpinUI")
+local luckySpinScreenGui = gui:IsA("ScreenGui")
+	and gui
+	or gui:FindFirstAncestorWhichIsA("ScreenGui")
 local mainFrame = gui:WaitForChild("MainFrame")
 local buttons = mainFrame:WaitForChild("Buttons")
 local spinButton = buttons:WaitForChild("Spin")
@@ -39,6 +42,33 @@ local lastTriggerOpenAt = 0
 local touchingCharacterParts = {}
 local manuallyClosedUntilExit = false
 local occupancyMonitorToken = 0
+local hiddenGuis = {}
+
+local BALANCE_INDICATOR_GUI_NAME = "Balance Indicator"
+
+local function restoreHiddenGuis()
+	for _, otherGui in ipairs(hiddenGuis) do
+		if otherGui and otherGui.Parent then
+			otherGui.Enabled = true
+		end
+	end
+
+	hiddenGuis = {}
+end
+
+local function hideOtherGuis()
+	hiddenGuis = {}
+
+	for _, otherGui in ipairs(playerGui:GetDescendants()) do
+		if otherGui:IsA("ScreenGui")
+			and otherGui ~= luckySpinScreenGui
+			and otherGui.Name ~= BALANCE_INDICATOR_GUI_NAME
+			and otherGui.Enabled == true then
+			otherGui.Enabled = false
+			table.insert(hiddenGuis, otherGui)
+		end
+	end
+end
 
 local function setButtonEnabled(button, enabled)
 	button.Active = enabled
@@ -53,6 +83,13 @@ player:GetAttributeChangedSignal("FhiaTokens"):Connect(updateTokenCounter)
 updateTokenCounter()
 
 local function setOpen(open)
+	local wasOpen = mainFrame.Visible
+	if open and not wasOpen then
+		if luckySpinScreenGui then luckySpinScreenGui.Enabled = true end
+		hideOtherGuis()
+	elseif not open then
+		restoreHiddenGuis()
+	end
 	mainFrame.Visible = open
 	SoundService:SetAttribute("LuckySpinMusicActive", open)
 	if not open then tokenInfo.Visible = false end
