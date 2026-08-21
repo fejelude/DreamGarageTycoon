@@ -166,6 +166,8 @@ end
 -- 🌐 MESSAGING SERVICE HOOKS
 -- ============================================================================
 local RESTOCK_TOPIC = "AdminShopRestock"
+local RESTOCK_ACK_TIMEOUT_SECONDS = 5
+local RESTOCK_DEDUP_SECONDS = 300
 local PendingRestocks = {}
 local ProcessedRestockIds = {}
 
@@ -183,12 +185,14 @@ local function dispatchAdminRestock(carName, requestId)
 	ProcessedRestockIds[requestId] = os.clock()
 	PendingRestocks[requestId] = { CarName = carName, Expected = expected, Completed = {} }
 	AdminRestockEvent:Fire(carName, requestId)
-	task.delay(5, function()
+	task.delay(RESTOCK_ACK_TIMEOUT_SECONDS, function()
 		local pending = PendingRestocks[requestId]
 		if pending then
 			PendingRestocks[requestId] = nil
 			warn("[Admin] Restock did not receive every authoritative shop acknowledgement for " .. carName)
 		end
+	end)
+	task.delay(RESTOCK_DEDUP_SECONDS, function()
 		ProcessedRestockIds[requestId] = nil
 	end)
 	return true
@@ -207,18 +211,24 @@ AdminRestockResultEvent.Event:Connect(function(requestId, shopName, succeeded, c
 end)
 
 task.spawn(function()
-	local ok, subscribeError = pcall(function()
-		MessagingService:SubscribeAsync(RESTOCK_TOPIC, function(message)
-			local data = message.Data
-			if type(data) == "table" and type(data.CarName) == "string" and type(data.RequestId) == "string"
-				and data.OriginJobId ~= game.JobId
-			then
-				print("🌐 [Admin] Cross-server Restock Received:", data.CarName)
-				dispatchAdminRestock(data.CarName, data.RequestId)
-			end
+	local attempt = 0
+	while true do
+		attempt += 1
+		local ok, subscribeError = pcall(function()
+			MessagingService:SubscribeAsync(RESTOCK_TOPIC, function(message)
+				local data = message.Data
+				if type(data) == "table" and type(data.CarName) == "string" and type(data.RequestId) == "string"
+					and data.OriginJobId ~= game.JobId
+				then
+					print("🌐 [Admin] Cross-server Restock Received:", data.CarName)
+					dispatchAdminRestock(data.CarName, data.RequestId)
+				end
+			end)
 		end)
-	end)
-	if not ok then warn("[Admin] Restock subscription failed: " .. tostring(subscribeError)) end
+		if ok then return end
+		warn("[Admin] Restock subscription attempt " .. attempt .. " failed: " .. tostring(subscribeError))
+		task.wait(math.min(30, 2 ^ math.min(attempt, 4)))
+	end
 end)
 
 -- ============================================================================
