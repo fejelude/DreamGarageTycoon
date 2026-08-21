@@ -1,0 +1,70 @@
+-- Purpose: Shared Lucky Spin presentation/product constants and server reward weights.
+-- Location: ReplicatedStorage > LuckySpinConfig (ModuleScript)
+-- Security: Clients may read this for animation only; LuckySpinService performs every authoritative roll.
+
+local Config = {}
+
+Config.ProductIds = {
+	Buyx1 = 3709203413,
+	Buyx10 = 3709203785,
+}
+
+Config.ProductTokens = {
+	[3709203413] = 1,
+	[3709203785] = 10,
+}
+
+Config.MusicSoundId = "rbxassetid://72997045367631"
+Config.WinSoundIds = {
+	"rbxassetid://134711305341613",
+	"rbxassetid://87339438449663",
+}
+
+-- These are weights in percentage points. The two fractional odds intentionally
+-- remain literal ratios rather than rounded display percentages. Their sum with
+-- the specified common outcomes is effectively 100% (floating point normalized).
+Config.Rewards = {
+	{ Id = "Wallet500", Type = "Wallet", Amount = 500, DisplayName = "$500", Weight = 94.599672, Segment = { -112, -69 } },
+	{ Id = "Wallet5000", Type = "Wallet", Amount = 5000, DisplayName = "$5,000", Weight = 2, Segment = { 72, 112 } },
+	{ Id = "CarPool1", Type = "CarPool", Pool = 1, DisplayName = "Random Car", Weight = 1.5, Segment = { 115, 156 } },
+	{ Id = "CarPool2", Type = "CarPool", Pool = 2, DisplayName = "Random Car", Weight = 1, Segment = { -154, -115 } },
+	{ Id = "CarPool3", Type = "CarPool", Pool = 3, DisplayName = "Random Car", Weight = 0.5, Segment = { -66, -24 } },
+	{ Id = "ExclusiveRaiju", Type = "Car", CarId = "Raiju", IsRobuxExclusive = true, Tier = "Exclusive", DisplayName = "🌟 Raiju / Exclusive (Raiju)", Weight = 0.4, Segment = { 25, 68 } },
+	{ Id = "LaRossa", Type = "Car", CarId = "La Rossa", Tier = "Legendary", DisplayName = "La Rossa", Weight = 100 / 555000, Segment = { 158, -158 }, Wrapped = true },
+	{ Id = "Hyperspace", Type = "Car", CarId = "Hyperspace", Tier = "Mythical", DisplayName = "Hyperspace", Weight = 100 / 677000, Segment = { -21, 22 } },
+}
+
+Config.Pools = {
+	[1] = { { Tier = "Common", Weight = 80 }, { Tier = "Uncommon", Weight = 20 } },
+	[2] = { { Tier = "Uncommon", Weight = 97 }, { Tier = "Rare", Weight = 3 } },
+	[3] = { { Tier = "Uncommon", Weight = 89.5 }, { Tier = "Rare", Weight = 10 }, { Tier = "Epic", Weight = 0.5 } },
+}
+
+-- Mirrors the existing shop stock weights, keeping expensive cars rarer. Only
+-- normal/base inventory tools are eligible for these pools.
+Config.CarWeights = {
+	Common = { Clunker = 150, Rustix = 110, Breako = 80, Delta = 50, Diva = 35, Iva = 20, Atom = 15, Hiva = 12, Senator = 9, Windsor = 5, Riva = 1 },
+	Uncommon = { Raiju = 60, Vioz = 50, Yora = 35, Ricky = 25, Uber = 18, Ironclad = 12, Vapid = 8, Galadriel = 5, Kingston = 3, Blackhead = 2, Mia = 1 },
+	Rare = { Maverick = 80, Javelin = 60, Stuttgart = 40, Vapid = 30, Velocity = 25, Sadie = 15, Vipera = 8, Camara = 4, Corvo = 1 },
+	Epic = { Razor = 70, Apollo = 50, Sovereign = 35, Sirene = 20, Classy = 10, Shaguar = 5, Vortex = 1 },
+}
+
+Config.RarityColors = {
+	Common = "#9A6846",
+	Uncommon = "#39C6A3",
+	Rare = "#50D8F2",
+	Epic = "#C69CFF",
+	Legendary = "#FFD75A",
+	Mythic = "#FF66E7",
+	Mythical = "#FF66E7",
+	Exclusive = "#FFD75A",
+}
+
+function Config.GetReward(rewardId)
+	for _, reward in ipairs(Config.Rewards) do
+		if reward.Id == rewardId then return reward end
+	end
+	return nil
+end
+
+return table.freeze(Config)

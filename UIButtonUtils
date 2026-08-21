@@ -13,6 +13,7 @@
 
 local TweenService      = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService  = game:GetService("UserInputService")
 local UIAudioConfig     = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
 local UIButtonUtils = {}
@@ -195,17 +196,18 @@ function UIButtonUtils.SetupHoverInfo(guiObject, informationFrame)
 
 	wireHoverEffects(guiObject, uiScale, onEnter, onLeave)
 
-	guiObject.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.Touch then
-			onEnter()
-		end
-	end)
-
-	guiObject.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.Touch then
-			onLeave()
-		end
-	end)
+	-- Touch has no persistent hover, so tapping toggles the panel. Gamepad focus
+	-- uses the same visible state while mouse users retain enter/leave behavior.
+	if guiObject:IsA("GuiButton") then
+		guiObject.Activated:Connect(function()
+			local inputType = UserInputService:GetLastInputType()
+			if inputType == Enum.UserInputType.Touch then
+				if informationFrame and informationFrame.Visible then onLeave() else onEnter() end
+			end
+		end)
+	end
+	guiObject.SelectionGained:Connect(onEnter)
+	guiObject.SelectionLost:Connect(onLeave)
 end
 
 return UIButtonUtils
