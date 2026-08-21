@@ -34,6 +34,7 @@ local LimitedCarsConfig = require(ReplicatedStorage:WaitForChild("LimitedCarsCon
 local InventorySlotsConfig = require(ReplicatedStorage:WaitForChild("InventorySlotsConfig"))
 local BaseAppearanceConfig = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
 local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
+local LuckySpinConfig = require(ReplicatedStorage:WaitForChild("LuckySpinConfig"))
 
 local function requireServerModule(moduleName)
 	local module = script.Parent:WaitForChild(moduleName, 15)
@@ -181,6 +182,8 @@ end
 -- also used for self purchases now so the Shop's StateLabels only celebrate a
 -- receipt after both the grant and receipt-history commit have succeeded.
 local PRODUCT_DISPLAY_NAMES = {
+	[LuckySpinConfig.ProductIds.Buyx1] = "1 Fhia Token",
+	[LuckySpinConfig.ProductIds.Buyx10] = "10 Fhia Tokens",
 	[TABLET_2X_ID] = "2x Tablet Earnings",
 	[SHOP_REROLL_ID] = "Common Shop Reroll",
 	[BANK_TRANSFER_SKIP_ID] = "Bank Transfer Timer Reset",
@@ -745,6 +748,26 @@ local function processReceipt(receiptInfo)
 			if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid) end
 		end
 		fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, isGift, targetPlayer, inventorySlotProduct.DisplayName)
+		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
+	end
+
+	local fhiaTokenAmount = LuckySpinConfig.ProductTokens[pid]
+	if fhiaTokenAmount then
+		-- Token products are self-only. The profile API records the receipt id and
+		-- token delta in one forced profile save before Roblox is acknowledged.
+		targetPlayer = buyerPlayer
+		isGift = false
+		local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
+		if not admin then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+		local invokeOk, grantOk = safeInvoke(admin, 20, "GrantFhiaTokensProduct", buyerPlayer,
+			receiptInfo.PurchaseId, pid, fhiaTokenAmount)
+		if not invokeOk or grantOk ~= true then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+		if not markPurchaseProcessed(purchaseKey) then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+		fireGiftPurchaseResult(buyerPlayer, {
+			Success = true,
+			ProductId = pid,
+			Message = ("Successfully purchased %d Fhia Token%s!"):format(fhiaTokenAmount, fhiaTokenAmount == 1 and "" or "s"),
+		})
 		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 	end
 

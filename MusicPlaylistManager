@@ -25,6 +25,7 @@ local DISCO_EMITTER_TAG = "DiscoMusicEmitter"
 local MUSIC_STATE = {
 	NORMAL = "NormalGameMusic",
 	DISCO = "DiscoMusic",
+	LUCKY_SPIN = "LuckySpinMusic",
 	DISABLED = "MusicDisabled",
 }
 
@@ -37,6 +38,8 @@ local DISTANCE_CHECK_INTERVAL = 0.25
 
 local DAY_TRACK_ID = "rbxassetid://1846088038"
 local NIGHT_TRACK_ID = "rbxassetid://9045766377"
+local LUCKY_SPIN_TRACK_ID = "rbxassetid://72997045367631"
+local LUCKY_SPIN_VOLUME = 0.5
 local DAY_START_HOUR = 6
 local NIGHT_START_HOUR = 18
 local TIME_OF_DAY_CHECK_INTERVAL = 2
@@ -50,6 +53,16 @@ end
 
 musicObject.Looped = true
 musicObject.Volume = 0
+
+local luckySpinMusic = SoundService:FindFirstChild("LuckySpinMusic")
+if not luckySpinMusic then
+	luckySpinMusic = Instance.new("Sound")
+	luckySpinMusic.Name = "LuckySpinMusic"
+	luckySpinMusic.Parent = SoundService
+end
+luckySpinMusic.SoundId = LUCKY_SPIN_TRACK_ID
+luckySpinMusic.Looped = true
+luckySpinMusic.Volume = 0
 
 local discoEmitter = nil
 local discoAttachment = nil
@@ -262,6 +275,9 @@ local function desiredState()
 	if isMuted() or shouldHoldForLoading() then
 		return MUSIC_STATE.DISABLED
 	end
+	if SoundService:GetAttribute("LuckySpinMusicActive") == true then
+		return MUSIC_STATE.LUCKY_SPIN
+	end
 	return isInsideDisco() and MUSIC_STATE.DISCO or MUSIC_STATE.NORMAL
 end
 
@@ -275,6 +291,7 @@ applyMusicState = function(force, fadeDuration)
 	local duration = fadeDuration or FADE_DURATION
 	local themeTarget = nextState == MUSIC_STATE.NORMAL and THEME_VOLUME or 0
 	local discoTarget = nextState == MUSIC_STATE.DISCO and discoVolume or 0
+	local luckySpinTarget = nextState == MUSIC_STATE.LUCKY_SPIN and LUCKY_SPIN_VOLUME or 0
 
 	if nextState == MUSIC_STATE.DISABLED then
 		-- Muting is authoritative and immediate with respect to playback state.
@@ -285,6 +302,9 @@ applyMusicState = function(force, fadeDuration)
 		if musicObject.IsPlaying then
 			musicObject:Stop()
 		end
+		cancelSoundTween(luckySpinMusic)
+		luckySpinMusic.Volume = 0
+		if luckySpinMusic.IsPlaying then luckySpinMusic:Stop() end
 		for sound in pairs(discoSounds) do
 			cancelSoundTween(sound)
 			sound.Volume = 0
@@ -298,10 +318,17 @@ applyMusicState = function(force, fadeDuration)
 	if not musicObject.IsPlaying then
 		musicObject:Play()
 	end
+	if nextState == MUSIC_STATE.LUCKY_SPIN and not luckySpinMusic.IsPlaying then luckySpinMusic:Play() end
 	if nextState == MUSIC_STATE.DISCO then
 		synchronizeDiscoTrack()
 	end
 	fadeSound(musicObject, themeTarget, duration)
+	fadeSound(luckySpinMusic, luckySpinTarget, duration)
+	if nextState ~= MUSIC_STATE.LUCKY_SPIN then
+		task.delay(duration, function()
+			if currentState ~= MUSIC_STATE.LUCKY_SPIN and luckySpinMusic.Volume <= 0.001 and luckySpinMusic.IsPlaying then luckySpinMusic:Stop() end
+		end)
+	end
 
 	for sound in pairs(discoSounds) do
 		fadeSound(sound, discoTarget, duration)
@@ -407,6 +434,10 @@ SoundService:GetAttributeChangedSignal("LoadingMusicActive"):Connect(function()
 		stopThemeForLoading()
 	end
 	applyMusicState(true, MUTE_FADE_DURATION)
+end)
+
+SoundService:GetAttributeChangedSignal("LuckySpinMusicActive"):Connect(function()
+	applyMusicState(true, FADE_DURATION)
 end)
 
 task.spawn(function()

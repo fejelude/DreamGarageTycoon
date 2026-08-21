@@ -1,0 +1,126 @@
+-- Purpose: Server-authoritative Lucky Spin RNG, validation, locking, and reward dispatch.
+-- Location: ServerScriptService > LuckySpinService (Script)
+-- Networking: ReplicatedStorage.LuckySpinRemotes.RequestSpin (RemoteFunction, client -> server -> client).
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local HttpService = game:GetService("HttpService")
+
+local Config = require(ReplicatedStorage:WaitForChild("LuckySpinConfig"))
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+
+local remotes = ReplicatedStorage:WaitForChild("LuckySpinRemotes")
+local requestSpin = remotes:WaitForChild("RequestSpin")
+assert(requestSpin:IsA("RemoteFunction"), "ReplicatedStorage > LuckySpinRemotes > RequestSpin must be a RemoteFunction")
+
+local adminAPI = ServerStorage:WaitForChild("TycoonAdminAPI")
+assert(adminAPI:IsA("BindableFunction"), "ServerStorage > TycoonAdminAPI must be a BindableFunction")
+
+local rng = Random.new()
+local spinLocks = {}
+
+local function weightedChoice(entries, weightField)
+	local total = 0
+	for _, entry in ipairs(entries) do total += math.max(0, tonumber(entry[weightField or "Weight"]) or 0) end
+	if total <= 0 then return nil end
+	local roll, cumulative = rng:NextNumber(0, total), 0
+	for _, entry in ipairs(entries) do
+		cumulative += math.max(0, tonumber(entry[weightField or "Weight"]) or 0)
+		if roll <= cumulative then return entry end
+	end
+	return entries[#entries]
+end
+
+local function chooseCar(poolId)
+	local tierChoice = weightedChoice(Config.Pools[poolId] or {})
+	if not tierChoice then return nil, nil end
+	local weightedCars = {}
+	for carId, weight in pairs(Config.CarWeights[tierChoice.Tier] or {}) do
+		local stats = CarStats.Cars[carId]
+		if stats and stats.Rarity == tierChoice.Tier then
+			table.insert(weightedCars, { CarId = carId, Weight = weight })
+		end
+	end
+	local carChoice = weightedChoice(weightedCars)
+	return carChoice and carChoice.CarId or nil, tierChoice.Tier
+end
+
+local function buildResult()
+	local configured = weightedChoice(Config.Rewards)
+	if not configured then return nil end
+	local result = {
+		SpinId = HttpService:GenerateGUID(false),
+		RewardId = configured.Id,
+		RewardType = configured.Type,
+		DisplayName = configured.DisplayName,
+		Amount = configured.Amount,
+		Tier = configured.Tier,
+		CarId = configured.CarId,
+		IsRobuxExclusive = configured.IsRobuxExclusive == true,
+		VisualSegment = { configured.Segment[1], configured.Segment[2] },
+		WrappedSegment = configured.Wrapped == true,
+	}
+	if configured.Type == "CarPool" then
+		result.RewardType = "Car"
+		result.CarId, result.Tier = chooseCar(configured.Pool)
+		result.DisplayName = result.CarId
+	end
+	if result.RewardType == "Car" then
+		local stats = result.CarId and CarStats.Cars[result.CarId]
+		if not stats then return nil end
+		result.Tier = result.IsRobuxExclusive and "Exclusive" or (result.Tier or stats.Rarity)
+		if not result.IsRobuxExclusive then result.DisplayName = result.CarId end
+	end
+	return result
+end
+
+local function publicResult(result, tokenBalance)
+	return {
+		Success = true,
+		SpinId = result.SpinId,
+		RewardId = result.RewardId,
+		RewardType = result.RewardType,
+		DisplayName = result.DisplayName,
+		Amount = result.Amount,
+		Tier = result.Tier,
+		VisualSegment = result.VisualSegment,
+		WrappedSegment = result.WrappedSegment,
+		TokenBalance = tokenBalance,
+		AnimationDuration = result.AnimationDuration,
+	}
+end
+
+requestSpin.OnServerInvoke = function(player, ...)
+	-- A valid request has no client-authored reward parameters.
+	if select("#", ...) > 0 then return { Success = false, Code = "InvalidRequest", Message = "Unable to process your spin. Please try again." } end
+	if spinLocks[player] then return { Success = false, Code = "Busy", Message = "A spin is already in progress!" } end
+	if player:GetAttribute("TycoonDataLoaded") ~= true then return { Success = false, Code = "Loading", Message = "Your data is still loading. Please try again." } end
+
+	spinLocks[player] = true
+	local result = buildResult()
+	if not result then
+		spinLocks[player] = nil
+		return { Success = false, Code = "Configuration", Message = "Unable to process your spin. Please try again." }
+	end
+	result.AnimationDuration = rng:NextNumber(3, 5)
+
+	local invokeOk, committed, message, tokenBalance = pcall(function()
+		return adminAPI:Invoke("CommitLuckySpin", player, result)
+	end)
+	if not invokeOk or committed ~= true then
+		spinLocks[player] = nil
+		return { Success = false, Code = message == "No tokens" and "NoTokens" or "CommitFailed", Message = message == "No tokens" and "You need a Fhia Token to spin!" or "Unable to process your spin. Please try again." }
+	end
+	-- The grant is already durable, but retain the server lock for the cosmetic
+	-- presentation window so an exploit client cannot stack concurrent spins.
+	local lock = spinLocks[player]
+	task.delay(result.AnimationDuration + 0.75, function()
+		if spinLocks[player] == lock then spinLocks[player] = nil end
+	end)
+	return publicResult(result, tokenBalance)
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	spinLocks[player] = nil
+end)

@@ -145,6 +145,7 @@ local SERVER_SESSION_TOKEN = game.JobId .. ":" .. HttpService:GenerateGUID(false
 
 local MAX_INVENTORY_SIZE = 500
 local MAX_ROBUX_RECEIPT_HISTORY = 300
+local MAX_LUCKY_SPIN_HISTORY = 100
 local DEFAULT_CAR_STORAGE_LIMIT = 5
 -- Versioned, one-way migration. This marker is written in the same UpdateAsync
 -- that acquires the profile lease, making Bank/ATM -> Wallet conversion atomic
@@ -317,6 +318,28 @@ local function compactRobuxReceiptHistory(raw)
 		compact[entry.ReceiptId] = entry.Data
 	end
 
+	return compact
+end
+
+local function sanitizeLuckySpinHistory(raw)
+	local entries = {}
+	if type(raw) ~= "table" then return entries end
+	for spinId, record in pairs(raw) do
+		if type(spinId) == "string" and spinId ~= "" and type(record) == "table" then
+			entries[spinId] = {
+			RewardId = type(record.RewardId) == "string" and record.RewardId or nil,
+			GrantedAt = math.max(0, math.floor(tonumber(record.GrantedAt) or 0)),
+		}
+		end
+	end
+	local ordered = {}
+	for spinId, record in pairs(entries) do table.insert(ordered, { SpinId = spinId, Record = record }) end
+	table.sort(ordered, function(a, b) return a.Record.GrantedAt > b.Record.GrantedAt end)
+	local compact = {}
+	for index, item in ipairs(ordered) do
+		if index > MAX_LUCKY_SPIN_HISTORY then break end
+		compact[item.SpinId] = item.Record
+	end
 	return compact
 end
 
@@ -1712,6 +1735,98 @@ local function grantWalletCashProduct(player, purchaseId, productId, walletCash)
 	return finish(true)
 end
 
+local function grantFhiaTokensProduct(player, purchaseId, productId, tokenAmount)
+	purchaseId = tostring(purchaseId or "")
+	productId = math.floor(tonumber(productId) or 0)
+	tokenAmount = math.floor(tonumber(tokenAmount) or 0)
+	local session = SessionData[player]
+	if purchaseId == "" or tokenAmount <= 0 or not session or not session.DataLoaded then
+		return false, "Player data not loaded"
+	end
+	session.FhiaTokenGrantLocks = session.FhiaTokenGrantLocks or {}
+	if session.FhiaTokenGrantLocks[purchaseId] then return false, "Token grant already running" end
+	session.FhiaTokenGrantLocks[purchaseId] = true
+	local function finish(ok, message)
+		session.FhiaTokenGrantLocks[purchaseId] = nil
+		return ok, message
+	end
+	session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+	if not session.RobuxProductReceipts[purchaseId] then
+		session.FhiaTokens = math.max(0, math.floor(tonumber(session.FhiaTokens) or 0)) + tokenAmount
+		session.RobuxProductReceipts[purchaseId] = { ProductId = productId, GrantedAt = os.time(), Source = "FhiaTokens" }
+		player:SetAttribute("FhiaTokens", session.FhiaTokens)
+		markDirty(player)
+	end
+	if not save(player, false, true) then return finish(false, "Token grant save failed") end
+	return finish(true)
+end
+
+local function commitLuckySpin(player, result)
+	local session = SessionData[player]
+	if not session or not session.DataLoaded or type(result) ~= "table" then return false, "Player data not loaded" end
+	if session.LuckySpinCommitLock then return false, "Spin already running" end
+	local spinId = type(result.SpinId) == "string" and result.SpinId or ""
+	if spinId == "" then return false, "Invalid spin" end
+	session.LuckySpinHistory = sanitizeLuckySpinHistory(session.LuckySpinHistory)
+	if session.LuckySpinHistory[spinId] then return false, "Spin already committed" end
+	local tokens = math.max(0, math.floor(tonumber(session.FhiaTokens) or 0))
+	if tokens < 1 then return false, "No tokens" end
+
+	local wallet = getWalletValue(player)
+	local rewardType = result.RewardType
+	local walletAmount = math.floor(tonumber(result.Amount) or 0)
+	local carId = type(result.CarId) == "string" and CarStats.GetCarId(result.CarId) or nil
+	if rewardType == "Wallet" and (not wallet or (walletAmount ~= 500 and walletAmount ~= 5000)) then return false, "Invalid wallet reward" end
+	if rewardType == "Car" and not carId then return false, "Invalid car reward" end
+	if rewardType ~= "Wallet" and rewardType ~= "Car" then return false, "Invalid reward" end
+	-- Wheel/crafting rewards bypass the player's purchasable slot limit, but the
+	-- profile schema still has a corruption guard at MAX_INVENTORY_SIZE. Reject
+	-- before token consumption if that absolute safety ceiling is reached.
+	if rewardType == "Car" and getCurrentInventoryCount(player) >= MAX_INVENTORY_SIZE then
+		return false, "Inventory safety limit reached"
+	end
+
+	session.LuckySpinCommitLock = true
+	local originalTokens = tokens
+	local originalWallet = wallet and wallet.Value or nil
+	session.FhiaTokens = tokens - 1
+	player:SetAttribute("FhiaTokens", session.FhiaTokens)
+	local grantOk, grantMessage = true, nil
+	if rewardType == "Wallet" then
+		wallet.Value += walletAmount
+	else
+		grantOk, grantMessage = giveTool(player, carId, {
+			Source = "LuckySpin", BypassStorageLimit = true, SpinTransactionId = spinId,
+			IsRobuxExclusive = result.IsRobuxExclusive == true,
+			ExclusiveDisplayName = result.IsRobuxExclusive == true and ("🌟 " .. carId .. " / Exclusive (" .. carId .. ")") or nil,
+		})
+	end
+	if not grantOk then
+		session.FhiaTokens = originalTokens
+		player:SetAttribute("FhiaTokens", originalTokens)
+		session.LuckySpinCommitLock = nil
+		return false, grantMessage or "Reward grant failed"
+	end
+
+	session.LuckySpinHistory[spinId] = { RewardId = tostring(result.RewardId or ""), GrantedAt = os.time() }
+	session.LuckySpinHistory = sanitizeLuckySpinHistory(session.LuckySpinHistory)
+	markDirty(player)
+	if save(player, false, true) then
+		session.LuckySpinCommitLock = nil
+		return true, nil, session.FhiaTokens
+	end
+
+	-- Save failed before the transaction became durable: return the live session
+	-- to its pre-spin state so a retry cannot cost a token without a reward.
+	session.FhiaTokens = originalTokens
+	player:SetAttribute("FhiaTokens", originalTokens)
+	session.LuckySpinHistory[spinId] = nil
+	if rewardType == "Wallet" then wallet.Value = originalWallet else removeToolsByAttribute(player, "SpinTransactionId", spinId) end
+	markDirty(player)
+	session.LuckySpinCommitLock = nil
+	return false, "Spin save failed"
+end
+
 local function hasReceiptGrant(player, purchaseId)
 	purchaseId = tostring(purchaseId or "")
 	local session = SessionData[player]
@@ -1838,6 +1953,11 @@ AdminAPI.OnInvoke = function(action, player, ...)
 	elseif action == "GrantWalletCashProduct" and player then
 		local purchaseId, productId, walletCash = ...
 		return grantWalletCashProduct(player, purchaseId, productId, walletCash)
+	elseif action == "GrantFhiaTokensProduct" and player then
+		local purchaseId, productId, tokenAmount = ...
+		return grantFhiaTokensProduct(player, purchaseId, productId, tokenAmount)
+	elseif action == "CommitLuckySpin" and player then
+		return commitLuckySpin(player, ...)
 
 	elseif action == "HasReceiptGrant" and player then
 		local purchaseId = ...
@@ -2535,6 +2655,8 @@ save = function(player, isClosing, force)
 		local intentionalEmptyInventory = session.IntentionalEmptyInventory == true
 		local explicitClear = session.ExplicitClear == true
 		local snapshotWallet = MoneyManager.GetBalance(player, "Wallet")
+		local snapshotFhiaTokens = math.max(0, math.floor(tonumber(session.FhiaTokens) or 0))
+		local luckySpinHistory = sanitizeLuckySpinHistory(session.LuckySpinHistory)
 		local snapshotOfflineTabletCarry = math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
 		local profileKey = session.ProfileKey
 		local leaseToken = session.LeaseToken
@@ -2613,6 +2735,8 @@ save = function(player, isClosing, force)
 
 					oldData.Bank       = 0
 					oldData.Wallet     = snapshotWallet
+					oldData.FhiaTokens = snapshotFhiaTokens
+					oldData.LuckySpinHistory = luckySpinHistory
 					oldData.ATMBalance = 0
 					oldData.WalletEconomyMigrationVersion = WALLET_ECONOMY_MIGRATION_VERSION
 					oldData.Inventory = finalInventory
@@ -2873,6 +2997,10 @@ local function InitializePlayer(player)
 		StarterPackSaveConfirmed = false,
 		StarterPackClearRequested = false,
 		WalletCashProductGrantInProgress = {},
+		FhiaTokens = 0,
+		FhiaTokenGrantLocks = {},
+		LuckySpinHistory = {},
+		LuckySpinCommitLock = nil,
 		PromoCodesRedeemed = {},
 		PromoCodeRedemptionInProgress = {},
 	}
@@ -3037,6 +3165,7 @@ local function InitializePlayer(player)
 		OfflinePremiumPendingAmount = 0, TabletDoublePendingAmount = 0, InventorySlotBonus = 0,
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
 		RobuxProductReceipts = {},
+		FhiaTokens = 0, LuckySpinHistory = {},
 		PromoCodesRedeemed = {},
 		DailyRewards = sanitizeDailyRewardsData(nil), FreeRewardsClaimed = false,
 		Tutorial = sanitizeTutorialData(nil)
@@ -3096,6 +3225,8 @@ local function InitializePlayer(player)
 	data.StarterPackPurchaseId = type(data.StarterPackPurchaseId) == "string" and data.StarterPackPurchaseId or nil
 	data.StarterPackReceipts = type(data.StarterPackReceipts) == "table" and data.StarterPackReceipts or {}
 	data.RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
+	data.FhiaTokens = math.max(0, math.floor(tonumber(data.FhiaTokens) or 0))
+	data.LuckySpinHistory = sanitizeLuckySpinHistory(data.LuckySpinHistory)
 	data.PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
 	data.IntentionalEmptyInventory = data.IntentionalEmptyInventory == true
 	data.DailyRewards = sanitizeDailyRewardsData(data.DailyRewards)
@@ -3143,6 +3274,9 @@ local function InitializePlayer(player)
 	SessionData[player].StarterPackSaveConfirmed = data.StarterPackPurchased == true
 	SessionData[player].StarterPackReceipts = {}
 	SessionData[player].RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
+	SessionData[player].FhiaTokens = data.FhiaTokens
+	SessionData[player].LuckySpinHistory = data.LuckySpinHistory
+	player:SetAttribute("FhiaTokens", data.FhiaTokens)
 	SessionData[player].PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
 	SessionData[player].IntentionalEmptyInventory = data.IntentionalEmptyInventory
 	SessionData[player].InventorySlotBonus = data.InventorySlotBonus
