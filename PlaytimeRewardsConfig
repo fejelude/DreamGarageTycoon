@@ -1,0 +1,41 @@
+-- Purpose: Shared display data and server-validated balancing for Playtime Rewards.
+-- Location: ReplicatedStorage > PlaytimeRewardsConfig (ModuleScript)
+-- Security: This module is readable by clients, but only PlaytimeRewardsService rolls/grants rewards.
+
+local Config = {}
+
+Config.SkipTimeProductId = 3709352943
+
+Config.Rewards = table.freeze({
+	[1] = { RequiredSeconds = 120, Type = "Wallet", Amount = 100 },
+	[2] = { RequiredSeconds = 300, Type = "CarPool", Pool = 1 },
+	[3] = { RequiredSeconds = 480, Type = "Wallet", Amount = 250 },
+	[4] = { RequiredSeconds = 900, Type = "FhiaTokens", Amount = 1 },
+	[5] = { RequiredSeconds = 1800, Type = "Wallet", Amount = 500 },
+	[6] = { RequiredSeconds = 2400, Type = "CarPool", Pool = 2 },
+	[7] = { RequiredSeconds = 2700, Type = "Wallet", Amount = 750 },
+	[8] = { RequiredSeconds = 3600, Type = "FhiaTokens", Amount = 2 },
+	[9] = { RequiredSeconds = 3900, Type = "Wallet", Amount = 1000 },
+	[10] = { RequiredSeconds = 4500, Type = "CarPool", Pool = 3 },
+	[11] = { RequiredSeconds = 5100, Type = "Wallet", Amount = 1500 },
+	[12] = { RequiredSeconds = 7200, Type = "FhiaTokens", Amount = 3 },
+})
+
+-- Tier odds are percentage weights. Pool 1's Common tier is implicit (100%).
+Config.Pools = table.freeze({
+	[1] = { { Tier = "Common", Weight = 100 } },
+	[2] = { { Tier = "Common", Weight = 97 }, { Tier = "Uncommon", Weight = 3 } },
+	[3] = { { Tier = "Common", Weight = 94.5 }, { Tier = "Uncommon", Weight = 5.4 }, { Tier = "Rare", Weight = 0.1 } },
+})
+
+-- Every list totals 100. Riva therefore has an exact 0.01% conditional chance
+-- in Pool 1 (one in 10,000). Later pools reuse the same price-descending curve.
+Config.CarWeights = table.freeze({
+	Common = { Clunker = 39, Rustix = 25, Breako = 16, Delta = 9, Diva = 5, Iva = 3, Atom = 1.7, Hiva = 1, Senator = 0.2, Windsor = 0.09, Riva = 0.01 },
+	Uncommon = { Raiju = 40, Vioz = 24, Yora = 14, Ricky = 8, Uber = 5, Ironclad = 3.5, Vapid = 2.2, Galadriel = 1.5, Kingston = 0.9, Blackhead = 0.6, Mia = 0.3 },
+	Rare = { Maverick = 38, Javelin = 24, Stuttgart = 15, Velocity = 9, Sadie = 6, Vipera = 4, Camara = 2.5, Corvo = 1.5 },
+})
+
+Config.RarityColors = table.freeze({ Common = "#9A6846", Uncommon = "#39C6A3", Rare = "#50D8F2" })
+
+return table.freeze(Config)
