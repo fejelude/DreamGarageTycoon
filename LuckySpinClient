@@ -8,6 +8,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local TweenService = game:GetService("TweenService")
 local SoundService = game:GetService("SoundService")
 local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -41,6 +42,14 @@ local occupancyMonitorToken = 0
 local OCCUPANCY_POLL_INTERVAL = 0.1
 local FULL_EXIT_GRACE = 0.2
 local lastOccupiedAt = 0
+local BALANCE_INDICATOR_GUI_NAME = "Balance Indicator"
+local BLUR_SIZE = 18
+local BLUR_TWEEN_INFO = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local hiddenGuis = {}
+local presentationActive = false
+local luckySpinBlur = nil
+local blurTween = nil
+local blurGeneration = 0
 
 local function setButtonEnabled(button, enabled)
 	button.Active = enabled
@@ -54,12 +63,75 @@ end
 player:GetAttributeChangedSignal("FhiaTokens"):Connect(updateTokenCounter)
 updateTokenCounter()
 
+local function restoreHiddenGuis()
+	for hiddenGui in pairs(hiddenGuis) do
+		if hiddenGui.Parent then hiddenGui.Enabled = true end
+	end
+	table.clear(hiddenGuis)
+end
+
+local function hideOtherGuis()
+	table.clear(hiddenGuis)
+	for _, otherGui in ipairs(playerGui:GetDescendants()) do
+		if otherGui:IsA("ScreenGui")
+			and otherGui ~= gui
+			and otherGui.Name ~= BALANCE_INDICATOR_GUI_NAME
+			and otherGui.Enabled then
+			hiddenGuis[otherGui] = true
+			otherGui.Enabled = false
+		end
+	end
+end
+
+local function setBlur(open)
+	blurGeneration += 1
+	local generation = blurGeneration
+	if blurTween then
+		blurTween:Cancel()
+		blurTween = nil
+	end
+
+	if open then
+		if not luckySpinBlur or not luckySpinBlur.Parent then
+			luckySpinBlur = Instance.new("BlurEffect")
+			luckySpinBlur.Name = "LuckySpinBlur"
+			luckySpinBlur.Size = 0
+			luckySpinBlur.Parent = Lighting
+		end
+		blurTween = TweenService:Create(luckySpinBlur, BLUR_TWEEN_INFO, { Size = BLUR_SIZE })
+		blurTween:Play()
+	elseif luckySpinBlur then
+		local blurToRemove = luckySpinBlur
+		blurTween = TweenService:Create(blurToRemove, BLUR_TWEEN_INFO, { Size = 0 })
+		blurTween:Play()
+		blurTween.Completed:Connect(function()
+			if generation == blurGeneration and not presentationActive and luckySpinBlur == blurToRemove then
+				blurToRemove:Destroy()
+				luckySpinBlur = nil
+				blurTween = nil
+			end
+		end)
+	end
+end
+
+local function setPresentationActive(open)
+	if presentationActive == open then return end
+	presentationActive = open
+	if open then
+		hideOtherGuis()
+	else
+		restoreHiddenGuis()
+	end
+	setBlur(open)
+end
+
 local function setOpen(open)
 	-- UI isolation controllers can temporarily disable ScreenGuis. A real trigger
 	-- entry must be able to restore this UI instead of only changing a hidden
 	-- MainFrame's Visible property.
 	if open and gui:IsA("ScreenGui") then gui.Enabled = true end
 	mainFrame.Visible = open
+	setPresentationActive(open)
 	SoundService:SetAttribute("LuckySpinMusicActive", open)
 	if not open then tokenInfo.Visible = false end
 	idleToken += 1
@@ -311,6 +383,7 @@ if existingTrigger then inspectWorldChild(existingTrigger) end
 Workspace.DescendantAdded:Connect(inspectWorldChild)
 
 mainFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+	setPresentationActive(mainFrame.Visible)
 	SoundService:SetAttribute("LuckySpinMusicActive", mainFrame.Visible)
 	if not mainFrame.Visible then tokenInfo.Visible = false; idleToken += 1 end
 end)
