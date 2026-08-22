@@ -20,6 +20,21 @@ local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductR
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
+-- Subscribe before waiting for the complete Shop hierarchy. Receipt delivery is
+-- asynchronous and RemoteEvents are not replayed; otherwise a fast receipt can
+-- be permanently missed while a slowly replicated UI descendant is loading.
+local giftRemotes = ReplicatedStorage:WaitForChild("GiftRemotes")
+local purchaseResultEvent = giftRemotes:WaitForChild("GiftPurchaseResult")
+local queuedPurchaseResults = {}
+local handlePurchaseResult = nil
+purchaseResultEvent.OnClientEvent:Connect(function(result)
+	if handlePurchaseResult then
+		handlePurchaseResult(result)
+	else
+		table.insert(queuedPurchaseResults, result)
+	end
+end)
+
 local shopGui = playerGui:WaitForChild("ShopUI")
 local shopScreenGui = shopGui:IsA("ScreenGui")
 	and shopGui
@@ -38,8 +53,6 @@ if not redeemCodeFunction:IsA("RemoteFunction") then
 	error("[ShopClient] ReplicatedStorage > ShopCodeRedemptionFunction must be a RemoteFunction, got " .. redeemCodeFunction.ClassName, 0)
 end
 local shopFeedback = UIAudioConfig.CreateStateFeedback(mainFrame)
-local giftRemotes = ReplicatedStorage:WaitForChild("GiftRemotes")
-local purchaseResultEvent = giftRemotes:WaitForChild("GiftPurchaseResult")
 local shownPurchaseIds = {}
 
 local function showAuthoritativePurchaseResult(result)
@@ -69,11 +82,22 @@ local function showAuthoritativePurchaseResult(result)
 	else
 		message = ("Successfully purchased %s!"):format(displayName)
 	end
-	shopFeedback:Success(message)
-	UIAudioConfig.PlayNamed("BuySuccess")
+	-- UniversalGiftUI temporarily disables ShopUI while selecting a recipient.
+	-- Wait for its committed-gift cleanup to restore the Shop before starting the
+	-- existing StateLabel fade/sound, rather than playing the animation invisibly.
+	task.spawn(function()
+		if result.IsGift == true and shopScreenGui then
+			local deadline = os.clock() + 3
+			while not shopScreenGui.Enabled and os.clock() < deadline do task.wait() end
+		end
+		shopFeedback:Success(message)
+		UIAudioConfig.PlayNamed("BuySuccess")
+	end)
 end
 
-purchaseResultEvent.OnClientEvent:Connect(showAuthoritativePurchaseResult)
+handlePurchaseResult = showAuthoritativePurchaseResult
+for _, result in ipairs(queuedPurchaseResults) do showAuthoritativePurchaseResult(result) end
+table.clear(queuedPurchaseResults)
 
 local mainButtonsGui = playerGui:WaitForChild("MainButtons")
 local buttonsContainer = mainButtonsGui:FindFirstChild("Buttons") or mainButtonsGui

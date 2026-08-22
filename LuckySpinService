@@ -70,7 +70,10 @@ local function buildResult()
 		local stats = result.CarId and CarStats.Cars[result.CarId]
 		if not stats then return nil end
 		result.Tier = result.IsRobuxExclusive and "Exclusive" or (result.Tier or stats.Rarity)
-		if not result.IsRobuxExclusive then result.DisplayName = result.CarId end
+		-- Presentation always receives the actual car name. In particular, the
+		-- exclusive Raiju reward must not expose the wheel-decoration caption inside
+		-- the RichText success sentence.
+		result.DisplayName = result.CarId
 	end
 	return result
 end

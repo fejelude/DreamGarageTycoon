@@ -8,6 +8,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local TweenService = game:GetService("TweenService")
 local SoundService = game:GetService("SoundService")
 local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -29,16 +30,38 @@ local tokenInfo = tokenButton:WaitForChild("FhiaTokenInfo")
 local wheel = mainFrame:WaitForChild("SpinWheelDecoration"):WaitForChild("Wheel")
 local feedback = UIAudioConfig.CreateStateFeedback(mainFrame)
 
+-- Lucky Spin car wins color only the car name with RichText. StateFeedback is
+-- shared by interfaces that use plain text, so opt this interface's success
+-- label in explicitly rather than changing every StateLabel in the game.
+local stateLabels = mainFrame:FindFirstChild("StateLabels") or mainFrame:FindFirstChild("StateLabels", true)
+local successStateLabel = (stateLabels and (stateLabels:FindFirstChild("Success") or stateLabels:FindFirstChild("Sucess")))
+	or mainFrame:FindFirstChild("Success")
+	or mainFrame:FindFirstChild("Sucess")
+	or mainFrame:FindFirstChild("Indicator-purchase", true)
+if successStateLabel and (successStateLabel:IsA("TextLabel") or successStateLabel:IsA("TextButton")) then
+	successStateLabel.RichText = true
+end
+
 local spinBusy = false
 local promptBusy = false
 local pendingProductId = nil
 local idleToken = 0
 local triggerConnections = {}
 local boundTrigger = nil
-local lastTriggerOpenAt = 0
 local touchingCharacterParts = {}
 local manuallyClosedUntilExit = false
 local occupancyMonitorToken = 0
+local OCCUPANCY_POLL_INTERVAL = 0.1
+local FULL_EXIT_GRACE = 0.2
+local lastOccupiedAt = 0
+local BALANCE_INDICATOR_GUI_NAME = "Balance Indicator"
+local BLUR_SIZE = 18
+local BLUR_TWEEN_INFO = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local hiddenGuis = {}
+local presentationActive = false
+local luckySpinBlur = nil
+local blurTween = nil
+local blurGeneration = 0
 
 local function setButtonEnabled(button, enabled)
 	button.Active = enabled
@@ -52,8 +75,75 @@ end
 player:GetAttributeChangedSignal("FhiaTokens"):Connect(updateTokenCounter)
 updateTokenCounter()
 
+local function restoreHiddenGuis()
+	for hiddenGui in pairs(hiddenGuis) do
+		if hiddenGui.Parent then hiddenGui.Enabled = true end
+	end
+	table.clear(hiddenGuis)
+end
+
+local function hideOtherGuis()
+	table.clear(hiddenGuis)
+	for _, otherGui in ipairs(playerGui:GetDescendants()) do
+		if otherGui:IsA("ScreenGui")
+			and otherGui ~= gui
+			and otherGui.Name ~= BALANCE_INDICATOR_GUI_NAME
+			and otherGui.Enabled then
+			hiddenGuis[otherGui] = true
+			otherGui.Enabled = false
+		end
+	end
+end
+
+local function setBlur(open)
+	blurGeneration += 1
+	local generation = blurGeneration
+	if blurTween then
+		blurTween:Cancel()
+		blurTween = nil
+	end
+
+	if open then
+		if not luckySpinBlur or not luckySpinBlur.Parent then
+			luckySpinBlur = Instance.new("BlurEffect")
+			luckySpinBlur.Name = "LuckySpinBlur"
+			luckySpinBlur.Size = 0
+			luckySpinBlur.Parent = Lighting
+		end
+		blurTween = TweenService:Create(luckySpinBlur, BLUR_TWEEN_INFO, { Size = BLUR_SIZE })
+		blurTween:Play()
+	elseif luckySpinBlur then
+		local blurToRemove = luckySpinBlur
+		blurTween = TweenService:Create(blurToRemove, BLUR_TWEEN_INFO, { Size = 0 })
+		blurTween:Play()
+		blurTween.Completed:Connect(function()
+			if generation == blurGeneration and not presentationActive and luckySpinBlur == blurToRemove then
+				blurToRemove:Destroy()
+				luckySpinBlur = nil
+				blurTween = nil
+			end
+		end)
+	end
+end
+
+local function setPresentationActive(open)
+	if presentationActive == open then return end
+	presentationActive = open
+	if open then
+		hideOtherGuis()
+	else
+		restoreHiddenGuis()
+	end
+	setBlur(open)
+end
+
 local function setOpen(open)
+	-- UI isolation controllers can temporarily disable ScreenGuis. A real trigger
+	-- entry must be able to restore this UI instead of only changing a hidden
+	-- MainFrame's Visible property.
+	if open and gui:IsA("ScreenGui") then gui.Enabled = true end
 	mainFrame.Visible = open
+	setPresentationActive(open)
 	SoundService:SetAttribute("LuckySpinMusicActive", open)
 	if not open then tokenInfo.Visible = false end
 	idleToken += 1
@@ -154,8 +244,16 @@ end
 
 local function rewardMessage(result)
 	if result.RewardType == "Wallet" then return "Congratulations! You won " .. result.DisplayName .. "!" end
-	local color = Config.RarityColors[result.Tier] or "#FFFFFF"
-	return ("Congratulations! You won <font color='%s'>%s</font>! It has been added to your inventory."):format(color, result.DisplayName)
+	local color = tostring(Config.RarityColors[result.Tier] or "#FFFFFF")
+	if not color:match("^#%x%x%x%x%x%x$") then color = "#FFFFFF" end
+	local displayName = tostring(result.DisplayName or "Car")
+		:gsub("&", "&amp;")
+		:gsub("<", "&lt;")
+		:gsub(">", "&gt;")
+		:gsub('"', "&quot;")
+		:gsub("'", "&apos;")
+	return ('Congratulations! You won <font color="%s">%s</font>! It has been added to your inventory.')
+		:format(color, displayName)
 end
 
 local function animateResult(result)
@@ -200,57 +298,66 @@ local function bindTrigger(trigger)
 	table.clear(touchingCharacterParts)
 	manuallyClosedUntilExit = false
 	occupancyMonitorToken += 1
+	lastOccupiedAt = os.clock()
 	boundTrigger = trigger
 
-	local function handleFullyExited()
-		if isInsideTrigger() then return end
-		manuallyClosedUntilExit = false
-		if mainFrame.Visible then setOpen(false) end
+	local function characterCanOpen()
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		return humanoid ~= nil and humanoid.Health > 0
 	end
 
 	local function reconcileTouchingParts()
 		local current = {}
-		for _, part in ipairs(trigger:GetTouchingParts()) do
+		local parts = nil
+		local character = player.Character
+		if character then
+			local overlapParams = OverlapParams.new()
+			overlapParams.FilterType = Enum.RaycastFilterType.Include
+			overlapParams.FilterDescendantsInstances = { character }
+			local ok, result = pcall(function()
+				return Workspace:GetPartsInPart(trigger, overlapParams)
+			end)
+			if ok then parts = result end
+		end
+		if not parts then
+			local ok, result = pcall(function() return trigger:GetTouchingParts() end)
+			parts = ok and result or {}
+		end
+
+		for _, part in ipairs(parts) do
 			if isCharacterPart(part) then current[part] = true end
 		end
 		touchingCharacterParts = current
-		handleFullyExited()
-	end
 
-	local function startOccupancyMonitor()
-		occupancyMonitorToken += 1
-		local token = occupancyMonitorToken
-		task.spawn(function()
-			while token == occupancyMonitorToken and boundTrigger == trigger and isInsideTrigger() do
-				task.wait(0.1)
-				if token == occupancyMonitorToken and trigger.Parent then reconcileTouchingParts() end
+		if isInsideTrigger() then
+			lastOccupiedAt = os.clock()
+			if not manuallyClosedUntilExit and not mainFrame.Visible and characterCanOpen() then
+				setOpen(true)
 			end
-		end)
+			return
+		end
+
+		-- One empty physics sample can occur while R6/R15 limbs exchange contact.
+		-- Only a continuously empty trigger counts as a full exit and releases the
+		-- manual-close latch.
+		if os.clock() - lastOccupiedAt >= FULL_EXIT_GRACE then
+			manuallyClosedUntilExit = false
+			if mainFrame.Visible then setOpen(false) end
+		end
 	end
 
 	table.insert(triggerConnections, trigger.Touched:Connect(function(hit)
-		local character = player.Character
-		if not character or not isCharacterPart(hit) then return end
-		local wasInside = isInsideTrigger()
-		touchingCharacterParts[hit] = true
-		if not wasInside then startOccupancyMonitor() end
-		if wasInside or manuallyClosedUntilExit or mainFrame.Visible then return end
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if not humanoid or humanoid.Health <= 0 or os.clock() - lastTriggerOpenAt < 0.15 then return end
-		lastTriggerOpenAt = os.clock()
-		setOpen(true)
+		if isCharacterPart(hit) then task.defer(reconcileTouchingParts) end
 	end))
 
 	table.insert(triggerConnections, trigger.TouchEnded:Connect(function(hit)
 		if not touchingCharacterParts[hit] then return end
-		touchingCharacterParts[hit] = nil
-		-- TouchEnded for one limb can arrive while another limb is entering. Defer
-		-- the empty-set decision so all physics callbacks for this step settle.
 		task.defer(reconcileTouchingParts)
 	end))
 
-	table.insert(triggerConnections, trigger.AncestryChanged:Connect(function(_, parent)
-		if not parent and boundTrigger == trigger then
+	table.insert(triggerConnections, trigger.AncestryChanged:Connect(function()
+		if boundTrigger == trigger and not trigger:IsDescendantOf(Workspace) then
 			for _, connection in ipairs(triggerConnections) do connection:Disconnect() end
 			table.clear(triggerConnections)
 			table.clear(touchingCharacterParts)
@@ -260,6 +367,18 @@ local function bindTrigger(trigger)
 			if mainFrame.Visible then setOpen(false) end
 		end
 	end))
+
+	-- Touched is edge-triggered and can be missed when this LocalScript or a
+	-- streamed TriggerPart arrives after the character is already overlapping it.
+	-- Continuous reconciliation is the source of truth; touch signals only make
+	-- it react before the next poll.
+	local monitorToken = occupancyMonitorToken
+	task.spawn(function()
+		while monitorToken == occupancyMonitorToken and boundTrigger == trigger and trigger:IsDescendantOf(Workspace) do
+			reconcileTouchingParts()
+			task.wait(OCCUPANCY_POLL_INTERVAL)
+		end
+	end)
 end
 
 player.CharacterRemoving:Connect(function()
@@ -267,6 +386,12 @@ player.CharacterRemoving:Connect(function()
 	manuallyClosedUntilExit = false
 	occupancyMonitorToken += 1
 	if mainFrame.Visible then setOpen(false) end
+end)
+
+player.CharacterAdded:Connect(function()
+	table.clear(touchingCharacterParts)
+	manuallyClosedUntilExit = false
+	lastOccupiedAt = os.clock()
 end)
 
 local function inspectWorldChild(instance)
@@ -278,6 +403,7 @@ if existingTrigger then inspectWorldChild(existingTrigger) end
 Workspace.DescendantAdded:Connect(inspectWorldChild)
 
 mainFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+	setPresentationActive(mainFrame.Visible)
 	SoundService:SetAttribute("LuckySpinMusicActive", mainFrame.Visible)
 	if not mainFrame.Visible then tokenInfo.Visible = false; idleToken += 1 end
 end)
