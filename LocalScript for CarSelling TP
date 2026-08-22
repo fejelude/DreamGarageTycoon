@@ -1,0 +1,27 @@
+-- Handles ATM teleport button interaction.
+-- Hover/click behavior uses the shared standard button helper so the
+-- ATM Information tooltip matches the Friend Bonus / Premium Bonus buttons.
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIButtonUtils     = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local teleportFunction = ReplicatedStorage:WaitForChild("TeleportToPlaceFunction")
+
+local player = Players.LocalPlayer
+local button = script.Parent
+local information = button:WaitForChild("Information")
+
+-- ⚙️ CONFIG
+local DESTINATION_NAME = "SellCars"
+
+local function teleportToATM()
+	local ok, response = pcall(function()
+		return teleportFunction:InvokeServer("Teleport", DESTINATION_NAME)
+	end)
+
+	if not ok or not (response and response.ok) then
+		warn("❌ ATM teleport failed: " .. tostring(ok and response.message or response))
+	end
+end
+
+UIButtonUtils.SetupStandardButton(button, information, teleportToATM)
