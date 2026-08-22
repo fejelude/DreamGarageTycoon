@@ -35,6 +35,7 @@ local InventorySlotsConfig = require(ReplicatedStorage:WaitForChild("InventorySl
 local BaseAppearanceConfig = require(ReplicatedStorage:WaitForChild("BaseAppearanceConfig"))
 local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
 local LuckySpinConfig = require(ReplicatedStorage:WaitForChild("LuckySpinConfig"))
+local PlaytimeRewardsConfig = require(ReplicatedStorage:WaitForChild("PlaytimeRewardsConfig"))
 
 local function requireServerModule(moduleName)
 	local module = script.Parent:WaitForChild(moduleName, 15)
@@ -184,6 +185,7 @@ end
 local PRODUCT_DISPLAY_NAMES = {
 	[LuckySpinConfig.ProductIds.Buyx1] = "1 Fhia Token",
 	[LuckySpinConfig.ProductIds.Buyx10] = "10 Fhia Tokens",
+	[PlaytimeRewardsConfig.SkipTimeProductId] = "Playtime Rewards Skip Time",
 	[TABLET_2X_ID] = "2x Tablet Earnings",
 	[SHOP_REROLL_ID] = "Common Shop Reroll",
 	[BANK_TRANSFER_SKIP_ID] = "Bank Transfer Timer Reset",
@@ -767,6 +769,23 @@ local function processReceipt(receiptInfo)
 			Success = true,
 			ProductId = pid,
 			Message = ("Successfully purchased %d Fhia Token%s!"):format(fhiaTokenAmount, fhiaTokenAmount == 1 and "" or "s"),
+		})
+		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
+	end
+
+	if pid == PlaytimeRewardsConfig.SkipTimeProductId then
+		-- The global receipt history/active lock above provides durable receipt
+		-- idempotency. The effect intentionally applies to whichever fresh session
+		-- is active when Roblox delivers or retries the outstanding receipt.
+		targetPlayer = buyerPlayer
+		isGift = false
+		if type(_G.GrantPlaytimeSkipReceipt) ~= "function" then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+		local grantOk = _G.GrantPlaytimeSkipReceipt(buyerPlayer)
+		if grantOk ~= true then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+		if not markPurchaseProcessed(purchaseKey) then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+		fireGiftPurchaseResult(buyerPlayer, {
+			Success = true, ProductId = pid, PurchaseId = tostring(receiptInfo.PurchaseId),
+			Message = "All Playtime Rewards are now unlocked!",
 		})
 		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 	end

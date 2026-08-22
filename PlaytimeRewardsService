@@ -1,0 +1,115 @@
+-- Purpose: Server-authoritative, current-server-session Playtime Rewards.
+-- Location: ServerScriptService > PlaytimeRewardsService (Script)
+-- Required pre-created instances:
+--   ReplicatedStorage > PlaytimeRewardsRemotes (Folder)
+--     GetState (RemoteFunction), ClaimReward (RemoteFunction), StateChanged (RemoteEvent)
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("PlaytimeRewardsConfig"))
+local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local remotes = ReplicatedStorage:WaitForChild("PlaytimeRewardsRemotes")
+local getState = remotes:WaitForChild("GetState")
+local claimReward = remotes:WaitForChild("ClaimReward")
+local stateChanged = remotes:WaitForChild("StateChanged")
+local admin = ServerStorage:WaitForChild("TycoonAdminAPI")
+assert(getState:IsA("RemoteFunction") and claimReward:IsA("RemoteFunction") and stateChanged:IsA("RemoteEvent"), "PlaytimeRewardsRemotes has invalid children")
+
+local rng = Random.new()
+local sessions = {}
+
+local function weightedChoice(entries, field)
+	local total = 0
+	for key, value in pairs(entries) do total += math.max(0, tonumber(type(value) == "table" and value[field or "Weight"] or value) or 0) end
+	if total <= 0 then return nil end
+	local roll, cumulative = rng:NextNumber(0, total), 0
+	for key, value in pairs(entries) do
+		cumulative += math.max(0, tonumber(type(value) == "table" and value[field or "Weight"] or value) or 0)
+		if roll <= cumulative then return type(value) == "table" and value or key end
+	end
+end
+
+local function rollCar(poolId)
+	local tierEntry = weightedChoice(Config.Pools[poolId])
+	local tier = tierEntry and tierEntry.Tier
+	local carId = tier and weightedChoice(Config.CarWeights[tier])
+	local stats = carId and CarStats.Cars[carId]
+	if not stats or stats.Rarity ~= tier then return nil end
+	return carId, tier
+end
+
+local function elapsed(session)
+	return math.max(0, os.clock() - session.StartedAt)
+end
+
+local function publicState(player)
+	local session = sessions[player]
+	if not session then return { IsLoaded = false, ServerElapsed = 0, Claimed = {}, SkipUnlocked = false } end
+	local claimed = {}
+	for index = 1, #Config.Rewards do claimed[index] = session.Claimed[index] == true end
+	return { IsLoaded = true, ServerElapsed = elapsed(session), Claimed = claimed, SkipUnlocked = session.SkipUnlocked == true }
+end
+
+local function notify(player)
+	if player.Parent then stateChanged:FireClient(player, publicState(player)) end
+end
+
+local function prepare(player)
+	task.spawn(function()
+		while player.Parent and player:GetAttribute("TycoonDataLoaded") ~= true do task.wait(0.1) end
+		if not player.Parent then return end
+		-- os.clock is monotonic and cannot be changed by a client. A new Player instance
+		-- always receives a new table, intentionally resetting this session-only cycle.
+		sessions[player] = { StartedAt = os.clock(), Claimed = {}, Locks = {}, SkipUnlocked = false }
+		notify(player)
+	end)
+end
+
+local function claim(player, requestedIndex, ...)
+	if select("#", ...) > 0 or type(requestedIndex) ~= "number" or requestedIndex % 1 ~= 0 then
+		return { Success = false, Code = "Invalid", Message = "Unable to claim this reward right now. Please try again.", State = publicState(player) }
+	end
+	local reward, session = Config.Rewards[requestedIndex], sessions[player]
+	if not reward or not session or player:GetAttribute("TycoonDataLoaded") ~= true then
+		return { Success = false, Code = "Loading", Message = "Unable to claim this reward right now. Please try again.", State = publicState(player) }
+	end
+	if session.Claimed[requestedIndex] then return { Success = false, Code = "Claimed", Message = "You've already claimed this reward!", State = publicState(player) } end
+	if session.Locks[requestedIndex] then return { Success = false, Code = "Busy", Message = "Unable to claim this reward right now. Please try again.", State = publicState(player) } end
+	if not session.SkipUnlocked and elapsed(session) < reward.RequiredSeconds then
+		return { Success = false, Code = "Early", Message = "This reward isn't ready yet!", State = publicState(player) }
+	end
+
+	session.Locks[requestedIndex] = true
+	local transaction = { RewardIndex = requestedIndex, Type = reward.Type, Amount = reward.Amount }
+	if reward.Type == "CarPool" then
+		transaction.CarId, transaction.Rarity = rollCar(reward.Pool)
+		if not transaction.CarId then
+			session.Locks[requestedIndex] = nil
+			return { Success = false, Code = "Configuration", Message = "Unable to claim this reward right now. Please try again.", State = publicState(player) }
+		end
+	end
+	local ok, committed, message, balance = pcall(function() return admin:Invoke("CommitPlaytimeReward", player, transaction) end)
+	session.Locks[requestedIndex] = nil
+	if not ok or committed ~= true then
+		return { Success = false, Code = "GrantFailed", Message = "Unable to claim this reward right now. Please try again.", State = publicState(player) }
+	end
+	session.Claimed[requestedIndex] = true
+	notify(player)
+	return { Success = true, RewardIndex = requestedIndex, RewardType = reward.Type, Amount = reward.Amount, CarId = transaction.CarId, Rarity = transaction.Rarity, TokenBalance = balance, State = publicState(player) }
+end
+
+function _G.GrantPlaytimeSkipReceipt(player)
+	local session = sessions[player]
+	if not session then return false, "Playtime session is not ready" end
+	session.SkipUnlocked = true
+	notify(player)
+	return true
+end
+
+getState.OnServerInvoke = function(player, ...) if select("#", ...) > 0 then return publicState(player) end return publicState(player) end
+claimReward.OnServerInvoke = claim
+Players.PlayerAdded:Connect(prepare)
+for _, player in ipairs(Players:GetPlayers()) do prepare(player) end
+Players.PlayerRemoving:Connect(function(player) sessions[player] = nil end)

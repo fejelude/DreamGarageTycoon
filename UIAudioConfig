@@ -275,7 +275,9 @@ function UIAudioConfig.CreateStateFeedback(container, options)
 
 	local function resolveLabels()
 		if container then
-			stateLabels = stateLabels or container:FindFirstChild("StateLabels") or container:FindFirstChild("StateLabels", true)
+			stateLabels = stateLabels
+				or container:FindFirstChild("StateLabels") or container:FindFirstChild("StateLabels", true)
+				or container:FindFirstChild("StateLabel") or container:FindFirstChild("StateLabel", true)
 			-- Some interfaces keep StateLabels in a folder, while tutorial Parts
 			-- intentionally keep Failed directly under the Part frame.
 			successLabel = successLabel

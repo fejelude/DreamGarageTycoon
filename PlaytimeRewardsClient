@@ -1,0 +1,159 @@
+-- Purpose: Playtime Rewards presentation, countdowns, claiming, and Skip Time prompt.
+-- Location: StarterGui > PlaytimeRewards > PlaytimeRewardsClient (LocalScript)
+-- Security: Local countdowns are cosmetic; ClaimReward performs all validation/granting.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local gui = script:FindFirstAncestor("PlaytimeRewards") or playerGui:WaitForChild("PlaytimeRewards")
+local rewardsUI = gui:WaitForChild("RewardsUI")
+local elements = rewardsUI:WaitForChild("Elements")
+local closeButton = rewardsUI:WaitForChild("CloseButton")
+local skipButton = rewardsUI:WaitForChild("SkipTime")
+local mainButton = playerGui:WaitForChild("MainButtons"):WaitForChild("Buttons"):WaitForChild("PlaytimeRewards")
+local information = mainButton:WaitForChild("Information")
+local information2 = mainButton:WaitForChild("Information2")
+local Config = require(ReplicatedStorage:WaitForChild("PlaytimeRewardsConfig"))
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local remotes = ReplicatedStorage:WaitForChild("PlaytimeRewardsRemotes")
+local getState, claimReward, stateChanged = remotes:WaitForChild("GetState"), remotes:WaitForChild("ClaimReward"), remotes:WaitForChild("StateChanged")
+local feedback = UIAudioConfig.CreateStateFeedback(rewardsUI)
+local stateLabelContainer = rewardsUI:FindFirstChild("StateLabel") or rewardsUI:FindFirstChild("StateLabels")
+local successLabel = stateLabelContainer and (stateLabelContainer:FindFirstChild("Sucess") or stateLabelContainer:FindFirstChild("Success"))
+if successLabel and successLabel:IsA("TextLabel") then successLabel.RichText = true end
+
+local state = { IsLoaded = false, ServerElapsed = 0, Claimed = {}, SkipUnlocked = false }
+local stateReceivedAt = os.clock()
+local claimBusy, promptBusy = {}, false
+local hiddenGuis, blur = {}, nil
+local BALANCE_GUI_NAME = "Balance Indicator"
+
+local function formatTime(seconds)
+	seconds = math.max(0, math.ceil(tonumber(seconds) or 0))
+	local hours, minutes = math.floor(seconds / 3600), math.floor(seconds % 3600 / 60)
+	if hours > 0 then return string.format("%d:%02d:%02d", hours, minutes, seconds % 60) end
+	return string.format("%02d:%02d", minutes, seconds % 60)
+end
+
+local function elapsed()
+	return math.max(0, (tonumber(state.ServerElapsed) or 0) + os.clock() - stateReceivedAt)
+end
+
+local function applyState(newState)
+	if type(newState) ~= "table" then return end
+	state = newState
+	state.Claimed = type(state.Claimed) == "table" and state.Claimed or {}
+	stateReceivedAt = os.clock()
+end
+
+local function setOpen(open)
+	if open then
+		table.clear(hiddenGuis)
+		for _, child in ipairs(playerGui:GetChildren()) do
+			if child:IsA("ScreenGui") and child ~= gui and child.Name ~= BALANCE_GUI_NAME and child.Enabled then
+				hiddenGuis[child] = true; child.Enabled = false
+			end
+		end
+		if gui:IsA("ScreenGui") then gui.Enabled = true end
+		if not blur then blur = Instance.new("BlurEffect"); blur.Name = "PlaytimeRewardsBlur"; blur.Size = 0; blur.Parent = Lighting end
+		TweenService:Create(blur, TweenInfo.new(0.3), { Size = 18 }):Play()
+	else
+		for hiddenGui in pairs(hiddenGuis) do if hiddenGui.Parent then hiddenGui.Enabled = true end end
+		table.clear(hiddenGuis)
+		if blur then
+			local old = blur; blur = nil
+			local tween = TweenService:Create(old, TweenInfo.new(0.3), { Size = 0 }); tween:Play()
+			tween.Completed:Connect(function() if old.Parent then old:Destroy() end end)
+		end
+	end
+	rewardsUI.Visible = open
+end
+
+local function successMessage(result)
+	if result.RewardType == "Wallet" then return ("Successfully claimed $%s!"):format(tostring(result.Amount)) end
+	if result.RewardType == "FhiaTokens" then return ("Successfully claimed %d Fhia Token%s!"):format(result.Amount, result.Amount == 1 and "" or "s") end
+	local name = tostring(result.CarId or "car"):gsub("[<>&]", { ["<"] = "&lt;", [">"] = "&gt;", ["&"] = "&amp;" })
+	local color = Config.RarityColors[result.Rarity] or "#FFFFFF"
+	return ('Successfully claimed <font color="%s">%s</font>! It has been added to your inventory.'):format(color, name)
+end
+
+local function requestClaim(index)
+	if claimBusy[index] then return end
+	claimBusy[index] = true
+	local ok, result = pcall(function() return claimReward:InvokeServer(index) end)
+	claimBusy[index] = nil
+	if ok and type(result) == "table" then
+		applyState(result.State)
+		if result.Success then feedback:Success(successMessage(result)) else feedback:Failed(result.Message or "Unable to claim this reward right now. Please try again.") end
+	else feedback:Failed("Unable to claim this reward right now. Please try again.") end
+end
+
+local function bindReward(index, frame)
+	local button = frame:FindFirstChildWhichIsA("GuiButton", true)
+	if button then UIButtonUtils.SetupButton(button, function() requestClaim(index) end); return end
+	frame.Active, frame.Selectable = true, true
+	local scale = frame:FindFirstChildOfClass("UIScale") or Instance.new("UIScale", frame)
+	local function scaleTo(value) TweenService:Create(scale, TweenInfo.new(0.15), { Scale = value }):Play() end
+	frame.MouseEnter:Connect(function() UIAudioConfig.PlayHover(); scaleTo(1.04) end)
+	frame.MouseLeave:Connect(function() scaleTo(1) end)
+	frame.SelectionGained:Connect(function() UIAudioConfig.PlayHover(); scaleTo(1.04) end)
+	frame.SelectionLost:Connect(function() scaleTo(1) end)
+	frame.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch or input.KeyCode == Enum.KeyCode.ButtonA then
+			UIAudioConfig.PlayClick(); scaleTo(1); requestClaim(index)
+		end
+	end)
+end
+
+for index = 1, #Config.Rewards do bindReward(index, elements:WaitForChild("Reward" .. index)) end
+UIButtonUtils.SetupButton(mainButton, function() setOpen(true) end)
+UIButtonUtils.SetupButton(closeButton, function() setOpen(false) end)
+UIButtonUtils.SetupButton(skipButton, function()
+	if promptBusy then return end
+	promptBusy = true
+	UIAudioConfig.PlayRobux(); UIAudioConfig.ShowPurchaseLoading()
+	local ok = pcall(function() MarketplaceService:PromptProductPurchase(player, Config.SkipTimeProductId) end)
+	if not ok then promptBusy = false; UIAudioConfig.HidePurchaseLoading(); feedback:Failed("Purchase Failed") end
+end, { SuppressClickSound = true })
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId)
+	if userId == player.UserId and productId == Config.SkipTimeProductId then promptBusy = false; UIAudioConfig.HidePurchaseLoading() end
+end)
+ReplicatedStorage:WaitForChild("GiftRemotes"):WaitForChild("GiftPurchaseResult").OnClientEvent:Connect(function(payload)
+	if type(payload) ~= "table" or tonumber(payload.ProductId) ~= Config.SkipTimeProductId then return end
+	promptBusy = false; UIAudioConfig.HidePurchaseLoading()
+	if payload.Success then feedback:Success(payload.Message or "All Playtime Rewards are now unlocked!") else feedback:Failed(payload.Message or "Purchase Failed") end
+end)
+stateChanged.OnClientEvent:Connect(applyState)
+
+task.spawn(function()
+	local ok, initial = pcall(function() return getState:InvokeServer() end)
+	if ok then applyState(initial) end
+	while gui.Parent do
+		local now, claimable, nextRemaining = elapsed(), 0, nil
+		for index, reward in ipairs(Config.Rewards) do
+			local frame = elements:FindFirstChild("Reward" .. index)
+			local owned = frame and frame:FindFirstChild("OwnedLabel")
+			local timer = frame and frame:FindFirstChild("Timer")
+			local claimed = state.Claimed[index] == true
+			local ready = state.SkipUnlocked == true or now >= reward.RequiredSeconds
+			if owned then owned.Visible = claimed end
+			if timer then timer.Visible = not claimed; timer.Text = ready and "READY!" or formatTime(reward.RequiredSeconds - now) end
+			if ready and not claimed then claimable += 1 elseif not claimed then
+				local remaining = reward.RequiredSeconds - now
+				if not nextRemaining or remaining < nextRemaining then nextRemaining = remaining end
+			end
+		end
+		information.Text = claimable > 0 and "READY!" or formatTime(nextRemaining or 0)
+		information2.Text, information2.Visible = tostring(claimable), claimable > 0
+		task.wait(0.25)
+	end
+end)
+
+rewardsUI.Visible = false

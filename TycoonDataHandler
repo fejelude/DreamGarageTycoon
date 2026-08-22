@@ -1761,6 +1761,62 @@ local function grantFhiaTokensProduct(player, purchaseId, productId, tokenAmount
 	return finish(true)
 end
 
+-- Atomically applies one Playtime Rewards grant to the live profile and forces
+-- it durable before the session service is allowed to mark the slot claimed.
+-- The service supplies a server-generated transaction; no client reward data
+-- reaches this API. Cars bypass purchasable slots like Lucky Spin prizes, while
+-- the absolute MAX_INVENTORY_SIZE corruption guard remains enforced.
+local function commitPlaytimeReward(player, transaction)
+	local session = SessionData[player]
+	if not save or not session or not session.DataLoaded or type(transaction) ~= "table" then
+		return false, "Player data not loaded"
+	end
+	if session.PlaytimeRewardCommitLock then return false, "Reward grant already running" end
+	local rewardIndex = math.floor(tonumber(transaction.RewardIndex) or 0)
+	local rewardType = transaction.Type
+	local amount = math.floor(tonumber(transaction.Amount) or 0)
+	local allowedWallet = ({ [1] = 100, [3] = 250, [5] = 500, [7] = 750, [9] = 1000, [11] = 1500 })[rewardIndex]
+	local allowedTokens = ({ [4] = 1, [8] = 2, [12] = 3 })[rewardIndex]
+	local carReward = rewardIndex == 2 or rewardIndex == 6 or rewardIndex == 10
+	local wallet = getWalletValue(player)
+	local carId = type(transaction.CarId) == "string" and CarStats.GetCarId(transaction.CarId) or nil
+	if rewardType == "Wallet" and (allowedWallet ~= amount or not wallet) then return false, "Invalid wallet reward" end
+	if rewardType == "FhiaTokens" and allowedTokens ~= amount then return false, "Invalid token reward" end
+	if rewardType == "CarPool" and (not carReward or not carId) then return false, "Invalid car reward" end
+	if rewardType ~= "Wallet" and rewardType ~= "FhiaTokens" and rewardType ~= "CarPool" then return false, "Invalid reward" end
+	if carReward and getCurrentInventoryCount(player) >= MAX_INVENTORY_SIZE then return false, "Inventory safety limit reached" end
+
+	session.PlaytimeRewardCommitLock = true
+	local originalWallet = wallet and wallet.Value
+	local originalTokens = math.max(0, math.floor(tonumber(session.FhiaTokens) or 0))
+	local transactionId = HttpService:GenerateGUID(false)
+	local grantOk, grantMessage = true, nil
+	if rewardType == "Wallet" then
+		wallet.Value += amount
+	elseif rewardType == "FhiaTokens" then
+		session.FhiaTokens = originalTokens + amount
+		player:SetAttribute("FhiaTokens", session.FhiaTokens)
+	else
+		grantOk, grantMessage = giveTool(player, carId, {
+			Source = "PlaytimeRewards", BypassStorageLimit = true,
+			PlaytimeRewardTransactionId = transactionId,
+			PlaytimeRewardIndex = rewardIndex,
+		})
+	end
+	if not grantOk then session.PlaytimeRewardCommitLock = nil; return false, grantMessage or "Reward grant failed" end
+	markDirty(player)
+	if save(player, false, true) then
+		session.PlaytimeRewardCommitLock = nil
+		return true, nil, rewardType == "FhiaTokens" and session.FhiaTokens or nil
+	end
+	if rewardType == "Wallet" then wallet.Value = originalWallet
+	elseif rewardType == "FhiaTokens" then session.FhiaTokens = originalTokens; player:SetAttribute("FhiaTokens", originalTokens)
+	else removeToolsByAttribute(player, "PlaytimeRewardTransactionId", transactionId) end
+	markDirty(player)
+	session.PlaytimeRewardCommitLock = nil
+	return false, "Reward save failed"
+end
+
 local function commitLuckySpin(player, result)
 	local session = SessionData[player]
 	if not session or not session.DataLoaded or type(result) ~= "table" then return false, "Player data not loaded" end
@@ -1958,6 +2014,8 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		return grantFhiaTokensProduct(player, purchaseId, productId, tokenAmount)
 	elseif action == "CommitLuckySpin" and player then
 		return commitLuckySpin(player, ...)
+	elseif action == "CommitPlaytimeReward" and player then
+		return commitPlaytimeReward(player, ...)
 
 	elseif action == "HasReceiptGrant" and player then
 		local purchaseId = ...
