@@ -47,17 +47,38 @@ end
 
 local function applyState(newState)
 	if type(newState) ~= "table" then return end
+	local previousClaimed = type(state.Claimed) == "table" and state.Claimed or {}
+	local incomingClaimed = type(newState.Claimed) == "table" and newState.Claimed or {}
+	-- Claimed and SkipUnlocked are monotonic for the lifetime of this LocalScript:
+	-- a fresh server session creates a fresh PlayerGui/LocalScript. Merging true
+	-- values prevents a delayed GetState/StateChanged response from visually
+	-- resurrecting a timer after a newer claim response already hid it.
+	newState.Claimed = incomingClaimed
+	for index = 1, #Config.Rewards do
+		newState.Claimed[index] = previousClaimed[index] == true or incomingClaimed[index] == true
+		if newState.Claimed[index] then
+			local frame = elements:FindFirstChild("Reward" .. index)
+			local owned = frame and frame:FindFirstChild("OwnedLabel")
+			local timer = frame and frame:FindFirstChild("Timer")
+			-- Apply the terminal visual immediately as well as in the periodic
+			-- renderer below. Repeating these assignments is intentionally idempotent.
+			if owned then owned.Visible = true end
+			if timer then timer.Visible = false end
+		end
+	end
+	newState.SkipUnlocked = state.SkipUnlocked == true or newState.SkipUnlocked == true
 	state = newState
-	state.Claimed = type(state.Claimed) == "table" and state.Claimed or {}
 	stateReceivedAt = os.clock()
 end
 
 local function setOpen(open)
 	if open then
 		table.clear(hiddenGuis)
-		for _, child in ipairs(playerGui:GetChildren()) do
-			if child:IsA("ScreenGui") and child ~= gui and child.Name ~= BALANCE_GUI_NAME and child.Enabled then
-				hiddenGuis[child] = true; child.Enabled = false
+		-- ScreenGuis may be grouped below Folders, so match Lucky Spin's descendant
+		-- scan rather than considering only direct PlayerGui children.
+		for _, otherGui in ipairs(playerGui:GetDescendants()) do
+			if otherGui:IsA("ScreenGui") and otherGui ~= gui and otherGui.Name ~= BALANCE_GUI_NAME and otherGui.Enabled then
+				hiddenGuis[otherGui] = true; otherGui.Enabled = false
 			end
 		end
 		if gui:IsA("ScreenGui") then gui.Enabled = true end
@@ -143,8 +164,18 @@ task.spawn(function()
 			local timer = frame and frame:FindFirstChild("Timer")
 			local claimed = state.Claimed[index] == true
 			local ready = state.SkipUnlocked == true or now >= reward.RequiredSeconds
-			if owned then owned.Visible = claimed end
-			if timer then timer.Visible = not claimed; timer.Text = ready and "READY!" or formatTime(reward.RequiredSeconds - now) end
+			if claimed then
+				-- Claimed is the terminal visual state. Set Timer last so no ready/countdown
+				-- presentation from this renderer can remain visible over OwnedLabel.
+				if owned then owned.Visible = true end
+				if timer then timer.Visible = false end
+			else
+				if owned then owned.Visible = false end
+				if timer then
+					timer.Text = ready and "READY!" or formatTime(reward.RequiredSeconds - now)
+					timer.Visible = true
+				end
+			end
 			if ready and not claimed then claimable += 1 elseif not claimed then
 				local remaining = reward.RequiredSeconds - now
 				if not nextRemaining or remaining < nextRemaining then nextRemaining = remaining end
