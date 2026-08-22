@@ -30,6 +30,18 @@ local tokenInfo = tokenButton:WaitForChild("FhiaTokenInfo")
 local wheel = mainFrame:WaitForChild("SpinWheelDecoration"):WaitForChild("Wheel")
 local feedback = UIAudioConfig.CreateStateFeedback(mainFrame)
 
+-- Lucky Spin car wins color only the car name with RichText. StateFeedback is
+-- shared by interfaces that use plain text, so opt this interface's success
+-- label in explicitly rather than changing every StateLabel in the game.
+local stateLabels = mainFrame:FindFirstChild("StateLabels") or mainFrame:FindFirstChild("StateLabels", true)
+local successStateLabel = (stateLabels and (stateLabels:FindFirstChild("Success") or stateLabels:FindFirstChild("Sucess")))
+	or mainFrame:FindFirstChild("Success")
+	or mainFrame:FindFirstChild("Sucess")
+	or mainFrame:FindFirstChild("Indicator-purchase", true)
+if successStateLabel and (successStateLabel:IsA("TextLabel") or successStateLabel:IsA("TextButton")) then
+	successStateLabel.RichText = true
+end
+
 local spinBusy = false
 local promptBusy = false
 local pendingProductId = nil
@@ -232,8 +244,16 @@ end
 
 local function rewardMessage(result)
 	if result.RewardType == "Wallet" then return "Congratulations! You won " .. result.DisplayName .. "!" end
-	local color = Config.RarityColors[result.Tier] or "#FFFFFF"
-	return ("Congratulations! You won <font color='%s'>%s</font>! It has been added to your inventory."):format(color, result.DisplayName)
+	local color = tostring(Config.RarityColors[result.Tier] or "#FFFFFF")
+	if not color:match("^#%x%x%x%x%x%x$") then color = "#FFFFFF" end
+	local displayName = tostring(result.DisplayName or "Car")
+		:gsub("&", "&amp;")
+		:gsub("<", "&lt;")
+		:gsub(">", "&gt;")
+		:gsub('"', "&quot;")
+		:gsub("'", "&apos;")
+	return ('Congratulations! You won <font color="%s">%s</font>! It has been added to your inventory.')
+		:format(color, displayName)
 end
 
 local function animateResult(result)
