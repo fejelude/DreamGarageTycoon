@@ -50,6 +50,9 @@ local function wipePlot(plot)
 
 	-- Clear Saved CPS Attribute
 	plot:SetAttribute("CurrentCPS", 0)
+	plot:SetAttribute("OfflineEarningsCPS", 0)
+	plot:SetAttribute("OfflineFrenzyMultiplier", 1)
+	plot:SetAttribute("OfflineFrenzyExpiresAt", 0)
 
 	-- Clean Entities
 	if plot:FindFirstChild("PlacedCars") then plot.PlacedCars:ClearAllChildren() end

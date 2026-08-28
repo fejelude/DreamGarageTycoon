@@ -14,11 +14,15 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Workspace = game:GetService("Workspace")
 local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local GlobalMoneyFrenzyConfig = require(ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyConfig"))
+local GlobalMoneyFrenzyService = require(ServerScriptService:WaitForChild("GlobalMoneyFrenzyService"))
 
 local OFFLINE_RATE = 0.30
-local MAX_OFFLINE_SECONDS = 8 * 60 * 60
+local MAX_OFFLINE_SECONDS = 60 * 60
+local OFFLINE_RATE_VERSION = 2
 local PREMIUM_PRODUCT_ID = 3598967453
 local PREMIUM_PROMPT_COOLDOWN_SECONDS = 3
 
@@ -160,21 +164,25 @@ end
 
 local function resolveOfflineIncomeRate(player, plot)
 	local savedRate = tonumber(player:GetAttribute("OfflineEarningsRate"))
-	if savedRate and savedRate > 0 then
+	local savedRateVersion = math.floor(tonumber(player:GetAttribute("OfflineEarningsRateVersion")) or 0)
+	if savedRateVersion >= OFFLINE_RATE_VERSION and savedRate and savedRate > 0 then
 		return savedRate
 	end
 
-	-- CurrentCPS is maintained by TycoonEconomy after normal earnings
-	-- multipliers are already applied. Use it directly; multiplying it again
-	-- by ActualEarningsMultiplier is what caused inflated offline payouts.
-	local currentRate = tonumber(plot:GetAttribute("CurrentCPS"))
+	-- A versioned plot rate excludes Global Money Frenzy. Prefer it when an old
+	-- profile has a legacy saved CurrentCPS snapshot that may include Frenzy.
+	local currentRate = tonumber(plot:GetAttribute("OfflineEarningsCPS"))
 	if currentRate and currentRate > 0 then
 		return currentRate
 	end
 
-	-- Legacy fallback for old saves without a stored leave-time rate. Rebuild
-	-- base CPS from placed cars, then apply the current normal multiplier once.
-	local multiplier = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
+	-- Legacy migration fallback: rebuild the garage and apply permanent bonuses
+	-- only. Dividing by the live Frenzy removes it from older multiplier state.
+	local multiplier = tonumber(player:GetAttribute("PermanentEarningsMultiplier"))
+	if not multiplier or multiplier <= 0 then
+		local actualMultiplier = tonumber(player:GetAttribute("ActualEarningsMultiplier")) or 1
+		multiplier = actualMultiplier / math.max(1, GlobalMoneyFrenzyService.GetMultiplier())
+	end
 	return rebuildBaseCPS(plot) * multiplier
 end
 
@@ -206,7 +214,13 @@ local function computeBaseOffline(player)
 		return true, 0
 	end
 
-	local amount = math.max(0, math.floor(normalRate * OFFLINE_RATE * elapsed))
+	local maxFrenzyMultiplier = GlobalMoneyFrenzyConfig.StackConfig.MaxMultiplier or 5
+	local frenzyMultiplier = math.clamp(tonumber(player:GetAttribute("OfflineFrenzyMultiplier")) or 1, 1, maxFrenzyMultiplier)
+	local frenzyExpiresAt = math.max(0, math.floor(tonumber(player:GetAttribute("OfflineFrenzyExpiresAt")) or 0))
+	local frenzySeconds = math.clamp(frenzyExpiresAt - lastOfflineAt, 0, elapsed)
+	local normalSeconds = elapsed - frenzySeconds
+	local effectiveSeconds = normalSeconds + (frenzySeconds * frenzyMultiplier)
+	local amount = math.max(0, math.floor(normalRate * OFFLINE_RATE * effectiveSeconds))
 	local tabletCarry = getTabletCarry(player)
 
 	return true, amount + tabletCarry

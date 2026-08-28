@@ -147,7 +147,7 @@ local function getRebirthMultiplierContribution(player, rebirthMultiplier)
 	return tonumber(rebirthMultiplier) or rebirth
 end
 
-local function GetActualEarningsMultiplier(player)
+local function GetPermanentEarningsMultiplier(player)
 	if not player then return 1 end
 
 	local friendMultiplier = tonumber(player:GetAttribute("FriendMultiplier")) or 1
@@ -164,14 +164,21 @@ local function GetActualEarningsMultiplier(player)
 	totalMultiplier += getRebirthMultiplierContribution(player, rebirthMultiplier)
 
 	local normalMultiplier = math.max(1, totalMultiplier)
-	local globalMoneyFrenzyMultiplier = GlobalMoneyFrenzyService.GetMultiplier()
 	local gamePassMultiplier = GamePassOwnershipService.GetGarageIncomeMultiplier(player)
-	return normalMultiplier * gamePassMultiplier * globalMoneyFrenzyMultiplier
+	return normalMultiplier * gamePassMultiplier
+end
+
+local function GetActualEarningsMultiplier(player, globalMoneyFrenzyMultiplier)
+	local permanentMultiplier = GetPermanentEarningsMultiplier(player)
+	globalMoneyFrenzyMultiplier = tonumber(globalMoneyFrenzyMultiplier) or GlobalMoneyFrenzyService.GetMultiplier()
+	return permanentMultiplier * math.max(1, globalMoneyFrenzyMultiplier)
 end
 
 local function RefreshActualEarningsMultiplier(player)
 	if not player then return end
-	player:SetAttribute("ActualEarningsMultiplier", GetActualEarningsMultiplier(player))
+	local permanentMultiplier = GetPermanentEarningsMultiplier(player)
+	player:SetAttribute("PermanentEarningsMultiplier", permanentMultiplier)
+	player:SetAttribute("ActualEarningsMultiplier", permanentMultiplier * GlobalMoneyFrenzyService.GetMultiplier())
 end
 
 local function watchEarningsMultiplierAttributes(player)
@@ -357,17 +364,27 @@ task.spawn(function()
 
 				-- 2. Apply the player's actual earnings multiplier.
 				-- Multiplier order is centralized in GetActualEarningsMultiplier so map displays and payouts stay in sync.
-				local actualEarningsMultiplier = 1
+				local permanentEarningsMultiplier = 1
+				local frenzyState = GlobalMoneyFrenzyService.GetState()
+				local frenzyMultiplier = math.max(1, tonumber(frenzyState.Multiplier) or 1)
 
 				if ownerValue and ownerValue.Value ~= "" then
 					local player = Players:FindFirstChild(ownerValue.Value)
 					if player then
-						actualEarningsMultiplier = GetActualEarningsMultiplier(player)
+						permanentEarningsMultiplier = GetPermanentEarningsMultiplier(player)
+						local actualEarningsMultiplier = GetActualEarningsMultiplier(player, frenzyMultiplier)
+						player:SetAttribute("PermanentEarningsMultiplier", permanentEarningsMultiplier)
 						player:SetAttribute("ActualEarningsMultiplier", actualEarningsMultiplier)
 					end
 				end
 
-				plotTotalCPS = plotTotalCPS * actualEarningsMultiplier
+				-- Preserve a leave-time rate without temporary global boosts. Offline
+				-- earnings apply Frenzy only to the portion before its real expiration.
+				plot:SetAttribute("OfflineEarningsCPS", plotTotalCPS * permanentEarningsMultiplier)
+				plot:SetAttribute("OfflineFrenzyMultiplier", frenzyMultiplier)
+				plot:SetAttribute("OfflineFrenzyExpiresAt", frenzyState.Active and math.max(0, tonumber(frenzyState.ExpiresAt) or 0) or 0)
+
+				plotTotalCPS = plotTotalCPS * permanentEarningsMultiplier * frenzyMultiplier
 
 				-- Update attribute so TabletHandler sees the Boosted CPS (before AFK)
 				plot:SetAttribute("CurrentCPS", plotTotalCPS)
