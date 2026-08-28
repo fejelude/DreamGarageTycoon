@@ -14,7 +14,6 @@ local CAR_WEIGHTS = {
 	Maverick = 80,
 	Javelin = 60,
 	Stuttgart = 40,
-	Vapid = 30,
 	Velocity = 25,
 	Sadie = 15,
 	Vipera = 8,
