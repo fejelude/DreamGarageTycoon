@@ -4,22 +4,42 @@ local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
 local Config = require(ReplicatedStorage:WaitForChild("GlobalLuckConfig"))
 
 local GlobalLuckUtil = {}
-local RARITY_POWER = { Common = 0, Uncommon = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
+local RARITY_POWER = { Common = 0, Uncommon = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5, Mythical = 5 }
 
 function GlobalLuckUtil.GetRarityPower(carName)
-	local stats = CarStats[carName]
+	local stats = CarStats.Cars and CarStats.Cars[carName]
 	return RARITY_POWER[stats and stats.Rarity] or 0
 end
 
 function GlobalLuckUtil.ApplyToWeights(baseWeights, multiplier)
 	multiplier = math.max(Config.BaseMultiplier, tonumber(multiplier) or Config.BaseMultiplier)
 	local adjusted = {}
-	for carName, weight in pairs(baseWeights or {}) do
+	local highestWeight = 0
+	local lowestWeight = math.huge
+
+	for _, weight in pairs(baseWeights or {}) do
 		local numericWeight = tonumber(weight) or 0
 		if numericWeight > 0 then
-			local power = GlobalLuckUtil.GetRarityPower(carName)
-			local rarityBoost = 1 + ((multiplier - 1) * (power / 5))
-			adjusted[carName] = math.max(1, math.floor((numericWeight * rarityBoost) + 0.5))
+			highestWeight = math.max(highestWeight, numericWeight)
+			lowestWeight = math.min(lowestWeight, numericWeight)
+		end
+	end
+
+	local weightRange = 0
+	if highestWeight > 0 and lowestWeight < highestWeight then
+		weightRange = math.log(highestWeight / lowestWeight)
+	end
+
+	for carName, weight in pairs(baseWeights or {}) do
+		local numericWeight = tonumber(weight) or 0
+		if numericWeight > 0 and multiplier > Config.BaseMultiplier and weightRange > 0 then
+			-- Cars inside one shop share a rarity, so rarity alone cannot change their
+			-- relative odds. Use the configured stock weight as scarcity instead:
+			-- the most common car stays unchanged, the rarest receives the full luck
+			-- multiplier, and cars between them receive a smooth proportional boost.
+			local scarcity = math.log(highestWeight / numericWeight) / weightRange
+			local luckBoost = multiplier ^ scarcity
+			adjusted[carName] = math.max(1, math.floor((numericWeight * luckBoost) + 0.5))
 		else
 			adjusted[carName] = numericWeight
 		end
