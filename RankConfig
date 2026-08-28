@@ -37,7 +37,7 @@ local RankConfig = {
 			{ Id = "Requirement2", Type = "Buy", Car = "Atom", Shop = "Common", Amount = 1 },
 			{ Id = "Requirement3", Type = "Buy", Car = "Hiva", Shop = "Common", Amount = 1 },
 			{ Id = "Requirement4", Type = "Hold", Currency = "Wallet", Amount = 750000 },
-			{ Id = "Requirement5", Type = "GiftSent", Amount = 1 },
+			{ Id = "Requirement5", Type = "Pad", PadNumber = 6, Amount = 1, Description = "Unlock Pad 6." },
 		},
 		Benefits = { Multiplier = 2, ShopAccess = "Uncommon", ChatTag = "VIP", ExtraStorage = 2 },
 		Announcement = {
@@ -51,7 +51,7 @@ local RankConfig = {
 			{ Id = "Requirement2", Type = "Buy", Car = "Vapid", Shop = "Uncommon", Amount = 2 },
 			{ Id = "Requirement3", Type = "Buy", Car = "BlackHead", Shop = "Uncommon", Amount = 1 },
 			{ Id = "Requirement4", Type = "Hold", Currency = "Wallet", Amount = 67000000000 },
-			{ Id = "Requirement5", Type = "GiftSent", Amount = 5 },
+			{ Id = "Requirement5", Type = "Pad", PadNumber = 10, Amount = 1, Description = "Unlock Pad 10." },
 		},
 		Benefits = { Multiplier = 3, ShopAccess = "Rare", ChatTag = "VIP+", ExtraStorage = 3 },
 		Announcement = {
@@ -77,9 +77,9 @@ local RankConfig = {
 		Requirements = {
 			{ Id = "Requirement1", Type = "Buy", Car = "Sirene", Shop = "Epic", Amount = 1 },
 			{ Id = "Requirement2", Type = "Buy", Car = "Classy", Shop = "Epic", Amount = 1 },
-			{ Id = "Requirement3", Type = "GiftReceivedUnique", Amount = 5, UniquePlayers = 5, Description = "Receive 5 cars as gifts from 5 different players." },
+			{ Id = "Requirement3", Type = "Buy", Car = "Shaguar", Shop = "Epic", Amount = 1, Description = "Buy 1 Shaguar from the Epic Shop." },
 			{ Id = "Requirement4", Type = "Hold", Currency = "Wallet", Amount = 2000000000000 },
-			{ Id = "Requirement5", Type = "GiftSentUnique", UniquePlayers = 8 },
+			{ Id = "Requirement5", Type = "Pad", PadNumber = 16, Amount = 1, Description = "Unlock Pad 16." },
 		},
 		Benefits = { Multiplier = 5, ShopAccess = "Legendary", ChatTag = "MVP+", ExtraStorage = 5 },
 		Announcement = {

@@ -459,6 +459,16 @@ local function updateRequirementLabels(rankName, rankState)
 		if label and label:IsA("TextLabel") then
 			local state = cacheInformationLabelState(label)
 			local stroke = label:FindFirstChildOfClass("UIStroke")
+			local definition = getRequirementDefinition(rankName, requirementId)
+			local descriptionLabel = frame:FindFirstChild("Information1", true)
+			if definition and definition.Description then
+				if descriptionLabel and descriptionLabel:IsA("TextLabel") then
+					descriptionLabel.Text = definition.Description
+				end
+				-- Completed requirements restore their normal visual style, but their
+				-- text must still reflect the replacement target rather than stale UI.
+				state.Text = formatProgress({ Current = progress.Target, Target = progress.Target }, definition)
+			end
 
 			if progress.Complete then
 				label.Text = state.Text
@@ -470,7 +480,7 @@ local function updateRequirementLabels(rankName, rankState)
 					if state.StrokeTransparency ~= nil then stroke.Transparency = state.StrokeTransparency end
 				end
 			else
-				label.Text = formatProgress(progress, getRequirementDefinition(rankName, requirementId))
+				label.Text = formatProgress(progress, definition)
 				if stroke then stroke.Color = LIGHT_RED end
 			end
 		end
