@@ -35,6 +35,10 @@ Config.Rewards = {
 }
 
 Config.Pools = {
+	-- Effective odds across a complete spin (after the outer reward roll):
+	-- Common 1.2%, Uncommon 1.7175%, Rare 0.08%, Epic 0.0025% (1 in 40,000).
+	-- Rare and Epic are intentionally not reduced further; pool weights must be
+	-- evaluated together with Config.Rewards rather than as direct percentages.
 	[1] = { { Tier = "Common", Weight = 80 }, { Tier = "Uncommon", Weight = 20 } },
 	[2] = { { Tier = "Uncommon", Weight = 97 }, { Tier = "Rare", Weight = 3 } },
 	[3] = { { Tier = "Uncommon", Weight = 89.5 }, { Tier = "Rare", Weight = 10 }, { Tier = "Epic", Weight = 0.5 } },
