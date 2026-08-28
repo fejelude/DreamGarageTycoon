@@ -2638,6 +2638,8 @@ save = function(player, isClosing, force)
 		local plotName = player:GetAttribute("OccupiedPlot")
 		local currentPendingInTycoon = 0
 		local currentGarageIncomeRate = 0
+		local currentOfflineFrenzyMultiplier = 1
+		local currentOfflineFrenzyExpiresAt = 0
 
 		if plotName and TycoonFolder:FindFirstChild(plotName) then
 			local plot = TycoonFolder[plotName]
@@ -2645,11 +2647,11 @@ save = function(player, isClosing, force)
 				currentPendingInTycoon = plot.PendingEarnings.Value
 			end
 
-			-- Snapshot the exact income rate the garage was producing while the
-			-- player was online. TycoonEconomy writes CurrentCPS after all normal
-			-- earnings multipliers, so OfflineEarningsService must use this saved
-			-- rate directly instead of rebuilding and multiplying again on next join.
-			currentGarageIncomeRate = math.max(0, tonumber(plot:GetAttribute("CurrentCPS")) or 0)
+			-- Snapshot permanent income separately from the temporary global boost.
+			-- OfflineEarningsService uses the boost snapshot only until its real expiry.
+			currentGarageIncomeRate = math.max(0, tonumber(plot:GetAttribute("OfflineEarningsCPS")) or 0)
+			currentOfflineFrenzyMultiplier = math.max(1, tonumber(plot:GetAttribute("OfflineFrenzyMultiplier")) or 1)
+			currentOfflineFrenzyExpiresAt = math.max(0, math.floor(tonumber(plot:GetAttribute("OfflineFrenzyExpiresAt")) or 0))
 			local function savePadsInFolder(padsFolder)
 				if not padsFolder then return end
 				for _, padObject in pairs(padsFolder:GetChildren()) do
@@ -2802,6 +2804,9 @@ save = function(player, isClosing, force)
 					oldData.Layout = finalLayout
 					oldData.PendingEarnings = finalPending
 					oldData.OfflineEarningsRate = currentGarageIncomeRate
+					oldData.OfflineEarningsRateVersion = 2
+					oldData.OfflineFrenzyMultiplier = currentOfflineFrenzyMultiplier
+					oldData.OfflineFrenzyExpiresAt = currentOfflineFrenzyExpiresAt
 
 					if currentShopDataAvailable then oldData.ShopPurchases = currentShopData end
 					if currentUncommonShopDataAvailable then oldData.UncommonShopPurchases = currentUncommonShopData end
@@ -3221,6 +3226,7 @@ local function InitializePlayer(player)
 		OwnedBaseSkins = { "Default" }, EquippedSkin = "Default", OwnedAppearanceSkins = { ["1"] = {}, ["2"] = {} }, EquippedLevel1Skin = BaseAppearanceConfig.DEFAULT_SKIN, EquippedLevel2Skin = BaseAppearanceConfig.DEFAULT_SKIN, Rank = "Player", RankData = {},
 		Settings = sanitizeSettings(nil), SettingsVersion = SETTINGS_SCHEMA_VERSION, Rebirth = 0, IndexDiscovered = {}, IndexExclusiveDiscovered = {},
 		OfflinePremiumPendingAmount = 0, TabletDoublePendingAmount = 0, InventorySlotBonus = 0,
+		OfflineEarningsRate = 0, OfflineEarningsRateVersion = 0, OfflineFrenzyMultiplier = 1, OfflineFrenzyExpiresAt = 0,
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
 		RobuxProductReceipts = {},
 		FhiaTokens = 0, LuckySpinHistory = {},
@@ -3292,8 +3298,14 @@ local function InitializePlayer(player)
 	data.Tutorial = sanitizeTutorialData(data.Tutorial)
 	data.LastOfflineAt = math.max(0, math.floor(tonumber(data.LastOfflineAt) or 0))
 	data.OfflineEarningsRate = math.max(0, tonumber(data.OfflineEarningsRate) or 0)
+	data.OfflineEarningsRateVersion = math.max(0, math.floor(tonumber(data.OfflineEarningsRateVersion) or 0))
+	data.OfflineFrenzyMultiplier = math.clamp(tonumber(data.OfflineFrenzyMultiplier) or 1, 1, 5)
+	data.OfflineFrenzyExpiresAt = math.max(0, math.floor(tonumber(data.OfflineFrenzyExpiresAt) or 0))
 	player:SetAttribute("LastOfflineAt", data.LastOfflineAt)
 	player:SetAttribute("OfflineEarningsRate", data.OfflineEarningsRate)
+	player:SetAttribute("OfflineEarningsRateVersion", data.OfflineEarningsRateVersion)
+	player:SetAttribute("OfflineFrenzyMultiplier", data.OfflineFrenzyMultiplier)
+	player:SetAttribute("OfflineFrenzyExpiresAt", data.OfflineFrenzyExpiresAt)
 	player:SetAttribute("OfflinePremiumPendingAmount", data.OfflinePremiumPendingAmount)
 	player:SetAttribute("TabletDoublePendingAmount", data.TabletDoublePendingAmount)
 
