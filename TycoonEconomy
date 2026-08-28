@@ -126,25 +126,17 @@ local function GetSkinMultiplier(player)
 	return 1 -- Default (No Boost)
 end
 
-local function getPositiveMultiplierContribution(multiplier, noBoostMultiplier)
-	multiplier = tonumber(multiplier) or noBoostMultiplier
-	noBoostMultiplier = tonumber(noBoostMultiplier) or 1
-
-	if multiplier <= noBoostMultiplier then
-		return 0
-	end
-
-	return multiplier
+local function getMultiplierBonus(multiplier)
+	-- Permanent boosts stack additively. Only the portion above the normal 1x
+	-- baseline is a bonus; otherwise every active source adds another hidden 1x.
+	return math.max(0, (tonumber(multiplier) or 1) - 1)
 end
 
-local function getRebirthMultiplierContribution(player, rebirthMultiplier)
+local function getRebirthMultiplierContribution(player)
 	local rebirth = math.floor(tonumber(player:GetAttribute("Rebirth")) or 0)
-	if rebirth <= 0 then
-		return 0
-	end
-
-	-- Rebirth 18 should add +18x, not multiply another source by 18.
-	return tonumber(rebirthMultiplier) or rebirth
+	-- Each rebirth is a direct +1x additive contribution. Rebirth 1 therefore
+	-- raises an otherwise-unboosted player from 1x to 2x.
+	return math.max(0, rebirth)
 end
 
 local function GetPermanentEarningsMultiplier(player)
@@ -154,16 +146,14 @@ local function GetPermanentEarningsMultiplier(player)
 	local premiumMultiplier = player.MembershipType == Enum.MembershipType.Premium and 1.5 or 1
 	local skinMultiplier = GetSkinMultiplier(player)
 	local rankMultiplier = tonumber(player:GetAttribute("RankResourceMultiplier")) or 1
-	local rebirthMultiplier = tonumber(player:GetAttribute("RebirthMultiplier")) or 1
 
-	local totalMultiplier = 0
-	totalMultiplier += getPositiveMultiplierContribution(friendMultiplier, 1)
-	totalMultiplier += getPositiveMultiplierContribution(premiumMultiplier, 1)
-	totalMultiplier += getPositiveMultiplierContribution(skinMultiplier, 1)
-	totalMultiplier += getPositiveMultiplierContribution(rankMultiplier, 1)
-	totalMultiplier += getRebirthMultiplierContribution(player, rebirthMultiplier)
+	local normalMultiplier = 1
+	normalMultiplier += getMultiplierBonus(friendMultiplier)
+	normalMultiplier += getMultiplierBonus(premiumMultiplier)
+	normalMultiplier += getMultiplierBonus(skinMultiplier)
+	normalMultiplier += getMultiplierBonus(rankMultiplier)
+	normalMultiplier += getRebirthMultiplierContribution(player)
 
-	local normalMultiplier = math.max(1, totalMultiplier)
 	local gamePassMultiplier = GamePassOwnershipService.GetGarageIncomeMultiplier(player)
 	return normalMultiplier * gamePassMultiplier
 end
