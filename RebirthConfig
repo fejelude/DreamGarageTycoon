@@ -56,9 +56,9 @@ end
 function RebirthConfig.GetMultiplier(rebirth)
 	rebirth = math.clamp(math.floor(tonumber(rebirth) or 0), 0, RebirthConfig.MAX_REBIRTH)
 
-	-- Rebirth count is the additive economy contribution: Rebirth 18 = +18x.
-	-- Rebirth 0 still displays as x1 so brand-new players never see a 0x multiplier.
-	return math.max(1, rebirth)
+	-- Each rebirth adds +1x to the normal 1x baseline. This value is used by the
+	-- Rebirth UI, so Rebirth 0 displays x1, Rebirth 1 x2, and Rebirth 18 x19.
+	return 1 + rebirth
 end
 
 return RebirthConfig
