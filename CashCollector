@@ -1,0 +1,116 @@
+-- ( SERVER SCRIPT: CashCollector )
+-- Handles the collection of PendingEarnings to the player's Bank (Cash).
+-- Automatically creates a CollectorPart if one is missing.
+
+local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
+local Debris = game:GetService("Debris")
+
+local TycoonFolder = Workspace:WaitForChild("Tycoons")
+local COLLECT_SOUND_ID = "rbxassetid://9083627113" -- Standard click sound, can be changed to cash sound
+
+-- 🛠️ HELPER: Setup Collector for a Plot
+local function setupCollector(plot)
+    -- 1. Find or Create the Collector Part
+    local collectorPart = plot:FindFirstChild("CollectorPart")
+
+    if not collectorPart then
+        -- Attempt to find a good position
+        local spawnPoint = plot:FindFirstChild("SpawnPoint")
+        local pos = CFrame.new(0, 5, 0) -- Default fallback
+
+        if spawnPoint then
+            -- Place it slightly to the side of the spawn
+            pos = spawnPoint.CFrame * CFrame.new(5, 2, 0)
+        elseif plot:IsA("Model") and plot.PrimaryPart then
+            pos = plot.PrimaryPart.CFrame * CFrame.new(5, 5, 0)
+        end
+
+        collectorPart = Instance.new("Part")
+        collectorPart.Name = "CollectorPart"
+        collectorPart.Size = Vector3.new(2, 4, 2)
+        collectorPart.Color = Color3.fromRGB(0, 255, 0) -- Neon Green
+        collectorPart.Material = Enum.Material.Neon
+        collectorPart.Anchored = true
+        collectorPart.CanCollide = true
+        collectorPart.CFrame = pos
+        collectorPart.Parent = plot
+
+        -- Add a label
+        local bb = Instance.new("BillboardGui")
+        bb.Size = UDim2.new(0, 100, 0, 50)
+        bb.StudsOffset = Vector3.new(0, 3, 0)
+        bb.AlwaysOnTop = true
+        bb.Parent = collectorPart
+
+        local txt = Instance.new("TextLabel")
+        txt.Size = UDim2.new(1,0,1,0)
+        txt.BackgroundTransparency = 1
+        txt.Text = "COLLECT CASH"
+        txt.TextColor3 = Color3.new(1,1,1)
+        txt.TextStrokeTransparency = 0
+        txt.Font = Enum.Font.FredokaOne
+        txt.TextScaled = true
+        txt.Parent = bb
+    end
+
+    -- 2. Clean up old prompts
+    for _, child in pairs(collectorPart:GetChildren()) do
+        if child:IsA("ProximityPrompt") then child:Destroy() end
+    end
+
+    -- 3. Create ProximityPrompt
+    local prompt = Instance.new("ProximityPrompt")
+    prompt.ActionText = "Collect Cash"
+    prompt.ObjectText = "ATM"
+    prompt.HoldDuration = 0.5
+    prompt.RequiresLineOfSight = false
+    prompt.MaxActivationDistance = 10
+    prompt.Parent = collectorPart
+
+    -- 4. Handle Interaction
+    prompt.Triggered:Connect(function(player)
+        local ownerVal = plot:FindFirstChild("Owner")
+        local pendingVal = plot:FindFirstChild("PendingEarnings")
+
+        if not ownerVal or not pendingVal then return end
+
+        -- Check Ownership
+        if ownerVal.Value ~= player.Name then
+            -- Optional: Tell them it's not theirs
+            return
+        end
+
+        -- Check Earnings
+        local amount = pendingVal.Value
+        if amount <= 0 then return end -- Nothing to collect
+
+        local leaderstats = player:FindFirstChild("leaderstats")
+        if leaderstats then
+            local cash = leaderstats:FindFirstChild("Cash")
+            if cash then
+                -- TRANSFER
+                cash.Value = cash.Value + amount
+                pendingVal.Value = 0
+
+                -- FEEDBACK
+                local s = Instance.new("Sound")
+                s.SoundId = COLLECT_SOUND_ID
+                s.Volume = 0.5
+                s.Parent = collectorPart
+                s:Play()
+                Debris:AddItem(s, 2)
+
+                print("💰 " .. player.Name .. " collected $" .. amount)
+            end
+        end
+    end)
+end
+
+-- 🔄 INIT LOOP
+for _, plot in pairs(TycoonFolder:GetChildren()) do
+    setupCollector(plot)
+end
+
+-- 🔄 NEW PLOT LISTENER (If plots are added dynamically)
+TycoonFolder.ChildAdded:Connect(setupCollector)
