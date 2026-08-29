@@ -409,6 +409,7 @@ local function giveCarTool(targetPlayer, carName, receiptInfo, isGift, buyerPlay
 		ExclusiveDisplayName = "Exclusive (" .. carName:gsub(" Item$", "") .. ")",
 		Source = isGift and "RobuxGift" or "RobuxPurchase",
 		ReceiptPurchaseId = receiptInfo.PurchaseId, ReceiptProductId = receiptInfo.ProductId,
+		QueueIfStorageFull = true, RewardInboxId = "Receipt:" .. tostring(receiptInfo.PurchaseId),
 	}
 	if isGift and buyerPlayer then
 		attributes.GiftSenderUserId = buyerPlayer.UserId

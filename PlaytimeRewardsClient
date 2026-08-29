@@ -101,7 +101,10 @@ local function successMessage(result)
 	if result.RewardType == "FhiaTokens" then return ("Successfully claimed %d Fhia Token%s!"):format(result.Amount, result.Amount == 1 and "" or "s") end
 	local name = tostring(result.CarId or "car"):gsub("[<>&]", { ["<"] = "&lt;", [">"] = "&gt;", ["&"] = "&amp;" })
 	local color = Config.RarityColors[result.Rarity] or "#FFFFFF"
-	return ('Successfully claimed <font color="%s">%s</font>! It has been added to your inventory.'):format(color, name)
+	local destination = result.Delivery == "Inbox"
+		and " Your inventory is full, so it has been saved in your reward inbox."
+		or " It has been added to your inventory."
+	return ('Successfully claimed <font color="%s">%s</font>!%s'):format(color, name, destination)
 end
 
 local function requestClaim(index)
