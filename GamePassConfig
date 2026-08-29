@@ -30,6 +30,18 @@ GamePassConfig.Passes = {
 		SuccessMessage = "2x Money Game Pass Owned",
 		FailureMessage = "2x Money Purchase Failed",
 	},
+	OfflineEarnings = {
+		Id = 3710404414,
+		GiftProductId = 3710406142,
+		GiftDisplayName = "2x Offline Earnings",
+		PurchaseDisplayName = "2x Offline Earnings",
+		Attribute = "Owns2xOfflineEarningsGamePass",
+		OfflineMultiplier = 2,
+		ButtonName = "2xOfflineEarnings",
+		OwnedLabelName = "OwnedLabel2xOfflineEarnings",
+		SuccessMessage = "2x Offline Earnings Game Pass Owned",
+		FailureMessage = "2x Offline Earnings Purchase Failed",
+	},
 }
 
 function GamePassConfig.GetPassById(gamePassId)
@@ -45,11 +57,16 @@ end
 function GamePassConfig.GetGarageIncomeMultiplier(player)
 	local multiplier = 1
 	for _, passInfo in pairs(GamePassConfig.Passes) do
-		if player and player:GetAttribute(passInfo.Attribute) == true then
+		if passInfo.Multiplier and player and player:GetAttribute(passInfo.Attribute) == true then
 			multiplier *= passInfo.Multiplier
 		end
 	end
 	return multiplier
+end
+
+function GamePassConfig.GetOfflineEarningsMultiplier(player)
+	local passInfo = GamePassConfig.Passes.OfflineEarnings
+	return player and player:GetAttribute(passInfo.Attribute) == true and passInfo.OfflineMultiplier or 1
 end
 
 function GamePassConfig.FormatMultiplier(multiplier)

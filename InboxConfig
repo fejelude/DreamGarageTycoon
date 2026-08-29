@@ -1,0 +1,15 @@
+-- Location: ReplicatedStorage > InboxConfig (ModuleScript)
+-- Compact presentation data; zero is a safe, intentionally blank fallback.
+local Config = {}
+Config.Images = {
+	Wallet = 0, FhiaTokens = 0, OfflineEarnings = 0, StarterPack = 0,
+}
+Config.RarityColors = {
+	Common = "#B7B7B7", Uncommon = "#55FF7F", Rare = "#55AAFF", Epic = "#C15CFF",
+	Legendary = "#FFD34D", Mythical = "#FF557F", Exclusive = "#55FFFF",
+}
+function Config.GetImage(entry)
+	local id = Config.Images[entry.RewardId] or Config.Images[entry.RewardType] or 0
+	return id > 0 and ("rbxassetid://" .. id) or ""
+end
+return Config

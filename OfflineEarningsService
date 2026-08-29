@@ -17,8 +17,10 @@ local ServerStorage = game:GetService("ServerStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local GamePassConfig = require(ReplicatedStorage:WaitForChild("GamePassConfig"))
 local GlobalMoneyFrenzyConfig = require(ReplicatedStorage:WaitForChild("GlobalMoneyFrenzyConfig"))
 local GlobalMoneyFrenzyService = require(ServerScriptService:WaitForChild("GlobalMoneyFrenzyService"))
+local InboxService = require(ServerScriptService:WaitForChild("InboxService"))
 
 local OFFLINE_RATE = 0.30
 local MAX_OFFLINE_SECONDS = 60 * 60
@@ -187,6 +189,11 @@ local function resolveOfflineIncomeRate(player, plot)
 end
 
 local function computeBaseOffline(player)
+	-- Never freeze a session amount before authoritative Marketplace/gift ownership
+	-- has loaded; RequestOfflineEarnings will report not-ready and may be retried.
+	if player:GetAttribute("GamePassOwnershipReady") ~= true then
+		return false, 0
+	end
 	local leaderstats = player:FindFirstChild("leaderstats")
 	local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
 	local plot = getPlayerPlot(player)
@@ -220,7 +227,10 @@ local function computeBaseOffline(player)
 	local frenzySeconds = math.clamp(frenzyExpiresAt - lastOfflineAt, 0, elapsed)
 	local normalSeconds = elapsed - frenzySeconds
 	local effectiveSeconds = normalSeconds + (frenzySeconds * frenzyMultiplier)
+	-- The cap and frenzy split are resolved first; the server-published entitlement
+	-- is then applied once to the final normal award (never to tablet carry).
 	local amount = math.max(0, math.floor(normalRate * OFFLINE_RATE * effectiveSeconds))
+	amount = math.floor(amount * GamePassConfig.GetOfflineEarningsMultiplier(player))
 	local tabletCarry = getTabletCarry(player)
 
 	return true, amount + tabletCarry
@@ -251,21 +261,12 @@ local function ensureSession(player)
 	return session
 end
 
-local function grant(player, amount)
-	if amount <= 0 then
-		return false, "No earnings available."
-	end
-
-	local leaderstats = player:FindFirstChild("leaderstats")
-	local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
-
-	if not wallet then
-		return false, "Wallet not found."
-	end
-
-	wallet.Value += amount
-
-	return true, "Granted"
+local function deliverToInbox(player, transactionId, amount, source)
+	return InboxService.Enqueue(player.UserId, transactionId, {
+		RewardType = "Wallet", RewardId = "Wallet", Amount = amount,
+		DisplayName = ("$%d Wallet Cash"):format(amount),
+		SourceType = "System", Source = source or "Offline Earnings",
+	})
 end
 
 requestData.OnServerInvoke = function(player)
@@ -329,19 +330,17 @@ local function claimPreparedSession(player, session)
 		message = "No offline earnings available."
 	else
 		amount = session.baseAmount
-		success, message = grant(player, amount)
+		local lastOfflineAt = math.max(0, math.floor(tonumber(player:GetAttribute("LastOfflineAt")) or 0))
+		success, message = deliverToInbox(player,
+			("Offline:%d:%d:%d"):format(player.UserId, lastOfflineAt, amount), amount, "Offline Earnings")
 
 		if success then
-			local leaderstats = player:FindFirstChild("leaderstats")
-			local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
-			local originalWallet = wallet and (wallet.Value - amount) or nil
 			local originalCarry = getTabletCarry(player)
 			session.claimed = true
 			clearTabletCarry(player)
 			if forceSave(player) then
 				message = "Claimed"
 			else
-				if wallet and originalWallet ~= nil then wallet.Value = originalWallet end
 				player:SetAttribute("OfflineTabletCarry", originalCarry)
 				session.claimed = false
 				success = false
@@ -445,7 +444,8 @@ function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
 	end
 
 	local payout = reservedAmount * 10
-	local success, message = grant(player, payout)
+	local success, message = deliverToInbox(player,
+		"Receipt:" .. tostring(purchaseId) .. ":OfflinePremium", payout, "10x Offline Earnings")
 
 	if not success then
 		return false, 0, message

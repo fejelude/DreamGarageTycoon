@@ -138,6 +138,7 @@ local function setPresentationActive(open)
 end
 
 local function setOpen(open)
+	if not open and spinBusy then return false end
 	-- UI isolation controllers can temporarily disable ScreenGuis. A real trigger
 	-- entry must be able to restore this UI instead of only changing a hidden
 	-- MainFrame's Visible property.
@@ -156,6 +157,7 @@ local function setOpen(open)
 			end
 		end)
 	end
+	return true
 end
 
 local function isCharacterPart(instance)
@@ -168,6 +170,7 @@ local function isInsideTrigger()
 end
 
 local function closeManually()
+	if spinBusy then return end
 	-- Keep the UI suppressed until every body part has actually left. Lingering
 	-- Touched events from another limb therefore cannot reopen it immediately.
 	manuallyClosedUntilExit = isInsideTrigger()
@@ -243,7 +246,7 @@ local function chooseLanding(segment, wrapped)
 end
 
 local function rewardMessage(result)
-	if result.RewardType == "Wallet" then return "Congratulations! You won " .. result.DisplayName .. "!" end
+	if result.RewardType == "Wallet" then return "Congratulations! You won " .. result.DisplayName .. "! It was safely sent to your Inbox." end
 	local color = tostring(Config.RarityColors[result.Tier] or "#FFFFFF")
 	if not color:match("^#%x%x%x%x%x%x$") then color = "#FFFFFF" end
 	local displayName = tostring(result.DisplayName or "Car")
@@ -252,7 +255,7 @@ local function rewardMessage(result)
 		:gsub(">", "&gt;")
 		:gsub('"', "&quot;")
 		:gsub("'", "&apos;")
-	return ('Congratulations! You won <font color="%s">%s</font>! It has been added to your inventory.')
+	return ('Congratulations! You won <font color="%s">%s</font>! It was safely sent to your Inbox.')
 		:format(color, displayName)
 end
 
@@ -288,7 +291,7 @@ UIButtonUtils.SetupButton(spinButton, function()
 	end
 	spinBusy = false
 	setButtonEnabled(spinButton, true)
-	if mainFrame.Visible then setOpen(true) end
+	if isInsideTrigger() then setOpen(true) else setOpen(false) end
 end)
 
 local function bindTrigger(trigger)
@@ -343,7 +346,7 @@ local function bindTrigger(trigger)
 		-- manual-close latch.
 		if os.clock() - lastOccupiedAt >= FULL_EXIT_GRACE then
 			manuallyClosedUntilExit = false
-			if mainFrame.Visible then setOpen(false) end
+			if mainFrame.Visible and not spinBusy then setOpen(false) end
 		end
 	end
 
@@ -385,7 +388,7 @@ player.CharacterRemoving:Connect(function()
 	table.clear(touchingCharacterParts)
 	manuallyClosedUntilExit = false
 	occupancyMonitorToken += 1
-	if mainFrame.Visible then setOpen(false) end
+	if mainFrame.Visible and not spinBusy then setOpen(false) end
 end)
 
 player.CharacterAdded:Connect(function()
@@ -403,6 +406,12 @@ if existingTrigger then inspectWorldChild(existingTrigger) end
 Workspace.DescendantAdded:Connect(inspectWorldChild)
 
 mainFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+	if spinBusy and not mainFrame.Visible then
+		task.defer(function()
+			if spinBusy then setOpen(true) end
+		end)
+		return
+	end
 	setPresentationActive(mainFrame.Visible)
 	SoundService:SetAttribute("LuckySpinMusicActive", mainFrame.Visible)
 	if not mainFrame.Visible then tokenInfo.Visible = false; idleToken += 1 end
