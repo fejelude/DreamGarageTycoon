@@ -264,6 +264,7 @@ local function grantCar(player, day, toolName, reward)
 	local attributes = {
 		Source = "DailyRewards",
 		DailyRewardDay = day,
+		QueueIfStorageFull = true,
 	}
 
 	if reward.Rarity then

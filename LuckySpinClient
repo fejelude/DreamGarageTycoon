@@ -138,6 +138,10 @@ local function setPresentationActive(open)
 end
 
 local function setOpen(open)
+	-- Do not let trigger exits or another UI controller hide the wheel while its
+	-- result animation is running. The server has already committed the reward,
+	-- so keeping the presentation visible prevents players from missing the win.
+	if not open and spinBusy then return end
 	-- UI isolation controllers can temporarily disable ScreenGuis. A real trigger
 	-- entry must be able to restore this UI instead of only changing a hidden
 	-- MainFrame's Visible property.
@@ -168,6 +172,7 @@ local function isInsideTrigger()
 end
 
 local function closeManually()
+	if spinBusy then return end
 	-- Keep the UI suppressed until every body part has actually left. Lingering
 	-- Touched events from another limb therefore cannot reopen it immediately.
 	manuallyClosedUntilExit = isInsideTrigger()
@@ -252,8 +257,11 @@ local function rewardMessage(result)
 		:gsub(">", "&gt;")
 		:gsub('"', "&quot;")
 		:gsub("'", "&apos;")
-	return ('Congratulations! You won <font color="%s">%s</font>! It has been added to your inventory.')
-		:format(color, displayName)
+	local destination = result.Delivery == "Inbox"
+		and " Your inventory is full, so it has been saved in your reward inbox."
+		or " It has been added to your inventory."
+	return ('Congratulations! You won <font color="%s">%s</font>!%s')
+		:format(color, displayName, destination)
 end
 
 local function animateResult(result)
@@ -279,6 +287,7 @@ UIButtonUtils.SetupButton(spinButton, function()
 	if spinBusy then feedback:Failed("A spin is already in progress!") return end
 	spinBusy = true
 	setButtonEnabled(spinButton, false)
+	if closeButton and closeButton:IsA("GuiButton") then setButtonEnabled(closeButton, false) end
 	idleToken += 1
 	local ok, result = pcall(function() return requestSpin:InvokeServer() end)
 	if ok and type(result) == "table" and result.Success then
@@ -288,7 +297,8 @@ UIButtonUtils.SetupButton(spinButton, function()
 	end
 	spinBusy = false
 	setButtonEnabled(spinButton, true)
-	if mainFrame.Visible then setOpen(true) end
+	if closeButton and closeButton:IsA("GuiButton") then setButtonEnabled(closeButton, true) end
+	if mainFrame.Visible then setOpen(isInsideTrigger()) end
 end)
 
 local function bindTrigger(trigger)

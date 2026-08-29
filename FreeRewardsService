@@ -45,7 +45,7 @@ local LIKE_ACKNOWLEDGED_ATTRIBUTE = "FreeRewardsLikeAcknowledged"
 
 local GROUP_ID = 35973937
 local REWARD_CAR_NAME = "Windsor"
-local REWARD_WALLET_CASH = 250000
+local REWARD_WALLET_CASH = 25000
 
 local DATA_READY_TIMEOUT_SECONDS = 12
 local CLAIM_COOLDOWN_SECONDS = 0.75
@@ -53,7 +53,7 @@ local LIKE_ACK_COOLDOWN_SECONDS = 1
 local GROUP_STATE_CACHE_SECONDS = 3
 local REQUIRED_WAIT_SECONDS = 8
 
-local SUCCESS_MESSAGE = "Reward claimed! The Windsor Car has been added to your inventory, and 250,000 Wallet Cash has been added to your account."
+local SUCCESS_MESSAGE = "Reward claimed! The Windsor Car has been added to your inventory, and 25,000 Wallet Cash has been added to your account."
 
 local claimLocks = {}
 local lastClaimAttemptAt = {}
@@ -276,6 +276,9 @@ local function tryClaim(player)
 			return false, tostring(claimMessage or "Reward save failed. Please try again.")
 		end
 
+		if claimMessage == "Inbox" then
+			return true, "Reward claimed! Your Windsor was saved in your reward inbox, and 25,000 Wallet Cash was added to your account."
+		end
 		return true, SUCCESS_MESSAGE
 	end)
 

@@ -133,7 +133,7 @@ local function grantCar(product, player, receiptInfo, buyerPlayer)
 	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
 	if not api then return false, "TycoonAdminAPI missing" end
 	local isGift = buyerPlayer and buyerPlayer ~= player
-	local attrs = { IsRobuxExclusive = true, BaseCarId = product.CarId, ExclusiveDisplayName = "Exclusive (" .. product.CarId .. ")", Source = isGift and "RobuxGift" or "LimitedCarsShop", ReceiptPurchaseId = receiptInfo.PurchaseId, ReceiptProductId = receiptInfo.ProductId }
+	local attrs = { IsRobuxExclusive = true, BaseCarId = product.CarId, ExclusiveDisplayName = "Exclusive (" .. product.CarId .. ")", Source = isGift and "RobuxGift" or "LimitedCarsShop", ReceiptPurchaseId = receiptInfo.PurchaseId, ReceiptProductId = receiptInfo.ProductId, QueueIfStorageFull = true, RewardInboxId = "LimitedReceipt:" .. tostring(receiptInfo.PurchaseId) }
 	if isGift then
 		attrs.GiftSenderUserId = buyerPlayer.UserId
 		attrs.GiftReceiverUserId = player.UserId

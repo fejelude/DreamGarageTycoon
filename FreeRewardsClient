@@ -747,7 +747,7 @@ local function attemptClaim()
 		end
 
 		if success then
-			showStateLabel(successLabel, message or "Reward claimed! The Windsor Car has been added to your inventory, and 250,000 Wallet Cash has been added to your account.")
+			showStateLabel(successLabel, message or "Reward claimed! The Windsor Car has been added to your inventory, and 25,000 Wallet Cash has been added to your account.")
 			safePlayNamed("BuySuccess")
 		else
 			showStateLabel(failedLabel, message or "Complete both quests before claiming your reward.")

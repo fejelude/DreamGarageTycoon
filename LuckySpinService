@@ -78,7 +78,7 @@ local function buildResult()
 	return result
 end
 
-local function publicResult(result, tokenBalance)
+local function publicResult(result, tokenBalance, delivery)
 	return {
 		Success = true,
 		SpinId = result.SpinId,
@@ -90,6 +90,7 @@ local function publicResult(result, tokenBalance)
 		VisualSegment = result.VisualSegment,
 		WrappedSegment = result.WrappedSegment,
 		TokenBalance = tokenBalance,
+		Delivery = delivery,
 		AnimationDuration = result.AnimationDuration,
 	}
 end
@@ -108,7 +109,7 @@ requestSpin.OnServerInvoke = function(player, ...)
 	end
 	result.AnimationDuration = rng:NextNumber(3, 5)
 
-	local invokeOk, committed, message, tokenBalance = pcall(function()
+	local invokeOk, committed, message, tokenBalance, delivery = pcall(function()
 		return adminAPI:Invoke("CommitLuckySpin", player, result)
 	end)
 	if not invokeOk or committed ~= true then
@@ -121,7 +122,7 @@ requestSpin.OnServerInvoke = function(player, ...)
 	task.delay(result.AnimationDuration + 0.75, function()
 		if spinLocks[player] == lock then spinLocks[player] = nil end
 	end)
-	return publicResult(result, tokenBalance)
+	return publicResult(result, tokenBalance, delivery)
 end
 
 Players.PlayerRemoving:Connect(function(player)

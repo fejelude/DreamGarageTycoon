@@ -144,6 +144,7 @@ local PROFILE_LEASE_VERSION_FIELD = "_SessionLeaseVersion"
 local SERVER_SESSION_TOKEN = game.JobId .. ":" .. HttpService:GenerateGUID(false)
 
 local MAX_INVENTORY_SIZE = 500
+local MAX_REWARD_INBOX_SIZE = 500
 local MAX_ROBUX_RECEIPT_HISTORY = 300
 local MAX_LUCKY_SPIN_HISTORY = 100
 local DEFAULT_CAR_STORAGE_LIMIT = 5
@@ -957,6 +958,106 @@ local function giveTool(player, toolName, customAttributes)
 	end
 end
 
+-- Reward cars use the normal storage limit. When that storage is full, the
+-- authoritative reward is retained in this persisted server-side inbox rather
+-- than being rejected or spawning unbounded Tool instances in the Backpack.
+local function sanitizeRewardInbox(raw)
+	local sanitized = {}
+	if type(raw) ~= "table" then return sanitized end
+	for _, entry in ipairs(raw) do
+		if #sanitized >= MAX_REWARD_INBOX_SIZE then break end
+		if type(entry) == "table" then
+			local rewardId = type(entry.RewardId) == "string" and entry.RewardId or nil
+			local toolId = type(entry.ToolId) == "string" and entry.ToolId or nil
+			local isExclusive = entry.IsRobuxExclusive == true
+			if rewardId and rewardId ~= "" and toolId and safeFindCarTool(toolId, isExclusive) then
+				table.insert(sanitized, {
+					RewardId = rewardId,
+					ToolId = toolId,
+					IsRobuxExclusive = isExclusive,
+					Source = type(entry.Source) == "string" and entry.Source or "RewardInbox",
+					QueuedAt = math.max(0, math.floor(tonumber(entry.QueuedAt) or 0)),
+				})
+			end
+		end
+	end
+	return sanitized
+end
+
+local function updateRewardInboxCount(player, session)
+	player:SetAttribute("RewardInboxCount", #(session and session.RewardInbox or {}))
+end
+
+local function removeRewardInboxEntry(session, rewardId)
+	if not session or type(session.RewardInbox) ~= "table" then return false end
+	for index = #session.RewardInbox, 1, -1 do
+		if session.RewardInbox[index].RewardId == rewardId then
+			table.remove(session.RewardInbox, index)
+			return true
+		end
+	end
+	return false
+end
+
+local function queueRewardCar(player, toolName, customAttributes)
+	local session = SessionData[player]
+	if not session or not session.DataLoaded then return false, "Player data not loaded" end
+	local isExclusive = type(customAttributes) == "table" and customAttributes.IsRobuxExclusive == true
+	local sourceTool = safeFindCarTool(toolName, isExclusive)
+	if not sourceTool then return false, "Invalid tool" end
+
+	session.RewardInbox = sanitizeRewardInbox(session.RewardInbox)
+	local rawReceiptId = type(customAttributes) == "table"
+		and (customAttributes.ReceiptPurchaseId or customAttributes.PurchaseId) or nil
+	local receiptId = rawReceiptId ~= nil and tostring(rawReceiptId) or nil
+	if receiptId == "" then receiptId = nil end
+	if receiptId then
+		session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+		if session.RobuxProductReceipts[receiptId] then
+			return true, "Already granted", nil, nil, true
+		end
+	end
+	local rewardId = type(customAttributes) == "table" and tostring(customAttributes.RewardInboxId or "") or ""
+	if rewardId == "" then rewardId = HttpService:GenerateGUID(false) end
+	for _, entry in ipairs(session.RewardInbox) do
+		if entry.RewardId == rewardId then return true, "Queued in reward inbox", nil, nil, true end
+	end
+	if #session.RewardInbox >= MAX_REWARD_INBOX_SIZE then return false, "Reward inbox safety limit reached" end
+
+	table.insert(session.RewardInbox, {
+		RewardId = rewardId,
+		ToolId = sourceTool.Name,
+		IsRobuxExclusive = isExclusive,
+		Source = type(customAttributes) == "table" and customAttributes.Source or "RewardInbox",
+		QueuedAt = os.time(),
+	})
+	if receiptId then
+		session.RobuxProductReceipts[receiptId] = {
+			ToolId = sourceTool.Name,
+			ProductId = tonumber(customAttributes.ReceiptProductId),
+			GrantedAt = os.time(),
+			Source = type(customAttributes.Source) == "string" and customAttributes.Source or "RewardInbox",
+			Queued = true,
+		}
+		session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+	end
+	updateRewardInboxCount(player, session)
+	markDirty(player)
+	markIndexDiscovered(player, sourceTool.Name, isExclusive)
+	return true, "Queued in reward inbox", nil, nil, false, rewardId
+end
+
+local function giveOrQueueRewardCar(player, toolName, customAttributes)
+	customAttributes = type(customAttributes) == "table" and customAttributes or {}
+	if canAddCarToStorage(player, 1) and getCurrentInventoryCount(player) < MAX_INVENTORY_SIZE then
+		local immediateAttributes = table.clone(customAttributes)
+		immediateAttributes.QueueIfStorageFull = nil
+		immediateAttributes.RewardInboxId = nil
+		return giveTool(player, toolName, immediateAttributes)
+	end
+	return queueRewardCar(player, toolName, customAttributes)
+end
+
 -- ----------------------------------------------------------------------------
 -- 🏗️ LAYOUT RESTORATION
 -- ----------------------------------------------------------------------------
@@ -1580,10 +1681,10 @@ local function claimFreeReward(player, carName, walletCash)
 	local originalWallet = wallet.Value
 	local claimToken = HttpService:GenerateGUID(false)
 
-	local grantOk, grantMessage = giveTool(player, carName, {
+	local grantOk, grantMessage = giveOrQueueRewardCar(player, carName, {
 		Source = "FreeRewards",
-		BypassStorageLimit = true,
 		FreeRewardClaimToken = claimToken,
+		RewardInboxId = claimToken,
 	})
 	if not grantOk then
 		return finish(false, grantMessage or "Unable to add the reward car to your inventory.")
@@ -1595,13 +1696,15 @@ local function claimFreeReward(player, carName, walletCash)
 
 	local saveOk = save(player, false, true)
 	if saveOk then
-		return finish(true)
+		return finish(true, grantMessage == "Queued in reward inbox" and "Inbox" or "Inventory")
 	end
 
 	-- Best-effort rollback. This protects against normal save failures. If the
 	-- server process dies mid-claim, the next load still falls back to persisted data.
 	wallet.Value = originalWallet
 	removeToolsByAttribute(player, "FreeRewardClaimToken", claimToken)
+	removeRewardInboxEntry(session, claimToken)
+	updateRewardInboxCount(player, session)
 	player:SetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE, false)
 	markDirty(player)
 
@@ -1764,8 +1867,8 @@ end
 -- Atomically applies one Playtime Rewards grant to the live profile and forces
 -- it durable before the session service is allowed to mark the slot claimed.
 -- The service supplies a server-generated transaction; no client reward data
--- reaches this API. Cars bypass purchasable slots like Lucky Spin prizes, while
--- the absolute MAX_INVENTORY_SIZE corruption guard remains enforced.
+-- reaches this API. Cars are delivered immediately when storage is available
+-- and otherwise retained in the persisted reward inbox.
 local function commitPlaytimeReward(player, transaction)
 	local session = SessionData[player]
 	if not save or not session or not session.DataLoaded or type(transaction) ~= "table" then
@@ -1784,8 +1887,6 @@ local function commitPlaytimeReward(player, transaction)
 	if rewardType == "FhiaTokens" and allowedTokens ~= amount then return false, "Invalid token reward" end
 	if rewardType == "CarPool" and (not carReward or not carId) then return false, "Invalid car reward" end
 	if rewardType ~= "Wallet" and rewardType ~= "FhiaTokens" and rewardType ~= "CarPool" then return false, "Invalid reward" end
-	if carReward and getCurrentInventoryCount(player) >= MAX_INVENTORY_SIZE then return false, "Inventory safety limit reached" end
-
 	session.PlaytimeRewardCommitLock = true
 	local originalWallet = wallet and wallet.Value
 	local originalTokens = math.max(0, math.floor(tonumber(session.FhiaTokens) or 0))
@@ -1797,8 +1898,8 @@ local function commitPlaytimeReward(player, transaction)
 		session.FhiaTokens = originalTokens + amount
 		player:SetAttribute("FhiaTokens", session.FhiaTokens)
 	else
-		grantOk, grantMessage = giveTool(player, carId, {
-			Source = "PlaytimeRewards", BypassStorageLimit = true,
+		grantOk, grantMessage = giveOrQueueRewardCar(player, carId, {
+			Source = "PlaytimeRewards", RewardInboxId = transactionId,
 			PlaytimeRewardTransactionId = transactionId,
 			PlaytimeRewardIndex = rewardIndex,
 		})
@@ -1807,11 +1908,16 @@ local function commitPlaytimeReward(player, transaction)
 	markDirty(player)
 	if save(player, false, true) then
 		session.PlaytimeRewardCommitLock = nil
-		return true, nil, rewardType == "FhiaTokens" and session.FhiaTokens or nil
+		return true, nil, rewardType == "FhiaTokens" and session.FhiaTokens or nil,
+			grantMessage == "Queued in reward inbox" and "Inbox" or "Inventory"
 	end
 	if rewardType == "Wallet" then wallet.Value = originalWallet
 	elseif rewardType == "FhiaTokens" then session.FhiaTokens = originalTokens; player:SetAttribute("FhiaTokens", originalTokens)
-	else removeToolsByAttribute(player, "PlaytimeRewardTransactionId", transactionId) end
+	else
+		removeToolsByAttribute(player, "PlaytimeRewardTransactionId", transactionId)
+		removeRewardInboxEntry(session, transactionId)
+		updateRewardInboxCount(player, session)
+	end
 	markDirty(player)
 	session.PlaytimeRewardCommitLock = nil
 	return false, "Reward save failed"
@@ -1835,13 +1941,6 @@ local function commitLuckySpin(player, result)
 	if rewardType == "Wallet" and (not wallet or (walletAmount ~= 500 and walletAmount ~= 5000)) then return false, "Invalid wallet reward" end
 	if rewardType == "Car" and not carId then return false, "Invalid car reward" end
 	if rewardType ~= "Wallet" and rewardType ~= "Car" then return false, "Invalid reward" end
-	-- Wheel/crafting rewards bypass the player's purchasable slot limit, but the
-	-- profile schema still has a corruption guard at MAX_INVENTORY_SIZE. Reject
-	-- before token consumption if that absolute safety ceiling is reached.
-	if rewardType == "Car" and getCurrentInventoryCount(player) >= MAX_INVENTORY_SIZE then
-		return false, "Inventory safety limit reached"
-	end
-
 	session.LuckySpinCommitLock = true
 	local originalTokens = tokens
 	local originalWallet = wallet and wallet.Value or nil
@@ -1851,8 +1950,8 @@ local function commitLuckySpin(player, result)
 	if rewardType == "Wallet" then
 		wallet.Value += walletAmount
 	else
-		grantOk, grantMessage = giveTool(player, carId, {
-			Source = "LuckySpin", BypassStorageLimit = true, SpinTransactionId = spinId,
+		grantOk, grantMessage = giveOrQueueRewardCar(player, carId, {
+			Source = "LuckySpin", RewardInboxId = spinId, SpinTransactionId = spinId,
 			IsRobuxExclusive = result.IsRobuxExclusive == true,
 			ExclusiveDisplayName = result.IsRobuxExclusive == true and ("🌟 " .. carId .. " / Exclusive (" .. carId .. ")") or nil,
 		})
@@ -1869,7 +1968,8 @@ local function commitLuckySpin(player, result)
 	markDirty(player)
 	if save(player, false, true) then
 		session.LuckySpinCommitLock = nil
-		return true, nil, session.FhiaTokens
+		return true, nil, session.FhiaTokens,
+			grantMessage == "Queued in reward inbox" and "Inbox" or "Inventory"
 	end
 
 	-- Save failed before the transaction became durable: return the live session
@@ -1877,7 +1977,13 @@ local function commitLuckySpin(player, result)
 	session.FhiaTokens = originalTokens
 	player:SetAttribute("FhiaTokens", originalTokens)
 	session.LuckySpinHistory[spinId] = nil
-	if rewardType == "Wallet" then wallet.Value = originalWallet else removeToolsByAttribute(player, "SpinTransactionId", spinId) end
+	if rewardType == "Wallet" then
+		wallet.Value = originalWallet
+	else
+		removeToolsByAttribute(player, "SpinTransactionId", spinId)
+		removeRewardInboxEntry(session, spinId)
+		updateRewardInboxCount(player, session)
+	end
 	markDirty(player)
 	session.LuckySpinCommitLock = nil
 	return false, "Spin save failed"
@@ -1941,6 +2047,8 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		SessionData[player].StarterPackClearRequested = true
 		SessionData[player].Tutorial = sanitizeTutorialData(nil)
 		SessionData[player].IntentionalEmptyInventory = false
+		SessionData[player].RewardInbox = {}
+		updateRewardInboxCount(player, SessionData[player])
 		applyTutorialAttributes(player, SessionData[player].Tutorial)
 		player:SetAttribute("IndexDiscoveredJson", "[]")
 		player:SetAttribute("IndexExclusiveDiscoveredJson", "[]")
@@ -1992,6 +2100,9 @@ AdminAPI.OnInvoke = function(action, player, ...)
 
 	elseif action == "GiveTool" and player then
 		local toolName, customAttributes = ...
+		if type(customAttributes) == "table" and customAttributes.QueueIfStorageFull == true then
+			return giveOrQueueRewardCar(player, toolName, customAttributes)
+		end
 		return giveTool(player, toolName, customAttributes)
 
 	elseif action == "TransferTool" and player then
@@ -2073,10 +2184,10 @@ AdminAPI.OnInvoke = function(action, player, ...)
 				return finish(false, "Wallet not loaded")
 			end
 
-			local grantOk, grantMsg = giveTool(player, carName, {
-				BypassStorageLimit = true,
+			local grantOk, grantMsg = giveOrQueueRewardCar(player, carName, {
 				Source = "StarterPack",
 				PurchaseId = purchaseId,
+				RewardInboxId = "StarterPack:" .. purchaseId,
 			})
 
 			if not grantOk then
@@ -2717,6 +2828,7 @@ save = function(player, isClosing, force)
 		local snapshotWallet = MoneyManager.GetBalance(player, "Wallet")
 		local snapshotFhiaTokens = math.max(0, math.floor(tonumber(session.FhiaTokens) or 0))
 		local luckySpinHistory = sanitizeLuckySpinHistory(session.LuckySpinHistory)
+		local rewardInbox = sanitizeRewardInbox(session.RewardInbox)
 		local snapshotOfflineTabletCarry = math.max(0, math.floor(tonumber(player:GetAttribute("OfflineTabletCarry")) or 0))
 		local profileKey = session.ProfileKey
 		local leaseToken = session.LeaseToken
@@ -2797,6 +2909,7 @@ save = function(player, isClosing, force)
 					oldData.Wallet     = snapshotWallet
 					oldData.FhiaTokens = snapshotFhiaTokens
 					oldData.LuckySpinHistory = luckySpinHistory
+					oldData.RewardInbox = rewardInbox
 					oldData.ATMBalance = 0
 					oldData.WalletEconomyMigrationVersion = WALLET_ECONOMY_MIGRATION_VERSION
 					oldData.Inventory = finalInventory
@@ -2946,6 +3059,46 @@ save = function(player, isClosing, force)
 	return saveSucceeded
 end
 
+local function deliverNextRewardInboxCar(player)
+	local session = SessionData[player]
+	if not session or not session.DataLoaded or session.RewardInboxDeliveryLock then return false end
+	session.RewardInbox = sanitizeRewardInbox(session.RewardInbox)
+	local entry = session.RewardInbox[1]
+	if not entry or not canAddCarToStorage(player, 1) or getCurrentInventoryCount(player) >= MAX_INVENTORY_SIZE then
+		updateRewardInboxCount(player, session)
+		return false
+	end
+
+	session.RewardInboxDeliveryLock = true
+	local grantOk = giveTool(player, entry.ToolId, {
+		Source = entry.Source,
+		IsRobuxExclusive = entry.IsRobuxExclusive,
+		ExclusiveDisplayName = entry.IsRobuxExclusive and ("Exclusive (" .. entry.ToolId:gsub(" Item$", "") .. ")") or nil,
+		RewardInboxDeliveryId = entry.RewardId,
+	})
+	if not grantOk then
+		session.RewardInboxDeliveryLock = nil
+		return false
+	end
+
+	table.remove(session.RewardInbox, 1)
+	updateRewardInboxCount(player, session)
+	markDirty(player)
+	if save(player, false, true) then
+		session.RewardInboxDeliveryLock = nil
+		return true
+	end
+
+	-- Keep the transfer atomic: a failed save restores the queue entry and
+	-- removes the unsaved live Tool, preventing either loss or duplication.
+	removeToolsByAttribute(player, "RewardInboxDeliveryId", entry.RewardId)
+	table.insert(session.RewardInbox, 1, entry)
+	updateRewardInboxCount(player, session)
+	markDirty(player)
+	session.RewardInboxDeliveryLock = nil
+	return false
+end
+
 local function startLeaseRenewal(player)
 	task.spawn(function()
 		while player.Parent == Players do
@@ -3064,6 +3217,7 @@ local function InitializePlayer(player)
 		FhiaTokenGrantLocks = {},
 		LuckySpinHistory = {},
 		LuckySpinCommitLock = nil,
+		RewardInbox = {},
 		PromoCodesRedeemed = {},
 		PromoCodeRedemptionInProgress = {},
 	}
@@ -3229,7 +3383,7 @@ local function InitializePlayer(player)
 		OfflineEarningsRate = 0, OfflineEarningsRateVersion = 0, OfflineFrenzyMultiplier = 1, OfflineFrenzyExpiresAt = 0,
 		StarterPackPurchased = false, StarterPackPurchaseId = nil, StarterPackReceipts = {},
 		RobuxProductReceipts = {},
-		FhiaTokens = 0, LuckySpinHistory = {},
+		FhiaTokens = 0, LuckySpinHistory = {}, RewardInbox = {},
 		PromoCodesRedeemed = {},
 		DailyRewards = sanitizeDailyRewardsData(nil), FreeRewardsClaimed = false,
 		Tutorial = sanitizeTutorialData(nil)
@@ -3291,6 +3445,7 @@ local function InitializePlayer(player)
 	data.RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
 	data.FhiaTokens = math.max(0, math.floor(tonumber(data.FhiaTokens) or 0))
 	data.LuckySpinHistory = sanitizeLuckySpinHistory(data.LuckySpinHistory)
+	data.RewardInbox = sanitizeRewardInbox(data.RewardInbox)
 	data.PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
 	data.IntentionalEmptyInventory = data.IntentionalEmptyInventory == true
 	data.DailyRewards = sanitizeDailyRewardsData(data.DailyRewards)
@@ -3346,7 +3501,9 @@ local function InitializePlayer(player)
 	SessionData[player].RobuxProductReceipts = compactRobuxReceiptHistory(data.RobuxProductReceipts)
 	SessionData[player].FhiaTokens = data.FhiaTokens
 	SessionData[player].LuckySpinHistory = data.LuckySpinHistory
+	SessionData[player].RewardInbox = data.RewardInbox
 	player:SetAttribute("FhiaTokens", data.FhiaTokens)
+	updateRewardInboxCount(player, SessionData[player])
 	SessionData[player].PromoCodesRedeemed = sanitizePromoCodeHistory(data.PromoCodesRedeemed)
 	SessionData[player].IntentionalEmptyInventory = data.IntentionalEmptyInventory
 	SessionData[player].InventorySlotBonus = data.InventorySlotBonus
@@ -3725,6 +3882,18 @@ task.spawn(function()
 		task.wait(25)
 		for _, player in pairs(Players:GetPlayers()) do
 			sanitizeInventory(player)
+		end
+	end
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(2)
+		for _, player in ipairs(Players:GetPlayers()) do
+			local session = SessionData[player]
+			if session and session.DataLoaded and #(session.RewardInbox or {}) > 0 then
+				task.spawn(deliverNextRewardInboxCar, player)
+			end
 		end
 	end
 end)
