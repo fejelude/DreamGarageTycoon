@@ -27,6 +27,7 @@
 --   Removing the competing PlayerRemoving listener lets that contract hold.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local InboxService      = require(script.Parent:WaitForChild("InboxService"))
 local ServerStorage     = game:GetService("ServerStorage")
 local Players           = game:GetService("Players")
 local HttpService       = game:GetService("HttpService")
@@ -201,12 +202,13 @@ local function queuePlayerSaveSoon(player)
 	return true
 end
 
-local function grantCraftReward(player, recipeCarName, realToolName, source)
-	return invokeInventory("GiveTool", player, realToolName, {
-		BypassStorageLimit = true,
-		Source = source,
-		CraftRecipe = recipeCarName,
-	})
+local function grantCraftReward(player, recipeCarName, realToolName, source, awardedAt)
+	local ok, message = InboxService.Enqueue(player.UserId,
+		("MythicalCraft:%d:%s:%d"):format(player.UserId, recipeCarName, math.floor(tonumber(awardedAt) or 0)), {
+			RewardType="Car", RewardId=realToolName, DisplayName=realToolName,
+			SourceType="Dealer", Source="ethourah", Rarity="Mythical",
+		})
+	return true, ok, message
 end
 
 -- =========================
@@ -690,21 +692,27 @@ FuncCraftCar.OnServerInvoke = function(player, carName, isPremiumRequest)
 		end
 
 		if isPremiumRequest then
+			local previousAward = session.AwardedCrafts[carName]
+			session.AwardedCrafts[carName] = nil
 			session.PendingPremiumCraft = carName
 			local saveOk, saveMessage = savePlayerNow(player)
 			if not saveOk then
 				session.PendingPremiumCraft = nil
+				session.AwardedCrafts[carName] = previousAward
 				return false, saveMessage or "Save failed. Premium craft was not started."
 			end
 			pushUpdate(player, session, "PendingPremium")
 			return true, "PendingPremium"
 		end
 
+		local previousAward = session.AwardedCrafts[carName]
+		session.AwardedCrafts[carName] = nil
 		session.ActiveCrafts[carName] = os.time() + recipe.CraftTime
 
 		local saveOk, saveMessage = savePlayerNow(player)
 		if not saveOk then
 			session.ActiveCrafts[carName] = nil
+			session.AwardedCrafts[carName] = previousAward
 			return false, saveMessage or "Save failed. Craft was not started."
 		end
 
@@ -809,7 +817,7 @@ SkipCraftFunc.OnInvoke = function(player)
 			local realToolName = recipe.TargetCar
 			local alreadyAwarded = session.AwardedCrafts[carName] ~= nil
 			session.AwardedCrafts[carName] = session.AwardedCrafts[carName] or os.time()
-			local invokeOk, giveResult, giveMessage = grantCraftReward(player, carName, realToolName, "MythicalCraftSkip")
+			local invokeOk, giveResult, giveMessage = grantCraftReward(player, carName, realToolName, "MythicalCraftSkip", session.AwardedCrafts[carName])
 
 			if invokeOk and giveResult ~= false then
 				if not alreadyAwarded then
@@ -897,7 +905,7 @@ task.spawn(function()
 					local alreadyAwarded = session.AwardedCrafts[carName] ~= nil
 					session.AwardedCrafts[carName] = session.AwardedCrafts[carName] or now
 					local invokeOk, giveResult, giveMessage =
-						grantCraftReward(player, carName, realToolName, "MythicalCraftComplete")
+						grantCraftReward(player, carName, realToolName, "MythicalCraftComplete", session.AwardedCrafts[carName])
 
 					if invokeOk and giveResult ~= false then
 						if not alreadyAwarded then

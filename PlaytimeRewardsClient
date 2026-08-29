@@ -97,11 +97,11 @@ local function setOpen(open)
 end
 
 local function successMessage(result)
-	if result.RewardType == "Wallet" then return ("Successfully claimed $%s!"):format(tostring(result.Amount)) end
-	if result.RewardType == "FhiaTokens" then return ("Successfully claimed %d Fhia Token%s!"):format(result.Amount, result.Amount == 1 and "" or "s") end
+	if result.RewardType == "Wallet" then return ("Successfully sent $%s to your Inbox!"):format(tostring(result.Amount)) end
+	if result.RewardType == "FhiaTokens" then return ("Successfully sent %d Fhia Token%s to your Inbox!"):format(result.Amount, result.Amount == 1 and "" or "s") end
 	local name = tostring(result.CarId or "car"):gsub("[<>&]", { ["<"] = "&lt;", [">"] = "&gt;", ["&"] = "&amp;" })
 	local color = Config.RarityColors[result.Rarity] or "#FFFFFF"
-	return ('Successfully claimed <font color="%s">%s</font>! It has been added to your inventory.'):format(color, name)
+	return ('Successfully sent <font color="%s">%s</font> to your Inbox!'):format(color, name)
 end
 
 local function requestClaim(index)
