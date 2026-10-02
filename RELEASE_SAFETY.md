@@ -51,7 +51,7 @@ The added profile/mailbox fields are additive. Do not run an older server build 
 - delivery retries after an injected DataStore outage;
 - car identity and paid variant survive delivery.
 
-The offline suite executes the actual service through freeze/save outages, reconnect recovery, premium binding and cancellation, legacy paid delivery, and zero awards. Craft tests execute both tiers' actual delivery and skip handlers, including failed binding/completion saves and old receipt retries during a new craft. Base migration tests execute both implementations, checking full preflight and rollback after a mid-move error.
+The offline suite executes the actual service through freeze/save outages, reconnect recovery, premium binding and cancellation, legacy paid delivery, and zero awards. Craft tests execute both tiers' actual delivery and skip handlers, including failed binding/completion saves and old receipt retries during a new craft. Base migration tests execute both implementations, checking full preflight and rollback after a mid-move error. A profile reward regression executes the promo redemption handler with concurrent spending during a failed save, checking that the reward marker and later spending survive together.
 
 Run with:
 ```sh

@@ -1528,8 +1528,6 @@ local function redeemPromoCode(player, code, codeInfo)
 		return finish(false, "Unable to redeem the code. Please try again.")
 	end
 
-	local originalWallet = wallet.Value
-	local previousHistoryEntry = session.PromoCodesRedeemed[code]
 	wallet.Value += amount
 	session.PromoCodesRedeemed[code] = { RedeemedAt = os.time(), RewardType = codeInfo.RewardType, RewardAmount = amount }
 	player:SetAttribute(PROMO_CODE_REDEEMED_ATTRIBUTE, HttpService:JSONEncode(session.PromoCodesRedeemed))
@@ -1539,11 +1537,10 @@ local function redeemPromoCode(player, code, codeInfo)
 	-- profile update. Reading the old stored wallet here used to resurrect cash
 	-- the player had already spent since the previous autosave.
 	if not save(player, false, true) then
-		wallet.Value = originalWallet
-		session.PromoCodesRedeemed[code] = previousHistoryEntry
-		player:SetAttribute(PROMO_CODE_REDEEMED_ATTRIBUTE, HttpService:JSONEncode(session.PromoCodesRedeemed))
-		markDirty(player)
-		return finish(false, "Unable to redeem the code. Please try again.")
+		-- The reward and marker remain live. An uncertain write is not a reason
+		-- to overwrite earnings or spending that happened while saving yielded.
+		queueCriticalSave(player, 2)
+		return finish(true, "Code redeemed. Your reward is saving.")
 	end
 
 	return finish(true, codeInfo.SuccessMessage or "Code successfully redeemed!")
