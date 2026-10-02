@@ -8,6 +8,7 @@ local Players = game:GetService("Players")
 local DataStoreService = game:GetService("DataStoreService")
 local StarterGui = game:GetService("StarterGui")
 local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
 local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
 local GamePassConfig = require(ReplicatedStorage:WaitForChild("GamePassConfig"))
 
@@ -53,10 +54,8 @@ local lastIntentTime = {}
 local intentStore = DataStoreService:GetDataStore("PendingRobuxGiftIntents_V1")
 
 local INTENT_COOLDOWN = 0.75
--- A prompt can outlive a server session and Roblox may retry its receipt much
--- later. Cancellation still clears immediately, but an accepted target remains
--- recoverable long enough for delayed receipt delivery.
-local INTENT_TTL = 7 * 24 * 60 * 60
+-- Pending contexts remain until a trusted unsuccessful prompt or the exact fulfilled receipt.
+local INTENT_TTL = 7 * 24 * 60 * 60 -- metadata, never proof of an uncharged purchase
 local function intentKey(userId) return "Buyer_" .. tostring(userId) end
 
 local function isStoredIntent(value)
@@ -77,17 +76,22 @@ end
 local function loadIntent(buyerUserId)
 	if pendingGifts[buyerUserId] then return pendingGifts[buyerUserId] end
 	local ok, stored = pcall(function() return intentStore:GetAsync(intentKey(buyerUserId)) end)
-	if ok and isStoredIntent(stored) then pendingGifts[buyerUserId] = stored end
+	if not ok then return nil, "Unavailable" end
+	if isStoredIntent(stored) then pendingGifts[buyerUserId] = stored end
 	return pendingGifts[buyerUserId]
 end
 
-local function clearPersistedIntent(buyerUserId, expectedIntent)
+local function clearPersistedIntent(buyerUserId, expectedIntent, purchaseId, unsuccessfulPrompt)
 	if not expectedIntent then return false end
 	local cleared = false
 	local ok, result = pcall(function()
 		return intentStore:UpdateAsync(intentKey(buyerUserId), function(current)
 			cleared = false
-			if sameIntent(current, expectedIntent) then
+			if sameIntent(current, expectedIntent)
+				and ((purchaseId and tostring(current.PurchaseId) == tostring(purchaseId))
+					or (unsuccessfulPrompt and expectedIntent.State == "Pending"
+						and current.State == "Pending" and not current.PurchaseId))
+			then
 				cleared = true
 				return {
 					State = "Cleared",
@@ -107,14 +111,8 @@ local function clearPersistedIntent(buyerUserId, expectedIntent)
 end
 
 local function pruneExpiredIntent(buyerUserId)
-	local intent = loadIntent(buyerUserId)
-	if intent and (tonumber(intent.ExpiresAt) or 0) <= os.time() then
-		clearPersistedIntent(buyerUserId, intent)
-		local current = pendingGifts[buyerUserId]
-		if current and (tonumber(current.ExpiresAt) or 0) > os.time() then return current end
-		return nil
-	end
-	return intent
+	-- Never expire accepted purchase context. Expiry does not prove no charge.
+	return loadIntent(buyerUserId)
 end
 
 local function validateIntentRequest(buyer, productId, receiverUserId)
@@ -125,7 +123,7 @@ local function validateIntentRequest(buyer, productId, receiverUserId)
 		return false, "Your data is still loading"
 	end
 
-	if typeof(productId) ~= "number" or productId <= 0 or productId ~= productId then
+	if typeof(productId) ~= "number" or productId <= 0 or productId >= math.huge or productId ~= math.floor(productId) then
 		return false, "Invalid gift product"
 	end
 
@@ -133,7 +131,7 @@ local function validateIntentRequest(buyer, productId, receiverUserId)
 		return false, "This product cannot be gifted"
 	end
 
-	if typeof(receiverUserId) ~= "number" then
+	if typeof(receiverUserId) ~= "number" or receiverUserId <= 0 or receiverUserId >= math.huge or receiverUserId ~= math.floor(receiverUserId) then
 		return false, "Invalid receiver"
 	end
 
@@ -171,6 +169,14 @@ local function setIntent(buyer, productId, receiverUserId)
 		return false, message
 	end
 
+	-- Recover completion followed by a crash before intent cleanup.
+	local previous, previousError = loadIntent(buyer.UserId)
+	if previousError then return false, "Gift purchase context is temporarily unavailable" end
+	if previous and previous.PurchaseId and type(_G.GiftReceiptWasFulfilled) == "function"
+		and _G.GiftReceiptWasFulfilled(buyer.UserId, previous.PurchaseId) == true then
+		clearPersistedIntent(buyer.UserId, previous, previous.PurchaseId, false)
+	end
+
 	local now = os.time()
 	local receiverPlayer = Players:GetPlayerByUserId(receiverUserId)
 	local candidate = {
@@ -191,8 +197,9 @@ local function setIntent(buyer, productId, receiverUserId)
 		return intentStore:UpdateAsync(intentKey(buyer.UserId), function(current)
 			accepted = false
 			conflict = false
-			if isStoredIntent(current) and (tonumber(current.ExpiresAt) or 0) > now then
-				if tonumber(current.ProductId) == candidate.ProductId
+			if isStoredIntent(current) then
+				if current.State == "Pending" and not current.PurchaseId
+					and tonumber(current.ProductId) == candidate.ProductId
 					and tonumber(current.ReceiverUserId) == candidate.ReceiverUserId
 				then
 					accepted = true
@@ -227,75 +234,75 @@ SetIntentEvent.OnServerEvent:Connect(function(buyer, receiverUserId, productId)
 	setIntent(buyer, productId, receiverUserId)
 end)
 
-CancelIntentEvent.OnServerEvent:Connect(function(buyer, productId)
-	local intent = pruneExpiredIntent(buyer.UserId)
-	if not intent then
+-- A client cannot certify that Roblox did not charge a purchase.
+CancelIntentEvent.OnServerEvent:Connect(function() end)
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(buyerUserId, productId, wasPurchased)
+	local intent = loadIntent(buyerUserId)
+	if not intent or tonumber(intent.ProductId) ~= tonumber(productId) then return end
+	if not wasPurchased then
+		clearPersistedIntent(buyerUserId, intent, nil, true)
 		return
 	end
-
-	if typeof(productId) == "number" and intent.ProductId ~= math.floor(productId) then
-		return
-	end
-
-	clearPersistedIntent(buyer.UserId, intent)
+	local purchasedIntent = table.clone(intent)
+	if purchasedIntent.State == "Pending" then purchasedIntent.State = "Purchased" end
+	pendingGifts[buyerUserId] = purchasedIntent
+	local ok, result = pcall(function()
+		return intentStore:UpdateAsync(intentKey(buyerUserId), function(current)
+			if sameIntent(current, intent) and current.State == "Pending" then
+				current.State = "Purchased"
+				current.PurchasedAt = os.time()
+			end
+			return current
+		end)
+	end)
+	if ok then pendingGifts[buyerUserId] = isStoredIntent(result) and result or nil end
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-	-- Do not discard an accepted intent here. Roblox may deliver the receipt after
-	-- the purchaser disconnects; keeping it prevents a retry from changing target.
-	local userId = player.UserId
-	lastIntentTime[userId] = nil
-	local intent = pendingGifts[userId]
-	if intent then
-		local cleanupDelay = math.max(1, (tonumber(intent.ExpiresAt) or os.time()) - os.time() + 1)
-		task.delay(cleanupDelay, function()
-			if pendingGifts[userId] == intent and (tonumber(intent.ExpiresAt) or 0) <= os.time() then
-				pruneExpiredIntent(userId)
-			end
-		end)
-	end
+	lastIntentTime[player.UserId] = nil
+	pendingGifts[player.UserId] = nil -- durable context survives departure
 end)
 
--- ReceiptRouter API. Intents are consumed only after the receipt is fully
--- granted and marked, so receipt retries keep the same target.
-_G.GetGiftIntent = function(buyerUserId, productId, consume)
-	local intent = pruneExpiredIntent(buyerUserId)
-	if not intent then
-		return nil, "NoIntent"
-	end
-
-	if typeof(productId) == "number" and intent.ProductId ~= math.floor(productId) then
+_G.GetGiftIntent = function(buyerUserId, productId, _consume)
+	local intent, loadError = pruneExpiredIntent(buyerUserId)
+	if loadError then return nil, loadError end
+	if not intent then return nil, "NoIntent" end
+	if typeof(productId) == "number" and tonumber(intent.ProductId) ~= productId then
 		return nil, "ProductMismatch", intent
 	end
-
-	if consume then
-		clearPersistedIntent(buyerUserId, intent)
-	end
-
 	return intent, nil
 end
 
-_G.ClearGiftIntent = function(buyerUserId, productId)
-	local intent = pruneExpiredIntent(buyerUserId)
-	if not intent then return false end
-
-	if typeof(productId) == "number" and intent.ProductId ~= math.floor(productId) then
-		return false
-	end
-
-	return clearPersistedIntent(buyerUserId, intent)
+_G.BindGiftIntent = function(buyerUserId, productId, purchaseId, expectedIntent)
+	local bound = false
+	local ok, result = pcall(function()
+		return intentStore:UpdateAsync(intentKey(buyerUserId), function(current)
+			bound = false
+			if not sameIntent(current, expectedIntent) or tonumber(current.ProductId) ~= productId then return current end
+			if current.PurchaseId and tostring(current.PurchaseId) ~= tostring(purchaseId) then return current end
+			current.State = "Bound"
+			current.PurchaseId = tostring(purchaseId)
+			current.BoundAt = current.BoundAt or os.time()
+			bound = true
+			return current
+		end)
+	end)
+	if ok then pendingGifts[buyerUserId] = isStoredIntent(result) and result or nil end
+	return ok and bound, ok and bound and result or nil
 end
 
--- Backwards-compatible API for older scripts.
-_G.GetGiftReceiver = function(buyerUserId, consume)
+_G.ClearGiftIntent = function(buyerUserId, productId, purchaseId)
+	if not purchaseId then return false end
+	local intent = loadIntent(buyerUserId)
+	if not intent or tonumber(intent.ProductId) ~= tonumber(productId) then return false end
+	return clearPersistedIntent(buyerUserId, intent, purchaseId, false)
+end
+
+-- Compatibility API is read-only.
+_G.GetGiftReceiver = function(buyerUserId, _consume)
 	local intent = pruneExpiredIntent(buyerUserId)
-	local receiverId = intent and intent.ReceiverUserId
-
-	if receiverId and consume then
-		clearPersistedIntent(buyerUserId, intent)
-	end
-
-	return receiverId
+	return intent and intent.ReceiverUserId
 end
 
 return {}

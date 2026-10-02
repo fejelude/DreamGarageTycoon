@@ -16,9 +16,9 @@ Owned cars carry a stable `IssuedId` through Tools, StarterGear mirrors, placed 
 
 Subsystem loads must acknowledge success before the profile is Ready. Mutating handlers check Ready and closing state. Saves collect loaded subsystem state; shutdown waits for active and already-closing profiles and completes final-save notifications after all attempts.
 
-Inbox entries retain a permanent consumed identity in the mailbox key. Claim grants and their unresolved profile markers commit together. The marker can be forgotten only after the mailbox durably removes/consumes the entry. Craft and car-transfer outboxes retain stable delivery IDs across retries. Sender and receiver rank grants use separate idempotent identities, and do not force a save in the middle of the caller's profile transaction.
+Inbox entries retain a permanent consumed identity in the mailbox key. Claim grants and their unresolved profile markers commit together. The marker can be forgotten only after the mailbox durably removes/consumes the entry. Active and premium craft jobs, and car-transfer outboxes, retain stable delivery IDs across retries. Paid craft skips persist a receipt-to-job binding before delivery; retrying a completed skip never completes a new job. Sender and receiver rank grants use separate idempotent identities, and do not force a save in the middle of the caller's profile transaction.
 
-Ordinary offline earnings freeze an award before Inbox enqueue, and consume that frozen award only after delivery. Receipt double-claim feedback comes from receipt finalization, rather than the purchase-prompt completion event.
+Offline earnings freeze an award before Inbox enqueue, and consume that frozen award only after delivery. An older pending award stays frozen across visits; new offline income waits until that award is consumed. Premium cancellation returns to the same frozen award and never adds it to tablet carry a second time. Receipt double-claim feedback comes from receipt finalization, rather than the purchase-prompt completion event.
 
 `HotbarPersistenceEvent` is created by the server when absent. The client sends six canonical owned car keys and a request ID; the server validates/rate-limits the request and returns the accepted keys with that ID. Import the paired inventory client and data handler.
 
@@ -34,6 +34,8 @@ The added profile/mailbox fields are additive. Do not run an older server build 
 - invalid/unknown IDs do not trigger claim writes;
 - delivery retries after an injected DataStore outage;
 - car identity and paid variant survive delivery.
+
+The offline suite executes the actual service through freeze/save outages, reconnect recovery, premium binding and cancellation, legacy paid delivery, and zero awards. Craft tests execute both tiers' actual delivery and skip handlers, including failed binding/completion saves and old receipt retries during a new craft. Base migration tests execute both implementations, checking full preflight and rollback after a mid-move error.
 
 Run with:
 ```sh
@@ -64,8 +66,10 @@ These need explicit product policy or further integration work; this PR does not
 - **Already-satisfied paid skips:** a playtime skip bought when rewards are already unlocked, or which becomes redundant while a prompt is open, can still provide no benefit. A credit/substitute policy is required.
 - **Inventory ceiling:** new grants must not overflow the persistence ceiling. Existing oversized saves fail closed for manual repair. Designing overflow storage or upgrading the data format is separate work.
 - **Ambiguous purchase prompts:** Roblox receipts identify products and purchases, not the originating UI prompt. Bound/purchased gift contexts are retained, but a crash before the prompt-completion event persists can require reconciliation. Do not replace unresolved paid intent with another recipient.
-- **DataStore size:** permanent Inbox consumed identities and retained unresolved journals grow. Monitor serialized size and design archival/sharding before reaching Roblox's key-size limit. Pruning unresolved identities by a recent-count window reintroduces replay.
+- **DataStore size:** permanent Inbox consumed identities, craft receipt bindings, and retained unresolved journals grow. Monitor serialized size and design archival/sharding before reaching Roblox's key-size limit. Pruning unresolved identities by a recent-count window reintroduces replay.
 - **Transaction isolation:** keeping accepted effects on uncertain writes avoids stale absolute rollback. This is not a universal transaction scheduler across every gameplay system; stress-test overlapping mutations and follow up on remaining shared-state writers.
+- **Offline migration:** existing normal offline deliveries used amount-based IDs and cannot always be reconstructed. Rehearse pending legacy claims before rollout. An ownership lookup outage followed by an early server crash can still lose an interval before its first freeze; automatic preparation reduces that window.
+- **Final saves:** retries are best effort within Roblox's shutdown lifetime. Service requests may remain throttled longer than that lifetime; an abrupt crash can lose unsaved gameplay since the last durable autosave. Test the shutdown budget with production-sized profiles.
 - **Historical data:** new stable IDs and tombstones cannot reconstruct gifts or dupes that already occurred, or prove a previously consumed legacy Inbox entry. Audit suspicious legacy accounts separately.
 - **Modal ownership:** conversation generations and missing-UI cleanup reduce stuck controls. A shared modal/focus manager across all menus remains an architectural follow-up.
 - **Runtime assets:** this export does not include the place, GUI tree, every Remote object, animations, or models. Missing/misconfigured Studio instances remain a release blocker even when scripts compile.

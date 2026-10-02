@@ -31,25 +31,56 @@ local LOD_CHECK_INTERVAL = 0.5   -- How often (in seconds) we check LOD distance
 
 -- 🛡️ STATE MANAGEMENT
 -- We store the "Base Position" of every car so it doesn't drift away
-local activeCars = {} -- [CarModel] = OriginalCFrame
+local activeCars = {} -- [CarModel] = authoritative animation origin
+local carConnections = {}
+local pendingCars = {}
 local carParents = {} -- [CarModel] = OriginalParentInstance
 local lastLODCheck = 0
 local carsCulled = {} -- [CarModel] = true (Keeps track of cars that are currently hidden)
 local carsAtBase = {} -- [CarModel] = true (Keeps track of cars that have been reset to base CFrame when animation is off)
 
--- 🛠️ REGISTER CAR
-local function trackCar(car)
-	if not car:IsA("Model") then return end
-	if activeCars[car] then return end -- Already tracked
-
-	-- Wait 0.2s for PadController (Server) to finish positioning the car
-	-- This ensures we capture the CORRECT position on the pad
-	task.wait(0.2)
-
-	if car.Parent then
-		activeCars[car] = car:GetPivot()
-		carParents[car] = car.Parent
+-- Each origin is published by the server whenever placement/migration changes.
+-- GetPivot is only a compatibility fallback for models without the attribute.
+local function untrackCar(car)
+	local connections = carConnections[car]
+	if connections then
+		for _, connection in ipairs(connections) do
+			connection:Disconnect()
+		end
 	end
+	carConnections[car] = nil
+	pendingCars[car] = nil
+	activeCars[car] = nil
+	carParents[car] = nil
+	carsCulled[car] = nil
+	carsAtBase[car] = nil
+end
+
+local function trackCar(car)
+	if not car:IsA("Model") or activeCars[car] or pendingCars[car] then return end
+	pendingCars[car] = true
+	task.wait(0.2)
+	if not pendingCars[car] or not car.Parent then
+		pendingCars[car] = nil
+		return
+	end
+
+	local origin = car:GetAttribute("AnimationBaseCFrame")
+	activeCars[car] = typeof(origin) == "CFrame" and origin or car:GetPivot()
+	carParents[car] = car.Parent
+	pendingCars[car] = nil
+	carConnections[car] = {
+		car:GetAttributeChangedSignal("AnimationBaseCFrame"):Connect(function()
+			local newOrigin = car:GetAttribute("AnimationBaseCFrame")
+			if typeof(newOrigin) == "CFrame" then
+				activeCars[car] = newOrigin
+				carsAtBase[car] = nil
+			end
+		end),
+		car.Destroying:Connect(function()
+			untrackCar(car)
+		end),
+	}
 end
 
 -- ⚡ CULLING HELPER
@@ -92,10 +123,7 @@ local function monitorPlot(plot)
 		-- Only clear if it was actually destroyed/removed permanently
 		-- Not if it was just moved to our carCacheFolder for LOD culling
 		if car.Parent ~= carCacheFolder then
-			activeCars[car] = nil
-			carsCulled[car] = nil
-			carsAtBase[car] = nil
-			carParents[car] = nil
+			untrackCar(car)
 		end
 	end)
 end
@@ -143,10 +171,7 @@ RunService.RenderStepped:Connect(function(dt)
 				end
 			else
 				-- Car was deleted
-				activeCars[car] = nil
-				carsCulled[car] = nil
-				carsAtBase[car] = nil
-				carParents[car] = nil
+				untrackCar(car)
 			end
 		end
 	end

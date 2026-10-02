@@ -12,6 +12,7 @@ local animator = humanoid:WaitForChild("Animator")
 local FADE_TIME = 0.5 -- Time in seconds to blend between animations
 local MIN_DURATION = 3 -- Minimum time to play an animation (prevents fast flickering)
 local RANDOMIZE = true -- Set to true to pick random dances, false for order
+local FAILURE_BACKOFF = 2
 
 -- The complete list of IDs you provided
 local animationIds = {
@@ -85,7 +86,18 @@ local animationIds = {
 
 -- UTILITY FUNCTION: Load and Play
 local currentTrack = nil
+local stopped = false
 local animationObject = Instance.new("Animation")
+
+npc.Destroying:Connect(function()
+	stopped = true
+	if currentTrack then
+		currentTrack:Stop(0)
+		currentTrack:Destroy()
+		currentTrack = nil
+	end
+	animationObject:Destroy()
+end)
 
 local function playAnimation(id)
 	-- 1. Set the ID
@@ -98,7 +110,13 @@ local function playAnimation(id)
 	end)
 
 	if not success or not newTrack then
-		warn("Failed to load animation ID: " .. id)
+		if not stopped then warn("Failed to load animation ID: " .. id) end
+		-- Failed IDs must yield too; otherwise this becomes a server busy loop.
+		task.wait(FAILURE_BACKOFF)
+		return
+	end
+	if stopped then
+		newTrack:Destroy()
 		return
 	end
 
@@ -111,7 +129,11 @@ local function playAnimation(id)
 
 	-- 5. Stop previous track smoothly
 	if currentTrack then
-		currentTrack:Stop(FADE_TIME)
+		local previousTrack = currentTrack
+		previousTrack:Stop(FADE_TIME)
+		task.delay(FADE_TIME, function()
+			previousTrack:Destroy()
+		end)
 	end
 
 	currentTrack = newTrack
@@ -134,7 +156,7 @@ local function playAnimation(id)
 end
 
 -- MAIN LOOP
-while true do
+while not stopped and npc.Parent do
 	if RANDOMIZE then
 		-- Pick a random ID
 		local randomId = animationIds[math.random(1, #animationIds)]
@@ -142,6 +164,7 @@ while true do
 	else
 		-- Play in order
 		for _, id in ipairs(animationIds) do
+			if stopped or not npc.Parent then break end
 			playAnimation(id)
 		end
 	end

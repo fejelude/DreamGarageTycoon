@@ -136,7 +136,12 @@ for index = 1, #Config.Rewards do bindReward(index, elements:WaitForChild("Rewar
 UIButtonUtils.SetupButton(mainButton, function() setOpen(true) end)
 UIButtonUtils.SetupButton(closeButton, function() setOpen(false) end)
 UIButtonUtils.SetupButton(skipButton, function()
-	if promptBusy then return end
+	if promptBusy or not state.IsLoaded or state.SkipUnlocked or state.CanSkip == false then return end
+	local canSkip = false
+	for index, reward in ipairs(Config.Rewards) do
+		if not state.Claimed[index] and elapsed() < reward.RequiredSeconds then canSkip = true; break end
+	end
+	if not canSkip then return end
 	promptBusy = true
 	UIAudioConfig.PlayRobux(); UIAudioConfig.ShowPurchaseLoading()
 	local ok = pcall(function() MarketplaceService:PromptProductPurchase(player, Config.SkipTimeProductId) end)
@@ -181,6 +186,14 @@ task.spawn(function()
 				if not nextRemaining or remaining < nextRemaining then nextRemaining = remaining end
 			end
 		end
+		local canSkip = false
+		if state.IsLoaded and not state.SkipUnlocked and state.CanSkip ~= false then
+			for index, reward in ipairs(Config.Rewards) do
+				if not state.Claimed[index] and now < reward.RequiredSeconds then canSkip = true; break end
+			end
+		end
+		skipButton.Active = canSkip and not promptBusy
+		skipButton.AutoButtonColor = canSkip and not promptBusy
 		information.Text = claimable > 0 and "READY!" or formatTime(nextRemaining or 0)
 		information2.Text, information2.Visible = tostring(claimable), claimable > 0
 		task.wait(0.25)

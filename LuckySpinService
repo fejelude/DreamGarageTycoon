@@ -20,6 +20,7 @@ assert(adminAPI:IsA("BindableFunction"), "ServerStorage > TycoonAdminAPI must be
 
 local rng = Random.new()
 local spinLocks = {}
+local lastSpinAttempt = {}
 
 local function weightedChoice(entries, weightField)
 	local total = 0
@@ -99,9 +100,12 @@ requestSpin.OnServerInvoke = function(player, ...)
 	-- A valid request has no client-authored reward parameters.
 	if select("#", ...) > 0 then return { Success = false, Code = "InvalidRequest", Message = "Unable to process your spin. Please try again." } end
 	if spinLocks[player] then return { Success = false, Code = "Busy", Message = "A spin is already in progress!" } end
-	if player:GetAttribute("TycoonDataLoaded") ~= true then return { Success = false, Code = "Loading", Message = "Your data is still loading. Please try again." } end
+	if player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("TycoonDataClosing") == true then return { Success = false, Code = "Loading", Message = "Your data is still loading. Please try again." } end
 
-	spinLocks[player] = true
+	local now = os.clock()
+	if now - (lastSpinAttempt[player] or -math.huge) < 1 then return { Success=false, Code="Busy", Message="Please wait before spinning again." } end
+	lastSpinAttempt[player] = now
+	spinLocks[player] = {}
 	local result = buildResult()
 	if not result then
 		spinLocks[player] = nil
@@ -127,7 +131,8 @@ requestSpin.OnServerInvoke = function(player, ...)
 		return adminAPI:Invoke("CommitLuckySpin", player, result)
 	end)
 	if not invokeOk or committed ~= true then
-		InboxService.CancelReservation(player.UserId, deliveryId)
+		-- A failed save may have committed. Keep the reservation so committed
+		-- token/history can recover it; acceptance still requires durable history.
 		spinLocks[player] = nil
 		return { Success = false, Code = message == "No tokens" and "NoTokens" or "CommitFailed", Message = message == "No tokens" and "You need a Fhia Token to spin!" or "Unable to process your spin. Please try again." }
 	end
@@ -159,4 +164,5 @@ end
 
 Players.PlayerRemoving:Connect(function(player)
 	spinLocks[player] = nil
+	lastSpinAttempt[player] = nil
 end)

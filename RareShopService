@@ -156,6 +156,14 @@ local PlayerSessions   = {}
 local PurchaseLocks    = {}
 local LastPurchaseTime = {}
 
+local function isPlayerReady(player)
+	return player ~= nil
+		and player.Parent == Players
+		and player:GetAttribute("TycoonDataLoaded") == true
+		and player:GetAttribute("DataLoadState") == "Ready"
+		and player:GetAttribute("TycoonDataClosing") ~= true
+end
+
 local function normalizePurchased(raw)
 	if type(raw) ~= "table" then return {} end
 	local normalized = {}
@@ -168,15 +176,24 @@ local function normalizePurchased(raw)
 end
 
 -- =========================
--- TIMEOUT UTILITY
+-- PROTECTED SERVER INVOCATION
 -- =========================
-local function safeInvoke(bindable, _timeout, ...)
+-- BindableFunction invocation is synchronous. The legacy timeout argument is
+-- intentionally ignored; abandoning an in-flight grant would permit duplication.
+local function safeInvoke(bindable, _legacyTimeout, ...)
 	local args = table.pack(...)
 	local result = table.pack(pcall(function()
 		return bindable:Invoke(table.unpack(args, 1, args.n))
 	end))
 	if not result[1] then return false, result[2] end
 	return true, table.unpack(result, 2, result.n)
+end
+
+local function markSessionDirty(player)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if api and api:IsA("BindableFunction") then
+		safeInvoke(api, 0, "MarkDirty", player)
+	end
 end
 
 local function recordRankPurchase(player, carName)
@@ -216,6 +233,9 @@ local function generateStockConfiguration(seedValue)
 			totalWeight += weight
 		end
 	end
+
+	-- pairs() order differs between servers; a seed alone is not deterministic.
+	table.sort(poolKeys)
 
 	if totalWeight <= 0 or #poolKeys == 0 then
 		return { Featured = featuredFlags, Limits = stockLimits }
@@ -279,6 +299,7 @@ local function getSession(player)
 		session.Purchased   = {}
 		session.Cache       = generateStockConfiguration(session.SeedVersion)
 		didReset            = true
+		if isPlayerReady(player) then markSessionDirty(player) end
 	end
 
 	if not session.Cache then
@@ -303,6 +324,7 @@ local function buildStatePayload(session)
 end
 
 local function pushUpdate(player, session, reason)
+	if not isPlayerReady(player) then return end
 	local payload        = buildStatePayload(session)
 	payload.Reason       = reason
 	RemoteUpdate:FireClient(player, payload)
@@ -345,6 +367,8 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 			session.Cache     = generateStockConfiguration(session.SeedVersion)
 		end
 
+		return true
+
 	elseif action == "Get" then
 		local session, _ = getSession(player)
 		return {
@@ -364,11 +388,14 @@ end
 -- CLIENT REQUESTS
 -- =========================
 FuncGetState.OnServerInvoke = function(player)
+	if not isPlayerReady(player) then return nil end
 	local session, didReset = getSession(player)
+	if not isPlayerReady(player) then return nil end
 	return buildStatePayload(session)
 end
 
 RemoteOpen.OnServerEvent:Connect(function(player)
+	if not isPlayerReady(player) then return end
 	local char = player.Character
 	if not char or not char.PrimaryPart then return end
 
@@ -392,6 +419,7 @@ RemoteOpen.OnServerEvent:Connect(function(player)
 end)
 
 FuncBuyCar.OnServerInvoke = function(player, carName)
+	if not isPlayerReady(player) then return false, "Player data is unavailable" end
 	if typeof(carName) ~= "string"         then return false, "Invalid Car"     end
 	if not player or not player.Parent     then return false, "Player missing"  end
 
@@ -427,6 +455,7 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 	PurchaseLocks[uid] = true
 
 	local pOk, logicOk, msg = pcall(function()
+		if not isPlayerReady(player) then return false, "Player data is unavailable" end
 		local session, didReset = getSession(player)
 		if didReset then pushUpdate(player, session, "Auto") end
 
@@ -459,6 +488,12 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 		if not TycoonAdminAPI then return false, "System Error: Admin API Missing" end
 
+		-- Revalidate after setup, before the authoritative inventory mutation.
+		if not isPlayerReady(player) then return false, "Player data is unavailable" end
+		-- GiveTool can wait for a missing Backpack. Cash purchases must not yield
+		-- between their final balance check, inventory grant, and wallet debit.
+		if not player:FindFirstChild("Backpack") then return false, "Backpack not loaded" end
+		if wallet.Value < carData.Price then return false, "Insufficient Wallet funds" end
 		local invokeOk, giveResult = safeInvoke(TycoonAdminAPI, 3, "GiveTool", player, toolSource.Name)
 		if not invokeOk or giveResult ~= true then
 			warn("⚠️ [RareShop] TycoonAdminAPI grant failed for", player.Name)
@@ -467,14 +502,12 @@ FuncBuyCar.OnServerInvoke = function(player, carName)
 
 		wallet.Value -= carData.Price
 		session.Purchased[carName] = bought + 1
+		markSessionDirty(player)
 		recordRankPurchase(player, carName)
 		pushUpdate(player, session, "Purchase")
 
 		JacobFeedback:FireClient(player, carName)
 
-		task.spawn(function()
-			safeInvoke(TycoonAdminAPI, 2, "MarkDirty", player)
-		end)
 
 		return true, "Success"
 	end)
@@ -494,11 +527,16 @@ end
 -- REROLL & ROTATION
 -- =========================
 function RerollBindable.OnInvoke(player)
-	if not player or not player.Parent then return false end
-	local session         = getSession(player)
-	session.LocalSeed     = math.random(1, 999999999)
-	session.Purchased     = {}
-	session.Cache         = generateStockConfiguration(session.LocalSeed)
+	if not isPlayerReady(player) then return false end
+	if PurchaseLocks[player.UserId] then return false end
+	local session = getSession(player)
+	local nextSeed = math.random(1, 999999999)
+	local nextCache = generateStockConfiguration(nextSeed)
+	if not isPlayerReady(player) then return false end
+	session.LocalSeed = nextSeed
+	session.Purchased = {}
+	session.Cache = nextCache
+	markSessionDirty(player)
 	pushUpdate(player, session, "Reroll")
 	return true
 end
@@ -517,7 +555,9 @@ AdminRestockEvent.Event:Connect(function(carName, requestId)
 	print("🔄 [RareShop] Processing Admin Restock for:", carName)
 
 	for _, player in ipairs(Players:GetPlayers()) do
+		if not isPlayerReady(player) then continue end
 		local session = getSession(player)
+		if not isPlayerReady(player) then continue end
 		local config = session.Cache
 
 		if isAll then
@@ -532,6 +572,7 @@ AdminRestockEvent.Event:Connect(function(carName, requestId)
 			session.Purchased[carName] = 0
 		end
 
+		markSessionDirty(player)
 		pushUpdate(player, session, "AdminRestock")
 	end
 
@@ -552,10 +593,12 @@ task.spawn(function()
 			lastGlobalID = currentID
 			print("🔄 [RareShop] GLOBAL ROTATION")
 			for _, player in ipairs(Players:GetPlayers()) do
+				if not isPlayerReady(player) then continue end
 				-- FIX: Always push to all players on rotation, regardless of didReset.
 				-- Autosave calling getSession() before this loop can silently consume
 				-- didReset=true, causing this loop to skip pushUpdate and leave clients stale.
 				local session = getSession(player)
+				if not isPlayerReady(player) then continue end
 				pushUpdate(player, session, "Auto")
 			end
 			if RestockNotificationEvent then

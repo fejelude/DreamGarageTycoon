@@ -59,9 +59,10 @@ local game = {JobId = "test-server", GetService = function(_, name)
 	return services[name]
 end}
 local os = {time = function() return math.floor(now) end, clock = function() return now end}
+local scheduled = {}
 local task = {
 	wait = function(seconds) now += seconds or 0.1; return seconds or 0.1 end,
-	spawn = function(callback, ...) callback(...); return {} end,
+	spawn = function(callback, ...) table.insert(scheduled, {Callback=callback, Args=table.pack(...)}); return {} end,
 	defer = function(callback, ...) callback(...) end,
 	delay = function() return {} end,
 	cancel = function() end,
@@ -70,7 +71,7 @@ local require = function(name)
 	assert(name == "GiftEntitlementService")
 	return {Grant = function() return true end}
 end
-local player = {UserId = 17, Name = "Test", GetAttribute = function(_, name)
+local player = {UserId = 17, Name = "Test", Parent = services.Players, GetAttribute = function(_, name)
 	if name == "TycoonDataLoaded" then return true end
 	if name == "DataLoadState" then return "Ready" end
 	return false

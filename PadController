@@ -35,7 +35,23 @@ pcall(function() CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5
 local CarCPSDisplayUtils = require(ReplicatedStorage:WaitForChild("CarCPSDisplayUtils"))
 
 -- 🛡️ STATE MANAGEMENT
-local processingTracks = {} 
+local processingTracks = {}
+
+local function canMutate(player)
+	return player and player.Parent == Players
+		and player:GetAttribute("TycoonDataLoaded") == true
+		and player:GetAttribute("DataLoadState") == "Ready"
+		and player:GetAttribute("TycoonDataClosing") ~= true
+		and player:GetAttribute("TycoonLayoutChanging") ~= true
+end
+
+local function markDirty(player)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if api and api:IsA("BindableFunction") then
+		local ok, err = pcall(function() api:Invoke("MarkDirty", player) end)
+		if not ok then warn("[PadController] Could not mark ownership change dirty: " .. tostring(err)) end
+	end
+end
 
 -- ============================================================================
 -- 🛠️ HELPER FUNCTIONS
@@ -197,43 +213,28 @@ end
 -- ============================================================================
 -- 📦 TRANSACTION FUNCTIONS
 -- ============================================================================
-local function removeToolFromPlayer(player, toolName)
-	local found = false
-	local charTool = player.Character and player.Character:FindFirstChild(toolName)
-	if charTool then
-		charTool:Destroy()
-		found = true
-	else
-		local backpackTool = player.Backpack:FindFirstChild(toolName)
-		if backpackTool then
-			backpackTool:Destroy()
-			found = true
-		end
-	end
-	local gearTool = player.StarterGear:FindFirstChild(toolName)
-	if gearTool then gearTool:Destroy() end
-	return found
-end
-
 local function spawnCarOnPad(padPart, carModel, plot, player)
 	local placedCar = carModel:Clone()
-	local padTop = padPart.CFrame * CFrame.new(0, (padPart.Size.Y / 2) + CONSTANTS.VERTICAL_OFFSET + 1, 0)
-	placedCar:PivotTo(padTop)
-
-	local carFolder = plot:FindFirstChild("PlacedCars")
-	if not carFolder then
-		carFolder = Instance.new("Folder", plot)
-		carFolder.Name = "PlacedCars"
-	end
-	placedCar.Parent = carFolder
-
-	for _, part in pairs(placedCar:GetDescendants()) do
-		if part:IsA("BasePart") then 
-			part.Anchored = true
-			part.CanCollide = true 
+	local ok, err = pcall(function()
+		local padTop = padPart.CFrame * CFrame.new(0, (padPart.Size.Y / 2) + CONSTANTS.VERTICAL_OFFSET + 1, 0)
+		placedCar:PivotTo(padTop)
+		placedCar:SetAttribute("AnimationBaseCFrame", padTop)
+		for _, part in ipairs(placedCar:GetDescendants()) do
+			if part:IsA("BasePart") then
+				part.Anchored = true
+				part.CanCollide = true
+			end
 		end
-	end
-	CarCPSDisplayUtils.BindModelCPSDisplay(placedCar, player)
+		local carFolder = plot:FindFirstChild("PlacedCars")
+		if not carFolder then
+			carFolder = Instance.new("Folder")
+			carFolder.Name = "PlacedCars"
+			carFolder.Parent = plot
+		end
+		placedCar.Parent = carFolder
+		CarCPSDisplayUtils.BindModelCPSDisplay(placedCar, player)
+	end)
+	if not ok then placedCar:Destroy(); error(err) end
 	return placedCar
 end
 
@@ -252,7 +253,7 @@ end
 -- ============================================================================
 
 local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
-	if occupiedVal.Value then return end
+	if not canMutate(player) or occupiedVal.Value then return end
 
 	-- Double Check: Is it unlocked? (Security Layer)
 	local padNum = getPadNumber(padObject)
@@ -263,7 +264,7 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 	if not thisPlot or player:GetAttribute("OccupiedPlot") ~= thisPlot.Name then return end
 	if not isCloseEnough(player, padPart) then return end
 
-	local tool = player.Character:FindFirstChildWhichIsA("Tool")
+	local tool = player.Character and player.Character:FindFirstChildWhichIsA("Tool")
 	if not tool then return end
 
 	-- 🛡️ SECURITY FIX: PREVENT SPOOFING
@@ -286,69 +287,62 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 	local realCar = realModelName and safeFindCarModel(realModelName, isExclusive)
 
 	if realCar then
-		-- Fix 8b: Close `removeToolFromPlayer` Security Gap
-		-- Use secureToolId for removal, not tool.Name (which could be spoofed to steal another item)
-		local removed = false
-		if tool.Parent == player.Character or tool.Parent == player.Backpack then tool:Destroy(); removed = true end
-		for _, mirror in ipairs(player.StarterGear:GetChildren()) do
-			if mirror:GetAttribute("ToolId") == secureToolId and mirror:GetAttribute("IsRobuxExclusive") == isExclusive then mirror:Destroy(); break end
+		-- Stage the visual before consuming ownership. If cloning fails, the exact
+		-- inventory Tool and its respawn mirror remain untouched.
+		local issuedId = tool:GetAttribute("IssuedId")
+		if type(issuedId) ~= "string" or issuedId == "" then
+			issuedId = HttpService:GenerateGUID(false)
+			tool:SetAttribute("IssuedId", issuedId)
+		end
+		local success, result = pcall(function()
+			local car = spawnCarOnPad(padPart, realCar, thisPlot, player)
+			car:SetAttribute("OwnerUserId", player.UserId)
+			car:SetAttribute("IssuedId", issuedId)
+			car:SetAttribute("CarGUID", issuedId)
+			car:SetAttribute("BaseCarId", secureToolId:gsub(" Item$", ""))
+			car:SetAttribute("IsRobuxExclusive", isExclusive)
+			return car
+		end)
+		if not success or not result then
+			warn("[PadController] Could not place car; inventory retained: " .. tostring(result))
+			return
 		end
 
-		if removed then
-			local success, result = pcall(function()
-				return spawnCarOnPad(padPart, realCar, thisPlot, player)
-			end)
-
-			if success and result then
-				occupiedVal.Value = true
-				linkedCarVal.Value = result
-				result:SetAttribute("OwnerUserId", player.UserId)
-				result:SetAttribute("CarGUID", tostring(player.UserId) .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000,9999)))
-				result:SetAttribute("BaseCarId", secureToolId:gsub(" Item$", ""))
-				result:SetAttribute("IsRobuxExclusive", isExclusive)
-
-				-- Update State immediately and refresh every placed car display because
-				-- Mythical CPS can depend on the best non-Mythical car on the base.
-				validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
-				CarCPSDisplayUtils.RefreshPlotCPSDisplays(thisPlot, player)
-
-				if player.Character then
-					local edgeOffset = (padPart.Size.Z / 2) + CONSTANTS.EJECT_DISTANCE
-					local safeSpot = padPart.CFrame * CFrame.new(0, CONSTANTS.EJECT_HEIGHT, edgeOffset)
-					local lookAtCar = CFrame.lookAt(safeSpot.Position, padPart.Position)
-					player.Character:PivotTo(lookAtCar)
-				end
-				playSound("PlaceSound", padPart)
-
-				-- Report only after the authoritative placement and pad state commit.
-				if padObject.Name == "Pad1" then
-					local tutorialAPI = game:GetService("ServerStorage"):FindFirstChild("TutorialProgressAPI")
-					if tutorialAPI and tutorialAPI:IsA("BindableFunction") then
-						task.spawn(function() tutorialAPI:Invoke("RecordObjective", player, "CarPlaced") end)
+		local starterGear = player:FindFirstChild("StarterGear")
+		if starterGear then
+			local legacyMirror
+			for _, mirror in ipairs(starterGear:GetChildren()) do
+				if mirror:IsA("Tool") and mirror:GetAttribute("ToolId") == secureToolId
+					and (mirror:GetAttribute("IsRobuxExclusive") == true) == isExclusive then
+					if mirror:GetAttribute("IssuedId") == issuedId then
+						legacyMirror = nil
+						mirror:Destroy()
+						break
 					end
+					-- Older profiles assigned different IDs to the live Tool and mirror.
+					legacyMirror = legacyMirror or mirror
 				end
-			else
-				warn("⚠️ Spawn Failed! Refunding item to " .. player.Name)
-				-- Refund using the SECURE ID, not the tool name
-				local originalTool = safeFindCarTool(secureToolId, isExclusive)
+			end
+			if legacyMirror then legacyMirror:Destroy() end
+		end
+		tool:Destroy()
+		occupiedVal.Value = true
+		linkedCarVal.Value = result
+		markDirty(player)
 
-				if originalTool then
-					local backpackClone = originalTool:Clone()
-					local gearClone = originalTool:Clone()
-					for _, clone in ipairs({backpackClone, gearClone}) do
-						clone:SetAttribute("IssuedByServer", true)
-						clone:SetAttribute("IssuedAt", os.time())
-						clone:SetAttribute("IssuedId", HttpService:GenerateGUID(false))
-						clone:SetAttribute("ToolId", secureToolId)
-						clone:SetAttribute("IsRobuxExclusive", isExclusive)
-						if isExclusive then clone:SetAttribute("ExclusiveDisplayName", "Exclusive (" .. secureToolId:gsub(" Item$", "") .. ")"); clone.Name = clone:GetAttribute("ExclusiveDisplayName") end
-						clone.CanBeDropped = false
-					end
-					backpackClone.Parent = player.Backpack
-					gearClone.Parent = player.StarterGear
-				else
-					warn("❌ CRITICAL: Could not find original tool to refund: " .. tostring(secureToolId))
-				end
+		validatePadState(padObject, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+		CarCPSDisplayUtils.RefreshPlotCPSDisplays(thisPlot, player)
+		if player.Character then
+			local edgeOffset = (padPart.Size.Z / 2) + CONSTANTS.EJECT_DISTANCE
+			local safeSpot = padPart.CFrame * CFrame.new(0, CONSTANTS.EJECT_HEIGHT, edgeOffset)
+			player.Character:PivotTo(CFrame.lookAt(safeSpot.Position, padPart.Position))
+		end
+		playSound("PlaceSound", padPart)
+
+		if padObject.Name == "Pad1" then
+			local tutorialAPI = ServerStorage:FindFirstChild("TutorialProgressAPI")
+			if tutorialAPI and tutorialAPI:IsA("BindableFunction") then
+				task.spawn(function() pcall(function() tutorialAPI:Invoke("RecordObjective", player, "CarPlaced") end) end)
 			end
 		end
 	else
@@ -357,6 +351,7 @@ local function AttemptPlace(player, padObject, padPart, occupiedVal, linkedCarVa
 end
 
 local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarVal, placePrompt, pickupPrompt)
+	if not canMutate(player) then return end
 	local thisPlot = getPlotFolder(padObject)
 	if not thisPlot or player:GetAttribute("OccupiedPlot") ~= thisPlot.Name then return end
 	if not isCloseEnough(player, padPart) then return end
@@ -376,15 +371,18 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 	local carName = carToRemove.Name
 	local isExclusive = carToRemove:GetAttribute("IsRobuxExclusive") == true
 	local baseCarId = carToRemove:GetAttribute("BaseCarId") or carName
-	local foundTool = isExclusive and safeFindCarTool(baseCarId, true) or FindToolFromModelName(carName)
+	local foundTool = safeFindCarTool(baseCarId, isExclusive)
+		or (not isExclusive and FindToolFromModelName(carName))
 
 	if foundTool then
 		local backpackClone = foundTool:Clone()
 		local gearClone = foundTool:Clone()
+		local issuedId = carToRemove:GetAttribute("IssuedId") or carToRemove:GetAttribute("CarGUID")
+		if type(issuedId) ~= "string" or issuedId == "" then issuedId = HttpService:GenerateGUID(false) end
 		for _, clone in ipairs({backpackClone, gearClone}) do
 			clone:SetAttribute("IssuedByServer", true)
 			clone:SetAttribute("IssuedAt", os.time())
-			clone:SetAttribute("IssuedId", HttpService:GenerateGUID(false))
+			clone:SetAttribute("IssuedId", issuedId)
 			clone:SetAttribute("ToolId", baseCarId)
 			clone:SetAttribute("IsRobuxExclusive", isExclusive)
 			if isExclusive then clone:SetAttribute("ExclusiveDisplayName", "Exclusive (" .. baseCarId:gsub(" Item$", "") .. ")"); clone.Name = clone:GetAttribute("ExclusiveDisplayName") end
@@ -397,6 +395,7 @@ local function AttemptPickup(player, padObject, padPart, occupiedVal, linkedCarV
 
 		occupiedVal.Value = false
 		linkedCarVal.Value = nil
+		markDirty(player)
 
 		-- Update State immediately and refresh every placed car display because
 		-- Mythical CPS can depend on the best non-Mythical car on the base.

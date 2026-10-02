@@ -21,6 +21,10 @@ local receiptStore = DataStoreService:GetDataStore(Config.ReceiptStoreName)
 
 local Service = {}
 local currentState
+local stateHealthy = false
+local refreshInFlight = false
+local nextRefreshAt = 0
+local refreshFailures = 0
 local generation = 0
 local expireToken = 0
 local function now() return os.time() end
@@ -41,8 +45,9 @@ local function sanitizeProcessedReceipts(raw)
 	return result
 end
 
-local function inactiveState(processedReceipts)
+local function inactiveState(processedReceipts, revision)
 	return {
+		Revision = math.max(0, math.floor(tonumber(revision) or 0)),
 		Active = false, StackCount = 0, Multiplier = Config.BaseMultiplier,
 		ActivatedAt = 0, ExpiresAt = 0, PurchaserUserId = 0,
 		PurchaserUsername = "", PurchaserDisplayName = "", ReceiptKey = "",
@@ -53,11 +58,12 @@ end
 local function sanitize(raw)
 	local s = type(raw) == "table" and raw or inactiveState()
 	local receipts = sanitizeProcessedReceipts(s.ProcessedReceipts)
-	if s.Active ~= true or (tonumber(s.ExpiresAt) or 0) <= now() then return inactiveState(receipts) end
+	if s.Active ~= true or (tonumber(s.ExpiresAt) or 0) <= now() then return inactiveState(receipts, s.Revision) end
 	-- StackCount was added in V2. Deriving it migrates an already-active legacy 2x session.
 	local stackCount = tonumber(s.StackCount) and math.floor(s.StackCount) or StackConfig.GetStackCount(s.Multiplier)
 	stackCount = math.clamp(stackCount, 1, StackConfig.MaxStackCount)
 	return {
+		Revision = math.max(0, math.floor(tonumber(s.Revision) or 0)),
 		Active = true, StackCount = stackCount, Multiplier = StackConfig.GetMultiplier(stackCount),
 		ActivatedAt = tonumber(s.ActivatedAt) or now(), ExpiresAt = tonumber(s.ExpiresAt) or now(),
 		PurchaserUserId = tonumber(s.PurchaserUserId) or 0,
@@ -69,10 +75,14 @@ local function sanitize(raw)
 	}
 end
 
+-- Gameplay getters always use this safe cache, even during a DataStore outage.
+currentState = inactiveState()
+
 local function publicState(notification)
 	local s = sanitize(currentState)
 	local nextMultiplier = StackConfig.GetNextMultiplier(s.StackCount)
 	return {
+		Revision = s.Revision, Healthy = stateHealthy,
 		Active = s.Active, StackCount = s.StackCount, Multiplier = s.Multiplier,
 		CurrentLuck = Config.FormatMultiplier(s.Multiplier),
 		NextLuck = nextMultiplier and Config.FormatMultiplier(nextMultiplier) or "MAX",
@@ -100,7 +110,9 @@ end
 
 local function setLocalState(newState, shouldPublish, notification, announcement)
 	local previous = currentState and sanitize(currentState)
-	currentState = sanitize(newState)
+	local incoming = sanitize(newState)
+	if previous and incoming.Revision < previous.Revision then return false end
+	currentState = incoming
 	if not previous or previous.Active ~= currentState.Active or previous.ExpiresAt ~= currentState.ExpiresAt or previous.StackCount ~= currentState.StackCount then
 		generation += 1
 	end
@@ -112,13 +124,29 @@ local function setLocalState(newState, shouldPublish, notification, announcement
 			if token == expireToken then Service.RefreshFromStore(true) end
 		end)
 	end
-	if shouldPublish then publish({ StateChanged = true, Announcement = announcement }) end
+	if shouldPublish then publish({ StateChanged = true, Revision = currentState.Revision, Announcement = announcement }) end
+	return true
 end
 
 function Service.RefreshFromStore(shouldPublish)
-	local ok, data = pcall(function() return stateStore:GetAsync(Config.StateKey) end)
-	if ok then setLocalState(data, shouldPublish) end
-	return ok
+	if refreshInFlight or os.clock() < nextRefreshAt then return false end
+	refreshInFlight = true
+	task.spawn(function()
+		local ok, data = pcall(function() return stateStore:GetAsync(Config.StateKey) end)
+		if ok then
+			stateHealthy = true
+			refreshFailures = 0
+			nextRefreshAt = os.clock() + 1
+			setLocalState(data, shouldPublish)
+		else
+			stateHealthy = false
+			refreshFailures += 1
+			nextRefreshAt = os.clock() + math.min(30, 2 ^ math.min(refreshFailures, 5))
+			warn("[GlobalLuckService] State refresh failed: " .. tostring(data))
+		end
+		refreshInFlight = false
+	end)
+	return true
 end
 
 -- Uses the same inactive-state normalization and client broadcast path as a
@@ -128,7 +156,7 @@ function Service.Clear()
 	local ok, err = pcall(function()
 		committed = stateStore:UpdateAsync(Config.StateKey, function(old)
 			local s = type(old) == "table" and old or {}
-			return inactiveState(s.ProcessedReceipts)
+			return inactiveState(s.ProcessedReceipts, (tonumber(s.Revision) or 0) + 1)
 		end)
 	end)
 	if not ok or type(committed) ~= "table" then
@@ -139,14 +167,15 @@ function Service.Clear()
 	-- again until reconciliation. The clear message tells subscribers to apply
 	-- the same inactive state immediately; the DataStore write above remains the
 	-- authoritative durable reset.
+	stateHealthy = true
 	setLocalState(committed, false)
-	publish({ StateChanged = true, Cleared = true })
+	publish({ StateChanged = true, Cleared = true, Revision = committed.Revision })
 	return true
 end
 
-function Service.GetState() if not currentState then Service.RefreshFromStore(false) end return publicState() end
+function Service.GetState() return publicState() end
 function Service.GetMultiplier() return Service.GetState().Multiplier end
-function Service.GetGeneration() Service.GetState() return generation end
+function Service.GetGeneration() return generation end
 function Service.CanPurchase() local s = Service.GetState(); return not (s.Active and s.Maxed) end
 function Service.NotifyClient(player, success, message) if player then PurchaseResultEvent:FireClient(player, success == true, message or "") end end
 
@@ -167,8 +196,11 @@ function Service.ProcessReceipt(receiptInfo)
 			s.ProcessedReceipts = sanitizeProcessedReceipts(s.ProcessedReceipts)
 			local isActivation = not s.Active
 			local priorCount = isActivation and 0 or s.StackCount
-			local applied = priorCount < StackConfig.MaxStackCount
-			local newCount = applied and (priorCount + 1) or priorCount
+			local extended = priorCount >= StackConfig.MaxStackCount
+			local applied = true
+			local newCount = extended and priorCount or (priorCount + 1)
+			s.Revision += 1
+			if extended then s.ExpiresAt = math.max(now(), s.ExpiresAt) + Config.DurationSeconds end
 			if isActivation then
 				local activatedAt = now()
 				s.Active, s.ActivatedAt, s.ExpiresAt = true, activatedAt, activatedAt + Config.DurationSeconds
@@ -183,15 +215,16 @@ function Service.ProcessReceipt(receiptInfo)
 				s.BoostPurchaseNotification = notification
 			end
 			local announcement
-			if applied and not isActivation then
+			if not extended and not isActivation then
 				local multiplierText = Config.FormatMultiplier(s.Multiplier):gsub("x", "×")
 				announcement = { Type = "BoostStack", Id = "GlobalLuck_Stack_" .. receiptKey, DisplayName = player.DisplayName, Username = player.Name, BoostName = "Global Luck", Multiplier = multiplierText }
 			end
-			s.LastMutation = { ReceiptKey = receiptKey, Applied = applied, IsActivation = isActivation, Announcement = announcement }
+			s.LastMutation = { ReceiptKey = receiptKey, Applied = applied, Extended = extended, IsActivation = isActivation, Announcement = announcement }
 			return s
 		end)
 	end)
 	if not ok or type(committed) ~= "table" then return false, "Global boost save failed", false end
+	stateHealthy = true
 	committed = sanitize(committed)
 	local mutation = committed.LastMutation
 	local ownsMutation = type(mutation) == "table" and mutation.ReceiptKey == receiptKey
@@ -206,7 +239,7 @@ function Service.ProcessReceipt(receiptInfo)
 	if mutation.Announcement then fireStackAnnouncement(mutation.Announcement) end
 	local markerOk = pcall(function() receiptStore:SetAsync(receiptKey, true) end)
 	if not markerOk then return false, "Receipt finalization failed", false end
-	if not mutation.Applied then return true, "Booster already reached 5.00x", false end
+	if mutation.Extended then return true, "Global Luck duration extended", false end
 	return true, mutation.IsActivation and "Global Luck activated" or ("Boosted to " .. Config.FormatMultiplier(committed.Multiplier)), false
 end
 
@@ -218,10 +251,10 @@ task.spawn(function()
 		local ok, err = pcall(function()
 			MessagingService:SubscribeAsync(Config.TopicName, function(message)
 				if type(message.Data) ~= "table" then return end
-				if message.Data.Cleared == true then
-					local receipts = currentState and currentState.ProcessedReceipts
-					setLocalState(inactiveState(receipts), false)
-					return
+				local revision = math.max(0, math.floor(tonumber(message.Data.Revision) or 0))
+				if revision < currentState.Revision then return end
+				if message.Data.Cleared == true and revision > currentState.Revision then
+					setLocalState(inactiveState(currentState.ProcessedReceipts, revision), false)
 				end
 				-- The DataStore, never the broadcast payload, remains authoritative.
 				Service.RefreshFromStore(false)

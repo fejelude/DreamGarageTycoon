@@ -183,7 +183,7 @@ local function render(entries)
 				confirmDecline(function(confirmed)
 					if confirmed then request(declineEntry, entry.Id, acceptButton, declineButton) end
 				end)
-		end
+			end)
 		end
 		row.Parent = holder
 	end

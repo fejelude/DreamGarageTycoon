@@ -16,6 +16,16 @@ local ServerStorage = game:GetService("ServerStorage")
 
 local TycoonFolder = Workspace:WaitForChild("Tycoons")
 
+local function canMutate(player)
+	return player and player.Parent == Players and player:GetAttribute("TycoonDataLoaded") == true
+		and player:GetAttribute("DataLoadState") == "Ready" and player:GetAttribute("TycoonDataClosing") ~= true
+end
+
+local function markDirty(player)
+	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if api and api:IsA("BindableFunction") then pcall(function() api:Invoke("MarkDirty", player) end) end
+end
+
 local function forceSave(player)
 	local api = ServerStorage:FindFirstChild("TycoonAdminAPI")
 	if not api or not api:IsA("BindableFunction") then
@@ -102,6 +112,65 @@ local function getLevelModel(plot, levelName)
 		end
 	end
 	return nil
+end
+
+local function getMainPart(pad)
+	if not pad then return nil end
+	if pad:IsA("BasePart") then return pad end
+	if pad:IsA("Model") then return pad.PrimaryPart or pad:FindFirstChildWhichIsA("BasePart") end
+end
+
+local function migratePadOccupancy(plot, fromLevel, toLevel)
+	local fromModel = getLevelModel(plot, "Level" .. tostring(fromLevel))
+	local toModel = getLevelModel(plot, "Level" .. tostring(toLevel))
+	local fromPads = fromModel and fromModel.Parent:FindFirstChild("Pads")
+	local toPads = toModel and toModel.Parent:FindFirstChild("Pads")
+	if not fromPads or not toPads or fromPads == toPads then return false, "Base pads are unavailable." end
+	local moves = {}
+	for _, fromPad in ipairs(fromPads:GetChildren()) do
+		local fromPart = getMainPart(fromPad)
+		local occupied = fromPart and fromPart:FindFirstChild("IsOccupied")
+		local link = fromPart and fromPart:FindFirstChild("LinkedCar")
+		local car = link and link.Value
+		if (occupied and occupied.Value) or car then
+			local number = fromPad.Name:match("^Pad(%d+)$")
+			local toPad = number and toPads:FindFirstChild("Pad" .. number)
+			if not toPad then return false, "Move cars off pads that do not exist on the destination base." end
+			local toPart = getMainPart(toPad)
+			local toOcc = toPart and toPart:FindFirstChild("IsOccupied")
+			local toLink = toPart and toPart:FindFirstChild("LinkedCar")
+			if not occupied or not link or not car or not car:IsA("Model") or not car.Parent or not toOcc or not toLink then
+				return false, "A car pad is unavailable."
+			end
+			if toOcc.Value or toLink.Value then return false, "The destination pads are occupied." end
+			table.insert(moves, {FromOcc=occupied, FromLink=link, ToOcc=toOcc, ToLink=toLink, Car=car,
+				OldOccupied=occupied.Value, OldToOccupied=toOcc.Value, OldToCar=toLink.Value,
+				Pivot=car:GetPivot(), Origin=car:GetAttribute("AnimationBaseCFrame"),
+				Target=toPart.CFrame * CFrame.new(0,(toPart.Size.Y/2)+6,0)})
+		end
+	end
+	local ok, err = pcall(function()
+		for _, move in ipairs(moves) do
+			move.Car:PivotTo(move.Target)
+			move.Car:SetAttribute("AnimationBaseCFrame", move.Target)
+			move.ToLink.Value, move.ToOcc.Value = move.Car, true
+			move.FromLink.Value, move.FromOcc.Value = nil, false
+		end
+	end)
+	if not ok then
+		for _, move in ipairs(moves) do
+			local restored, message = pcall(function()
+				move.FromLink.Value, move.FromOcc.Value = move.Car, move.OldOccupied
+				move.ToLink.Value, move.ToOcc.Value = move.OldToCar, move.OldToOccupied
+				move.Car:PivotTo(move.Pivot)
+				move.Car:SetAttribute("AnimationBaseCFrame", move.Origin or move.Pivot)
+			end)
+			if not restored then warn("[BaseMigration] Rollback failed: " .. tostring(message)) end
+		end
+		warn("[BaseMigration] Application failed: " .. tostring(err))
+		return false, "Base switch failed."
+	end
+	return true
 end
 
 local function setLevelVisibility(plot, level1Model, level2Model, baseLevel)
@@ -196,6 +265,7 @@ local function setupBuyButton(plot, padModel, padNumber)
 	buyButton:SetAttribute("Connected", true)
 
 	local function attemptBuy(player)
+		if not canMutate(player) then return end
 		-- 🛡️ Anti-Spam Check: Abort if player is on cooldown
 		if playerPurchaseDebounce[player.UserId] then return end
 
@@ -220,6 +290,7 @@ local function setupBuyButton(plot, padModel, padNumber)
 				-- ✅ SUCCESS: Rich enough!
 				wallet.Value -= cost 
 				player:SetAttribute("HighestUnlockedPad", padNumber)
+				markDirty(player)
 				updatePadVisuals(plot, padNumber, tonumber(player:GetAttribute("BaseLevel")) or 1)
 				print("✅ " .. player.Name .. " Purchased Pad " .. padNumber)
 
@@ -293,13 +364,14 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 	buyButton:SetAttribute("Connected", true)
 
 	local function attemptBuy(player)
+		if not canMutate(player) then return end
 		if playerPurchaseDebounce[player.UserId] then return end
 		if plot.Owner.Value ~= player.Name then return end
 
 		local currentLevel = tonumber(player:GetAttribute("HighestUnlockedPad")) or 1
 		local baseLevel = tonumber(player:GetAttribute("BaseLevel")) or 1
 
-		if baseLevel >= 2 then return end
+		if baseLevel >= 2 or (tonumber(player:GetAttribute("OwnedBaseLevel")) or baseLevel) >= 2 then return end
 
 		playerPurchaseDebounce[player.UserId] = player
 
@@ -326,94 +398,20 @@ local function setupLevel2BuyButton(plot, buyButtonModel)
 
 		if wallet then
 			if wallet.Value >= cost then
-				local originalWallet = wallet.Value
-				wallet.Value -= cost
-
-				-- MIGRATE CAR STATES FROM LEVEL 1 TO LEVEL 2 PADS
-				local level1 = getLevelModel(plot, "Level1")
-				local level2 = getLevelModel(plot, "Level2")
-				if level1 and level2 then
-					local l1Pads = level1.Parent:FindFirstChild("Pads")
-					local l2Pads = level2.Parent:FindFirstChild("Pads")
-					if l1Pads and l2Pads then
-						for _, l1PadObj in pairs(l1Pads:GetChildren()) do
-							local padNum = l1PadObj.Name:match("Pad(%d+)")
-							local l2PadObj = l2Pads:FindFirstChild("Pad" .. tostring(padNum))
-
-							if l2PadObj then
-								local l1Primary = l1PadObj:IsA("Model") and (l1PadObj.PrimaryPart or l1PadObj:FindFirstChildWhichIsA("BasePart")) or l1PadObj
-								local l2Primary = l2PadObj:IsA("Model") and (l2PadObj.PrimaryPart or l2PadObj:FindFirstChildWhichIsA("BasePart")) or l2PadObj
-
-								if l1Primary and l2Primary then
-									local l1Occ = l1Primary:FindFirstChild("IsOccupied")
-									local l2Occ = l2Primary:FindFirstChild("IsOccupied")
-									if l1Occ and l2Occ then
-										l2Occ.Value = l1Occ.Value
-									end
-
-									local l1Lnk = l1Primary:FindFirstChild("LinkedCar")
-									local l2Lnk = l2Primary:FindFirstChild("LinkedCar")
-									if l1Lnk and l2Lnk then
-										l2Lnk.Value = l1Lnk.Value
-
-										-- Fix 6: Physically snap the car to the new pad's location
-										if l1Lnk.Value and l1Lnk.Value:IsA("Model") then
-											local verticalOffset = 5 -- Use a standard offset height
-											local newCFrame = l2Primary.CFrame * CFrame.new(0, (l2Primary.Size.Y / 2) + verticalOffset, 0)
-											l1Lnk.Value:PivotTo(newCFrame)
-										end
-									end
-
-									-- Fix 2: Stale Level 1 Pad States After Base Upgrade
-									if l1Occ then l1Occ.Value = false end
-									if l1Lnk then l1Lnk.Value = nil end
-								end
-							end
-						end
-					end
-				end
-
-				local originalOwnedBaseLevel = tonumber(player:GetAttribute("OwnedBaseLevel")) or baseLevel or 1
-				local originalBaseLevel = tonumber(player:GetAttribute("BaseLevel")) or baseLevel or 1
-				player:SetAttribute("OwnedBaseLevel", math.max(2, originalOwnedBaseLevel))
-				player:SetAttribute("BaseLevel", 2)
-				local saveOk = forceSave(player)
-				if not saveOk then
-					wallet.Value = originalWallet
-					player:SetAttribute("OwnedBaseLevel", originalOwnedBaseLevel)
-					player:SetAttribute("BaseLevel", originalBaseLevel)
-					-- Restore occupancy and car placement along with the rolled-back
-					-- attributes; otherwise the failed upgrade leaves cars linked to the
-					-- inactive Level 2 pads and they can disappear from the next save.
-					local rollbackLevel1 = getLevelModel(plot, "Level1")
-					local rollbackLevel2 = getLevelModel(plot, "Level2")
-					local l1Pads = rollbackLevel1 and rollbackLevel1.Parent:FindFirstChild("Pads")
-					local l2Pads = rollbackLevel2 and rollbackLevel2.Parent:FindFirstChild("Pads")
-					if l1Pads and l2Pads then
-						for _, l2PadObj in ipairs(l2Pads:GetChildren()) do
-							local l1PadObj = l1Pads:FindFirstChild(l2PadObj.Name)
-							local l1Primary = l1PadObj and (l1PadObj:IsA("Model") and (l1PadObj.PrimaryPart or l1PadObj:FindFirstChildWhichIsA("BasePart")) or l1PadObj)
-							local l2Primary = l2PadObj:IsA("Model") and (l2PadObj.PrimaryPart or l2PadObj:FindFirstChildWhichIsA("BasePart")) or l2PadObj
-							if l1Primary and l2Primary then
-								local l1Occ, l2Occ = l1Primary:FindFirstChild("IsOccupied"), l2Primary:FindFirstChild("IsOccupied")
-								local l1Link, l2Link = l1Primary:FindFirstChild("LinkedCar"), l2Primary:FindFirstChild("LinkedCar")
-								if l1Occ and l2Occ then l1Occ.Value = l2Occ.Value; l2Occ.Value = false end
-								if l1Link and l2Link then
-									l1Link.Value = l2Link.Value
-									if l1Link.Value and l1Link.Value:IsA("Model") then
-										l1Link.Value:PivotTo(l1Primary.CFrame * CFrame.new(0, (l1Primary.Size.Y / 2) + 5, 0))
-									end
-									l2Link.Value = nil
-								end
-							end
-						end
-					end
-					forceSave(player)
-					warn("⚠️ [PadProgressionHandler] Level 2 base purchase save failed for " .. player.Name .. "; restored previous base attributes.")
-					if playerPurchaseDebounce[player.UserId] == player then
-						playerPurchaseDebounce[player.UserId] = nil
-					end
+				local migrated, message = migratePadOccupancy(plot, baseLevel, 2)
+				if not migrated then
+					playerPurchaseDebounce[player.UserId] = nil
+					PadUnlockEvent:FireClient(player, false, message)
 					return
+				end
+				wallet.Value -= cost
+				player:SetAttribute("OwnedBaseLevel", math.max(2, tonumber(player:GetAttribute("OwnedBaseLevel")) or 1))
+				player:SetAttribute("BaseLevel", 2)
+				markDirty(player)
+				if not forceSave(player) then
+					-- Preserve the accepted upgrade while persistence retries.
+					warn("[PadProgressionHandler] Level 2 purchased; persistence retrying for " .. player.Name)
+					PadUnlockEvent:FireClient(player, false, "Base upgraded, but saving is still retrying. Please wait before leaving.")
 				end
 				updatePadVisuals(plot, currentLevel, 2)
 

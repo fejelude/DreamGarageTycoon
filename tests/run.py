@@ -4,6 +4,7 @@ No Roblox services are contacted. Luau service tests use deterministic mocks;
 Studio integration and failure injection are documented in RELEASE_SAFETY.md.
 """
 import argparse
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -33,10 +34,20 @@ for test in sorted((root / "tests").glob("*.luau")):
     # Insert repository sources into lexical wrappers rather than duplicating
     # the implementation in the test. Luau CLI does not supply Roblox globals.
     bundle = test.read_text()
-    for name in ("InboxService",):
+    for name in ("InboxService", "OfflineEarningsService"):
         marker = "-- SOURCE:" + name
         if marker in bundle:
             bundle = bundle.replace(marker, (root / name).read_text())
+    for match in re.finditer(r"-- (FUNCTION|HANDLER):([^:\n]+):([^\n]+)", bundle):
+        kind, filename, name = match.groups()
+        source = (root / filename).read_text()
+        prefix = "local function " + name + "(" if kind == "FUNCTION" else name + " = function("
+        start = source.index(prefix)
+        end_match = re.search(r"\nend(?:\n|$)", source[start:])
+        if not end_match:
+            raise SystemExit("Cannot extract " + name)
+        function_source = source[start:start + end_match.start() + 4]
+        bundle = bundle.replace(match.group(0), function_source)
     with tempfile.TemporaryDirectory() as temporary:
         script = Path(temporary) / test.name
         script.write_text(bundle)

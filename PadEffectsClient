@@ -198,18 +198,48 @@ local function playNotification(isSuccess, data)
 	end
 end
 
+local fovGeneration = 0
+local fovBaseline
+local fovCamera
+local punchTween
+local returnTween
+
 local function punchFOV()
-	-- Fix 4: Hardcoded FOV in punchFOV
-	-- Read the live setting so custom FOVs aren't snapped to 70
-	local originalFOV = camera.FieldOfView
-	local tPunch = TweenService:Create(camera, TweenInfo.new(FOV_TIME_IN, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-		FieldOfView = originalFOV + FOV_PUNCH_AMOUNT
+	local currentCamera = Workspace.CurrentCamera
+	if not currentCamera then return end
+	fovGeneration += 1
+	local generation = fovGeneration
+	if punchTween then punchTween:Cancel() end
+	if returnTween then returnTween:Cancel() end
+	if fovCamera ~= currentCamera or not fovBaseline then
+		fovCamera = currentCamera
+		fovBaseline = currentCamera.FieldOfView
+	end
+	local baseline = fovBaseline
+	punchTween = TweenService:Create(currentCamera, TweenInfo.new(FOV_TIME_IN, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+		FieldOfView = math.min(120, baseline + FOV_PUNCH_AMOUNT)
 	})
-	local tReturn = TweenService:Create(camera, TweenInfo.new(FOV_TIME_OUT, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
-		FieldOfView = originalFOV
+	returnTween = TweenService:Create(currentCamera, TweenInfo.new(FOV_TIME_OUT, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+		FieldOfView = baseline
 	})
-	tPunch:Play()
-	tPunch.Completed:Connect(function() tReturn:Play() end)
+	local currentReturn = returnTween
+	local punchConnection
+	punchConnection = punchTween.Completed:Connect(function(state)
+		punchConnection:Disconnect()
+		if generation == fovGeneration and state == Enum.PlaybackState.Completed then
+			currentReturn:Play()
+		end
+	end)
+	local returnConnection
+	returnConnection = currentReturn.Completed:Connect(function(state)
+		returnConnection:Disconnect()
+		if generation == fovGeneration and state == Enum.PlaybackState.Completed then
+			fovBaseline = nil
+			punchTween = nil
+			returnTween = nil
+		end
+	end)
+	punchTween:Play()
 end
 
 -- ============================================================================
