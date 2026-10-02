@@ -3096,13 +3096,22 @@ local function InitializePlayer(player)
 	}
 
 	do
-		local sanitizedInventory = {}
+		local sanitizedInventory, restoredIds = {}, {}
+		local function reserveIdentity(id)
+			if type(id) ~= "string" or #id == 0 or #id > 256 or restoredIds[id] then
+				error("Saved car identity is invalid or duplicated")
+			end
+			restoredIds[id] = true
+		end
 		for _, storedItem in pairs(type(data.Inventory) == "table" and data.Inventory or {}) do
 			if #sanitizedInventory >= MAX_INVENTORY_SIZE then error("Saved inventory exceeds safety limit") end
 			local toolName = normalizeStoredToolId(storedItem)
 			local storedExclusive = type(storedItem) == "table" and storedItem.IsRobuxExclusive == true
 			if not toolName or not safeFindCarTool(toolName, storedExclusive) then error("Saved car asset is unavailable: " .. tostring(toolName)) end
-			table.insert(sanitizedInventory, normalizeStoredCarRecord(storedItem))
+			local record = normalizeStoredCarRecord(storedItem)
+			record.IssuedId = record.IssuedId or generateCarGUID(player)
+			reserveIdentity(record.IssuedId)
+			table.insert(sanitizedInventory, record)
 		end
 		data.Inventory = sanitizedInventory
 
@@ -3115,7 +3124,9 @@ local function InitializePlayer(player)
 				and safeFindCarTool(toolName, entry.IsRobuxExclusive == true) and not seenPads[padName]
 			then
 				seenPads[padName] = true
-				table.insert(sanitizedLayout, { Tool = toolName, Pad = padName, IsRobuxExclusive = entry.IsRobuxExclusive == true, IssuedId = entry.IssuedId })
+				local issuedId = entry.IssuedId or generateCarGUID(player)
+				reserveIdentity(issuedId)
+				table.insert(sanitizedLayout, {Tool=toolName, Pad=padName, IsRobuxExclusive=entry.IsRobuxExclusive == true, IssuedId=issuedId})
 			else
 				error("Saved layout contains an unavailable or duplicate car pad")
 			end
@@ -3438,6 +3449,7 @@ local function InitializePlayer(player)
 		local plot = plotName and TycoonFolder:FindFirstChild(plotName) or nil
 		if not plot or RestoreLayout(player, plot, data.Layout) ~= true then
 			warn("⚠️ [TycoonDataHandler] Saved layout could not be restored safely for " .. player.Name)
+			closePersistenceSessions(player)
 			releaseProfileLeaseWithoutSave(session)
 			SessionData[player] = nil
 			if player.Parent == Players then player:Kick("Your garage could not be loaded safely. Please rejoin.") end
@@ -3465,6 +3477,7 @@ Players.PlayerAdded:Connect(function(player)
 	if ok then return end
 	warn("❌ [TycoonDataHandler] Player initialization failed for " .. player.Name .. ": " .. tostring(err))
 	local session = SessionData[player]
+	closePersistenceSessions(player)
 	if session then releaseProfileLeaseWithoutSave(session) end
 	SessionData[player] = nil
 	if player.Parent == Players then player:Kick("Your data could not be loaded safely. Please rejoin.") end

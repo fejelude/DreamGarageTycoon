@@ -10,6 +10,22 @@ This branch hardens the live game's existing systems. Import matching server and
 - When a save or request has an uncertain result, the UI asks the player to check the result. A client timeout does not prove a server operation failed.
 - An incomplete data restore blocks gameplay and saving. A missing asset or oversized legacy inventory needs repair; it must not be silently saved as a smaller inventory.
 
+## Review map
+
+Severity describes the original failure's impact. Import each row's server/client changes together.
+
+| Priority | Problem and affected scripts | Fix and interaction to review |
+| --- | --- | --- |
+| Critical | Incomplete restores and count-based anti-wipe fallbacks could overwrite or resurrect cars (`TycoonDataHandler`, `PadController`). | Block incomplete loads/snapshots; preserve unique IssuedIds; save legitimate empty locations; remove the exact respawn mirror. Review inventory, placement, sacrifice, selling and gifts together. |
+| Critical | A durable reward followed by an uncertain save/cleanup could be delivered twice (Inbox, car gifts, crafts, offline earnings, Lucky Spin). | Retain profile journals until durable Inbox consumption; save stable job/outbox identities before cross-key delivery; retain accepted effects after uncertain saves. Gift acquisition and craft rank progress now happen on Inbox acceptance. |
+| High | Gift intent expiry/replacement and failed lookups could change the recipient of a paid receipt (`GiftIntentHandler`, `ReceiptRouter`). | Bind and save the original intent/target; match receipt identity when clearing it; retry on unavailable intent reads. Review all gift product families and legacy pending receipts. |
+| High | Sell-all confirmation could sell inventory different from the player's quote (`SofhiaSellService`, `SofhiaDialogueLogic`). | Server quote tokens bind price, instances, ownership IDs and variants; expired/changed inventory rejects the sale. Both sides use the new quote protocol. |
+| High | Partial base migrations and stale rollback could lose occupancy or overwrite newer state (base, pad, rebirth and skin services). | Validate every move before applying; synchronously restore links/pivots on application failure; retain accepted state on uncertain persistence. Animation origins follow migrations. |
+| High | Unready/closing state, unresolved ownership and retry callbacks could mutate incomplete profiles (shops, rewards, ownership and rank). | Require readiness at mutating boundaries; distinguish unknown ownership from resolved false; coalesce/retry lookups; close partially loaded subsystem sessions on load failure. |
+| Medium | Blocking global lookups, nondeterministic shop ordering and unpaid elapsed time affected scale and consistency (global boosts, shops, economy). | Cached nonyielding global state, background refresh/backoff, sorted pools and elapsed-time accrual. Existing same-rotation stock may change once when sorted ordering deploys. |
+| Medium | Client lifecycle errors could leave stale callbacks, animations, camera/controls or purchase loaders active (NPC dialogues and client effects). | Generation checks, tracked cleanup, timeouts and server-confirmed purchase feedback; shorter dialogue with distinct character voices. A shared modal manager remains a follow-up. |
+| Medium | Client hotbar attributes were not an authoritative persistence protocol (`inventory gui`, data handler). | Server validates six owned variant-aware keys and acknowledges revisions; defer changes during respawn. Existing tools must have canonical IDs. |
+
 ## Persistence and delivery contracts
 
 Owned cars carry a stable `IssuedId` through Tools, StarterGear mirrors, placed models, saved inventory/layout, and Inbox payloads. Variant ownership is stored separately from the canonical base car ID. A mirror is another representation of the same car, not a second owned car.
