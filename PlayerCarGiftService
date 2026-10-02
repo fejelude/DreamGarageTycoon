@@ -52,17 +52,10 @@ local function canReceiveGift(player)
 	return ok and allowed == true
 end
 
-local function recordGift(giver, receiver, carId)
-	local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
-	if rankApi then
-		pcall(function()
-			rankApi:Invoke("CarGiftSent", giver, receiver, carId)
-		end)
-	end
-end
-
 local function isDataLoaded(player)
 	return player and player:GetAttribute(DATA_READY_ATTRIBUTE) == true
+		and player:GetAttribute("DataLoadState") == "Ready"
+		and player:GetAttribute("TycoonDataClosing") ~= true
 end
 
 local function getToolUniqueId(tool)
@@ -516,7 +509,7 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			return
 		end
 
-		local success, transferOk, giverMessage, receiverMessage = pcall(function()
+		local success, transferOk, giverMessage, transferId = pcall(function()
 			return TycoonAdminAPI:Invoke("TransferTool", session.Giver, player, session.Tool)
 		end)
 
@@ -526,13 +519,14 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 			failSession(
 				session,
 				giverMessage or "Gift failed: Could not transfer car.",
-				receiverMessage or "Gift failed: Could not receive car."
+				(success and giverMessage) or "Gift failed: Could not receive car."
 			)
 
 			return
 		end
 
-		recordGift(session.Giver, player, session.CarId)
+		-- TransferTool records sender progress with its durable delivery outbox.
+		-- Recipient progress is recorded when the Inbox entry is accepted.
 
 		sendGiverUpdate(
 			session.Giver,
@@ -543,7 +537,7 @@ ActionRemote.OnServerEvent:Connect(function(player, action, data)
 		sendReceiverUpdate(
 			player,
 			"Success",
-			"Car Added to Inventory!"
+			"Gift received! Open your Inbox to claim the car."
 		)
 
 		clearSession(session)

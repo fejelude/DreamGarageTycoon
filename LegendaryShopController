@@ -624,6 +624,7 @@ local function setFocusMode(active)
 	setBlur(active)
 	toggleOtherGuis(active)
 	toggleNamedGuiObjects(active, "FriendBoost")
+	local char = player.Character
 	if char then
 		player:SetAttribute("MovementLock", active)
 	end
@@ -654,6 +655,37 @@ local function showFeedback(text, color)
 	else
 		shopFeedback:Failed(text, color)
 	end
+end
+
+-- A client timeout says nothing about whether a server mutation committed.
+local function invokeWorkshop(remote, ...)
+	local arguments = table.pack(...)
+	local result
+	local finished = false
+	local request = task.spawn(function()
+		result = table.pack(pcall(function()
+			return remote:InvokeServer(table.unpack(arguments, 1, arguments.n))
+		end))
+		finished = true
+	end)
+	local deadline = os.clock() + 10
+	while not finished and os.clock() < deadline do task.wait() end
+	if not finished then
+		pcall(task.cancel, request)
+		return false, "The server has not confirmed the result. Check your craft before trying again."
+	end
+	if not result[1] then return false, "The server could not confirm the result. Please check your craft." end
+	return table.unpack(result, 2, result.n)
+end
+
+local function refreshWorkshopState()
+	local state = invokeWorkshop(FuncGetState)
+	if type(state) == "table" and type(state.CraftProgress) == "table"
+		and type(state.ActiveCrafts) == "table" and type(state.CompletedCrafts) == "table" then
+		return state
+	end
+	showFeedback("Could not refresh your craft. Close and reopen the workshop in a moment.", FEEDBACK_COLORS.FailCash)
+	return currentState or {CraftProgress = {}, ActiveCrafts = {}, CompletedCrafts = {}}
 end
 
 -- ============================================================================
@@ -919,11 +951,11 @@ local function AttemptSacrifice(carName, ingredient)
 		Kit.Sound:Play("Click")
 
 		task.spawn(function()
-			local success, msg = FuncSacrifice:InvokeServer(carName, ingredient, confirmationToken)
+			local success, msg = invokeWorkshop(FuncSacrifice, carName, ingredient, confirmationToken)
 			if requestSessionId == shopSessionId then isProcessingPurchase = false end
 			if not isActiveShopSession(requestSessionId) then mainFrame.Visible = true; return end
 
-			currentState = FuncGetState:InvokeServer()
+			currentState = refreshWorkshopState()
 			UpdateDisplay()
 
 			local itemsLeft = 0
@@ -1028,11 +1060,9 @@ local function AttemptCraft(carName, isPremium)
 		local timeStr = string.format("%02d:%02d:%02d",
 			math.floor(delta / 3600), math.floor((delta % 3600) / 60), math.floor(delta % 60))
 		angeloSpeak(pickRandom({
-			"Patience. you cant make another one dude. im already making the <font color='#B652FF'>" .. activeDisplayName .. "</font> right now. It will be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"i am making a car for you at this moment " .. coloredName .. " i am making <font color='#B652FF'>" .. activeDisplayName .. "</font>. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"You cant rush perfection " .. coloredName .. " The <font color='#B652FF'>" .. activeDisplayName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more time, come back later alright?",
-			"I am working as fast as I can. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"The metal is still hot. You must wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before the build is complete.",
+			"I've already got the <font color='#B652FF'>" .. activeDisplayName .. "</font> on the bench. Give me <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"One build at a time, " .. coloredName .. ". Your <font color='#B652FF'>" .. activeDisplayName .. "</font> needs another <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"Still working on your <font color='#B652FF'>" .. activeDisplayName .. "</font>. Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 		}), function()
 			-- FIX: Standardized 1.5s wait, then show Active Craft panel.
 			-- Do NOT call restoreToCraftingFrame — panel's Exit button handles return.
@@ -1045,13 +1075,13 @@ local function AttemptCraft(carName, isPremium)
 	-- ── Already completed ────────────────────────────────────────────────────
 	if currentState.CompletedCrafts[carName] then
 		angeloSpeak(pickRandom({
-			"It is finished. The <font color='#B652FF'>" .. displayName .. "</font> is a true work of art. It should be in your Inventory already.",
-			"The <font color='#B652FF'>" .. displayName .. "</font> is already there in your Inventory, " .. coloredName .. ".",
-			"Construction of the <font color='#B652FF'>" .. displayName .. "</font> is done. A flawless execution. It's already there in your Inventory.",
+			"It is finished. The <font color='#B652FF'>" .. displayName .. "</font> is a true work of art. Open your Inbox to claim it.",
+			"The <font color='#B652FF'>" .. displayName .. "</font> is ready to claim in your Inbox, " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. displayName .. "</font> is done. Open your Inbox to claim the finished car.",
 		}), function()
 			local FuncAcknowledge = LegendaryRemotes:FindFirstChild("AcknowledgeLegendaryCraft")
-			if FuncAcknowledge then FuncAcknowledge:InvokeServer(carName) end
-			currentState = FuncGetState:InvokeServer()
+			if FuncAcknowledge then invokeWorkshop(FuncAcknowledge, carName) end
+			currentState = refreshWorkshopState()
 			UpdateDisplay()
 			restoreToCraftingFrame()
 		end)
@@ -1060,8 +1090,7 @@ local function AttemptCraft(carName, isPremium)
 
 	-- ── Requirements check ───────────────────────────────────────────────────
 	local missingItems  = {}
-	local totalMissing  = 0
-	local progress      = currentState.CraftProgress[carName] or {}
+		local progress      = currentState.CraftProgress[carName] or {}
 
 	for ingredient, requiredAmount in pairs(recipe) do
 		if ingredient == "TargetCar" or ingredient == "CraftTime" then continue end
@@ -1076,32 +1105,15 @@ local function AttemptCraft(carName, isPremium)
 					"<font color='#FF6B6B'>" .. left .. "x</font> <font color='#00E5FF'>"
 						.. ingredient .. "</font>")
 			end
-			totalMissing += left
 		end
 	end
 
 	if #missingItems > 0 then
 		local listStr = table.concat(missingItems, "<font color='#AAAAAA'>, </font>")
 		angeloSpeak(pickRandom({
-			"<font color='#FF4C4C'>Not yet.</font> You are still missing: "
-				.. listStr
-				.. "<font color='#f4efe6'>. Come back when the tribute is complete.</font>",
-			"<font color='#FFD700'>Seriously?</font> The forge cannot be lit. You still owe me "
-				.. listStr
-				.. "<font color='#f4efe6'>. Don't waste my time until you have it all.</font>",
-			"<font color='#00E5FF'>Incomplete.</font> The ritual requires "
-				.. listStr
-				.. "<font color='#f4efe6'>. Every piece matters — bring them all before you dare press that button again.</font>",
-			"The <font color='#B652FF'>" .. displayName .. "</font>"
-				.. "<font color='#f4efe6'> is a legend. Legends demand sacrifice. You are short </font>"
-				.. listStr
-				.. "<font color='#f4efe6'>. Return when the debt is paid.</font>",
-			coloredName
-				.. "<font color='#f4efe6'> you are </font><font color='#FF4C4C'>"
-				.. totalMissing .. " sacrifice" .. (totalMissing == 1 and "" or "s")
-				.. "</font><font color='#f4efe6'> short. Still need: </font>"
-				.. listStr
-				.. "<font color='#f4efe6'>.</font>",
+			"Can't start this one yet. I still need " .. listStr .. ".",
+			"Almost there, " .. coloredName .. ". Bring me " .. listStr .. " and I can get to work.",
+			"Here's what's missing: " .. listStr .. ". Once that's covered, we're good.",
 		}), restoreToCraftingFrame)
 		return
 	end
@@ -1120,11 +1132,11 @@ local function AttemptCraft(carName, isPremium)
 		Kit.Sound:Play("Click")
 
 		task.spawn(function()
-			local success, msg = FuncCraftCar:InvokeServer(carName, isPremium)
+			local success, msg = invokeWorkshop(FuncCraftCar, carName, isPremium)
 			if requestSessionId == shopSessionId then isProcessingPurchase = false end
 			if not isActiveShopSession(requestSessionId) then mainFrame.Visible = true; return end
 
-			currentState = FuncGetState:InvokeServer()
+			currentState = refreshWorkshopState()
 			UpdateDisplay()
 
 			if success then
@@ -1243,13 +1255,13 @@ local function OpenCraftingMenu(carName)
 		local displayName = getDisplayCarName(carName)
 		local coloredName = "<font color='" .. USER_COLOR .. "'>@" .. player.Name .. "</font>"
 		angeloSpeak(pickRandom({
-			"It is finished. The <font color='#B652FF'>" .. displayName .. "</font> is a true work of art. It should be in your Inventory already.",
-			"The <font color='#B652FF'>" .. displayName .. "</font> is already there in your Inventory, " .. coloredName .. ".",
-			"Construction of the <font color='#B652FF'>" .. displayName .. "</font> is done. A flawless execution. It's already there in your Inventory.",
+			"It is finished. The <font color='#B652FF'>" .. displayName .. "</font> is a true work of art. Open your Inbox to claim it.",
+			"The <font color='#B652FF'>" .. displayName .. "</font> is ready to claim in your Inbox, " .. coloredName .. ".",
+			"Construction of the <font color='#B652FF'>" .. displayName .. "</font> is done. Open your Inbox to claim the finished car.",
 		}), function()
 			local FuncAcknowledge = LegendaryRemotes:FindFirstChild("AcknowledgeLegendaryCraft")
-			if FuncAcknowledge then FuncAcknowledge:InvokeServer(carName) end
-			currentState = FuncGetState:InvokeServer()
+			if FuncAcknowledge then invokeWorkshop(FuncAcknowledge, carName) end
+			currentState = refreshWorkshopState()
 			local craftGui = gui:FindFirstChild(carName .. "Crafting")
 			if craftGui then
 				UpdateCraftingUI(carName)
@@ -1390,7 +1402,7 @@ local function init()
 		hideAllCraftingMenus()
 
 		currentState = { CraftProgress = {}, ActiveCrafts = {}, CompletedCrafts = {} }
-		local realState = FuncGetState:InvokeServer()
+		local realState = refreshWorkshopState()
 		if not isActiveShopSession(sessionId) then return end
 		currentState = realState
 		UpdateDisplay()
@@ -1411,8 +1423,8 @@ local function init()
 			local dName = getDisplayCarName(recentCompletedCar)
 			local timeAgo = formatTimeAgo(completedTime)
 			angeloSpeak(pickRandom({
-				"Your <font color='#B652FF'>" .. dName .. "</font> has been crafted and delivered to your Inventory <font color='#FFD700'>" .. timeAgo .. "</font>!",
-				"The <font color='#B652FF'>" .. dName .. "</font> was completed <font color='#FFD700'>" .. timeAgo .. "</font>. It's sitting in your Inventory now."
+				"Your <font color='#B652FF'>" .. dName .. "</font> has been crafted and sent to your Inbox <font color='#FFD700'>" .. timeAgo .. "</font>!",
+				"The <font color='#B652FF'>" .. dName .. "</font> was completed <font color='#FFD700'>" .. timeAgo .. "</font>. Open your Inbox to claim it."
 			}), function()
 				if isActiveShopSession(sessionId) then mainFrame.Visible = true end
 			end)
@@ -1449,15 +1461,15 @@ local function init()
 			local dName = carName and getDisplayCarName(carName) or "your car"
 			if carName then acknowledgedCrafts[carName] = true end
 			angeloSpeak(pickRandom({
-				"It is finished. The <font color='#B652FF'>" .. dName .. "</font> is a true work of art. It should be in your Inventory already.",
-				"The <font color='#B652FF'>" .. dName .. "</font> is already there in your Inventory, " .. coloredName .. ".",
-				"Construction of the <font color='#B652FF'>" .. dName .. "</font> is done. A flawless execution. It's already there in your Inventory.",
+				"It is finished. The <font color='#B652FF'>" .. dName .. "</font> is a true work of art. Open your Inbox to claim it.",
+				"The <font color='#B652FF'>" .. dName .. "</font> is ready to claim in your Inbox, " .. coloredName .. ".",
+				"Construction of the <font color='#B652FF'>" .. dName .. "</font> is done. Open your Inbox to claim the finished car.",
 			}))
 		elseif newState.Reason == "Skipped" then
 			local dName = carName and getDisplayCarName(carName) or "your car"
 			if carName then acknowledgedCrafts[carName] = true end
 			angeloSpeak(
-				"<font color='#B652FF'>I used magic to do this immediately</font>, it drains my energy, so I need payment to do it. The <font color='#B652FF'>" .. dName .. "</font> should be in your Inventory.",
+				"<font color='#B652FF'>I used magic to do this immediately</font>, it drains my energy, so I need payment to do it. The <font color='#B652FF'>" .. dName .. "</font> is ready to claim in your Inbox.",
 				function()
 					if isShopOpen then mainFrame.Visible = true end
 				end
