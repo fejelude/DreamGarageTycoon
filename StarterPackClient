@@ -43,7 +43,7 @@ local VERIFY_ERROR_MESSAGE = "Could not verify ownership. Please try again."
 local OWNED_BASE_MESSAGE = "You've already purchased this product."
 local PROCESSING_MESSAGE = "Purchase received. Finalizing your rewards..."
 local PROCESSING_FAILED_MESSAGE = "Purchase is still processing. Please wait a moment or rejoin."
-local SUCCESS_MESSAGE = "Successfully bought the developer product! You have been granted Senator Car and $800,000 in your wallet."
+local SUCCESS_MESSAGE = "Successfully bought the Starter Pack! Your Senator and $800,000 were sent to your Inbox."
 
 successLabel.Text = SUCCESS_MESSAGE
 

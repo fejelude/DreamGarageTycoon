@@ -1,0 +1,237 @@
+-- Purpose: Cross-server, idempotent persistent reward mailbox.
+-- Location: ServerScriptService > InboxService (ModuleScript)
+local DataStoreService = game:GetService("DataStoreService")
+local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local HttpService = game:GetService("HttpService")
+
+local GiftEntitlementService = require(ServerScriptService:WaitForChild("GiftEntitlementService"))
+local store = DataStoreService:GetDataStore("DreamGarage_Inbox_V1")
+local Service = {}
+local localLocks = {}
+local MAX_ENTRIES = 200
+local CLAIM_LEASE_SECONDS = 90
+local RESERVATION_RECOVERY_SECONDS = 120
+
+local function key(userId)
+	return "User_" .. tostring(math.floor(tonumber(userId) or 0))
+end
+
+local function compact(entry)
+	return {
+		Id = tostring(entry.Id),
+		TransactionId = tostring(entry.TransactionId),
+		RewardType = tostring(entry.RewardType),
+		RewardId = tostring(entry.RewardId or ""),
+		Amount = math.max(0, math.floor(tonumber(entry.Amount) or 0)),
+		DisplayName = tostring(entry.DisplayName or entry.RewardId or "Reward"),
+		SourceType = tostring(entry.SourceType or "System"),
+		Source = tostring(entry.Source or "Rewards"),
+		SenderUserId = math.floor(tonumber(entry.SenderUserId) or 0),
+		SenderUsername = tostring(entry.SenderUsername or ""),
+		SenderDisplayName = tostring(entry.SenderDisplayName or ""),
+		Rarity = tostring(entry.Rarity or ""),
+		IsRobuxExclusive = entry.IsRobuxExclusive == true,
+		Declineable = entry.Declineable == true,
+		CreatedAt = math.floor(tonumber(entry.CreatedAt) or os.time()),
+		State = entry.State == "Reserved" and "Reserved" or "Pending",
+	}
+end
+
+function Service.Enqueue(userId, transactionId, reward)
+	userId = math.floor(tonumber(userId) or 0)
+	transactionId = tostring(transactionId or "")
+	if userId <= 0 or transactionId == "" or type(reward) ~= "table" then
+		return false, "Invalid delivery"
+	end
+
+	local inserted = false
+	local result
+	local ok, err = pcall(function()
+		result = store:UpdateAsync(key(userId), function(old)
+			old = type(old) == "table" and old or { Entries = {} }
+			old.Entries = type(old.Entries) == "table" and old.Entries or {}
+			for _, existing in ipairs(old.Entries) do
+				if existing.TransactionId == transactionId or existing.Id == transactionId then
+					return old
+				end
+			end
+			if #old.Entries >= MAX_ENTRIES then return nil end
+			reward.TransactionId = transactionId
+			reward.Id = reward.Id or transactionId
+			reward.CreatedAt = reward.CreatedAt or os.time()
+			table.insert(old.Entries, compact(reward))
+			inserted = true
+			old.Revision = (tonumber(old.Revision) or 0) + 1
+			return old
+		end)
+	end)
+	if not ok or not result then return false, tostring(err or "Inbox is full") end
+	return true, inserted and "Inserted" or "Already delivered"
+end
+
+function Service.Activate(userId, transactionId)
+	local activated = false
+	local ok, err = pcall(function()
+		store:UpdateAsync(key(userId), function(old)
+			if type(old) ~= "table" or type(old.Entries) ~= "table" then return old end
+			for _, entry in ipairs(old.Entries) do
+				if entry.TransactionId == transactionId then
+					if entry.State == "Reserved" then entry.State = "Pending" end
+					activated = entry.State == "Pending"
+					break
+				end
+			end
+			return old
+		end)
+	end)
+	return ok and activated, ok and nil or tostring(err)
+end
+
+function Service.CancelReservation(userId, transactionId)
+	return pcall(function()
+		store:UpdateAsync(key(userId), function(old)
+			if type(old) ~= "table" or type(old.Entries) ~= "table" then return old end
+			for index, entry in ipairs(old.Entries) do
+				if entry.TransactionId == transactionId and entry.State == "Reserved" then
+					table.remove(old.Entries, index)
+					break
+				end
+			end
+			return old
+		end)
+	end)
+end
+
+function Service.Get(userId)
+	local ok, data = pcall(function() return store:GetAsync(key(userId)) end)
+	if not ok then return nil, tostring(data) end
+	local entries = {}
+	for _, entry in ipairs(type(data) == "table" and type(data.Entries) == "table" and data.Entries or {}) do
+		if entry.State == "Pending"
+			or (entry.State == "Claiming" and (tonumber(entry.ClaimExpiresAt) or 0) <= os.time())
+			or (entry.State == "Reserved" and os.time() - (tonumber(entry.CreatedAt) or os.time()) >= RESERVATION_RECOVERY_SECONDS)
+		then
+			local public = table.clone(entry)
+			public.State = "Pending"
+			public.ClaimToken = nil
+			public.ClaimExpiresAt = nil
+			table.insert(entries, public)
+		end
+	end
+	table.sort(entries, function(a, b)
+		if a.CreatedAt == b.CreatedAt then return a.Id < b.Id end
+		return a.CreatedAt > b.CreatedAt
+	end)
+	return entries
+end
+
+local function acquireClaim(userId, entryId, requireDeclineable)
+	local token = game.JobId .. ":" .. HttpService:GenerateGUID(false)
+	local claimedEntry
+	local now = os.time()
+	local ok, err = pcall(function()
+		store:UpdateAsync(key(userId), function(old)
+			if type(old) ~= "table" or type(old.Entries) ~= "table" then return old end
+			for _, entry in ipairs(old.Entries) do
+				if entry.Id == entryId then
+					local available = entry.State == "Pending"
+						or (entry.State == "Claiming" and (tonumber(entry.ClaimExpiresAt) or 0) <= now)
+						or (entry.State == "Reserved" and now - (tonumber(entry.CreatedAt) or now) >= RESERVATION_RECOVERY_SECONDS)
+					if available and (not requireDeclineable or entry.Declineable == true) then
+						entry.State = "Claiming"
+						entry.ClaimToken = token
+						entry.ClaimExpiresAt = now + CLAIM_LEASE_SECONDS
+						claimedEntry = table.clone(entry)
+					end
+					break
+				end
+			end
+			return old
+		end)
+	end)
+	if not ok then return nil, nil, tostring(err) end
+	if not claimedEntry then return nil, nil, requireDeclineable and "This reward cannot be declined." or "Inbox entry is busy or no longer exists." end
+	return claimedEntry, token
+end
+
+local function releaseClaim(userId, entryId, token)
+	pcall(function()
+		store:UpdateAsync(key(userId), function(old)
+			if type(old) ~= "table" or type(old.Entries) ~= "table" then return old end
+			for _, entry in ipairs(old.Entries) do
+				if entry.Id == entryId and entry.State == "Claiming" and entry.ClaimToken == token then
+					entry.State, entry.ClaimToken, entry.ClaimExpiresAt = "Pending", nil, nil
+					break
+				end
+			end
+			return old
+		end)
+	end)
+end
+
+local function removeClaim(userId, entryId, token)
+	local removed = false
+	local ok = pcall(function()
+		store:UpdateAsync(key(userId), function(old)
+			if type(old) ~= "table" or type(old.Entries) ~= "table" then return old end
+			for index, entry in ipairs(old.Entries) do
+				if entry.Id == entryId and entry.State == "Claiming" and entry.ClaimToken == token then
+					table.remove(old.Entries, index)
+					removed = true
+					break
+				end
+			end
+			return old
+		end)
+	end)
+	return ok and removed
+end
+
+local function grant(player, entry)
+	if entry.RewardType == "Entitlement" then
+		return GiftEntitlementService.Grant(player, entry.RewardId, { PurchaseId = "Inbox:" .. entry.Id })
+	end
+	local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if not admin then return false, "Reward service unavailable" end
+	return admin:Invoke("CommitInboxClaim", player, entry)
+end
+
+function Service.Accept(player, entryId)
+	entryId = tostring(entryId or "")
+	if entryId == "" or localLocks[player] then return false, "Claim already in progress." end
+	localLocks[player] = true
+	local entry, token, acquireError = acquireClaim(player.UserId, entryId, false)
+	if not entry then localLocks[player] = nil return false, acquireError end
+	local invoked, grantOk, grantMessage = pcall(grant, player, entry)
+	if not invoked or grantOk ~= true then
+		releaseClaim(player.UserId, entryId, token)
+		localLocks[player] = nil
+		local message = invoked and tostring(grantMessage or "Unable to claim this reward right now.") or tostring(grantOk)
+		if message == "Car storage full" then
+			message = "Your inventory is full! Free a slot before claiming this car."
+		end
+		return false, message
+	end
+	local removed = removeClaim(player.UserId, entryId, token)
+	localLocks[player] = nil
+	if not removed then
+		-- The profile receipt already prevents a second grant. Leaving the leased
+		-- entry intact makes a later retry safely finish mailbox cleanup.
+		return true, "Reward granted safely; Inbox cleanup will finish automatically."
+	end
+	return true, "Successfully claimed " .. entry.DisplayName .. "!"
+end
+
+function Service.Decline(player, entryId)
+	entryId = tostring(entryId or "")
+	if entryId == "" or localLocks[player] then return false, "Request already in progress." end
+	localLocks[player] = true
+	local _, token, acquireError = acquireClaim(player.UserId, entryId, true)
+	if not token then localLocks[player] = nil return false, acquireError end
+	local removed = removeClaim(player.UserId, entryId, token)
+	localLocks[player] = nil
+	return removed, removed and "Gift declined." or "Unable to decline this gift right now."
+end
+
+return Service

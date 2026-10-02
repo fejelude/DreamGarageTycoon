@@ -10,6 +10,7 @@ local ServerStorage = game:GetService("ServerStorage")
 
 local Config = require(ReplicatedStorage:WaitForChild("PlaytimeRewardsConfig"))
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local InboxService = require(script.Parent:WaitForChild("InboxService"))
 local remotes = ReplicatedStorage:WaitForChild("PlaytimeRewardsRemotes")
 local getState = remotes:WaitForChild("GetState")
 local claimReward = remotes:WaitForChild("ClaimReward")
@@ -90,14 +91,21 @@ local function claim(player, requestedIndex, ...)
 			return { Success = false, Code = "Configuration", Message = "Unable to claim this reward right now. Please try again.", State = publicState(player) }
 		end
 	end
-	local ok, committed, message, balance = pcall(function() return admin:Invoke("CommitPlaytimeReward", player, transaction) end)
+	local rewardType = reward.Type == "CarPool" and "Car" or reward.Type
+	local rewardId = rewardType == "Car" and transaction.CarId or reward.Type
+	local deliveryId = ("Playtime:%d:%d:%d"):format(player.UserId, math.floor(session.StartedAt * 1000), requestedIndex)
+	local ok, committed, message = pcall(function()
+		return InboxService.Enqueue(player.UserId, deliveryId, { RewardType=rewardType, RewardId=rewardId,
+			Amount=reward.Amount, DisplayName=rewardType=="Wallet" and (("$%d Wallet Cash"):format(reward.Amount)) or rewardType=="FhiaTokens" and (("%d Fhia Tokens"):format(reward.Amount)) or transaction.CarId,
+			SourceType="System", Source="Playtime Rewards", Rarity=transaction.Rarity })
+	end)
 	session.Locks[requestedIndex] = nil
 	if not ok or committed ~= true then
 		return { Success = false, Code = "GrantFailed", Message = "Unable to claim this reward right now. Please try again.", State = publicState(player) }
 	end
 	session.Claimed[requestedIndex] = true
 	notify(player)
-	return { Success = true, RewardIndex = requestedIndex, RewardType = reward.Type, Amount = reward.Amount, CarId = transaction.CarId, Rarity = transaction.Rarity, TokenBalance = balance, State = publicState(player) }
+	return { Success = true, RewardIndex = requestedIndex, RewardType = reward.Type, Amount = reward.Amount, CarId = transaction.CarId, Rarity = transaction.Rarity, SentToInbox=true, State = publicState(player) }
 end
 
 function _G.GrantPlaytimeSkipReceipt(player)

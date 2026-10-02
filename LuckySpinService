@@ -9,6 +9,7 @@ local HttpService = game:GetService("HttpService")
 
 local Config = require(ReplicatedStorage:WaitForChild("LuckySpinConfig"))
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
+local InboxService = require(script.Parent:WaitForChild("InboxService"))
 
 local remotes = ReplicatedStorage:WaitForChild("LuckySpinRemotes")
 local requestSpin = remotes:WaitForChild("RequestSpin")
@@ -107,13 +108,45 @@ requestSpin.OnServerInvoke = function(player, ...)
 		return { Success = false, Code = "Configuration", Message = "Unable to process your spin. Please try again." }
 	end
 	result.AnimationDuration = rng:NextNumber(3, 5)
+	if math.max(0, math.floor(tonumber(player:GetAttribute("FhiaTokens")) or 0)) < 1 then
+		spinLocks[player] = nil
+		return { Success = false, Code = "NoTokens", Message = "You need a Fhia Token to spin!" }
+	end
+	local deliveryId = "LuckySpin:" .. result.SpinId
+	local inboxOk = InboxService.Enqueue(player.UserId, deliveryId, {
+		RewardType = result.RewardType, RewardId = result.RewardType == "Car" and result.CarId or result.RewardId,
+		Amount = result.Amount, DisplayName = result.RewardType == "Wallet" and (("$%s Wallet Cash"):format(result.Amount)) or result.DisplayName,
+		SourceType = "System", Source = "Lucky Spin", Rarity = result.Tier,
+		IsRobuxExclusive = result.IsRobuxExclusive,
+		State = "Reserved",
+	})
+	if not inboxOk then spinLocks[player] = nil; return { Success=false, Code="CommitFailed", Message="Unable to safely deliver your spin. Please try again." } end
+	result.InboxRecorded = true
 
 	local invokeOk, committed, message, tokenBalance = pcall(function()
 		return adminAPI:Invoke("CommitLuckySpin", player, result)
 	end)
 	if not invokeOk or committed ~= true then
+		InboxService.CancelReservation(player.UserId, deliveryId)
 		spinLocks[player] = nil
 		return { Success = false, Code = message == "No tokens" and "NoTokens" or "CommitFailed", Message = message == "No tokens" and "You need a Fhia Token to spin!" or "Unable to process your spin. Please try again." }
+	end
+	local activated = false
+	for attempt = 1, 3 do
+		activated = InboxService.Activate(player.UserId, deliveryId)
+		if activated then break end
+		task.wait(attempt * 0.25)
+	end
+	if not activated then
+		-- Token/history are already durable. Keep retrying activation independently
+		-- of the cosmetic request so a transient mailbox outage cannot lose a win.
+		task.spawn(function()
+			for attempt = 1, 20 do
+				if InboxService.Activate(player.UserId, deliveryId) then return end
+				task.wait(math.min(30, attempt * 2))
+			end
+			warn("[LuckySpinService] Reserved Inbox delivery still needs activation: " .. deliveryId)
+		end)
 	end
 	-- The grant is already durable, but retain the server lock for the cosmetic
 	-- presentation window so an exploit client cannot stack concurrent spins.

@@ -1,0 +1,21 @@
+-- Location: ServerScriptService > InboxServer (Script)
+-- Requires pre-created ReplicatedStorage > InboxRemotes with GetInbox,
+-- AcceptInboxEntry, DeclineInboxEntry (RemoteFunctions), InboxChanged (RemoteEvent).
+local ReplicatedStorage=game:GetService("ReplicatedStorage")
+local Service=require(script.Parent:WaitForChild("InboxService"))
+local folder=ReplicatedStorage:WaitForChild("InboxRemotes")
+local get,accept,decline,changed=folder:WaitForChild("GetInbox"),folder:WaitForChild("AcceptInboxEntry"),folder:WaitForChild("DeclineInboxEntry"),folder:WaitForChild("InboxChanged")
+assert(get:IsA("RemoteFunction") and accept:IsA("RemoteFunction") and decline:IsA("RemoteFunction") and changed:IsA("RemoteEvent"),"InboxRemotes hierarchy is invalid")
+get.OnServerInvoke=function(player,...)
+	if select("#",...)>0 then return {Success=false,Message="Invalid request"} end
+	local entries,err=Service.Get(player.UserId); return {Success=entries~=nil,Entries=entries or {},Message=err}
+end
+accept.OnServerInvoke=function(player,id,...)
+	if select("#",...)>0 or type(id)~="string" then return {Success=false,Message="Invalid request"} end
+	local ok,msg=Service.Accept(player,id); if ok then changed:FireClient(player) end; return {Success=ok,Message=msg}
+end
+decline.OnServerInvoke=function(player,id,...)
+	if select("#",...)>0 or type(id)~="string" then return {Success=false,Message="Invalid request"} end
+	local ok,msg=Service.Decline(player,id); if ok then changed:FireClient(player) end; return {Success=ok,Message=msg}
+end
+_G.EnqueueInboxReward=function(userId,transactionId,reward) return Service.Enqueue(userId,transactionId,reward) end

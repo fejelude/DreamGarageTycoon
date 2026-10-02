@@ -11,6 +11,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local HttpService = game:GetService("HttpService")
+local InboxService = require(script.Parent:WaitForChild("InboxService"))
 
 local REMOTES_FOLDER_NAME = "DailyRewardsRemotes"
 local STATE_ATTRIBUTE = "DailyRewardsStateJson"
@@ -250,46 +251,6 @@ local function markDirty(player)
 	end)
 end
 
-local function getWallet(player)
-	local leaderstats = player:FindFirstChild("leaderstats") or player:WaitForChild("leaderstats", 5)
-
-	if not leaderstats then
-		return nil
-	end
-
-	return leaderstats:FindFirstChild("Wallet") or leaderstats:WaitForChild("Wallet", 5)
-end
-
-local function grantCar(player, day, toolName, reward)
-	local attributes = {
-		Source = "DailyRewards",
-		DailyRewardDay = day,
-	}
-
-	if reward.Rarity then
-		attributes.Rarity = reward.Rarity
-	end
-
-	local ok, grantOk, grantMessage = pcall(function()
-		return adminApi:Invoke("GiveTool", player, toolName, attributes)
-	end)
-
-	if not ok then
-		warn("⚠️ [DailyRewards] Failed to grant " .. tostring(toolName) .. " to " .. player.Name .. ": " .. tostring(grantOk))
-		return false, "Reward system is not ready yet."
-	end
-
-	if not grantOk then
-		if grantMessage == "Car storage full" then
-			return false, "Car storage is full!"
-		end
-
-		return false, tostring(grantMessage or "Unable to grant reward.")
-	end
-
-	return true
-end
-
 local function grantReward(player, day)
 	local reward = REWARDS[day]
 
@@ -297,19 +258,14 @@ local function grantReward(player, day)
 		return false, "Invalid daily reward."
 	end
 
-	if reward.Type == "Cash" then
-		local wallet = getWallet(player)
-
-		if not wallet then
-			return false, "Wallet is not ready yet."
-		end
-
-		wallet.Value += reward.Amount
-		return true
-	end
-
-	if reward.Type == "Car" then
-		return grantCar(player, day, reward.ToolName, reward)
+	local rewardType = reward.Type == "Cash" and "Wallet" or reward.Type
+	if rewardType == "Wallet" or rewardType == "Car" then
+		return InboxService.Enqueue(player.UserId,
+			("Daily:%d:%d:%d"):format(player.UserId, getDayKey(os.time()), day), {
+				RewardType=rewardType, RewardId=rewardType=="Car" and reward.ToolName or "Wallet",
+				Amount=reward.Amount, DisplayName=rewardType=="Car" and reward.ToolName or (("$%d Wallet Cash"):format(reward.Amount)),
+				SourceType="System", Source="Daily Rewards", Rarity=reward.Rarity,
+			})
 	end
 
 	return false, "Invalid daily reward."
@@ -371,7 +327,7 @@ local function tryClaim(player, requestedDay)
 		local updatedState = buildClientState(player)
 		stateChangedEvent:FireClient(player, updatedState)
 
-		return true, "Reward has been claimed successfully!", updatedState
+		return true, "Reward was safely sent to your Inbox!", updatedState
 	end)
 
 	claimLocks[player] = nil

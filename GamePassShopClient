@@ -58,14 +58,14 @@ local function renderPass(passKey, passInfo)
 
 	if not ownershipReady then
 		button.Visible = false
-		ownedLabel.Visible = false
+		if ownedLabel then ownedLabel.Visible = false end
 		setButtonInputLocked(button, true)
 		return
 	end
 
 	button.Visible = not owns
 	setButtonInputLocked(button, promptBusy and pendingPassKey == passKey)
-	ownedLabel.Visible = owns
+	if ownedLabel then ownedLabel.Visible = owns end
 end
 
 local function renderAll()
@@ -129,12 +129,11 @@ for passKey, passInfo in pairs(GamePassConfig.Passes) do
 		"ImageButton",
 		"PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > Gamepass > " .. passInfo.ButtonName
 	)
-	ownedLabelByPassKey[passKey] = requireChild(
-		ownedStuff,
-		passInfo.OwnedLabelName,
-		"ImageLabel",
-		"PlayerGui > ShopUI > MainFrame > ShopUIScrolling > ButtonsForBuying > Buttons > OwnedStuff > " .. passInfo.OwnedLabelName
-	)
+	local ownedLabel = ownedStuff:FindFirstChild(passInfo.OwnedLabelName)
+	if ownedLabel and not ownedLabel:IsA("ImageLabel") then
+		error("[GamePassShopClient] Owned label must be an ImageLabel: " .. passInfo.OwnedLabelName, 0)
+	end
+	ownedLabelByPassKey[passKey] = ownedLabel
 
 	Kit.Tween:SetupButton(buttonByPassKey[passKey], function()
 		beginPurchase(passKey, passInfo)

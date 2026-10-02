@@ -1572,24 +1572,6 @@ local function claimFreeReward(player, carName, walletCash)
 		return ok, message
 	end
 
-	local wallet = getWalletValue(player)
-	if not wallet then
-		return finish(false, "Wallet not loaded")
-	end
-
-	local originalWallet = wallet.Value
-	local claimToken = HttpService:GenerateGUID(false)
-
-	local grantOk, grantMessage = giveTool(player, carName, {
-		Source = "FreeRewards",
-		BypassStorageLimit = true,
-		FreeRewardClaimToken = claimToken,
-	})
-	if not grantOk then
-		return finish(false, grantMessage or "Unable to add the reward car to your inventory.")
-	end
-
-	wallet.Value += walletCash
 	player:SetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE, true)
 	markDirty(player)
 
@@ -1600,8 +1582,6 @@ local function claimFreeReward(player, carName, walletCash)
 
 	-- Best-effort rollback. This protects against normal save failures. If the
 	-- server process dies mid-claim, the next load still falls back to persisted data.
-	wallet.Value = originalWallet
-	removeToolsByAttribute(player, "FreeRewardClaimToken", claimToken)
 	player:SetAttribute(FREE_REWARDS_CLAIMED_ATTRIBUTE, false)
 	markDirty(player)
 
@@ -1835,34 +1815,12 @@ local function commitLuckySpin(player, result)
 	if rewardType == "Wallet" and (not wallet or (walletAmount ~= 500 and walletAmount ~= 5000)) then return false, "Invalid wallet reward" end
 	if rewardType == "Car" and not carId then return false, "Invalid car reward" end
 	if rewardType ~= "Wallet" and rewardType ~= "Car" then return false, "Invalid reward" end
-	-- Wheel/crafting rewards bypass the player's purchasable slot limit, but the
-	-- profile schema still has a corruption guard at MAX_INVENTORY_SIZE. Reject
-	-- before token consumption if that absolute safety ceiling is reached.
-	if rewardType == "Car" and getCurrentInventoryCount(player) >= MAX_INVENTORY_SIZE then
-		return false, "Inventory safety limit reached"
-	end
+	if result.InboxRecorded ~= true then return false, "Inbox delivery not recorded" end
 
 	session.LuckySpinCommitLock = true
 	local originalTokens = tokens
-	local originalWallet = wallet and wallet.Value or nil
 	session.FhiaTokens = tokens - 1
 	player:SetAttribute("FhiaTokens", session.FhiaTokens)
-	local grantOk, grantMessage = true, nil
-	if rewardType == "Wallet" then
-		wallet.Value += walletAmount
-	else
-		grantOk, grantMessage = giveTool(player, carId, {
-			Source = "LuckySpin", BypassStorageLimit = true, SpinTransactionId = spinId,
-			IsRobuxExclusive = result.IsRobuxExclusive == true,
-			ExclusiveDisplayName = result.IsRobuxExclusive == true and ("🌟 " .. carId .. " / Exclusive (" .. carId .. ")") or nil,
-		})
-	end
-	if not grantOk then
-		session.FhiaTokens = originalTokens
-		player:SetAttribute("FhiaTokens", originalTokens)
-		session.LuckySpinCommitLock = nil
-		return false, grantMessage or "Reward grant failed"
-	end
 
 	session.LuckySpinHistory[spinId] = { RewardId = tostring(result.RewardId or ""), GrantedAt = os.time() }
 	session.LuckySpinHistory = sanitizeLuckySpinHistory(session.LuckySpinHistory)
@@ -1877,10 +1835,88 @@ local function commitLuckySpin(player, result)
 	session.FhiaTokens = originalTokens
 	player:SetAttribute("FhiaTokens", originalTokens)
 	session.LuckySpinHistory[spinId] = nil
-	if rewardType == "Wallet" then wallet.Value = originalWallet else removeToolsByAttribute(player, "SpinTransactionId", spinId) end
 	markDirty(player)
 	session.LuckySpinCommitLock = nil
 	return false, "Spin save failed"
+end
+
+-- Inbox claims use the main profile's durable receipt journal. This makes the
+-- inventory/currency mutation and its idempotency marker part of the same
+-- profile UpdateAsync. If Inbox removal is retried after a crash, the reward is
+-- recognized here and is never granted a second time.
+local function commitInboxClaim(player, entry)
+	local session = SessionData[player]
+	if not save or not session or not session.DataLoaded or type(entry) ~= "table" then
+		return false, "Player data not loaded"
+	end
+	local entryId = type(entry.Id) == "string" and entry.Id or ""
+	local receiptId = "Inbox:" .. entryId
+	if entryId == "" then return false, "Invalid Inbox entry" end
+	session.InboxClaimLocks = session.InboxClaimLocks or {}
+	if session.InboxClaimLocks[entryId] then return false, "Claim already in progress" end
+	session.InboxClaimLocks[entryId] = true
+	local function finish(ok, message)
+		session.InboxClaimLocks[entryId] = nil
+		return ok, message
+	end
+
+	session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
+	if session.RobuxProductReceipts[receiptId] then
+		return finish(save(player, false, true), "Already claimed")
+	end
+
+	local rewardType = entry.RewardType
+	if entry.Source == "Lucky Spin" then
+		local spinId = string.match(entryId, "^LuckySpin:(.+)$")
+		session.LuckySpinHistory = sanitizeLuckySpinHistory(session.LuckySpinHistory)
+		if not spinId or not session.LuckySpinHistory[spinId] then
+			return finish(false, "This spin reward is not committed yet")
+		end
+	end
+	local amount = math.max(0, math.floor(tonumber(entry.Amount) or 0))
+	local wallet = getWalletValue(player)
+	local originalWallet = wallet and wallet.Value or nil
+	local originalTokens = math.max(0, math.floor(tonumber(session.FhiaTokens) or 0))
+	local grantedCar = false
+	local grantOk, grantMessage = true, nil
+
+	if rewardType == "Wallet" then
+		if not wallet or amount <= 0 then return finish(false, "Invalid Wallet reward") end
+		wallet.Value += amount
+	elseif rewardType == "FhiaTokens" then
+		if amount <= 0 then return finish(false, "Invalid token reward") end
+		session.FhiaTokens = originalTokens + amount
+		player:SetAttribute("FhiaTokens", session.FhiaTokens)
+	elseif rewardType == "Car" then
+		local carId = type(entry.RewardId) == "string" and CarStats.GetCarId(entry.RewardId) or nil
+		if not carId then return finish(false, "Invalid car reward") end
+		grantOk, grantMessage = giveTool(player, carId, {
+			Source = tostring(entry.Source or "Inbox"), InboxEntryId = entryId,
+			IsRobuxExclusive = entry.IsRobuxExclusive == true,
+		})
+		grantedCar = grantOk == true
+	else
+		return finish(false, "Unsupported profile reward")
+	end
+	if not grantOk then return finish(false, grantMessage or "Unable to grant reward") end
+
+	session.RobuxProductReceipts[receiptId] = {
+		ProductId = 0, GrantedAt = os.time(), Source = "Inbox", Action = rewardType,
+		GrantHash = tostring(entry.RewardId or "") .. ":" .. tostring(amount),
+	}
+	markDirty(player)
+	if save(player, false, true) then return finish(true, "Claimed") end
+
+	session.RobuxProductReceipts[receiptId] = nil
+	if rewardType == "Wallet" and wallet then wallet.Value = originalWallet
+	elseif rewardType == "FhiaTokens" then
+		session.FhiaTokens = originalTokens
+		player:SetAttribute("FhiaTokens", originalTokens)
+	elseif grantedCar then
+		removeToolsByAttribute(player, "InboxEntryId", entryId)
+	end
+	markDirty(player)
+	return finish(false, "Reward save failed")
 end
 
 local function hasReceiptGrant(player, purchaseId)
@@ -2016,6 +2052,8 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		return commitLuckySpin(player, ...)
 	elseif action == "CommitPlaytimeReward" and player then
 		return commitPlaytimeReward(player, ...)
+	elseif action == "CommitInboxClaim" and player then
+		return commitInboxClaim(player, ...)
 
 	elseif action == "HasReceiptGrant" and player then
 		local purchaseId = ...
@@ -2067,23 +2105,6 @@ AdminAPI.OnInvoke = function(action, player, ...)
 			session.StarterPackPurchaseId = session.StarterPackPurchaseId or purchaseId
 			markDirty(player)
 		else
-			local leaderstats = player:FindFirstChild("leaderstats")
-			local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
-			if not wallet then
-				return finish(false, "Wallet not loaded")
-			end
-
-			local grantOk, grantMsg = giveTool(player, carName, {
-				BypassStorageLimit = true,
-				Source = "StarterPack",
-				PurchaseId = purchaseId,
-			})
-
-			if not grantOk then
-				return finish(false, grantMsg or "Starter Pack car grant failed")
-			end
-
-			wallet.Value += walletCash
 			session.StarterPackPurchased = true
 			session.StarterPackPurchaseId = purchaseId
 			session.StarterPackReceipts[purchaseId] = true

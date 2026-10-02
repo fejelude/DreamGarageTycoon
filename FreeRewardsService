@@ -31,6 +31,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
+local InboxService = require(script.Parent:WaitForChild("InboxService"))
 local Workspace = game:GetService("Workspace")
 
 local REMOTES_FOLDER_NAME = "FreeRewardsRemotes"
@@ -53,7 +54,7 @@ local LIKE_ACK_COOLDOWN_SECONDS = 1
 local GROUP_STATE_CACHE_SECONDS = 3
 local REQUIRED_WAIT_SECONDS = 8
 
-local SUCCESS_MESSAGE = "Reward claimed! The Windsor Car has been added to your inventory, and 250,000 Wallet Cash has been added to your account."
+local SUCCESS_MESSAGE = "Reward claimed! Your Windsor and Wallet Cash were safely sent to your Inbox."
 
 local claimLocks = {}
 local lastClaimAttemptAt = {}
@@ -271,6 +272,16 @@ local function tryClaim(player)
 			return false, "Complete both quests before claiming your reward."
 		end
 
+		local transactionBase = "FreeRewards:" .. tostring(player.UserId)
+		local carOk = InboxService.Enqueue(player.UserId, transactionBase .. ":Car", {
+			RewardType="Car", RewardId=REWARD_CAR_NAME, DisplayName=REWARD_CAR_NAME,
+			SourceType="System", Source="Free Rewards",
+		})
+		local cashOk = InboxService.Enqueue(player.UserId, transactionBase .. ":Wallet", {
+			RewardType="Wallet", RewardId="Wallet", Amount=REWARD_WALLET_CASH,
+			DisplayName=("$%d Wallet Cash"):format(REWARD_WALLET_CASH), SourceType="System", Source="Free Rewards",
+		})
+		if not carOk or not cashOk then return false, "Unable to safely deliver this reward. Please try again." end
 		local claimOk, claimMessage = adminApi:Invoke("ClaimFreeReward", player, REWARD_CAR_NAME, REWARD_WALLET_CASH)
 		if claimOk ~= true then
 			return false, tostring(claimMessage or "Reward save failed. Please try again.")

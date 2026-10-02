@@ -18,7 +18,7 @@ local giftButtons = shopGui and shopGui:FindFirstChild("GiftButtons", true)
 if not giftButtons then
 	warn("[GiftIntentHandler] StarterGui > ShopUI > ... > GiftButtons was not found; button-attribute Game Pass gift IDs cannot be registered")
 end
-for buttonName, passKey in pairs({ GiftExclusive = "Exclusive", Gift2xMoney = "DoubleMoney" }) do
+for buttonName, passKey in pairs({ GiftExclusive = "Exclusive", Gift2xMoney = "DoubleMoney", Gift2xOfflineEarnings = "OfflineEarnings" }) do
 	local button = giftButtons and giftButtons:FindFirstChild(buttonName)
 	local passInfo = GamePassConfig.Passes[passKey]
 	local productId = passInfo and tonumber(passInfo.GiftProductId)
@@ -53,7 +53,10 @@ local lastIntentTime = {}
 local intentStore = DataStoreService:GetDataStore("PendingRobuxGiftIntents_V1")
 
 local INTENT_COOLDOWN = 0.75
-local INTENT_TTL = 30 * 60
+-- A prompt can outlive a server session and Roblox may retry its receipt much
+-- later. Cancellation still clears immediately, but an accepted target remains
+-- recoverable long enough for delayed receipt delivery.
+local INTENT_TTL = 7 * 24 * 60 * 60
 local function intentKey(userId) return "Buyer_" .. tostring(userId) end
 
 local function isStoredIntent(value)
@@ -152,6 +155,9 @@ local function validateIntentRequest(buyer, productId, receiverUserId)
 		return false, "This player's data is still loading"
 	end
 	local product = GiftProductRegistry.GetByProductId(productId)
+	if product and product.OwnershipAttribute and receiverPlayer:GetAttribute("GamePassOwnershipReady") ~= true then
+		return false, "This player's ownership is still loading"
+	end
 	if product and product.OwnershipAttribute and receiverPlayer:GetAttribute(product.OwnershipAttribute) == true then
 		return false, receiverPlayer.Name .. " already owns this perk"
 	end
@@ -166,10 +172,15 @@ local function setIntent(buyer, productId, receiverUserId)
 	end
 
 	local now = os.time()
+	local receiverPlayer = Players:GetPlayerByUserId(receiverUserId)
 	local candidate = {
 		State = "Pending",
 		Token = HttpService:GenerateGUID(false),
 		ReceiverUserId = receiverUserId,
+		ReceiverUsername = receiverPlayer and receiverPlayer.Name or nil,
+		ReceiverDisplayName = receiverPlayer and receiverPlayer.DisplayName or nil,
+		SenderUsername = buyer.Name,
+		SenderDisplayName = buyer.DisplayName,
 		ProductId = math.floor(productId),
 		CreatedAt = now,
 		ExpiresAt = now + INTENT_TTL,

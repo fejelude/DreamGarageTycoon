@@ -1,0 +1,255 @@
+-- Purpose: Persistent Inbox presentation and entry actions.
+-- Location: StarterGui > InboxGui > InboxClient (LocalScript)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local gui = playerGui:WaitForChild("InboxGui")
+local mainFrame = gui:WaitForChild("MainFrame")
+local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
+local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
+local InboxConfig = require(ReplicatedStorage:WaitForChild("InboxConfig"))
+local remotes = ReplicatedStorage:WaitForChild("InboxRemotes")
+local getInbox = remotes:WaitForChild("GetInbox")
+local acceptEntry = remotes:WaitForChild("AcceptInboxEntry")
+local declineEntry = remotes:WaitForChild("DeclineInboxEntry")
+local inboxChanged = remotes:WaitForChild("InboxChanged")
+
+local mainButtons = playerGui:WaitForChild("MainButtons")
+local openButton = mainButtons:FindFirstChild("Inbox", true)
+local scrolling = mainFrame:WaitForChild("Elements"):WaitForChild("ShopUIScrolling")
+local holder = scrolling:WaitForChild("ElementsFrame")
+local template = holder:WaitForChild("Template")
+local emptyIndicator = mainFrame:WaitForChild("EmptyInboxindicator")
+local listLayout = scrolling:FindFirstChildWhichIsA("UIListLayout", true)
+local feedback = UIAudioConfig.CreateStateFeedback(mainFrame)
+local hiddenGuis = {}
+local requestBusy = {}
+local isOpen = false
+local refreshGeneration = 0
+local inboxBlur
+local blurTween
+local confirmationCleanup
+local openGeneration = 0
+
+local BALANCE_INDICATOR_GUI_NAME = "Balance Indicator"
+local BLUR_SIZE = 18
+local BLUR_TWEEN = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+local function setButtonEnabled(button, enabled)
+	button.Active = enabled
+	button.Selectable = enabled
+	pcall(function() button.Interactable = enabled end)
+end
+
+local function restoreHiddenGuis()
+	for screenGui in pairs(hiddenGuis) do
+		if screenGui.Parent then screenGui.Enabled = true end
+	end
+	table.clear(hiddenGuis)
+end
+
+local function hideOtherGuis()
+	table.clear(hiddenGuis)
+	for _, descendant in ipairs(playerGui:GetDescendants()) do
+		if descendant:IsA("ScreenGui")
+			and descendant ~= gui
+			and descendant.Name ~= BALANCE_INDICATOR_GUI_NAME
+			and descendant.Enabled
+		then
+			hiddenGuis[descendant] = true
+			descendant.Enabled = false
+		end
+	end
+end
+
+local function setBlur(enabled)
+	if blurTween then blurTween:Cancel(); blurTween = nil end
+	if enabled then
+		if not inboxBlur or not inboxBlur.Parent then
+			inboxBlur = Instance.new("BlurEffect")
+			inboxBlur.Name = "InboxBlur"
+			inboxBlur.Size = 0
+			inboxBlur.Parent = Lighting
+		end
+		blurTween = TweenService:Create(inboxBlur, BLUR_TWEEN, { Size = BLUR_SIZE })
+		blurTween:Play()
+	elseif inboxBlur then
+		local removing = inboxBlur
+		blurTween = TweenService:Create(removing, BLUR_TWEEN, { Size = 0 })
+		blurTween:Play()
+		blurTween.Completed:Connect(function()
+			if not isOpen and inboxBlur == removing then
+				removing:Destroy()
+				inboxBlur, blurTween = nil, nil
+			end
+		end)
+	end
+end
+
+local function clearRows()
+	for _, child in ipairs(holder:GetChildren()) do
+		if child ~= template and child:GetAttribute("InboxClone") == true then child:Destroy() end
+	end
+end
+
+local refresh
+local function closeConfirmation()
+	if confirmationCleanup then confirmationCleanup(); confirmationCleanup = nil end
+end
+
+local function confirmDecline(callback)
+	closeConfirmation()
+	local confirmationGui = playerGui:FindFirstChild("Confirmation")
+	local confirmationFrame = confirmationGui and confirmationGui:FindFirstChild("MainFrame", true)
+	local yes = confirmationFrame and (confirmationFrame:FindFirstChild("Yes", true) or confirmationFrame:FindFirstChild("Confirm", true))
+	local no = confirmationFrame and (confirmationFrame:FindFirstChild("No", true) or confirmationFrame:FindFirstChild("Cancel", true))
+	if not (confirmationFrame and yes and no and yes:IsA("GuiButton") and no:IsA("GuiButton")) then
+		feedback:Failed("Confirmation interface is unavailable.")
+		return
+	end
+	local label = confirmationFrame:FindFirstChildWhichIsA("TextLabel", true)
+	local previousText = label and label.Text
+	local previousFrameVisible = confirmationFrame.Visible
+	local previousGuiEnabled = confirmationGui:IsA("ScreenGui") and confirmationGui.Enabled or nil
+	if label then label.Text = "Are you sure you want to decline this gift? This cannot be undone." end
+	if confirmationGui:IsA("ScreenGui") then confirmationGui.Enabled = true end
+	confirmationFrame.Visible = true
+	local yesConnection, noConnection
+	local finished = false
+	local function cleanup()
+		if finished then return end
+		finished = true
+		if yesConnection then yesConnection:Disconnect() end
+		if noConnection then noConnection:Disconnect() end
+		if label and label.Parent then label.Text = previousText end
+		if confirmationFrame.Parent then confirmationFrame.Visible = previousFrameVisible end
+		if previousGuiEnabled ~= nil and confirmationGui.Parent then confirmationGui.Enabled = previousGuiEnabled end
+	end
+	confirmationCleanup = cleanup
+	local function finish(confirmed)
+		cleanup()
+		confirmationCleanup = nil
+		callback(confirmed)
+	end
+	yesConnection = yes.Activated:Connect(function() finish(true) end)
+	noConnection = no.Activated:Connect(function() finish(false) end)
+end
+
+local function request(remote, entryId, acceptButton, declineButton)
+	if requestBusy[entryId] then return end
+	requestBusy[entryId] = true
+	setButtonEnabled(acceptButton, false)
+	if declineButton then setButtonEnabled(declineButton, false) end
+	local ok, result = pcall(function() return remote:InvokeServer(entryId) end)
+	requestBusy[entryId] = nil
+	if ok and type(result) == "table" and result.Success then
+		feedback:Success(result.Message or "Done")
+		refresh()
+	else
+		local message = ok and type(result) == "table" and result.Message
+		feedback:Failed(message or "Unable to claim this reward right now. Please try again.")
+		if acceptButton.Parent then setButtonEnabled(acceptButton, true) end
+		if declineButton and declineButton.Parent then setButtonEnabled(declineButton, true) end
+	end
+end
+
+local function render(entries)
+	clearRows()
+	template.Visible = false
+	emptyIndicator.Visible = #entries == 0
+	for order, entry in ipairs(entries) do
+		local row = template:Clone()
+		row.Name = "Inbox_" .. entry.Id
+		row:SetAttribute("InboxClone", true)
+		row.LayoutOrder = order
+		row.Visible = true
+		row:WaitForChild("FromWho?").Text = entry.SenderUsername ~= ""
+			and ("From: @" .. entry.SenderUsername) or ("From: " .. entry.Source)
+		row:WaitForChild("ItemReceived").Text = entry.DisplayName
+		row:WaitForChild("ItemImage").Image = InboxConfig.GetImage(entry)
+		local buttons = row:WaitForChild("Buttons")
+		local acceptButton = buttons:WaitForChild("Accept")
+		local declineButton = buttons:WaitForChild("Decline")
+		declineButton.Visible = entry.Declineable == true
+		UIButtonUtils.SetupButton(acceptButton, function()
+			request(acceptEntry, entry.Id, acceptButton, declineButton)
+		end)
+		if entry.Declineable == true then
+			UIButtonUtils.SetupButton(declineButton, function()
+				confirmDecline(function(confirmed)
+					if confirmed then request(declineEntry, entry.Id, acceptButton, declineButton) end
+				end)
+		end
+		end
+		row.Parent = holder
+	end
+end
+
+refresh = function()
+	refreshGeneration += 1
+	local generation = refreshGeneration
+	local ok, result = pcall(function() return getInbox:InvokeServer() end)
+	if generation ~= refreshGeneration or not isOpen then return end
+	if ok and type(result) == "table" and result.Success then
+		render(result.Entries)
+	else
+		feedback:Failed(type(result) == "table" and result.Message or "Unable to load Inbox. Please try again.")
+	end
+end
+
+local function setOpen(open)
+	if isOpen == open then
+		if open then refresh() end
+		return
+	end
+	isOpen = open
+	openGeneration += 1
+	local generation = openGeneration
+	mainFrame.Visible = open
+	if open then
+		if gui:IsA("ScreenGui") then gui.Enabled = true end
+		hideOtherGuis()
+		setBlur(true)
+		template.Visible = false
+		emptyIndicator.Visible = false
+		task.spawn(refresh)
+		task.spawn(function()
+			while isOpen and generation == openGeneration do
+				task.wait(15)
+				if isOpen and generation == openGeneration then refresh() end
+			end
+		end)
+	else
+		refreshGeneration += 1
+		closeConfirmation()
+		restoreHiddenGuis()
+		setBlur(false)
+	end
+end
+
+assert(openButton and openButton:IsA("GuiButton"), "MainButtons > Inbox ImageButton is missing")
+UIButtonUtils.SetupButton(openButton, function() setOpen(true) end)
+local closeButton = mainFrame:FindFirstChild("ExitButton", true) or mainFrame:FindFirstChild("Close", true)
+if closeButton and closeButton:IsA("GuiButton") then
+	UIButtonUtils.SetupButton(closeButton, function() setOpen(false) end)
+else
+	warn("[InboxClient] InboxGui > MainFrame close button is missing")
+end
+if listLayout and scrolling:IsA("ScrollingFrame") then
+	local function updateCanvas()
+		scrolling.CanvasSize = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y)
+	end
+	listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvas)
+	updateCanvas()
+end
+inboxChanged.OnClientEvent:Connect(function() if isOpen then task.spawn(refresh) end end)
+mainFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+	if isOpen and not mainFrame.Visible then setOpen(false) end
+end)
+mainFrame.Visible = false
+template.Visible = false
+emptyIndicator.Visible = false

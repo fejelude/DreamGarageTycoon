@@ -52,6 +52,7 @@ local GlobalLuckService = requireServerModule("GlobalLuckService")
 local GlobalMoneyFrenzyService = requireServerModule("GlobalMoneyFrenzyService")
 local LimitedCarsService = requireServerModule("LimitedCarsService")
 local GiftEntitlementService = requireServerModule("GiftEntitlementService")
+local InboxService = requireServerModule("InboxService")
 local STARTER_PACK_WALLET_CASH = 800000
 local RebirthConfig = require(ReplicatedStorage:WaitForChild("RebirthConfig"))
 local AdRewardsConfig = require(ReplicatedStorage:WaitForChild("AdRewardsConfig"))
@@ -457,6 +458,16 @@ local function grantStarterPackRewards(player, purchaseId)
 		return false
 	end
 
+	local baseId = "Receipt:" .. tostring(purchaseId) .. ":StarterPack"
+	local carOk = InboxService.Enqueue(player.UserId, baseId .. ":Car", {
+		RewardType="Car", RewardId=STARTER_PACK_CAR_NAME, DisplayName=STARTER_PACK_CAR_NAME,
+		SourceType="Purchase", Source="Starter Pack",
+	})
+	local cashOk = InboxService.Enqueue(player.UserId, baseId .. ":Wallet", {
+		RewardType="Wallet", RewardId="Wallet", Amount=STARTER_PACK_WALLET_CASH,
+		DisplayName=("$%d Wallet Cash"):format(STARTER_PACK_WALLET_CASH), SourceType="Purchase", Source="Starter Pack",
+	})
+	if not carOk or not cashOk then return false end
 	local invokeOk, grantOk, grantMsg = safeInvoke(
 		TycoonAdminAPI,
 		20,
@@ -619,6 +630,26 @@ local function processReceipt(receiptInfo)
 	local consumeStaleGiftIntentAfterGrant = false
 	local giftFallbackMessage = nil
 	local giftIntentStatus = nil
+	local function enqueueRegisteredGift(targetUserId)
+		if not registeredGiftProduct then return false end
+		local reward
+		if registeredGiftProduct.Kind == "GamePassGift" then
+			reward = { RewardType="Entitlement", RewardId=registeredGiftProduct.PassKey,
+				DisplayName=registeredGiftProduct.DisplayName }
+		elseif registeredGiftProduct.Kind == "Car" then
+			reward = { RewardType="Car", RewardId=registeredGiftProduct.CarName,
+				DisplayName=registeredGiftProduct.DisplayName, Rarity=registeredGiftProduct.Rarity }
+		elseif registeredGiftProduct.Kind == "CashPack" then
+			reward = { RewardType="Wallet", RewardId="Wallet", Amount=registeredGiftProduct.WalletReward,
+				DisplayName=registeredGiftProduct.DisplayName }
+		else
+			return false
+		end
+		reward.SourceType, reward.Source = "Gift", "Player Gift"
+		reward.SenderUserId, reward.SenderUsername, reward.SenderDisplayName = buyerId, buyerPlayer.Name, buyerPlayer.DisplayName
+		reward.Declineable = true
+		return InboxService.Enqueue(targetUserId, "Receipt:" .. tostring(receiptInfo.PurchaseId), reward)
+	end
 
 	local purchaseKey = buyerId .. "_" .. receiptInfo.PurchaseId
 	if activeReceiptLocks[purchaseKey] then
@@ -651,7 +682,17 @@ local function processReceipt(receiptInfo)
 		end
 
 		local boundPlayer = Players:GetPlayerByUserId(targetUserId)
-		if not boundPlayer then return false end
+		if not boundPlayer then
+			if registeredGiftProduct and targetUserId ~= buyerId then
+				local delivered = enqueueRegisteredGift(targetUserId)
+				if delivered and markPurchaseProcessed(purchaseKey) then
+					if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid) end
+					fireGiftPurchaseResult(buyerPlayer,{Success=true,ProductId=pid,ReceiverUserId=targetUserId,Message="Gift safely delivered to the recipient's Inbox!"})
+					return "DeliveredOffline"
+				end
+			end
+			return false
+		end
 		targetPlayer = boundPlayer
 		isGift = targetUserId ~= buyerId
 		giftReceiverId = isGift and targetUserId or nil
@@ -664,7 +705,9 @@ local function processReceipt(receiptInfo)
 			warn("[ReceiptRouter] PurchaseId/ProductId mismatch for " .. purchaseKey)
 			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 		end
-		if not useBoundTarget(boundTargetUserId) then
+		local boundResult = useBoundTarget(boundTargetUserId)
+		if boundResult == "DeliveredOffline" then return finish(Enum.ProductPurchaseDecision.PurchaseGranted) end
+		if not boundResult then
 			-- The original recipient may simply be in another server/offline. Never
 			-- redirect an already-started paid grant to whoever a later client names.
 			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
@@ -680,8 +723,13 @@ local function processReceipt(receiptInfo)
 					targetPlayer = receiver
 					isGift = true
 				else
-					-- Never redirect a paid gift to the purchaser. Holding the receipt lets
-					-- Roblox retry safely when the original recipient rejoins.
+					if registeredGiftProduct then
+						local delivered = enqueueRegisteredGift(giftReceiverId)
+						if delivered and markPurchaseProcessed(purchaseKey) then
+							if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId,pid) end
+							return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
+						end
+					end
 					return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 				end
 			elseif giftIntentStatus == "ProductMismatch" then
@@ -857,7 +905,11 @@ local function processReceipt(receiptInfo)
 			consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 		end
 
-		purchaseSuccess = grantCashPackWalletReward(targetPlayer, receiptInfo, cashPackInfo)
+		if isGift then
+			purchaseSuccess = enqueueRegisteredGift(targetPlayer.UserId)
+		else
+			purchaseSuccess = grantCashPackWalletReward(targetPlayer, receiptInfo, cashPackInfo)
+		end
 		if purchaseSuccess and isGift then
 			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, registeredGiftProduct.DisplayName or "Wallet Cash")
 			if GlobalChatBroadcast then
@@ -870,16 +922,15 @@ local function processReceipt(receiptInfo)
 			-- Gift-only developer products are never awarded to their purchaser.
 			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 		end
-		local grantOk, grantMessage, wasNew = GiftEntitlementService.Grant(targetPlayer, registeredGiftProduct.PassKey, receiptInfo)
+		local grantOk, grantMessage = InboxService.Enqueue(targetPlayer.UserId, "Receipt:" .. tostring(receiptInfo.PurchaseId), {
+			RewardType="Entitlement", RewardId=registeredGiftProduct.PassKey, DisplayName=registeredGiftProduct.DisplayName,
+			SourceType="Gift", Source="Player Gift", SenderUserId=buyerPlayer.UserId,
+			SenderUsername=buyerPlayer.Name, SenderDisplayName=buyerPlayer.DisplayName, Declineable=true })
 		purchaseSuccess = grantOk
 		if grantOk then
 			local displayName = registeredGiftProduct.DisplayName
 			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, displayName)
-			if not wasNew then
-				suppressConfirmedSuccess = true
-				fireGiftPurchaseResult(buyerPlayer, { Success = false, ProductId = pid, Message = targetPlayer.Name .. " already owns this perk." })
-			end
-			if wasNew and GlobalChatBroadcast then
+			if GlobalChatBroadcast then
 				GlobalChatBroadcast:FireAllClients({ Type = "System", Message = ("🎁 <b><font color='#55CFFF'>%s</font></b> gifted <b><font color='#FF69B4'>%s</font></b> the <b><font color='#FFD700'>%s</font></b>! ✨"):format(buyerPlayer.Name, targetPlayer.Name, displayName) })
 			end
 		else
@@ -1018,7 +1069,12 @@ local function processReceipt(receiptInfo)
 		-- ─── 🟢 COMMON CAR ───────────────────────────────────────────────────────
 	elseif carProductInfo then
 		local grantMessage = nil
-		purchaseSuccess, grantMessage, carPostCommit = grantCarPurchase(buyerPlayer, targetPlayer, isGift, carProductInfo, receiptInfo)
+		if isGift then
+			purchaseSuccess, grantMessage = enqueueRegisteredGift(targetPlayer.UserId)
+			carPostCommit = nil
+		else
+			purchaseSuccess, grantMessage, carPostCommit = grantCarPurchase(buyerPlayer, targetPlayer, false, carProductInfo, receiptInfo)
+		end
 		if not purchaseSuccess then
 			warn("Robux car receipt grant failed:", tostring(grantMessage), "ProductId:", pid, "PurchaseId:", receiptInfo.PurchaseId)
 		end
