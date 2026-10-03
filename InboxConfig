@@ -6,10 +6,25 @@ Config.Images = {
 }
 Config.RarityColors = {
 	Common = "#B7B7B7", Uncommon = "#55FF7F", Rare = "#55AAFF", Epic = "#C15CFF",
-	Legendary = "#FFD34D", Mythical = "#FF557F", Exclusive = "#55FFFF",
+	Legendary = "#FFD34D", Mythic = "#FF557F", Mythical = "#FF557F", Exclusive = "#55FFFF",
+}
+Config.CategoryStyles = {
+	Wallet = { Label = "CURRENCY", Color = "#63E6A5" },
+	FhiaTokens = { Label = "PREMIUM CURRENCY", Color = "#55FFFF" },
+	Car = { Label = "VEHICLE", Color = "#55AAFF" },
+	Entitlement = { Label = "PREMIUM REWARD", Color = "#FFD34D" },
 }
 function Config.GetImage(entry)
 	local id = Config.Images[entry.RewardId] or Config.Images[entry.RewardType] or 0
 	return id > 0 and ("rbxassetid://" .. id) or ""
+end
+function Config.GetStyle(entry)
+	local category = Config.CategoryStyles[entry.RewardType]
+		or { Label = "REWARD", Color = Config.RarityColors.Common }
+	local tier = tostring(entry.Rarity or "")
+	if tier == "" then
+		tier = entry.IsRobuxExclusive == true and "Exclusive" or category.Label
+	end
+	return category.Label, tier, Config.RarityColors[tier] or category.Color
 end
 return Config

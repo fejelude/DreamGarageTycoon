@@ -1876,6 +1876,55 @@ local function commitInboxClaim(player, entry)
 	return finish(true, "Claimed")
 end
 
+-- Credits a frozen offline claim and consumes its identity in the same profile
+-- snapshot. The caller never needs to route a successful claim through Inbox.
+-- On an ambiguous save failure the mutation remains in memory and is retried;
+-- creating a second delivery at that point would risk a double payout.
+local function commitOfflineEarnings(player, claimId, amount, expectedState, purchaseId)
+	local session = SessionData[player]
+	if not session or not session.DataLoaded or session.Closing then return false, "Player data is not ready" end
+	claimId = tostring(claimId or "")
+	amount = tonumber(amount)
+	expectedState = expectedState == "Premium" and "Premium" or "Pending"
+	purchaseId = tostring(purchaseId or "")
+	if claimId == "" or #claimId > 256 or not amount or amount ~= amount or amount == math.huge then
+		return false, "Invalid offline claim"
+	end
+	amount = math.floor(amount)
+	if amount <= 0 then return false, "Invalid offline reward" end
+	if session.OfflineClaimCommitLock then return false, "Claim already in progress" end
+	local frozenAmount = math.floor(tonumber(player:GetAttribute("OfflineClaimAmount")) or -1)
+	local expectedBaseAmount = expectedState == "Premium" and math.floor(amount / 10) or amount
+	if player:GetAttribute("OfflineClaimState") == "Consumed" then
+		if player:GetAttribute("OfflineClaimId") == claimId and frozenAmount == expectedBaseAmount
+			and (expectedState ~= "Premium" or player:GetAttribute("OfflineClaimPurchaseId") == purchaseId) then
+			return true, "Already claimed"
+		end
+		return false, "Offline claim changed"
+	end
+	if player:GetAttribute("OfflineClaimState") ~= expectedState
+		or player:GetAttribute("OfflineClaimId") ~= claimId
+		or frozenAmount ~= expectedBaseAmount
+		or (expectedState == "Premium" and player:GetAttribute("OfflineClaimPurchaseId") ~= purchaseId)
+	then
+		return false, "Offline claim changed"
+	end
+	local wallet = getWalletValue(player)
+	if not wallet then return false, "Wallet is unavailable" end
+	session.OfflineClaimCommitLock = true
+	wallet.Value += amount
+	player:SetAttribute("OfflineClaimState", "Consumed")
+	player:SetAttribute("OfflinePremiumPendingAmount", 0)
+	markDirty(player)
+	local saved = save(player, false, true)
+	session.OfflineClaimCommitLock = nil
+	if not saved then
+		queueCriticalSave(player, 1)
+		return false, "Your Wallet credit is still saving. It will not be paid twice."
+	end
+	return true, "Claimed"
+end
+
 local function hasReceiptGrant(player, purchaseId)
 	purchaseId = tostring(purchaseId or "")
 	local session = SessionData[player]
@@ -2030,6 +2079,8 @@ AdminAPI.OnInvoke = function(action, player, ...)
 		return true
 	elseif action == "CommitInboxClaim" and player then
 		return commitInboxClaim(player, ...)
+	elseif action == "CommitOfflineEarnings" and player then
+		return commitOfflineEarnings(player, ...)
 
 	elseif action == "HasReceiptGrant" and player then
 		local purchaseId = ...

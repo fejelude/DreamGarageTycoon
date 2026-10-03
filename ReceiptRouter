@@ -981,7 +981,7 @@ local function processReceipt(receiptInfo)
 			if ok then profileGrantHash = tostring(payout) end
 			offlinePremiumClientResult = {
 				success = ok,
-				message = ok and "Claimed" or (msg or "You have already claimed your offline earnings."),
+				message = ok and (msg or "Claimed") or (msg or "You have already claimed your offline earnings."),
 				amount = ok and payout or 0,
 			}
 		end

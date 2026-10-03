@@ -283,7 +283,9 @@ local function ensureSession(player)
 	return session
 end
 
-local function deliverToInbox(player, transactionId, amount, source)
+local markConsumed
+
+local function deliverRecoveryToInbox(player, transactionId, amount, source)
 	return InboxService.Enqueue(player.UserId, transactionId, {
 		RewardType = "Wallet", RewardId = "Wallet", Amount = amount,
 		DisplayName = ("$%d Wallet Cash"):format(amount),
@@ -291,7 +293,33 @@ local function deliverToInbox(player, transactionId, amount, source)
 	})
 end
 
-local function markConsumed(player, session)
+local function creditWallet(player, session, amount, expectedState, purchaseId)
+	local admin = getAdminApi()
+	if not admin or not admin:IsA("BindableFunction") then
+		-- No profile mutation could have started, so a durable Inbox recovery item is
+		-- safe. Never take this path after an Invoke attempt, whose outcome may be
+		-- ambiguous even when pcall reports an error.
+		local recovered, message = deliverRecoveryToInbox(player, session.id, amount, "Offline Earnings Recovery")
+		if recovered then markConsumed(player, session) end
+		return recovered, recovered and "Recovered" or message, recovered
+	end
+	local invoked, credited, message = pcall(function()
+		return admin:Invoke("CommitOfflineEarnings", player, session.id, amount, expectedState, purchaseId)
+	end)
+	if not invoked then
+		return false, "Your Wallet credit could not be confirmed. Please rejoin before retrying.", false
+	end
+	if credited then
+		session.state = "Consumed"
+		session.claimed = true
+		session.premiumPurchaseSubmitted = false
+		session.freezeSaved = true
+		return true, message, false
+	end
+	return false, message, false
+end
+
+markConsumed = function(player, session)
 	session.state = "Consumed"
 	session.claimed = true
 	session.premiumPurchaseSubmitted = false
@@ -386,10 +414,9 @@ local function claimOfflineEarnings(player)
 		return false, session.state == "Premium" and "Premium purchase is processing." or "No offline earnings available.", 0
 	end
 	local amount = session.baseAmount
-	local success, deliveryMessage = deliverToInbox(player, session.id, amount, "Offline Earnings")
-	if success then markConsumed(player, session) end
+	local success, deliveryMessage, recovered = creditWallet(player, session, amount, "Pending", nil)
 	session.claimInProgress = false
-	return success, success and "Claimed" or deliveryMessage, success and amount or 0
+	return success, success and (recovered and "Recovered" or "Claimed") or deliveryMessage, success and amount or 0
 end
 
 claimNormal.OnServerInvoke = claimOfflineEarnings
@@ -458,10 +485,9 @@ function _G.OfflineEarningsService.TryGrantPremium(player, purchaseId)
 		session.claimInProgress=false
 		return true, payout, "Claimed"
 	end
-	local success, message = deliverToInbox(player, session.id, payout, "10x Offline Earnings")
-	if success then markConsumed(player, session) end
+	local success, message, recovered = creditWallet(player, session, payout, "Premium", purchaseId)
 	session.claimInProgress = false
-	return success, success and payout or 0, success and "Claimed" or message
+	return success, success and payout or 0, success and (recovered and "Recovered" or "Claimed") or message
 end
 
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
