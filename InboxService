@@ -155,11 +155,18 @@ local function getData(userId)
 	reads[userId] = flight
 	local version = versions[userId] or 0
 	local ok, data = pcall(function() return store:GetAsync(key(userId)) end)
-	flight.Data = ok and (type(data) == "table" and data or {}) or nil
-	flight.Error = not ok and tostring(data) or nil
+	local schemaError
+	if ok then
+		if data ~= nil and type(data) ~= "table" then schemaError = "Inbox document has an invalid type"
+		elseif type(data) == "table" and data.Entries ~= nil and type(data.Entries) ~= "table" then schemaError = "Inbox entries have an invalid type"
+		elseif type(data) == "table" and data.Consumed ~= nil and type(data.Consumed) ~= "table" then schemaError = "Inbox journal has an invalid type" end
+	end
+	-- Do not turn malformed stored data into an empty mailbox or cache it.
+	flight.Data = ok and not schemaError and (data or {}) or nil
+	flight.Error = schemaError or (not ok and tostring(data) or nil)
 	flight.Done = true
 	if reads[userId] == flight then reads[userId] = nil end
-	if ok and version == (versions[userId] or 0) then
+	if ok and not schemaError and version == (versions[userId] or 0) then
 		cache[userId] = { Data = flight.Data, ExpiresAt = os.clock() + CACHE_SECONDS }
 	end
 	if not reads[userId] then versions[userId] = nil end
@@ -268,7 +275,8 @@ local function removeClaim(userId, entryId, token)
 		store:UpdateAsync(key(userId), function(old)
 			removed = false
 			if type(old) ~= "table" then return old end
-			old.Consumed = type(old.Consumed) == "table" and old.Consumed or {}
+			if old.Consumed ~= nil and type(old.Consumed) ~= "table" then error("Inbox journal has an invalid type") end
+			old.Consumed = old.Consumed or {}
 			if old.Consumed[entryId] then removed = true; return old end
 			if type(old.Entries) ~= "table" then return old end
 			for index, entry in ipairs(old.Entries) do

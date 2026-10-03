@@ -866,6 +866,15 @@ local function giveTool(player, toolName, customAttributes)
 	end
 
 	local session = SessionData[player]
+	local isDataLoad = type(customAttributes) == "table" and customAttributes.Source == "DataLoad"
+	local function canGrantNow()
+		return session and SessionData[player] == session and not session.Closing and not session.LeaseLost
+			and player:GetAttribute("TycoonDataClosing") ~= true and (session.DataLoaded or isDataLoad)
+			and player.Parent == Players and backpack.Parent == player
+			and player:FindFirstChild("Backpack") == backpack
+	end
+	-- WaitForChild above may resume after the player/session began closing.
+	if not canGrantNow() then return false, "Player data is not ready" end
 	if receiptId then
 		if not session or not session.DataLoaded then
 			return false, "Player data not loaded"
@@ -882,6 +891,17 @@ local function giveTool(player, toolName, customAttributes)
 	if getCurrentInventoryCount(player) >= MAX_INVENTORY_SIZE then return false, "Inventory safety limit reached" end
 	if not bypassStorageLimit and not canAddCarToStorage(player, 1) then
 		return false, "Car storage full"
+	end
+	-- Rank capacity callbacks may yield. Revalidate before any ownership grant.
+	if not canGrantNow() then return false, "Player data is not ready" end
+	local currentCount = getCurrentInventoryCount(player)
+	if currentCount >= MAX_INVENTORY_SIZE then return false, "Inventory safety limit reached" end
+	if not isDataLoad and not bypassStorageLimit
+		and currentCount >= math.min(MAX_INVENTORY_SIZE, tonumber(player:GetAttribute("RankStorageLimit")) or DEFAULT_CAR_STORAGE_LIMIT) then
+		return false, "Car storage full"
+	end
+	if receiptId and session.RobuxProductReceipts[receiptId] then
+		return true, "Already granted", nil, nil, true
 	end
 	local isExclusive = type(customAttributes) == "table" and customAttributes.IsRobuxExclusive == true
 	local sourceTool = safeFindCarTool(toolName, isExclusive)
@@ -926,9 +946,6 @@ local function giveTool(player, toolName, customAttributes)
 			markDirty(player)
 		end
 		if session then session.IntentionalEmptyInventory = false end
-		if not (type(customAttributes) == "table" and customAttributes.SuppressIndexMark == true) then
-			markIndexDiscovered(player, sourceTool.Name, isExclusive)
-		end
 		if receiptId and session then
 			session.RobuxProductReceipts[receiptId] = {
 				ToolId = sourceTool.Name,
@@ -938,6 +955,17 @@ local function giveTool(player, toolName, customAttributes)
 			}
 			session.RobuxProductReceipts = compactRobuxReceiptHistory(session.RobuxProductReceipts)
 			markDirty(player)
+		end
+		if not (type(customAttributes) == "table" and customAttributes.SuppressIndexMark == true) then
+			local discoveryToolId = sourceTool.Name
+			-- Ownership and receipt identity must remain one synchronous mutation.
+			-- The Inbox caller adds its marker immediately after return; index
+			-- presentation may yield only in a later scheduler turn.
+			task.defer(function()
+				if SessionData[player] == session and player.Parent == Players and not session.Closing then
+					markIndexDiscovered(player, discoveryToolId, isExclusive)
+				end
+			end)
 		end
 		return true, nil, backpackTool, gearTool
 	else
@@ -1114,13 +1142,15 @@ local function toolIdMatchesTarget(toolId, targetToolId)
 	return cleanToolId == cleanTargetId
 end
 
-local function getHotbarReservationCount(player, targetToolId)
+local function getHotbarReservationCount(player, targetToolId, isExclusive)
 	if not player or type(targetToolId) ~= "string" then return 0 end
 
 	local reserved = 0
 	for i = 1, 6 do
 		local hotbarToolId = player:GetAttribute("HotbarSlot" .. i)
-		if toolIdMatchesTarget(hotbarToolId, targetToolId) then
+		local exclusiveBase = type(hotbarToolId) == "string" and hotbarToolId:match("^Exclusive %((.+)%)$")
+		local matchesVariant = isExclusive == nil or (exclusiveBase ~= nil) == isExclusive
+		if matchesVariant and toolIdMatchesTarget(exclusiveBase or hotbarToolId, targetToolId) then
 			reserved += 1
 		end
 	end
@@ -1190,12 +1220,12 @@ local function selectPreferredSacrificeTool(player, targetToolId)
 		end
 	end
 
-	-- Hotbar slots store base identity rather than variant. Reserve valuable
-	-- Exclusive copies first so an ambiguous reservation can never force the
-	-- crafting selector to consume an Exclusive while a normal copy is eligible.
-	local reservations = getHotbarReservationCount(player, targetToolId)
-	while reservations > 0 and #exclusive > 0 do table.remove(exclusive); reservations -= 1 end
-	while reservations > 0 and #normal > 0 do table.remove(normal); reservations -= 1 end
+	-- Canonical hotbar keys reserve their own variant. An exclusive slot
+	-- must neither consume a normal reservation nor disappear during selection.
+	local normalReservations = getHotbarReservationCount(player, targetToolId, false)
+	local exclusiveReservations = getHotbarReservationCount(player, targetToolId, true)
+	while exclusiveReservations > 0 and #exclusive > 0 do table.remove(exclusive); exclusiveReservations -= 1 end
+	while normalReservations > 0 and #normal > 0 do table.remove(normal); normalReservations -= 1 end
 
 	local function firstIssuedTool(tools)
 		for _, tool in ipairs(tools) do
@@ -1226,15 +1256,19 @@ local function removeMatchingTools(player, targetToolId, requestedAmount)
 	requestedAmount = math.max(1, tonumber(requestedAmount) or 1)
 	local removedOwnedCount = 0
 	local removedIds = {}
-	local hotbarReservations = getHotbarReservationCount(player, targetToolId)
+	local hotbarReservations = {
+		[false] = getHotbarReservationCount(player, targetToolId, false),
+		[true] = getHotbarReservationCount(player, targetToolId, true),
+	}
 
 	local function removeFromOwnedContainer(container)
 		if not container or removedOwnedCount >= requestedAmount then return end
 		for _, child in ipairs(container:GetChildren()) do
 			if removedOwnedCount >= requestedAmount then break end
 			if toolMatchesId(child, targetToolId) and not isProtectedFromSacrifice(player, child) then
-				if hotbarReservations > 0 then
-					hotbarReservations -= 1
+				local isExclusive = child:GetAttribute("IsRobuxExclusive") == true
+				if hotbarReservations[isExclusive] > 0 then
+					hotbarReservations[isExclusive] -= 1
 					continue
 				end
 				local issuedId = child:GetAttribute("IssuedId")
@@ -3428,7 +3462,7 @@ local function InitializePlayer(player)
 	end
 
 	if #data.Inventory == 0 and (not data.Layout or #data.Layout == 0) and not data.IntentionalEmptyInventory then
-		giveTool(player, STARTER_CAR_NAME)
+		giveTool(player, STARTER_CAR_NAME, { Source = "DataLoad" })
 	end
 
 	sanitizeInventory(player)

@@ -9,10 +9,12 @@ local now, guid = 1000, 0
 local documents = {}
 local readCalls, writeCalls = 0, 0
 local failWrites = 0
+local failReads = 0
 local failRemoval = false
 local store = {}
 function store:GetAsync(key)
 	readCalls += 1
+	if failReads > 0 then failReads -= 1; error("Injected Inbox read outage") end
 	return deepCopy(documents[key])
 end
 function store:UpdateAsync(key, transform)
@@ -30,6 +32,7 @@ end
 local claimMarkers = {}
 local wallet = 0
 local failGrant = false
+local corruptJournalOnGrant = false
 local admin = {}
 function admin:Invoke(action, player, entry)
 	if action == "ForgetInboxClaim" then
@@ -41,6 +44,10 @@ function admin:Invoke(action, player, entry)
 		if not claimMarkers[entry.Id] then
 			claimMarkers[entry.Id] = true
 			wallet += entry.Amount
+		end
+		if corruptJournalOnGrant then
+			corruptJournalOnGrant = false
+			documents.User_17.Consumed = "corrupt-journal"
 		end
 		return true
 	end
@@ -144,4 +151,58 @@ for _, entry in ipairs(Inbox.Get(17)) do if entry.Id == "identity" then found = 
 assert(found and found.IssuedId == "issued-car-123" and found.IsRobuxExclusive,
 	"Car ownership identity and paid variant must survive delivery")
 
-print("Inbox regressions passed: claim/decline replay, uncertain cleanup, lease release, invalid IDs, outages, car identity")
+-- Unavailable/corrupt data is not proof that no reward has been issued.
+advance()
+failReads = 1
+local missing, readError = Inbox.Get(17)
+assert(missing == nil and type(readError) == "string", "Read outages must remain explicit")
+assert(Inbox.Get(17) ~= nil, "Read outage must not cache an empty mailbox")
+local healthyMailbox = deepCopy(mailbox())
+for _, malformed in ipairs({
+	"malformed-root",
+	{Entries = "malformed-entries", Consumed = {["retained-receipt"] = now}},
+	{Entries = {}, Consumed = "malformed-journal"},
+}) do
+	advance()
+	documents.User_17 = deepCopy(malformed)
+	local writesBefore = writeCalls
+	local readOk, entries, corruptionError = pcall(Inbox.Get, 17)
+	assert(readOk and entries == nil and type(corruptionError) == "string",
+		"Malformed mailboxes must return nil/error, not throw or appear empty")
+	local issuedOk, issued, issueError = pcall(Inbox.HasIssued, 17, "identity")
+	assert(issuedOk and issued == nil and type(issueError) == "string",
+		"HasIssued must preserve uncertainty when data is malformed")
+	local claimOk, accepted = pcall(Inbox.Accept, player, "identity")
+	assert(claimOk and accepted == false and writeCalls == writesBefore,
+		"Malformed reads must reject claims before writing or resetting a journal")
+	if type(malformed) == "table" then
+		assert(mailbox().Consumed == malformed.Consumed or
+			(type(mailbox().Consumed) == "table" and mailbox().Consumed["retained-receipt"] == malformed.Consumed["retained-receipt"]),
+			"Rejected claims must preserve the stored journal")
+	else
+		assert(mailbox() == malformed, "Rejected claims must preserve the malformed document")
+	end
+	documents.User_17 = deepCopy(healthyMailbox)
+	assert(Inbox.Get(17) ~= nil, "Malformed reads must not cache an empty mailbox")
+end
+
+-- Corruption after acquisition must preserve the journal and profile marker.
+advance()
+assert(Inbox.Enqueue(17, "cleanup-corruption", reward(13, false)))
+local preservedConsumed = deepCopy(mailbox().Consumed)
+corruptJournalOnGrant = true
+assert(Inbox.Accept(player, "cleanup-corruption"))
+assert(wallet == 56 and mailbox().Consumed == "corrupt-journal",
+	"Cleanup must preserve a malformed journal")
+assert(claimMarkers["cleanup-corruption"], "Failed cleanup must retain replay protection")
+local stillPresent = false
+for _, entry in ipairs(mailbox().Entries) do
+	if entry.Id == "cleanup-corruption" then stillPresent = true end
+end
+assert(stillPresent, "Unacknowledged entry must remain for recovery")
+mailbox().Consumed = preservedConsumed
+now += 130
+assert(Inbox.Accept(player, "cleanup-corruption"))
+assert(wallet == 56, "Cleanup retry after repair must not apply the reward twice")
+
+print("Inbox regressions passed: claim/decline replay, uncertain cleanup, lease release, invalid IDs, outages, car identity, corrupt reads and cleanup")
