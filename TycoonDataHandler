@@ -286,6 +286,36 @@ local function sanitizeLuckySpinHistory(raw)
 	return pending
 end
 
+-- Settings defaults and attribute names must be declared before the load helpers.
+-- These keys match SettingsClient and preserve the existing saved Settings schema.
+local DEFAULT_PLAYER_SETTINGS = {
+	MusicMuted = false,
+	SFXMuted = false,
+	CarLODEnabled = false,
+	CarAnimationEnabled = true,
+	RealTimeShadowsEnabled = true,
+	PotatoModeEnabled = false,
+	ReceiveGiftsEnabled = true,
+	AFKModeEnabled = false,
+	EventMessagesEnabled = true,
+}
+
+local PLAYER_SETTING_ATTRIBUTES = {
+	MusicMuted = "Setting_MusicMuted",
+	SFXMuted = "Setting_SFXMuted",
+	CarLODEnabled = "Setting_CarLODEnabled",
+	CarAnimationEnabled = "Setting_CarAnimationEnabled",
+	RealTimeShadowsEnabled = "Setting_RealTimeShadowsEnabled",
+	PotatoModeEnabled = "Setting_PotatoModeEnabled",
+	ReceiveGiftsEnabled = "Setting_ReceiveGiftsEnabled",
+	AFKModeEnabled = "Setting_AFKModeEnabled",
+	EventMessagesEnabled = "Setting_EventMessagesEnabled",
+}
+
+local CONSTANTS = {
+	VERTICAL_OFFSET = 5,
+}
+
 local function failSetup(message)
 	error("[TycoonDataHandler] " .. message, 0)
 end
@@ -508,7 +538,11 @@ local function getCurrentSettings(player)
 	for settingName, defaultValue in pairs(DEFAULT_PLAYER_SETTINGS) do
 		local attributeName = PLAYER_SETTING_ATTRIBUTES[settingName]
 		local value = player:GetAttribute(attributeName)
-		settings[settingName] = (type(value) == "boolean") and value or defaultValue
+		if type(value) == "boolean" then
+			settings[settingName] = value
+		else
+			settings[settingName] = defaultValue
+		end
 	end
 	return settings
 end

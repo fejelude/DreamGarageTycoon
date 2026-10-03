@@ -89,3 +89,10 @@ Sync these eight scripts together: `TycoonDataHandler`, `LocalShopService`, `Unc
 For a remaining join failure, capture server Output beginning with `[TycoonDataHandler] Player initialization failed`. This includes a traceback and underlying shop/rank error. Startup timeouts list the providers that never became ready. Inspect earlier errors from those scripts and their required instances. In Studio, also verify the published test place's DataStore access settings. Do not change the production store name or bypass validation to work around a missing dependency.
 
 Manual checks for this change: delay a shop's startup, join, and confirm WaitingForServices transitions to Ready without a kick; omit a provider and confirm a bounded setup failure naming it without a profile write; leave during the startup wait and confirm no lease is acquired; cause a shop Load callback to error and confirm Output preserves the cause and the profile is never saved as defaults. This patch was inspected statically; Roblox Studio runtime verification is still required.
+
+
+### Confirmed initialization regression
+
+The reported `TycoonDataHandler:456: invalid argument #1 to 'pairs' (table expected, got nil)` in the pre-startup-wait build comes from `sanitizeSettings` iterating an undeclared `DEFAULT_PLAYER_SETTINGS`. Restore that table and `PLAYER_SETTING_ATTRIBUTES` before the helpers, matching all nine SettingsClient keys/defaults. Restore `CONSTANTS.VERTICAL_OFFSET=5` as well; it is required by placed-car restoration. Preserve explicit false attributes with a boolean branch instead of `value and value or default`.
+
+This fixes a source regression, not a missing synced Explorer object or anti-cheat verdict. No DataStore name, profile key, saved schema or lease checks change. Static checks confirmed matching client/server settings and declaration order; Studio still needs a fresh join, saved-settings round trip (including disabled gifts/animations), and placed-car restore.
