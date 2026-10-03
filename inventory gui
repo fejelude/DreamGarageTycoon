@@ -89,7 +89,8 @@ end
 
 
 -- Controls
-local PlayerModule = require(player.PlayerScripts:WaitForChild("PlayerModule"))
+local playerScripts = player:WaitForChild("PlayerScripts")
+local PlayerModule = require(playerScripts:WaitForChild("PlayerModule"))
 local Controls     = PlayerModule:GetControls()
 
 -- Config

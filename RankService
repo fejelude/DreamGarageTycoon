@@ -787,6 +787,8 @@ end
 
 local RankPersistenceFunction = requireChild(ServerStorage, "RankPersistenceFunction", "BindableFunction")
 
+RankPersistenceFunction:SetAttribute("PersistenceReady", false)
+
 RankPersistenceFunction.OnInvoke = function(action, player, data)
 	if action == "Load" then
 		Sessions[player] = normalizeLoadedData(data)
@@ -811,6 +813,9 @@ RankPersistenceFunction.OnInvoke = function(action, player, data)
 	end
 	return false
 end
+
+-- Publish readiness only after the persistence callback has been installed.
+RankPersistenceFunction:SetAttribute("PersistenceReady", true)
 
 local SetRankAPI = requireChild(ServerStorage, "SetRankAPI", "BindableFunction")
 

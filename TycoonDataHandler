@@ -58,6 +58,8 @@ end
 local DATA_KEY = "DreamGarageTycoon_PlayerProfiles_Production_V1"
 local PlayerDataStore = DataStoreService:GetDataStore(DATA_KEY)
 
+local REQUIRED_WAIT_SECONDS = 15
+local PERSISTENCE_STARTUP_TIMEOUT_SECONDS = 60
 local AUTOSAVE_INTERVAL = 180
 local MIN_SAVE_INTERVAL = 60
 local MAX_RETRIES = 3
@@ -362,18 +364,48 @@ local FinalSaveStates = {}
 local save
 local releaseProfileLeaseWithoutSave
 
+local REQUIRED_PERSISTENCE_BINDABLES = {
+	"ShopPersistenceFunction",
+	"UncommonShopPersistenceFunction",
+	"RareShopPersistenceFunction",
+	"EpicShopPersistenceFunction",
+	"LegendaryShopPersistenceFunction",
+	"MythicalShopPersistenceFunction",
+	"RankPersistenceFunction",
+}
+
+-- Shop scripts can yield while requiring modules or waiting for place assets.
+-- Existence alone is insufficient: BindableFunction:Invoke can wait indefinitely
+-- when the instance exists but its OnInvoke callback has not been installed.
+local function waitForPersistenceStartup(player)
+	local deadline = os.clock() + PERSISTENCE_STARTUP_TIMEOUT_SECONDS
+	while player.Parent == Players do
+		local pending = {}
+		for _, name in ipairs(REQUIRED_PERSISTENCE_BINDABLES) do
+			local bindable = ServerStorage:FindFirstChild(name)
+			if bindable and not bindable:IsA("BindableFunction") then
+				player:SetAttribute("DataLoadFailureCategory", "ServerSetup")
+				error("Invalid persistence instance: ServerStorage > " .. name .. " must be a BindableFunction")
+			end
+			if not bindable or bindable:GetAttribute("PersistenceReady") ~= true then
+				table.insert(pending, name)
+			end
+		end
+		if #pending == 0 then return true end
+		if os.clock() >= deadline then
+			player:SetAttribute("DataLoadFailureCategory", "ServerSetup")
+			error("Persistence startup timed out: " .. table.concat(pending, ", ")
+				.. ". Check the paired shop/rank scripts, their Output errors, and required Explorer instances.")
+		end
+		task.wait(0.1)
+	end
+	return false
+end
+
 local function closePersistenceSessions(player)
-	for _, bindableName in ipairs({
-		"ShopPersistenceFunction",
-		"UncommonShopPersistenceFunction",
-		"RareShopPersistenceFunction",
-		"EpicShopPersistenceFunction",
-		"LegendaryShopPersistenceFunction",
-		"MythicalShopPersistenceFunction",
-		"RankPersistenceFunction",
-	}) do
+	for _, bindableName in ipairs(REQUIRED_PERSISTENCE_BINDABLES) do
 		local bindable = ServerStorage:FindFirstChild(bindableName)
-		if bindable and bindable:IsA("BindableFunction") then
+		if bindable and bindable:IsA("BindableFunction") and bindable:GetAttribute("PersistenceReady") == true then
 			local ok, closeError = pcall(function()
 				bindable:Invoke("Close", player)
 			end)
@@ -2905,6 +2937,12 @@ end
 -- 🚪 PLAYER INITIALIZATION
 -- ----------------------------------------------------------------------------
 local function InitializePlayer(player)
+	player:SetAttribute(DATA_READY_ATTRIBUTE, false)
+	player:SetAttribute("DataLoadFailureCategory", nil)
+	player:SetAttribute("DataLoadState", "WaitingForServices")
+	-- Do not acquire a profile lease until all seven persistence providers are
+	-- ready. Slow startup should neither kick a player nor consume lease time.
+	if not waitForPersistenceStartup(player) then return end
 	SessionData[player] = {
 		LastSave          = os.time(),
 		IsDirty           = false,
@@ -3284,7 +3322,8 @@ local function InitializePlayer(player)
 		local bindable = ServerStorage:FindFirstChild(bindableName)
 		if not bindable or not bindable:IsA("BindableFunction") then error("Required subsystem unavailable: " .. bindableName) end
 		local ok, acknowledged = pcall(function() return bindable:Invoke("Load", player, payload) end)
-		if not ok or acknowledged ~= true then error("Required subsystem did not load: " .. bindableName) end
+		if not ok then error("Required subsystem load failed: " .. bindableName .. ": " .. tostring(acknowledged)) end
+		if acknowledged ~= true then error("Required subsystem did not acknowledge load: " .. bindableName .. " (sync the paired service script)") end
 	end
 
 	safeShopLoad("ShopPersistenceFunction", data.ShopPurchases)
@@ -3380,7 +3419,8 @@ local function InitializePlayer(player)
 	data.RankData.LegacyRank = data.Rank
 	data.RankData.CurrentRank = data.RankData.CurrentRank or data.Rank
 	local rankOk, rankLoaded = pcall(function() return rankPersistenceBindable:Invoke("Load", player, data.RankData) end)
-	if not rankOk or rankLoaded ~= true then error("Rank data did not load safely") end
+	if not rankOk then error("Rank data load failed: " .. tostring(rankLoaded)) end
+	if rankLoaded ~= true then error("Rank data did not acknowledge load (sync the paired RankService script)") end
 
 	-- 🎮 HOTBAR: restore slot assignments so the client can read them
 	local hotbarSlots = data.HotbarSlots or {}
@@ -3504,14 +3544,24 @@ local function InitializePlayer(player)
 end
 
 Players.PlayerAdded:Connect(function(player)
-	local ok, err = pcall(InitializePlayer, player)
+	local ok, err = xpcall(function()
+		InitializePlayer(player)
+	end, debug.traceback)
 	if ok then return end
 	warn("❌ [TycoonDataHandler] Player initialization failed for " .. player.Name .. ": " .. tostring(err))
 	local session = SessionData[player]
 	closePersistenceSessions(player)
 	if session then releaseProfileLeaseWithoutSave(session) end
 	SessionData[player] = nil
-	if player.Parent == Players then player:Kick("Your data could not be loaded safely. Please rejoin.") end
+	player:SetAttribute(DATA_READY_ATTRIBUTE, false)
+	player:SetAttribute("DataLoadState", "Failed")
+	if player.Parent == Players then
+		if player:GetAttribute("DataLoadFailureCategory") == "ServerSetup" then
+			player:Kick("The server's data services could not start. Please try another server.")
+		else
+			player:Kick("Your data could not be loaded safely. Please rejoin.")
+		end
+	end
 end)
 
 local function runFinalSave(player)

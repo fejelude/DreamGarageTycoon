@@ -140,6 +140,7 @@ if not PersistenceBindable then
 	PersistenceBindable.Name   = "EpicShopPersistenceFunction"
 	PersistenceBindable.Parent = ServerStorage
 end
+PersistenceBindable:SetAttribute("PersistenceReady", false)
 
 local AdminRestockEvent = ServerStorage:FindFirstChild("AdminRestockEvent")
 if not AdminRestockEvent then
@@ -382,6 +383,9 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 		LastPurchaseTime[uid] = nil
 	end
 end
+
+-- Publish readiness only after the persistence callback has been installed.
+PersistenceBindable:SetAttribute("PersistenceReady", true)
 
 -- =========================
 -- CLIENT REQUESTS

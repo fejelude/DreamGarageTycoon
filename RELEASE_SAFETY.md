@@ -78,3 +78,14 @@ These need explicit product policy or further integration work; this PR does not
 - **Historical data:** new stable IDs and tombstones cannot reconstruct gifts or dupes that already occurred, or prove a previously consumed legacy Inbox entry. Audit suspicious legacy accounts separately.
 - **Modal ownership:** conversation generations and missing-UI cleanup reduce stuck controls. A shared modal/focus manager across all menus remains an architectural follow-up.
 - **Runtime assets:** this export does not include the place, GUI tree, every Remote object, animations, or models. Missing/misconfigured Studio instances remain a release blocker even when scripts compile.
+
+
+## Join startup and sync diagnostics
+
+The data-load kick is an initialization safety failure, not an anti-cheat verdict. The data handler now waits up to 60 seconds for all seven shop/rank persistence callbacks before acquiring a profile lease. Each provider publishes `PersistenceReady=true` only after installing its callback. Cleanup skips unready callbacks, avoiding an indefinite Invoke wait after failed startup. Genuine failed restores still cannot become Ready or overwrite a profile with defaults.
+
+Sync these eight scripts together: `TycoonDataHandler`, `LocalShopService`, `UncommonShopService`, `RareShopService`, `EpicShopService`, `LegendaryShopService`, `MythicalShopService`, and `RankService`. Run exactly one enabled server Script for each service; keep required server ModuleScripts such as `InboxService` in ServerScriptService. GitHub exports source text, not Explorer instances. In particular, rank bindables/remotes and ReplicatedStorage > BindableFunctions > SkipLegendaryCraftFunction / SkipMythicalCraftFunction must exist with the correct classes.
+
+For a remaining join failure, capture server Output beginning with `[TycoonDataHandler] Player initialization failed`. This includes a traceback and underlying shop/rank error. Startup timeouts list the providers that never became ready. Inspect earlier errors from those scripts and their required instances. In Studio, also verify the published test place's DataStore access settings. Do not change the production store name or bypass validation to work around a missing dependency.
+
+Manual checks for this change: delay a shop's startup, join, and confirm WaitingForServices transitions to Ready without a kick; omit a provider and confirm a bounded setup failure naming it without a profile write; leave during the startup wait and confirm no lease is acquired; cause a shop Load callback to error and confirm Output preserves the cause and the profile is never saved as defaults. This patch was inspected statically; Roblox Studio runtime verification is still required.

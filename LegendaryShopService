@@ -132,6 +132,7 @@ if not PersistenceBindable then
 	PersistenceBindable.Name   = "LegendaryShopPersistenceFunction"
 	PersistenceBindable.Parent = ServerStorage
 end
+PersistenceBindable:SetAttribute("PersistenceReady", false)
 
 local BindableFunctions = ReplicatedStorage:WaitForChild("BindableFunctions")
 local SkipCraftFunc = BindableFunctions:WaitForChild("SkipLegendaryCraftFunction")
@@ -371,6 +372,9 @@ PersistenceBindable.OnInvoke = function(action, player, data)
 		PendingSacrificeConfirmations[uid] = nil
 	end
 end
+
+-- Publish readiness only after the persistence callback has been installed.
+PersistenceBindable:SetAttribute("PersistenceReady", true)
 
 local function finishCraftDelivery(player, session, carName, receiptRecord)
 	local recipe = RECIPES[carName]
