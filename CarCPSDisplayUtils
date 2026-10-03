@@ -201,11 +201,12 @@ function CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
 	local storedBase = tonumber(cpsLabel:GetAttribute(BASE_CPS_ATTR))
 	if storedBase then return storedBase end
 
-	local stats = carModel and (CarStats.GetCarStats and CarStats.GetCarStats(carModel.Name) or CarStats.Cars[carModel.Name])
+	local modelId = carModel and (carModel:GetAttribute("BaseCarId") or carModel.Name)
+	local stats = modelId and (CarStats.GetCarStats and CarStats.GetCarStats(modelId) or CarStats.Cars[modelId])
 	local baseCPS = stats and tonumber(stats.CPS)
 
 	if not baseCPS then
-		local cleanName = carModel and cleanToolName(carModel.Name)
+		local cleanName = modelId and cleanToolName(modelId)
 		stats = cleanName and (CarStats.GetCarStats and CarStats.GetCarStats(cleanName) or CarStats.Cars[cleanName])
 		baseCPS = stats and tonumber(stats.CPS)
 	end
@@ -319,7 +320,7 @@ function CarCPSDisplayUtils.GetBestPlacedBaseCPSForModel(carModel, player)
 	for _, pad in ipairs(padsFolder:GetChildren()) do
 		local linkedCar = getLinkedCarValue(pad)
 		if linkedCar and linkedCar.Parent then
-			local stats = getStatForObjectName(linkedCar.Name)
+			local stats = getStatForObjectName(linkedCar:GetAttribute("BaseCarId") or linkedCar.Name)
 			if stats and not CarStats.IsMythicalCar(stats) then
 				bestBaseCPS = math.max(bestBaseCPS, tonumber(stats.CPS) or 0)
 			end
@@ -333,7 +334,7 @@ function CarCPSDisplayUtils.GetEffectiveModelBaseCPS(carModel, cpsLabel, player)
 	local baseCPS = CarCPSDisplayUtils.GetModelBaseCPS(carModel, cpsLabel)
 	if not baseCPS then return nil end
 
-	local stats = carModel and getStatForObjectName(carModel.Name)
+	local stats = carModel and getStatForObjectName(carModel:GetAttribute("BaseCarId") or carModel.Name)
 	if stats and CarStats.IsMythicalCar(stats) then
 		return CarStats.CalculateOwnedCarBaseCPS(stats, CarCPSDisplayUtils.GetBestPlacedBaseCPSForModel(carModel, player), carModel:GetAttribute("IsRobuxExclusive") == true)
 	end
@@ -353,8 +354,8 @@ function CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
 end
 
 function CarCPSDisplayUtils.BindModelCPSDisplay(carModel, player)
-	CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
 	if not carModel or not player then return end
+	CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
 	if carModel:GetAttribute(MODEL_OWNER_ATTR) == player.UserId and modelConnections[carModel] then return end
 
 	if modelConnections[carModel] then
@@ -368,17 +369,21 @@ function CarCPSDisplayUtils.BindModelCPSDisplay(carModel, player)
 
 	local connections = {}
 	modelConnections[carModel] = connections
+	local function disconnect()
+		if modelConnections[carModel] ~= connections then return end
+		modelConnections[carModel] = nil
+		for _, connection in ipairs(connections) do
+			connection:Disconnect()
+		end
+	end
+	table.insert(connections, carModel.Destroying:Connect(disconnect))
+	table.insert(connections, player.Destroying:Connect(disconnect))
 
 	local function safeUpdate()
 		if carModel.Parent then
 			CarCPSDisplayUtils.UpdateModelCPSDisplay(carModel, player)
 		else
-			if modelConnections[carModel] then
-				for _, connection in ipairs(modelConnections[carModel]) do
-					connection:Disconnect()
-				end
-				modelConnections[carModel] = nil
-			end
+			disconnect()
 		end
 	end
 
@@ -432,6 +437,7 @@ function CarCPSDisplayUtils.BindToolCPSDisplay(tool, playersService)
 	end
 
 	local function rebindPlayerMultiplier()
+		if state.destroyed then return end
 		disconnectPlayerConnections()
 
 		local player = getToolOwner(tool, playersService)
@@ -459,6 +465,14 @@ function CarCPSDisplayUtils.BindToolCPSDisplay(tool, playersService)
 	end
 
 	state.ancestryConnection = tool.AncestryChanged:Connect(rebindPlayerMultiplier)
+	state.destroyingConnection = tool.Destroying:Connect(function()
+		state.destroyed = true
+		disconnectPlayerConnections()
+		if state.ancestryConnection then state.ancestryConnection:Disconnect() end
+		if state.toolIdConnection then state.toolIdConnection:Disconnect() end
+		if state.destroyingConnection then state.destroyingConnection:Disconnect() end
+		toolStates[tool] = nil
+	end)
 
 	state.toolIdConnection = tool:GetAttributeChangedSignal("ToolId"):Connect(function()
 		local carModel = tool:FindFirstChildWhichIsA("Model")

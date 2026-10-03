@@ -93,7 +93,8 @@ requestRebirth.OnServerInvoke = function(player, action)
 	if action ~= "CashRebirth" then
 		return false, "Invalid action."
 	end
-	if player:GetAttribute("TycoonDataLoaded") ~= true then
+	if player.Parent ~= Players or player:GetAttribute("TycoonDataLoaded") ~= true
+		or player:GetAttribute("DataLoadState") ~= "Ready" or player:GetAttribute("TycoonDataClosing") == true then
 		return false, "Your data is still loading. Please try again."
 	end
 
@@ -120,10 +121,11 @@ requestRebirth.OnServerInvoke = function(player, action)
 
 		local newRebirth = setRebirth(player, rebirth + 1)
 		if not forceSave(player) then
-			walletValue.Value += required
-			setRebirth(player, rebirth)
-			forceSave(player)
-			return false, "Rebirth could not be saved. Please try again."
+			-- Never reset progression over a concurrent paid skip or refund an
+			-- uncertain committed rebirth. Retain this effect and retry saving.
+			local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
+			if admin then pcall(function() admin:Invoke("QueueSaveSoon", player, 3) end) end
+			return false, "Rebirth applied, but saving is still retrying. Please wait before leaving.", getSnapshot(player)
 		end
 		local snapshot = getSnapshot(player)
 

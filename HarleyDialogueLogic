@@ -68,6 +68,7 @@ local ANIM_SPEED = 0.1
 -- 🛠️ STATE VARIABLES
 -- ============================================================================
 local isInteracting = false
+local interactionGeneration = 0
 local isLeaving = false
 local currentDialogueJob = nil
 local buttonConnections = {}
@@ -188,7 +189,14 @@ local function getCleanTextLength(str)
 	return utf8.len(cleanStr) or #cleanStr
 end
 
+local function waitForInteraction(seconds)
+	local generation = interactionGeneration
+	task.wait(seconds)
+	return isInteracting and generation == interactionGeneration
+end
+
 local function typewrite(label, text, onComplete)
+	local generation = interactionGeneration
 	if not label then return end
 	label.RichText = true
 
@@ -204,7 +212,7 @@ local function typewrite(label, text, onComplete)
 
 	currentDialogueJob = task.spawn(function()
 		for i = 1, len do
-			if not isInteracting and not isLeaving then break end
+			if generation ~= interactionGeneration or (not isInteracting and not isLeaving) then return end
 			label.MaxVisibleGraphemes = i
 			if i % 3 == 0 then
 				local s = Instance.new("Sound", SoundService)
@@ -215,17 +223,22 @@ local function typewrite(label, text, onComplete)
 			end
 			task.wait(TYPEWRITER_SPEED)
 		end
+		if generation ~= interactionGeneration then return end
 		label.MaxVisibleGraphemes = -1
 
 		currentDialogueJob = nil
 
 		if onComplete and isInteracting then
-			task.spawn(onComplete)
+			task.spawn(function()
+				if isInteracting and generation == interactionGeneration then onComplete() end
+			end)
 		end
 	end)
 end
 
 local function stopInteraction()
+	interactionGeneration += 1
+	promptDebounce = false
 	if not isInteracting and not isLeaving then return end
 
 	isInteracting = false
@@ -236,7 +249,8 @@ local function stopInteraction()
 	clearConnections()
 	setFocusMode(false)
 
-	camera.CameraType = Enum.CameraType.Custom
+	local activeCamera = Workspace.CurrentCamera
+	if activeCamera then activeCamera.CameraType = Enum.CameraType.Custom end
 	if controls then controls:Enable() end
 
 	if player.Character then
@@ -302,9 +316,28 @@ end
 
 local function startInteraction(npcModel)
 	if isInteracting or isLeaving then return end
+	local readyGui = playerGui:FindFirstChild(GUI_ID)
+	local readyContainer = readyGui and readyGui:FindFirstChild(CONTAINER_ID, true)
+	local validUi = readyContainer and readyContainer:FindFirstChild(TEXT_ID, true)
+	if validUi then
+		for _, id in ipairs(ALL_BUTTON_IDS) do
+			local button = readyContainer:FindFirstChild(id, true)
+			if not button or not button:IsA("GuiButton") then validUi = false; break end
+		end
+	end
+	if not validUi or not Workspace.CurrentCamera or not npcModel:FindFirstChild(CAMERA_PART)
+		or player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("MovementLock") == true then
+		promptDebounce = false
+		return
+	end
+	camera = Workspace.CurrentCamera
 
+	interactionGeneration += 1
 	isInteracting = true
 	clearConnections()
+	table.insert(buttonConnections, npcModel.AncestryChanged:Connect(function()
+		if not npcModel:IsDescendantOf(Workspace) then stopInteraction() end
+	end))
 
 	local camPart = npcModel:FindFirstChild(CAMERA_PART)
 	if not camPart then
@@ -382,7 +415,7 @@ local function startInteraction(npcModel)
 				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Alright then. Thanks for stopping by.</font>"
 				typewrite(dialogueLabel, goodbyeMsg)
 			end
-			task.wait(LEAVE_DELAY)
+			if not waitForInteraction(LEAVE_DELAY) then return end
 			stopInteraction()
 		end)
 

@@ -1,21 +1,58 @@
 -- Location: ServerScriptService > InboxServer (Script)
--- Requires pre-created ReplicatedStorage > InboxRemotes with GetInbox,
--- AcceptInboxEntry, DeclineInboxEntry (RemoteFunctions), InboxChanged (RemoteEvent).
-local ReplicatedStorage=game:GetService("ReplicatedStorage")
-local Service=require(script.Parent:WaitForChild("InboxService"))
-local folder=ReplicatedStorage:WaitForChild("InboxRemotes")
-local get,accept,decline,changed=folder:WaitForChild("GetInbox"),folder:WaitForChild("AcceptInboxEntry"),folder:WaitForChild("DeclineInboxEntry"),folder:WaitForChild("InboxChanged")
-assert(get:IsA("RemoteFunction") and accept:IsA("RemoteFunction") and decline:IsA("RemoteFunction") and changed:IsA("RemoteEvent"),"InboxRemotes hierarchy is invalid")
-get.OnServerInvoke=function(player,...)
-	if select("#",...)>0 then return {Success=false,Message="Invalid request"} end
-	local entries,err=Service.Get(player.UserId); return {Success=entries~=nil,Entries=entries or {},Message=err}
+-- Requires existing InboxRemotes; request limits run before DataStore access.
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local Service = require(script.Parent:WaitForChild("InboxService"))
+local folder = ReplicatedStorage:WaitForChild("InboxRemotes")
+local get, accept, decline, changed = folder:WaitForChild("GetInbox"), folder:WaitForChild("AcceptInboxEntry"), folder:WaitForChild("DeclineInboxEntry"), folder:WaitForChild("InboxChanged")
+assert(get:IsA("RemoteFunction") and accept:IsA("RemoteFunction") and decline:IsA("RemoteFunction") and changed:IsA("RemoteEvent"), "InboxRemotes hierarchy is invalid")
+
+local requests = {}
+local aggregate = { Tokens = 30, UpdatedAt = os.clock() }
+local function take(bucket, capacity, refill)
+	local now = os.clock()
+	bucket.Tokens = math.min(capacity, bucket.Tokens + (now - bucket.UpdatedAt) * refill)
+	bucket.UpdatedAt = now
+	if bucket.Tokens < 1 then return false end
+	bucket.Tokens -= 1
+	return true
 end
-accept.OnServerInvoke=function(player,id,...)
-	if select("#",...)>0 or type(id)~="string" then return {Success=false,Message="Invalid request"} end
-	local ok,msg=Service.Accept(player,id); if ok then changed:FireClient(player) end; return {Success=ok,Message=msg}
+local function allowed(player)
+	if player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("TycoonDataClosing") == true then return false end
+	local bucket = requests[player]
+	if not bucket then
+		bucket = { Tokens = 4, UpdatedAt = os.clock() }
+		requests[player] = bucket
+	end
+	return take(bucket, 4, 0.5) and take(aggregate, 30, 5)
 end
-decline.OnServerInvoke=function(player,id,...)
-	if select("#",...)>0 or type(id)~="string" then return {Success=false,Message="Invalid request"} end
-	local ok,msg=Service.Decline(player,id); if ok then changed:FireClient(player) end; return {Success=ok,Message=msg}
+local function validId(id)
+	return type(id) == "string" and #id > 0 and #id <= 256 and not id:find("[%c]")
 end
-_G.EnqueueInboxReward=function(userId,transactionId,reward) return Service.Enqueue(userId,transactionId,reward) end
+local function unavailable()
+	return { Success = false, Message = "Please wait a moment and try again." }
+end
+get.OnServerInvoke = function(player, ...)
+	if select("#", ...) > 0 then return { Success = false, Message = "Invalid request" } end
+	if not allowed(player) then return unavailable() end
+	local entries, err = Service.Get(player.UserId)
+	return { Success = entries ~= nil, Entries = entries or {}, Message = err }
+end
+accept.OnServerInvoke = function(player, id, ...)
+	if select("#", ...) > 0 or not validId(id) then return { Success = false, Message = "Invalid request" } end
+	if not allowed(player) then return unavailable() end
+	local ok, msg = Service.Accept(player, id)
+	if ok and player.Parent then changed:FireClient(player) end
+	return { Success = ok, Message = msg }
+end
+decline.OnServerInvoke = function(player, id, ...)
+	if select("#", ...) > 0 or not validId(id) then return { Success = false, Message = "Invalid request" } end
+	if not allowed(player) then return unavailable() end
+	local ok, msg = Service.Decline(player, id)
+	if ok and player.Parent then changed:FireClient(player) end
+	return { Success = ok, Message = msg }
+end
+Players.PlayerRemoving:Connect(function(player) requests[player] = nil end)
+_G.EnqueueInboxReward = function(userId, transactionId, reward)
+	return Service.Enqueue(userId, transactionId, reward)
+end

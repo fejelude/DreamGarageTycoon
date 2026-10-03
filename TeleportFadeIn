@@ -21,6 +21,7 @@ local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "TeleportFadeGui"
 screenGui.IgnoreGuiInset = true -- Covers the top bar perfectly
 screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 10000
 screenGui.Parent = playerGui
 
 local fadeFrame = Instance.new("Frame")
@@ -33,14 +34,27 @@ fadeFrame.Parent = screenGui
 -- 1 second fade duration
 local tweenInfo = TweenInfo.new(1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 
+local fadeGeneration = 0
+local activeTween
+
+local function applyFade(transparency)
+	if activeTween then activeTween:Cancel() end
+	activeTween = TweenService:Create(fadeFrame, tweenInfo, { BackgroundTransparency = transparency })
+	activeTween:Play()
+end
+
 teleportEvent.OnClientEvent:Connect(function(action)
+	if action ~= "FadeOut" and action ~= "FadeIn" then return end
+	fadeGeneration += 1
+	local generation = fadeGeneration
+	applyFade(action == "FadeOut" and 0 or 1)
 	if action == "FadeOut" then
-		-- Screen turns black
-		local tween = TweenService:Create(fadeFrame, tweenInfo, {BackgroundTransparency = 0})
-		tween:Play()
-	elseif action == "FadeIn" then
-		-- Screen turns clear
-		local tween = TweenService:Create(fadeFrame, tweenInfo, {BackgroundTransparency = 1})
-		tween:Play()
+		-- A lost failure/cancellation message must not leave a permanent black screen.
+		task.delay(45, function()
+			if fadeGeneration == generation and fadeFrame.Parent then
+				fadeGeneration += 1
+				applyFade(1)
+			end
+		end)
 	end
 end)

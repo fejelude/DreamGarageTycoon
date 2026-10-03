@@ -9,6 +9,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
 
 local CarSellPrices = require(ReplicatedStorage:WaitForChild("CarSellPrices"))
 local SellFunction = ReplicatedStorage:WaitForChild("SofhiaSellFunction")
@@ -18,6 +19,14 @@ local MAX_DISTANCE = 30 -- Max interaction distance
 local SELL_ALL_ACTION = "SellAllCars"
 
 local activeTransactions = {}
+local sellAllQuotes = {}
+local lastQuoteAt = {}
+local QUOTE_TTL = 30
+local QUOTE_COOLDOWN = 0.5
+local function canMutate(player)
+	return player and player.Parent == Players and player:GetAttribute("TycoonDataLoaded") == true
+		and player:GetAttribute("DataLoadState") == "Ready" and player:GetAttribute("TycoonDataClosing") ~= true
+end
 
 -- Retrieve player's equipped car strictly on the server
 local function getServerEquippedCar(player)
@@ -90,6 +99,8 @@ local function collectSellableInventoryTools(player)
 					Tool = child,
 					CleanId = cleanId,
 					SellPrice = details.SellPrice,
+					IssuedId = child:GetAttribute("IssuedId"),
+					IsRobuxExclusive = child:GetAttribute("IsRobuxExclusive") == true,
 				})
 			end
 		end
@@ -101,32 +112,85 @@ local function collectSellableInventoryTools(player)
 	return sellableTools
 end
 
-local function cleanupStarterGearMirrors(player, soldCleanIds)
-	local starterGear = player:FindFirstChild("StarterGear")
-	if not starterGear then return end
+local function quoteSellAll(player)
+	local now = os.clock()
+	if now - (lastQuoteAt[player] or -math.huge) < QUOTE_COOLDOWN then
+		return false, "Please wait before requesting another quote."
+	end
+	lastQuoteAt[player] = now
+	local near, message = validatePlayerNearSofhia(player)
+	if not near then return false, message end
+	local entries = collectSellableInventoryTools(player)
+	if #entries == 0 then return false, "You do not have any cars in your inventory to sell." end
+	local amount = 0
+	for _, entry in ipairs(entries) do amount += entry.SellPrice end
+	local quote = {
+		Id = HttpService:GenerateGUID(false), ExpiresAt = now + QUOTE_TTL,
+		Entries = entries, Amount = amount, Count = #entries,
+	}
+	sellAllQuotes[player] = quote
+	return true, "", { Id = quote.Id, Amount = amount, Count = #entries }
+end
 
-	for _, child in ipairs(starterGear:GetChildren()) do
-		if child:IsA("Tool") then
-			local rawId = child:GetAttribute("ToolId") or child.Name
-			local cleanId = CarSellPrices.CleanId(rawId)
-			if soldCleanIds[cleanId] then
-				child:Destroy()
+local function matchesQuote(quote, current)
+	if #current ~= quote.Count then return false end
+	local expected = {}
+	for _, entry in ipairs(quote.Entries) do expected[entry.Tool] = entry end
+	for _, entry in ipairs(current) do
+		local original = expected[entry.Tool]
+		if not original or original.CleanId ~= entry.CleanId
+			or original.IssuedId ~= entry.IssuedId
+			or original.IsRobuxExclusive ~= entry.IsRobuxExclusive
+			or original.SellPrice ~= entry.SellPrice then
+			return false
+		end
+		expected[entry.Tool] = nil
+	end
+	return next(expected) == nil
+end
+
+local function cleanupStarterGearMirrors(player, toolsToSell)
+	local gear = player:FindFirstChild("StarterGear")
+	if not gear then return end
+	local removed = {}
+	for _, entry in ipairs(toolsToSell) do
+		local issuedId = entry.Tool:GetAttribute("IssuedId")
+		local exclusive = entry.Tool:GetAttribute("IsRobuxExclusive") == true
+		local exact, legacy
+		for _, mirror in ipairs(gear:GetChildren()) do
+			if mirror:IsA("Tool") and not removed[mirror]
+				and CarSellPrices.CleanId(mirror:GetAttribute("ToolId") or mirror.Name) == entry.CleanId
+				and (mirror:GetAttribute("IsRobuxExclusive") == true) == exclusive then
+				if type(issuedId) == "string" and mirror:GetAttribute("IssuedId") == issuedId then
+					exact = mirror
+					break
+				end
+				legacy = legacy or mirror
 			end
 		end
+		local mirror = exact or legacy
+		if mirror then removed[mirror] = true; mirror:Destroy() end
 	end
 end
 
-local function sellAllInventoryCars(player)
+local function sellAllInventoryCars(player, quoteId)
+	local quote = sellAllQuotes[player]
+	if type(quoteId) ~= "string" or #quoteId > 100 or not quote or quote.Id ~= quoteId
+		or os.clock() > quote.ExpiresAt then
+		return false, "Inventory changed. Please review a new quote."
+	end
 	local toolsToSell = collectSellableInventoryTools(player)
+	if not matchesQuote(quote, toolsToSell) then
+		sellAllQuotes[player] = nil
+		return false, "Inventory changed. Please review a new quote."
+	end
 	if #toolsToSell == 0 then
 		return false, "You do not have any cars in your inventory to sell."
 	end
 
 	local sellAmount = 0
-	local soldCleanIds = {}
 	for _, entry in ipairs(toolsToSell) do
 		sellAmount += entry.SellPrice
-		soldCleanIds[entry.CleanId] = true
 	end
 
 	if sellAmount <= 0 then
@@ -139,15 +203,16 @@ local function sellAllInventoryCars(player)
 		return false, "Could not locate wallet."
 	end
 
+	-- Call the data API before consuming anything. An unavailable API must not
+	-- turn an already completed sale into a reported failure and unsafe retry.
+	local marked = TycoonAdminAPI:Invoke("MarkInventoryCleared", player)
+	if marked ~= true then return false, "Inventory system is unavailable." end
+	sellAllQuotes[player] = nil
+	cleanupStarterGearMirrors(player, toolsToSell)
 	for _, entry in ipairs(toolsToSell) do
-		if entry.Tool and entry.Tool.Parent then
-			entry.Tool:Destroy()
-		end
+		entry.Tool:Destroy()
 	end
-	cleanupStarterGearMirrors(player, soldCleanIds)
-
 	wallet.Value += sellAmount
-	TycoonAdminAPI:Invoke("MarkInventoryCleared", player)
 
 	print("💰 Sofhia Sell All: " .. player.Name .. " sold " .. tostring(#toolsToSell) .. " inventory cars for $" .. tostring(sellAmount))
 	return true, "Success", sellAmount, #toolsToSell
@@ -156,7 +221,7 @@ end
 local function sellEquippedCar(player, requestedCarId)
 	-- Validation: Check equipped tool strictly on server
 	local actualCarId, actualTool = getServerEquippedCar(player)
-	if not actualCarId or not actualTool then
+	if not actualCarId or not actualTool or actualTool:GetAttribute("IssuedByServer") ~= true then
 		return false, "You are not holding a car."
 	end
 
@@ -201,10 +266,18 @@ local function sellEquippedCar(player, requestedCarId)
 	return true, "Success"
 end
 
-SellFunction.OnServerInvoke = function(player, requestedCarId)
+SellFunction.OnServerInvoke = function(player, requestedCarId, quoteId)
+	if not canMutate(player) then return false, "Player data is unavailable." end
 	-- 1. Argument validation
-	if type(requestedCarId) ~= "string" then
+	if type(requestedCarId) ~= "string" or #requestedCarId > 100 then
 		return false, "Invalid request format."
+	end
+
+	if requestedCarId == "QuoteSellAllCars" then
+		if activeTransactions[player.UserId] then return false, "Transaction in progress. Please wait." end
+		local ok, result, message, quote = pcall(quoteSellAll, player)
+		if not ok then warn("[SofhiaSellService] Quote failed: " .. tostring(result)); return false, "Could not prepare a quote." end
+		return result, message, quote
 	end
 
 	-- 2. Transaction Lock (Prevents Spam/Race Conditions)
@@ -221,7 +294,7 @@ SellFunction.OnServerInvoke = function(player, requestedCarId)
 		end
 
 		if requestedCarId == SELL_ALL_ACTION then
-			return sellAllInventoryCars(player)
+			return sellAllInventoryCars(player, quoteId)
 		end
 
 		return sellEquippedCar(player, requestedCarId)
@@ -245,5 +318,7 @@ end
 
 -- Cleanup locks on leave
 Players.PlayerRemoving:Connect(function(player)
+	sellAllQuotes[player] = nil
+	lastQuoteAt[player] = nil
 	if activeTransactions[player.UserId] == player then activeTransactions[player.UserId] = nil end
 end)

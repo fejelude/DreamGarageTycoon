@@ -118,6 +118,7 @@ local DIALOGUE_POOLS = {
 -- 🛠️ STATE VARIABLES & UI HIDING
 -- ============================================================================
 local isInteracting = false
+local interactionGeneration = 0
 local currentDialogueJob = nil
 local buttonConnections = {}
 local buttonHoverConnections = {}
@@ -217,7 +218,14 @@ local function playSound(id, vol)
 	end
 end
 
+local function waitForInteraction(seconds)
+	local generation = interactionGeneration
+	task.wait(seconds)
+	return isInteracting and generation == interactionGeneration
+end
+
 local function typewrite(label, text, onComplete)
+	local generation = interactionGeneration
 	if not label then return end
 	label.RichText = true
 
@@ -231,7 +239,7 @@ local function typewrite(label, text, onComplete)
 
 	currentDialogueJob = task.spawn(function()
 		for i = 1, len do
-			if not isInteracting then break end
+			if not isInteracting or generation ~= interactionGeneration then return end
 			label.MaxVisibleGraphemes = i
 			if i % 3 == 0 then
 				local s = Instance.new("Sound", SoundService)
@@ -239,9 +247,14 @@ local function typewrite(label, text, onComplete)
 			end
 			task.wait(TYPEWRITER_SPEED)
 		end
+		if generation ~= interactionGeneration then return end
 		label.MaxVisibleGraphemes = -1
 		currentDialogueJob = nil
-		if onComplete and isInteracting then task.spawn(onComplete) end
+		if onComplete and isInteracting then
+			task.spawn(function()
+				if isInteracting and generation == interactionGeneration then onComplete() end
+			end)
+		end
 	end)
 end
 
@@ -267,6 +280,8 @@ local function getRandomDialogue(poolKey, optionalCarId, optionalCPS)
 end
 
 local function stopInteraction()
+	interactionGeneration += 1
+	promptDebounce = false
 	if not isInteracting then return end
 	isInteracting = false
 	promptDebounce = false  -- 🔒 Release prompt lock on clean stop
@@ -284,11 +299,18 @@ local function stopInteraction()
 
 	-- Restore camera to default
 	local currentCamera = Workspace.CurrentCamera
-	currentCamera.CameraType = Enum.CameraType.Custom
-	currentCamera.FieldOfView = 70
+	if currentCamera then
+		currentCamera.CameraType = Enum.CameraType.Custom
+		currentCamera.FieldOfView = 70
+	end
 end
 
 local function beginPurchaseReactionFocus(shopGuiName)
+	local myGui, container, dialogueLabel = getUIElements()
+	if not myGui or not container or not dialogueLabel or not Workspace.CurrentCamera then return false end
+	if player:GetAttribute("MovementLock") == true then return false end
+	local generation = interactionGeneration
+	local character = player.Character
 	-- Purchase reactions are opened from the shop, not from the original prompt
 	-- flow. Reset any stale dialogue focus first, let the shop finish its own
 	-- Enabled=false cleanup, then apply the exact same focus hide/lock behavior
@@ -301,14 +323,16 @@ local function beginPurchaseReactionFocus(shopGuiName)
 	end
 
 	task.wait()
-
+	if generation ~= interactionGeneration or character ~= player.Character or isInteracting
+		or player:GetAttribute("MovementLock") == true then return false end
+	interactionGeneration += 1
 	isInteracting = true
 	clearConnections()
-
 	local controls = getControls()
 	if controls then controls:Disable() end
 
 	setFocusMode(true)
+	return true
 end
 
 local function animateButton(btn)
@@ -361,8 +385,19 @@ end
 
 local function startInteraction(npcModel)
 	if isInteracting then return end
+	local myGui, container, dialogueLabel, buttonsFrame, buyBtn, leaveBtn = getUIElements()
+	if player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("MovementLock") == true
+		or not Workspace.CurrentCamera or not myGui or not container or not dialogueLabel or not buttonsFrame
+		or not buyBtn or not buyBtn:IsA("GuiButton") or not leaveBtn or not leaveBtn:IsA("GuiButton") then
+		promptDebounce = false
+		return
+	end
+	interactionGeneration += 1
 	isInteracting = true
 	clearConnections()
+	table.insert(buttonConnections, npcModel.AncestryChanged:Connect(function()
+		if not npcModel:IsDescendantOf(Workspace) then stopInteraction() end
+	end))
 
 	local controls = getControls()
 	if controls then controls:Disable() end
@@ -383,24 +418,20 @@ local function startInteraction(npcModel)
 	-- Refresh camera reference to prevent stale object bugs
 	local camera = Workspace.CurrentCamera
 	local camPart = npcModel:FindFirstChild("CameraAimPart")
-	if camPart then
+	if camPart and camera then
 		camera.CameraType = Enum.CameraType.Scriptable
 		TweenService:Create(camera, TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
 			CFrame = camPart.CFrame
 		}):Play()
 	end
 
-	local myGui = playerGui:WaitForChild(GUI_ID, 5)
-	if not myGui then return end
-
-	local _, container, dialogueLabel, buttonsFrame, buyBtn, leaveBtn = getUIElements()
 	myGui.Enabled = true
 	container.Visible = true
 	setButtonsState(false)
 
 	local greeting = getRandomDialogue("Greetings")
 	typewrite(dialogueLabel, greeting, function()
-		task.wait(DIALOGUE_PAUSE)
+		if not waitForInteraction(DIALOGUE_PAUSE) then return end
 		setButtonsState(true)
 	end)
 
@@ -421,7 +452,7 @@ local function startInteraction(npcModel)
 		if not hasRequiredRank() then
 			local responseText = getRandomDialogue("RankGate")
 			typewrite(dialogueLabel, responseText, function()
-				task.wait(DIALOGUE_PAUSE + 1)
+				if not waitForInteraction(DIALOGUE_PAUSE + 1) then return end
 				stopInteraction()
 			end)
 			return
@@ -429,7 +460,7 @@ local function startInteraction(npcModel)
 
 		local responseText = getRandomDialogue("Buy")
 		typewrite(dialogueLabel, responseText, function()
-			task.wait(DIALOGUE_PAUSE)
+			if not waitForInteraction(DIALOGUE_PAUSE) then return end
 			stopInteraction()
 			openEpicRemote:FireServer()
 		end)
@@ -439,7 +470,7 @@ local function startInteraction(npcModel)
 		setButtonsState(false)
 		local responseText = getRandomDialogue("Leave")
 		typewrite(dialogueLabel, responseText, function()
-			task.wait(DIALOGUE_PAUSE)
+			if not waitForInteraction(DIALOGUE_PAUSE) then return end
 			stopInteraction()
 		end)
 	end)
@@ -450,13 +481,16 @@ end
 -- ============================================================================
 purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipientName, giftSenderName)
 	-- FIX: 0.8s delay before NPC speaks after purchase
+	local generation = interactionGeneration
+	local character = player.Character
 	task.wait(0.8)
+	if generation ~= interactionGeneration or character ~= player.Character or isInteracting then return end
 
 	local carData = CarStats.Cars[carId]
 	if not carData then return end
 
 	-- Use the same focus/UI hiding lifecycle as the original dialogue open flow.
-	beginPurchaseReactionFocus("EpicShopUi")
+	if not beginPurchaseReactionFocus("EpicShopUi") then return end
 
 	-- 🛡️ [POLISH] Refresh camera reference to prevent stale object bugs
 	local camera = Workspace.CurrentCamera
@@ -489,7 +523,7 @@ purchaseFeedbackRemote.OnClientEvent:Connect(function(carId, isRobux, giftRecipi
 		end
 
 		typewrite(dialogueLabel, reactionText, function()
-			task.wait(REACTION_PAUSE)
+			if not waitForInteraction(REACTION_PAUSE) then return end
 			stopInteraction() -- Fully close everything
 		end)
 	else

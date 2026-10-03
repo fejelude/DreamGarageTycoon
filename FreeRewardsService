@@ -60,6 +60,8 @@ local claimLocks = {}
 local lastClaimAttemptAt = {}
 local lastLikeAckAt = {}
 local groupStateCache = {}
+local groupChecksInFlight = {}
+local readyNotificationsInFlight = {}
 
 local function failSetup(message)
 	error("[FreeRewards] " .. message, 0)
@@ -157,20 +159,20 @@ local function clearGroupCache(player)
 end
 
 local function ensureStateReady(player, timeoutSeconds)
-	if player:GetAttribute(DATA_READY_ATTRIBUTE) == true then
+	if player:GetAttribute(DATA_READY_ATTRIBUTE) == true and player:GetAttribute("TycoonDataClosing") ~= true then
 		return true
 	end
 
 	local started = os.clock()
 	while player.Parent and os.clock() - started < timeoutSeconds do
-		if player:GetAttribute(DATA_READY_ATTRIBUTE) == true then
+		if player:GetAttribute(DATA_READY_ATTRIBUTE) == true and player:GetAttribute("TycoonDataClosing") ~= true then
 			return true
 		end
 
 		task.wait(0.1)
 	end
 
-	return player:GetAttribute(DATA_READY_ATTRIBUTE) == true
+	return player:GetAttribute(DATA_READY_ATTRIBUTE) == true and player:GetAttribute("TycoonDataClosing") ~= true
 end
 
 local function isInRewardsGroupFresh(player)
@@ -194,7 +196,11 @@ local function isInRewardsGroupCached(player)
 		return cached.Value == true
 	end
 
+	if groupChecksInFlight[player] then return cached and cached.Value == true or false end
+	groupChecksInFlight[player] = true
 	local value = isInRewardsGroupFresh(player)
+	groupChecksInFlight[player] = nil
+	if not player.Parent then return false end
 	groupStateCache[player] = {
 		CheckedAt = now,
 		Value = value,
@@ -213,13 +219,13 @@ end
 
 local function buildClientState(player, useFreshGroupCheck)
 	local claimed = hasClaimed(player)
-	local dataReady = player:GetAttribute(DATA_READY_ATTRIBUTE) == true
+	local dataReady = player:GetAttribute(DATA_READY_ATTRIBUTE) == true and player:GetAttribute("TycoonDataClosing") ~= true
 
 	local groupJoined
 	if claimed then
 		groupJoined = true
-	elseif useFreshGroupCheck then
-		groupJoined = isInRewardsGroupFresh(player)
+	elseif not dataReady then
+		groupJoined = false
 	else
 		groupJoined = isInRewardsGroupCached(player)
 	end
@@ -266,9 +272,7 @@ local function tryClaim(player)
 			return false, "You have already claimed this reward."
 		end
 
-		clearGroupCache(player)
-
-		if not isInRewardsGroupFresh(player) or not hasAcknowledgedLike(player) then
+		if not isInRewardsGroupCached(player) or not hasAcknowledgedLike(player) then
 			return false, "Complete both quests before claiming your reward."
 		end
 
@@ -304,16 +308,15 @@ local function tryClaim(player)
 end
 
 getStateFunction.OnServerInvoke = function(player)
-	if player:GetAttribute(DATA_READY_ATTRIBUTE) ~= true then
+	if player:GetAttribute(DATA_READY_ATTRIBUTE) ~= true and not readyNotificationsInFlight[player] then
+		readyNotificationsInFlight[player] = true
 		task.spawn(function()
-			if ensureStateReady(player, DATA_READY_TIMEOUT_SECONDS) and player.Parent then
-				fireState(player, true)
-			end
+			if ensureStateReady(player, DATA_READY_TIMEOUT_SECONDS) and player.Parent then fireState(player, false) end
+			readyNotificationsInFlight[player] = nil
 		end)
 	end
-
-	clearGroupCache(player)
-	return buildClientState(player, true)
+	-- Client polling cannot bypass the server's group cache or launch concurrent checks.
+	return buildClientState(player, false)
 end
 
 acknowledgeLikeEvent.OnServerEvent:Connect(function(player)
@@ -341,4 +344,6 @@ Players.PlayerRemoving:Connect(function(player)
 	lastClaimAttemptAt[player] = nil
 	lastLikeAckAt[player] = nil
 	groupStateCache[player] = nil
+	groupChecksInFlight[player] = nil
+	readyNotificationsInFlight[player] = nil
 end)

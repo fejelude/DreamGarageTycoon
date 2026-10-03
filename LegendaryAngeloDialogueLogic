@@ -197,7 +197,14 @@ local function getCleanTextLength(str)
 	return utf8.len(cleanStr) or #cleanStr
 end
 
+local function waitForInteraction(seconds)
+	local generation = interactionGeneration
+	task.wait(seconds)
+	return isInteracting and generation == interactionGeneration
+end
+
 local function typewrite(label, text, onComplete)
+	local generation = interactionGeneration
 	if not label then return end
 	label.RichText = true
 
@@ -213,7 +220,7 @@ local function typewrite(label, text, onComplete)
 
 	currentDialogueJob = task.spawn(function()
 		for i = 1, len do
-			if not isInteracting and not isLeaving then break end
+			if generation ~= interactionGeneration or (not isInteracting and not isLeaving) then return end
 			label.MaxVisibleGraphemes = i
 			if i % 3 == 0 then
 				local s = Instance.new("Sound", SoundService)
@@ -224,19 +231,21 @@ local function typewrite(label, text, onComplete)
 			end
 			task.wait(TYPEWRITER_SPEED)
 		end
+		if generation ~= interactionGeneration then return end
 		label.MaxVisibleGraphemes = -1
 		currentDialogueJob = nil
 
 		if onComplete and isInteracting then
-			task.spawn(onComplete)
+			task.spawn(function()
+				if isInteracting and generation == interactionGeneration then onComplete() end
+			end)
 		end
 	end)
 end
 
 local function stopInteraction()
-	if not isInteracting and not isLeaving then return end
-
 	interactionGeneration += 1
+	if not isInteracting and not isLeaving then return end
 	isInteracting = false
 	isLeaving = false
 	isOpeningShop = false
@@ -253,7 +262,8 @@ local function stopInteraction()
 	clearConnections()
 	setFocusMode(false)
 
-	camera.CameraType = Enum.CameraType.Custom
+	local activeCamera = Workspace.CurrentCamera
+	if activeCamera then activeCamera.CameraType = Enum.CameraType.Custom end
 	if controls then controls:Enable() end
 
 	if player.Character then
@@ -360,19 +370,53 @@ local function animateButton(btn)
 end
 
 local GREETING_DIALOGUES = {
-	"Welcome to the inner circle, ",
-	"Looking to craft something extraordinary, ",
-	"The legendary cars await, ",
-	"I've been expecting you, "
+	"Back for another build, ",
+	"What are we building today, ",
+	"Got something in mind, ",
+	"Good to see you, "
 }
+
+local function readCraftState(remote)
+	if not remote then return nil end
+	local generation = interactionGeneration
+	local state, finished
+	local request = task.spawn(function()
+		local ok, result = pcall(function() return remote:InvokeServer() end)
+		state = ok and result or nil
+		finished = true
+	end)
+	local deadline = os.clock() + 8
+	while not finished and isInteracting and generation == interactionGeneration and os.clock() < deadline do task.wait() end
+	if not finished then pcall(task.cancel, request) end
+	if generation ~= interactionGeneration or not isInteracting then return nil end
+	return type(state) == "table" and state or nil
+end
 
 local function startInteraction(npcModel)
 	if isInteracting or isLeaving then return end
+	local readyGui = playerGui:FindFirstChild(GUI_ID)
+	local readyContainer = readyGui and readyGui:FindFirstChild(CONTAINER_ID, true)
+	local validUi = readyContainer and readyContainer:FindFirstChild(TEXT_ID, true)
+	if validUi then
+		for _, id in ipairs(ALL_BUTTON_IDS) do
+			local button = readyContainer:FindFirstChild(id, true)
+			if not button or not button:IsA("GuiButton") then validUi = false; break end
+		end
+	end
+	if not validUi or not Workspace.CurrentCamera or not npcModel:FindFirstChild(CAMERA_PART)
+		or player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("MovementLock") == true then
+		
+		return
+	end
+	camera = Workspace.CurrentCamera
 
 	interactionGeneration += 1
 	isInteracting = true
 	isOpeningShop = false
 	clearConnections()
+	table.insert(buttonConnections, npcModel.AncestryChanged:Connect(function()
+		if not npcModel:IsDescendantOf(Workspace) then stopInteraction() end
+	end))
 
 	local camPart = npcModel:FindFirstChild(CAMERA_PART)
 	if not camPart then
@@ -438,7 +482,7 @@ local function startInteraction(npcModel)
 				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Return when you are ready, </font>" .. coloredRedName .. "!"
 				typewrite(dialogueLabel, goodbyeMsg)
 			end
-			task.wait(LEAVE_DELAY)
+			if not waitForInteraction(LEAVE_DELAY) then return end
 			stopInteraction()
 		end)
 
@@ -471,7 +515,7 @@ local function startInteraction(npcModel)
 				}
 				local responseText = msgs[math.random(1, #msgs)]
 				typewrite(dialogueLabel, responseText, function()
-					task.wait(2.0)
+					if not waitForInteraction(2.0) then return end
 					stopInteraction()
 				end)
 				return
@@ -479,7 +523,15 @@ local function startInteraction(npcModel)
 
 			-- PRE-CHECK ACTIVE CRAFT: Do not show "pick a chassis" if already crafting
 			local FuncGetState = LegendaryRemotes:FindFirstChild("GetLegendaryShopState")
-			local currentState = FuncGetState and FuncGetState:InvokeServer() or {}
+			local generation = interactionGeneration
+			local currentState = readCraftState(FuncGetState)
+			if generation ~= interactionGeneration or not isInteracting then return end
+			if not currentState then
+				typewrite(dialogueLabel, "I can't check your build right now. Let's try again in a moment.", function()
+					setButtonsState(true)
+				end)
+				return
+			end
 
 			local activeCar, endTime
 			if currentState and currentState.ActiveCrafts then
@@ -512,7 +564,7 @@ local function startInteraction(npcModel)
 					end
 
 					pendingShopOpenTask = task.spawn(function()
-						task.wait(1)
+						if not waitForInteraction(1) then return end
 						if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
 						releaseInteractionForShop()
 						RemoteOpen:FireServer()

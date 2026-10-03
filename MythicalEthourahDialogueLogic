@@ -49,7 +49,7 @@ local LEAVE_DELAY = 2.5
 local SHOP_OPEN_DELAY_SECONDS = 2.0
 
 local TYPING_SOUND_ID = "rbxassetid://4676738150"
-local CRAFT_OPEN_MESSAGE = "Aight pick a chassis. You already know what it costs to build with me."
+local CRAFT_OPEN_MESSAGE = "Alright pick a chassis. You already know what it costs to build with me."
 
 local HOVER_SCALE = 1.1
 local CLICK_SCALE = 0.9
@@ -197,7 +197,14 @@ local function getCleanTextLength(str)
 	return utf8.len(cleanStr) or #cleanStr
 end
 
+local function waitForInteraction(seconds)
+	local generation = interactionGeneration
+	task.wait(seconds)
+	return isInteracting and generation == interactionGeneration
+end
+
 local function typewrite(label, text, onComplete)
+	local generation = interactionGeneration
 	if not label then return end
 	label.RichText = true
 
@@ -213,7 +220,7 @@ local function typewrite(label, text, onComplete)
 
 	currentDialogueJob = task.spawn(function()
 		for i = 1, len do
-			if not isInteracting and not isLeaving then break end
+			if generation ~= interactionGeneration or (not isInteracting and not isLeaving) then return end
 			label.MaxVisibleGraphemes = i
 			if i % 3 == 0 then
 				local s = Instance.new("Sound", SoundService)
@@ -224,19 +231,21 @@ local function typewrite(label, text, onComplete)
 			end
 			task.wait(TYPEWRITER_SPEED)
 		end
+		if generation ~= interactionGeneration then return end
 		label.MaxVisibleGraphemes = -1
 		currentDialogueJob = nil
 
 		if onComplete and isInteracting then
-			task.spawn(onComplete)
+			task.spawn(function()
+				if isInteracting and generation == interactionGeneration then onComplete() end
+			end)
 		end
 	end)
 end
 
 local function stopInteraction()
-	if not isInteracting and not isLeaving then return end
-
 	interactionGeneration += 1
+	if not isInteracting and not isLeaving then return end
 	isInteracting = false
 	isLeaving = false
 	isOpeningShop = false
@@ -253,7 +262,8 @@ local function stopInteraction()
 	clearConnections()
 	setFocusMode(false)
 
-	camera.CameraType = Enum.CameraType.Custom
+	local activeCamera = Workspace.CurrentCamera
+	if activeCamera then activeCamera.CameraType = Enum.CameraType.Custom end
 	if controls then controls:Enable() end
 
 	if player.Character then
@@ -360,19 +370,53 @@ local function animateButton(btn)
 end
 
 local GREETING_DIALOGUES = {
-	"Aye on god you already know who runs this, step up ",
-	"King of kings right here. What you need from me ",
-	"You came to the right spot no cap. Wassup ",
-	"Only the real ones pull up to me. What it is "
+	"Back for another build, ",
+	"What are you after today, ",
+	"You've found the right forge, ",
+	"Let's see what youught, "
 }
+
+local function readCraftState(remote)
+	if not remote then return nil end
+	local generation = interactionGeneration
+	local state, finished
+	local request = task.spawn(function()
+		local ok, result = pcall(function() return remote:InvokeServer() end)
+		state = ok and result or nil
+		finished = true
+	end)
+	local deadline = os.clock() + 8
+	while not finished and isInteracting and generation == interactionGeneration and os.clock() < deadline do task.wait() end
+	if not finished then pcall(task.cancel, request) end
+	if generation ~= interactionGeneration or not isInteracting then return nil end
+	return type(state) == "table" and state or nil
+end
 
 local function startInteraction(npcModel)
 	if isInteracting or isLeaving then return end
+	local readyGui = playerGui:FindFirstChild(GUI_ID)
+	local readyContainer = readyGui and readyGui:FindFirstChild(CONTAINER_ID, true)
+	local validUi = readyContainer and readyContainer:FindFirstChild(TEXT_ID, true)
+	if validUi then
+		for _, id in ipairs(ALL_BUTTON_IDS) do
+			local button = readyContainer:FindFirstChild(id, true)
+			if not button or not button:IsA("GuiButton") then validUi = false; break end
+		end
+	end
+	if not validUi or not Workspace.CurrentCamera or not npcModel:FindFirstChild(CAMERA_PART)
+		or player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("MovementLock") == true then
+		
+		return
+	end
+	camera = Workspace.CurrentCamera
 
 	interactionGeneration += 1
 	isInteracting = true
 	isOpeningShop = false
 	clearConnections()
+	table.insert(buttonConnections, npcModel.AncestryChanged:Connect(function()
+		if not npcModel:IsDescendantOf(Workspace) then stopInteraction() end
+	end))
 
 	local camPart = npcModel:FindFirstChild(CAMERA_PART)
 	if not camPart then
@@ -439,14 +483,14 @@ local function startInteraction(npcModel)
 
 			if dialogueLabel then
 				local coloredRedName = "<font color='" .. ETHOURAH_COLOR .. "'>" .. player.DisplayName .. "</font>"
-				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Aight slide out then. Come back when you ready to get serious </font>" .. coloredRedName .. "."
+				local goodbyeMsg = "<font color='" .. GREEN_COLOR .. "'>Alright slide out then. Come back when you ready to get serious </font>" .. coloredRedName .. "."
 
 				typewrite(dialogueLabel, goodbyeMsg, function()
-					task.wait(LEAVE_DELAY)
+					if not waitForInteraction(LEAVE_DELAY) then return end
 					stopInteraction()
 				end)
 			else
-				task.wait(LEAVE_DELAY)
+				if not waitForInteraction(LEAVE_DELAY) then return end
 				stopInteraction()
 			end
 		end)
@@ -455,13 +499,13 @@ local function startInteraction(npcModel)
 			setButtonsState(false)
 			if dialogueLabel then
 				local inqMsgs = {
-					"You wanna know how this works? Aight listen up. You bring me the rides and the cash I ask for, and I build you something nobody else got. No sacrifices, no car. Simple as that. I don't do handouts.",
-					"It's basic math bro. You hand over the exact whips I need, I tear 'em apart, and I hand you back a Mythic. Don't overthink it.",
+					"You wanna know how this works? Alright listen up. You bring me the rides and the cash I ask for, and I build you something nobody else got. No sacrifices, no car. Simple as that. I don't do handouts.",
+					"It's basic math. You hand over the exact whips I need, I tear 'em apart, and I hand you back a Mythic. Don't overthink it.",
 					"Look, I take what's good and make it perfect. Bring the tribute I ask for and you'll leave with a legend. No cap."
 				}
 				local loreText = inqMsgs[math.random(1, #inqMsgs)]
 				typewrite(dialogueLabel, loreText, function()
-					task.wait(1.25)
+					if not waitForInteraction(1.25) then return end
 					setButtonsState(true)
 				end)
 			end
@@ -474,14 +518,14 @@ local function startInteraction(npcModel)
 
 			if not hasRequiredRank() then
 				local msgs = {
-					"Nah bro, you ain't ready for this heat. Hit <font color='#FF4444'><b>MVP++</b></font> or step off.",
-					"Come back when you actually matter on god. <font color='#FF4444'><b>MVP++</b></font> is the baseline here.",
+					"Nah, you ain't ready for this heat. Hit <font color='#FF4444'><b>MVP++</b></font> or step off.",
+					"You'll need a higher rank for these builds. <font color='#FF4444'><b>MVP++</b></font> is the baseline here.",
 					"I only do business with the absolute highest rollers. Get your <font color='#FF4444'><b>MVP++</b></font> up and we'll talk.",
 					"You think you can just walk up to me with that weak rank? Go get <font color='#FF4444'><b>MVP++</b></font> first."
 				}
 				local responseText = msgs[math.random(1, #msgs)]
 				typewrite(dialogueLabel, responseText, function()
-					task.wait(2.0)
+					if not waitForInteraction(2.0) then return end
 					stopInteraction()
 				end)
 				return
@@ -489,7 +533,15 @@ local function startInteraction(npcModel)
 
 			-- ✅ CHANGE 2: Active craft pre-check (matches Angelo behaviour)
 			local FuncGetState = MythicalRemotes:FindFirstChild("GetMythicalShopState")
-			local currentState = FuncGetState and FuncGetState:InvokeServer() or {}
+			local generation = interactionGeneration
+			local currentState = readCraftState(FuncGetState)
+			if generation ~= interactionGeneration or not isInteracting then return end
+			if not currentState then
+				typewrite(dialogueLabel, "I can't check your build right now. Let's try again in a moment.", function()
+					setButtonsState(true)
+				end)
+				return
+			end
 
 			local activeCar, endTime
 			if currentState and currentState.ActiveCrafts then
@@ -506,11 +558,11 @@ local function startInteraction(npcModel)
 				local openGeneration = interactionGeneration
 
 				local busyMsgs = {
-					"Chill bro I'm already working on your car. Wait until the current one is done.",
+					"Chill I'm already working on your car. Wait until the current one is done.",
 					"You can't just stack orders on me like that. Come back when I finish what's on the forge.",
 					"One at a time fam. I need to wrap up your current build first.",
 					"The forge is occupied. Pull up again once I'm done with what you already ordered.",
-					"Bro I only got two hands. Let me finish before you come asking for more.",
+					"I only got two hands. Let me finish before you come asking for more.",
 				}
 				local responseText = busyMsgs[math.random(1, #busyMsgs)]
 
@@ -522,7 +574,7 @@ local function startInteraction(npcModel)
 					end
 
 					pendingShopOpenTask = task.spawn(function()
-						task.wait(1)
+						if not waitForInteraction(1) then return end
 						if not isInteracting or not isOpeningShop or interactionGeneration ~= openGeneration then return end
 						releaseInteractionForShop()
 						RemoteOpen:FireServer()
@@ -536,7 +588,7 @@ local function startInteraction(npcModel)
 
 			local openMsgs = {
 				CRAFT_OPEN_MESSAGE,
-				"Aight let's see what you're working with. Pick a blueprint.",
+				"Alright let's see what you're working with. Pick a blueprint.",
 				"Bet. Pull up the menu and choose what you wanna drop bags on.",
 				"Let's get it. Choose a chassis and I'll tell you the cost."
 			}
@@ -593,16 +645,16 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "SelectCar" then
 		local msgs = {
-			"Oh you went with the <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font>. Solid pick on god.",
+			"Oh you went with the <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font>. Solid pick.",
 			"The <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font>? Yeah you got taste fr.",
 			"Bet. Let me show you what I need to make that <font color='#00E5FF'>" .. tostring(extraInfo) .. "</font> happen."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "ConfirmSacrifice" then
-		local msgs = {"You sure about this? Once I take it it's gone no cap.", "You really bout to let that go? Say less.", "Aight confirm it. No crying later."}
+		local msgs = {"You sure about this? Once I take it it's gone.", "You really bout to let that go? Say less.", "Alright confirm it. No crying later."}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CancelSacrifice" then
-		local msgs = {"Aight you shook. Come back when you ready.", "No pressure. Take your time and think about it.", "That's cool I'll be right here when you make up your mind."}
+		local msgs = {"Alright you shook. Come back when you ready.", "No pressure. Take your time and think about it.", "That's cool I'll be right here when you make up your mind."}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "NotEnough" then
 		local msgs = {
@@ -616,33 +668,33 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
 			"The <font color='#00E5FF'>" .. extraInfo.itemName .. "</font> got stripped for parts. You still on <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more sacrifices tho.",
-			"Sacrifice accepted no cap. Bring me <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more and we cooking.",
+			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more and we cooking.",
 			"Bet " .. coloredName .. " good looking on the <font color='#00E5FF'>" .. extraInfo.itemName .. "</font>. We almost there just <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more to go.",
 			"The build gettin stronger. <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more pieces and we lit.",
 			"Another one checked off. <font color='#FFD700'>" .. extraInfo.itemsLeft .. "</font> more before I fire up the forge."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyDone" then
-		local msgs = {"We already got enough of that on god.", "That requirement been handled. Don't need no more.", "Chill we good on that already."}
+		local msgs = {"We already got enough of that.", "That requirement been handled. Don't need no more.", "Chill we good on that already."}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AllComplete" then
 		local msgs = {
-			"That was the last one no cap! The <font color='#50C878'>sacrifices are complete</font>. You ready to run it?",
+			"That was the last one! The <font color='#50C878'>sacrifices are complete</font>. You ready to run it?",
 			"Everything locked in. Hit confirm and I start building fr.",
 			"We got everything we need. Let's get it.",
-			"All requirements met on god. The <font color='#00E5FF'>" .. extraInfo.carName .. "</font> is ready to be born. Just say the word."
+			"All requirements met. The <font color='#00E5FF'>" .. extraInfo.carName .. "</font> is ready to be born. Just say the word."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "CraftStarted" then
 		local msgs = {
-			"Aight ima get started on your <font color='#B652FF'>" .. extraInfo.carName .. "</font> fr. Pull up in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"Alright ima get started on your <font color='#B652FF'>" .. extraInfo.carName .. "</font> fr. Pull up in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
 			"We cooking homie. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> gonna be ready real soon."
 		}
 		msg = msgs[math.random(1, #msgs)]
 	elseif actionType == "AlreadyCrafted" then
 		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
-			"It's done. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> is a masterpiece on god. Check your inventory.",
+			"It's done. The <font color='#B652FF'>" .. extraInfo.carName .. "</font> is a masterpiece. Check your inventory.",
 			"The <font color='#B652FF'>" .. extraInfo.carName .. "</font> already sitting in your inventory " .. coloredName .. ".",
 			"That <font color='#B652FF'>" .. extraInfo.carName .. "</font> build is complete. Flawless execution. Go check your inventory."
 		}
@@ -650,7 +702,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	elseif actionType == "CraftComplete" then
 		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
-			"It's done. The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is a masterpiece on god. Check your inventory.",
+			"It's done. The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> is a masterpiece. Check your inventory.",
 			"The <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> already sitting in your inventory " .. coloredName .. ".",
 			"That <font color='#B652FF'>" .. (extraInfo and extraInfo.carName or "car") .. "</font> build is complete. Flawless execution. Go check your inventory."
 		}
@@ -659,7 +711,7 @@ UpdateDialogueEvent.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		local coloredName = "<font color='" .. USER_COLOR .. "'>" .. player.DisplayName .. "</font>"
 		local msgs = {
 			"Chill fam you can't rush me. I'm already on the <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now. Come back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
-			"Bro I'm working on your <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now " .. coloredName .. ". Check back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
+			"I'm working on your <font color='#B652FF'>" .. extraInfo.carName .. "</font> right now " .. coloredName .. ". Check back in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
 			"You can't rush perfection " .. coloredName .. ". The <font color='#B652FF'>" .. extraInfo.carName .. "</font> needs <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> more. Be patient.",
 			"I'm on it already. Pull up in <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font>.",
 			"The forge still hot. You gotta wait exactly <font color='#FF4C4C'>" .. extraInfo.timeStr .. "</font> before it's done."
@@ -785,22 +837,22 @@ EthourahShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	elseif actionType == "SelectCar" then
 		local display = type(extraInfo) == "string" and extraInfo or (extraInfo and extraInfo.carName or "that car")
 		local msgs = {
-			"Oh you went with the <font color='#00E5FF'>" .. display .. "</font>. Solid pick on god.",
+			"Oh you went with the <font color='#00E5FF'>" .. display .. "</font>. Solid pick.",
 			"The <font color='#00E5FF'>" .. display .. "</font>? Yeah you got taste fr.",
 			"Bet. Let me show you what I need to make that <font color='#00E5FF'>" .. display .. "</font> happen."
 		}
 		msg = msgs[math.random(1, #msgs)]
 
 	elseif actionType == "ConfirmSacrifice" then
-		local msgs = {"You sure about this? Once I take it it's gone no cap.", "You really bout to let that go? Say less.", "Aight confirm it. No crying later."}
+		local msgs = {"You sure about this? Once I take it it's gone.", "You really bout to let that go? Say less.", "Alright confirm it. No crying later."}
 		msg = msgs[math.random(1, #msgs)]
 
 	elseif actionType == "CancelSacrifice" then
-		local msgs = {"Aight you shook. Come back when you ready.", "No pressure. Take your time and think about it.", "That's cool I'll be right here when you make up your mind."}
+		local msgs = {"Alright you shook. Come back when you ready.", "No pressure. Take your time and think about it.", "That's cool I'll be right here when you make up your mind."}
 		msg = msgs[math.random(1, #msgs)]
 
 	elseif actionType == "AlreadyDone" then
-		local msgs = {"We already got enough of that on god.", "That requirement been handled. Don't need no more.", "Chill we good on that already."}
+		local msgs = {"We already got enough of that.", "That requirement been handled. Don't need no more.", "Chill we good on that already."}
 		msg = msgs[math.random(1, #msgs)]
 
 	elseif actionType == "NotEnough" then
@@ -818,7 +870,7 @@ EthourahShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		local itemsLeft = extraInfo and extraInfo.itemsLeft or "?"
 		local msgs = {
 			"The <font color='#00E5FF'>" .. itemName .. "</font> got stripped for parts. You still on <font color='#FFD700'>" .. itemsLeft .. "</font> more sacrifices tho.",
-			"Sacrifice accepted no cap. Bring me <font color='#FFD700'>" .. itemsLeft .. "</font> more and we cooking.",
+			"Sacrifice accepted. Bring me <font color='#FFD700'>" .. itemsLeft .. "</font> more and we cooking.",
 			"Bet " .. coloredName .. " good looking on the <font color='#00E5FF'>" .. itemName .. "</font>. We almost there just <font color='#FFD700'>" .. itemsLeft .. "</font> more to go.",
 			"The build gettin stronger. <font color='#FFD700'>" .. itemsLeft .. "</font> more pieces and we lit.",
 			"Another one checked off. <font color='#FFD700'>" .. itemsLeft .. "</font> more before I fire up the forge."
@@ -828,10 +880,10 @@ EthourahShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	elseif actionType == "AllComplete" then
 		local carName = extraInfo and extraInfo.carName or "the car"
 		local msgs = {
-			"That was the last one no cap! The <font color='#50C878'>sacrifices are complete</font>. You ready to run it?",
+			"That was the last one! The <font color='#50C878'>sacrifices are complete</font>. You ready to run it?",
 			"Everything locked in. Hit confirm and I start building fr.",
 			"We got everything we need. Let's get it.",
-			"All requirements met on god. The <font color='#00E5FF'>" .. carName .. "</font> is ready to be born. Just say the word."
+			"All requirements met. The <font color='#00E5FF'>" .. carName .. "</font> is ready to be born. Just say the word."
 		}
 		msg = msgs[math.random(1, #msgs)]
 
@@ -839,7 +891,7 @@ EthourahShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		local carName = extraInfo and extraInfo.carName or "your car"
 		local timeStr = extraInfo and extraInfo.timeStr or "some time"
 		local msgs = {
-			"Aight ima get started on your <font color='#B652FF'>" .. carName .. "</font> fr. Pull up in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"Alright ima get started on your <font color='#B652FF'>" .. carName .. "</font> fr. Pull up in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"We cooking homie. The <font color='#B652FF'>" .. carName .. "</font> gonna be ready in <font color='#FF4C4C'>" .. timeStr .. "</font>."
 		}
 		msg = msgs[math.random(1, #msgs)]
@@ -849,7 +901,7 @@ EthourahShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 		local timeStr = extraInfo and extraInfo.timeStr or "some time"
 		local msgs = {
 			"Chill fam you can't rush me. I'm already on the <font color='#B652FF'>" .. carName .. "</font> right now. Come back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
-			"Bro I'm working on your <font color='#B652FF'>" .. carName .. "</font> right now " .. coloredName .. ". Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
+			"I'm working on your <font color='#B652FF'>" .. carName .. "</font> right now " .. coloredName .. ". Check back in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"You can't rush perfection " .. coloredName .. ". The <font color='#B652FF'>" .. carName .. "</font> needs <font color='#FF4C4C'>" .. timeStr .. "</font> more. Be patient.",
 			"I'm on it already. Pull up in <font color='#FF4C4C'>" .. timeStr .. "</font>.",
 			"The forge still hot. You gotta wait exactly <font color='#FF4C4C'>" .. timeStr .. "</font> before it's done."
@@ -859,7 +911,7 @@ EthourahShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	elseif actionType == "AlreadyCrafted" then
 		local carName = extraInfo and extraInfo.carName or "your car"
 		local msgs = {
-			"It's done. The <font color='#B652FF'>" .. carName .. "</font> is a masterpiece on god. Check your inventory.",
+			"It's done. The <font color='#B652FF'>" .. carName .. "</font> is a masterpiece. Check your inventory.",
 			"The <font color='#B652FF'>" .. carName .. "</font> already sitting in your inventory " .. coloredName .. ".",
 			"That <font color='#B652FF'>" .. carName .. "</font> build is complete. Flawless execution. Go check your inventory."
 		}
@@ -868,7 +920,7 @@ EthourahShopSpeak.Event:Connect(function(actionType, extraInfo, callbackEvent)
 	elseif actionType == "CraftComplete" then
 		local carName = (extraInfo and extraInfo.carName) or "your car"
 		local msgs = {
-			"It's done. The <font color='#B652FF'>" .. carName .. "</font> is a masterpiece on god. Check your inventory.",
+			"It's done. The <font color='#B652FF'>" .. carName .. "</font> is a masterpiece. Check your inventory.",
 			"The <font color='#B652FF'>" .. carName .. "</font> already sitting in your inventory " .. coloredName .. ".",
 			"That <font color='#B652FF'>" .. carName .. "</font> build is complete. Flawless execution. Go check your inventory."
 		}

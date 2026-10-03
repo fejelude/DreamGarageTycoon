@@ -30,6 +30,7 @@ local RankUpdate = requireChild(RankRemotes, "RankUpdate", "RemoteEvent")
 local RankAnnouncement = requireChild(RankRemotes, "RankAnnouncement", "RemoteEvent")
 
 local Sessions = {}
+local LoadedSessions = {}
 local PlayerConnections = {}
 local PendingSessionCleanup = {}
 local RankClaimLocks = {}
@@ -184,6 +185,17 @@ local function normalizeProgressByRank(raw, data)
 	return progressByRank
 end
 
+-- Keep unresolved delivery identities until their Inbox acknowledgement is durable.
+local function sanitizeInboxGrants(raw)
+	local result = {}
+	for id, timestamp in pairs(type(raw) == "table" and raw or {}) do
+		if type(id) == "string" and #id > 0 and #id <= 300 then
+			result[id] = sanitizeCount(timestamp)
+		end
+	end
+	return result
+end
+
 local function normalizeLoadedData(data)
 	data = type(data) == "table" and data or {}
 	local savedRank = data.CurrentRank or RankConfig.DefaultRankName
@@ -205,6 +217,7 @@ local function normalizeLoadedData(data)
 
 	data.Progress = normalizeProgressByRank(data.Progress, data)
 	data.ProcessedReceiptGrants = sanitizeProcessedReceiptGrants(data.ProcessedReceiptGrants)
+	data.InboxCarGrants = sanitizeInboxGrants(data.InboxCarGrants)
 
 	return data
 end
@@ -256,6 +269,7 @@ local function disconnectPlayer(player)
 	disconnectPlayerConnections(player)
 	PendingSessionCleanup[player] = nil
 	Sessions[player] = nil
+	LoadedSessions[player] = nil
 end
 
 local function schedulePlayerSessionCleanup(player)
@@ -270,6 +284,7 @@ local function schedulePlayerSessionCleanup(player)
 		if PendingSessionCleanup[player] == cleanupToken and not player.Parent then
 			PendingSessionCleanup[player] = nil
 			Sessions[player] = nil
+			LoadedSessions[player] = nil
 		end
 	end)
 end
@@ -561,6 +576,10 @@ announceRank = function(player, rankName)
 end
 
 local function claimRank(player, rankName)
+	if player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("DataLoadState") ~= "Ready"
+		or player:GetAttribute("TycoonDataClosing") == true or not Sessions[player] then
+		return false, "Your data is not ready.", nil
+	end
 	if type(rankName) ~= "string" or not RankConfig.Ranks[rankName] then
 		return false, "Invalid rank", buildState(player)
 	end
@@ -581,18 +600,14 @@ local function claimRank(player, rankName)
 	end
 
 	local previousRank = session.CurrentRank
-	local previousCompleted = table.clone(session.CompletedRanks)
-	local previousRewards = table.clone(session.ClaimedRewards)
 	local granted, message = grantRank(player, rankName, false)
 	if granted and not forceSave(player) then
-		session.CurrentRank = previousRank
-		session.CompletedRanks = previousCompleted
-		session.ClaimedRewards = previousRewards
-		applyBenefits(player)
+		-- An UpdateAsync error can follow a committed write. Keep the applied
+		-- reward and marker together instead of restoring stale absolute state.
 		markDirty(player)
+		requestSave(player)
 		pushState(player)
-		forceSave(player)
-		return false, "Rank could not be saved. Please try again.", buildState(player)
+		return true, "Rank unlocked. Saving is delayed; please stay connected.", buildState(player)
 	end
 	if granted and previousRank ~= rankName then announceRank(player, rankName) end
 	return granted, message, buildState(player)
@@ -676,6 +691,40 @@ RankProgressAPI.OnInvoke = function(action, player, ...)
 		local carName, source, shopName = ...
 		recordCarObtained(player, carName, source, shopName)
 		return true
+	elseif action == "InboxCarGranted" or action == "InboxGiftSent" then
+		local deliveryId, carOrReceiverId, source, senderUserId = ...
+		local session = Sessions[player]
+		if not session or not LoadedSessions[player] or type(deliveryId) ~= "string" or #deliveryId == 0 or #deliveryId > 256 then
+			return false, "Invalid delivery rank grant"
+		end
+		local key = (action == "InboxGiftSent" and "Sent:" or "Received:") .. deliveryId
+		session.InboxCarGrants = session.InboxCarGrants or {}
+		if session.InboxCarGrants[key] then return true end
+		if action == "InboxCarGranted" then
+			if type(carOrReceiverId) ~= "string" or carOrReceiverId == "" then return false end
+			local craft = deliveryId:match("^LegendaryCraft:") or deliveryId:match("^MythicalCraft:")
+				or source == "Craft" or source == "LegendaryCraft" or source == "MythicalCraft"
+			recordCarObtained(player, carOrReceiverId, craft and "Craft" or "Obtain", nil, true)
+			if type(senderUserId) == "number" and senderUserId > 0 and senderUserId ~= player.UserId then
+				recordGiftProgress(player, {UserId = senderUserId}, false, true)
+			end
+		else
+			if type(carOrReceiverId) ~= "number" or carOrReceiverId <= 0 or carOrReceiverId == player.UserId then return false end
+			recordGiftProgress(player, {UserId = carOrReceiverId}, true, true)
+		end
+		session.InboxCarGrants[key] = os.time()
+		markDirty(player)
+		-- The caller saves this marker with the inventory claim or transfer outbox.
+		-- Calling SaveNow here would split that transaction across two snapshots.
+		return true
+	elseif action == "ForgetInboxCarGrant" then
+		local deliveryId = ...
+		local session = Sessions[player]
+		if session and LoadedSessions[player] and type(deliveryId) == "string" and session.InboxCarGrants then
+			session.InboxCarGrants["Received:" .. deliveryId] = nil
+			markDirty(player)
+		end
+		return true
 	elseif action == "CarGiftSent" then
 		local receiver, carName = ...
 		recordGiftProgress(player, receiver, true)
@@ -738,20 +787,25 @@ end
 
 local RankPersistenceFunction = requireChild(ServerStorage, "RankPersistenceFunction", "BindableFunction")
 
+RankPersistenceFunction:SetAttribute("PersistenceReady", false)
+
 RankPersistenceFunction.OnInvoke = function(action, player, data)
 	if action == "Load" then
 		Sessions[player] = normalizeLoadedData(data)
+		LoadedSessions[player] = true
 		applyBenefits(player)
 		pushState(player)
 		return true
 	elseif action == "Get" then
-		local session = getSession(player)
+		local session = Sessions[player]
+		if not session or not LoadedSessions[player] then return nil end
 		return {
 			CurrentRank = session.CurrentRank,
 			CompletedRanks = session.CompletedRanks,
 			ClaimedRewards = session.ClaimedRewards,
 			Progress = session.Progress,
 			ProcessedReceiptGrants = session.ProcessedReceiptGrants,
+			InboxCarGrants = session.InboxCarGrants,
 		}
 	elseif action == "Close" then
 		disconnectPlayer(player)
@@ -759,6 +813,9 @@ RankPersistenceFunction.OnInvoke = function(action, player, data)
 	end
 	return false
 end
+
+-- Publish readiness only after the persistence callback has been installed.
+RankPersistenceFunction:SetAttribute("PersistenceReady", true)
 
 local SetRankAPI = requireChild(ServerStorage, "SetRankAPI", "BindableFunction")
 
@@ -783,7 +840,7 @@ ClaimRank.OnServerInvoke = function(player, rankName)
 end
 
 local function hookPlayer(player)
-	disconnectPlayer(player)
+	disconnectPlayerConnections(player)
 	PendingSessionCleanup[player] = nil
 	getSession(player)
 	applyBenefits(player)

@@ -475,6 +475,20 @@ local _loadingScreen  = nil  -- cached PurchasingState ScreenGui
 local _loadingFrame   = nil  -- cached Loading Frame
 local _origFrameTrans = 0    -- captured from editor design
 local _origIconTrans  = 0    -- captured from editor design
+local _loadingFadeTweens = {}
+
+local function cancelLoadingFadeTweens()
+	for _, tween in ipairs(_loadingFadeTweens) do
+		tween:Cancel()
+	end
+	_loadingFadeTweens = {}
+end
+
+local function nextLoadingGeneration()
+	_G.__LoadingUIGeneration = (_G.__LoadingUIGeneration or 0) + 1
+	cancelLoadingFadeTweens()
+	return _G.__LoadingUIGeneration
+end
 
 local function resolveLoadingUI()
 	-- Return cached refs if still valid
@@ -525,6 +539,7 @@ end
 -- Show the loading overlay immediately when a Robux purchase is initiated.
 -- Safe to call from any script — always renders above shop UIs.
 function UIAudioConfig.ShowPurchaseLoading()
+	nextLoadingGeneration()
 	local screen, frame = resolveLoadingUI()
 	if not frame then return end
 
@@ -557,30 +572,29 @@ end
 
 -- Hide the loading overlay when a purchase finishes (success, cancel, or fail).
 function UIAudioConfig.HidePurchaseLoading()
+	local currentGen = nextLoadingGeneration()
 	local screen, frame = resolveLoadingUI()
 	if not frame then return end
 
-	-- Use a generation counter to ensure late-running fades don't hide a NEW loading session
-	if not _G.__LoadingUIGeneration then _G.__LoadingUIGeneration = 0 end
-	_G.__LoadingUIGeneration += 1
-	local currentGen = _G.__LoadingUIGeneration
-
 	task.delay(0.5, function()
-		if currentGen ~= _G.__LoadingUIGeneration then return end
+		if currentGen ~= _G.__LoadingUIGeneration or not screen.Parent or not frame.Parent then return end
 
 		local icon = frame:FindFirstChild("LoadingIcon")
 		local fadeInfo = TweenInfo.new(0.3, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 
 		local frameTween = TweenService:Create(frame, fadeInfo, {BackgroundTransparency = 1})
-		frameTween:Play()
-
+		local fadeTweens = { frameTween }
 		if icon then
-			local iconTween = TweenService:Create(icon, fadeInfo, {ImageTransparency = 1})
-			iconTween:Play()
+			table.insert(fadeTweens, TweenService:Create(icon, fadeInfo, {ImageTransparency = 1}))
 		end
+		_loadingFadeTweens = fadeTweens
 
-		frameTween.Completed:Connect(function()
-			if currentGen ~= _G.__LoadingUIGeneration then return end
+		local connection
+		connection = frameTween.Completed:Connect(function(playbackState)
+			connection:Disconnect()
+			if playbackState ~= Enum.PlaybackState.Completed or currentGen ~= _G.__LoadingUIGeneration then return end
+			if not screen.Parent or not frame.Parent then return end
+			if _loadingFadeTweens == fadeTweens then _loadingFadeTweens = {} end
 			frame.Visible = false
 			screen.Enabled = false
 
@@ -596,6 +610,7 @@ function UIAudioConfig.HidePurchaseLoading()
 				icon.Rotation = 0
 			end
 		end)
+		for _, tween in ipairs(fadeTweens) do tween:Play() end
 	end)
 end
 

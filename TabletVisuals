@@ -42,7 +42,8 @@ local HOVER_VOLUME = 0.5
 -- 🛡️ STATE
 local isClaiming = false
 local isHoveringMap = {} 
-local lastProjectedAmount = 0 
+local deliveredDoublePurchases = {}
+local doubleCheckoutDelivered = false
 local claimRequestId = 0
 local pendingClaimByPlot = {}
 
@@ -156,6 +157,7 @@ local function isCloseEnough(targetPart)
 end
 
 local function getClaimPartFromPlotName(plotName)
+	if typeof(plotName) ~= "string" or plotName == "" then return nil end
 	local plot = TycoonFolder:FindFirstChild(plotName)
 	local model = plot and plot:FindFirstChild("ClaimEarnings")
 	return model and (model:FindFirstChild("ClaimPart") or model:FindFirstChild("Earnings"))
@@ -269,13 +271,33 @@ local function setupClientTablet(plot)
 				return
 			end
 
-			lastProjectedAmount = (reservedAmount > 0 and reservedAmount or pendingVal.Value) * 2
+			doubleCheckoutDelivered = false
 			TabletEvent:FireServer("Prompt2X", plot.Name)
 		end)
 	end
 end
 
 TabletEvent.OnClientEvent:Connect(function(action, plotName, wasSuccessful, payload, requestId)
+	if action == "DoubleClaimResult" then
+		if not wasSuccessful or typeof(requestId) ~= "string" or deliveredDoublePurchases[requestId] then return end
+		local amount = tonumber(payload)
+		if not amount or amount ~= amount or amount < 0 or amount == math.huge then return end
+		deliveredDoublePurchases[requestId] = true
+		doubleCheckoutDelivered = true
+		local part = getClaimPartFromPlotName(plotName)
+		if part then
+			spawnFloatingText(part, "DOUBLE CASH! ( +$" .. math.floor(amount) .. " )", Color3.fromRGB(255, 255, 0), DOUBLE_CASH_DURATION)
+		end
+		if SoundService:GetAttribute("SFXMuted") ~= true then
+			local sfx = Instance.new("Sound")
+			sfx.SoundId = SUCCESS_SOUND_ID
+			sfx.Volume = 1
+			sfx.Parent = SoundService
+			sfx:Play()
+			Debris:AddItem(sfx, 2)
+		end
+		return
+	end
 	if action ~= "ClaimResult" then return end
 
 	if pendingClaimByPlot[plotName] ~= requestId then
@@ -305,22 +327,12 @@ end)
 -- 💰 PURCHASE SUCCESS LISTENER
 -- ============================================================================
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, isPurchased)
-	if userId == player.UserId and productId == DEV_PRODUCT_ID and isPurchased then
-		local s = Instance.new("Sound");
-		s.SoundId = SUCCESS_SOUND_ID; s.Volume = 1; s.Parent = SoundService; s:Play();
-		game.Debris:AddItem(s, 2)
-
-		local myPlotName = player:GetAttribute("OccupiedPlot")
-		if myPlotName then
-			local plot = TycoonFolder:FindFirstChild(myPlotName)
-			local model = plot and plot:FindFirstChild("ClaimEarnings")
-			local part = model and (model:FindFirstChild("ClaimPart") or model:FindFirstChild("Earnings"))
-
-			if part then
-				local msg = "DOUBLE CASH! ( +$" .. lastProjectedAmount .. " )"
-				spawnFloatingText(part, msg, Color3.fromRGB(255, 255, 0), DOUBLE_CASH_DURATION)
-			end
-		end
+	if userId ~= player.UserId or productId ~= DEV_PRODUCT_ID or not isPurchased or doubleCheckoutDelivered then return end
+	-- Prompt completion is only confirmation of checkout. Receipt processing may
+	-- still be pending; success comes from DoubleClaimResult after durable saves.
+	local part = getClaimPartFromPlotName(player:GetAttribute("OccupiedPlot"))
+	if part then
+		spawnFloatingText(part, "Processing purchase...", Color3.fromRGB(255, 255, 255), DOUBLE_CASH_DURATION)
 	end
 end)
 

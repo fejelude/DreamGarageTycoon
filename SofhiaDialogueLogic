@@ -63,6 +63,8 @@ local CONFIRMATION_COLORS = { Sacrifice = "#ff5757", Target = "#63b3ff", Accent 
 -- 🛠️ STATE VARIABLES
 -- ============================================================================
 local isInteracting = false
+local interactionGeneration = 0
+local ownsConfirmation = false
 local isLeaving = false
 local isProcessingSell = false
 local currentDialogueJob = nil
@@ -80,40 +82,33 @@ local SellFunction = ReplicatedStorage:WaitForChild("SofhiaSellFunction")
 -- do not select the same line when another variation is available.
 local DIALOGUES = {
 	Greeting = {
-		"Hiya! ✨ I'm Sofhia. I can buy the car you're holding, or every sellable car in your inventory—whichever you like! ♡",
-		"Oh, hello there! 🌸 Got a car you'd like to sell? I can buy one from your hands or gather up all your sellable inventory cars!",
-		"Welcome, friend! ♡ Sofhia's car counter is open~ Show me one car, or choose them all, and I'll take care of the rest! ✨",
+		"Hey! Got a car for me? I can buy the one you're holding, or price up your inventory.",
+		"Good to see you. Selling one car today, or making some room?",
+		"Hi! Show me what you've brought. I'll give you a price before we make a deal.",
 	},
 	NoCars = {
-		"Nice! Looks like I already bought every car you have! Come back when you find more cars, okay? ♡",
-		"Your inventory is all cleared out—I've already bought every available car! Bring me another one whenever you're ready. 🌸",
-		"Aww, there aren't any eligible cars left for me to buy right now. Your placed garage cars are safe, so come visit again when you find more! ✨",
-		"No sellable cars this time! It looks like we've finished the whole collection for now. I'll be right here when you get more~ ♡",
+		"I can't find any sellable cars in your inventory. Bring me another one when you're ready.",
+		"Nothing I can buy this time. Your placed cars can stay where they are.",
 	},
 	NoEquippedCar = {
-		"I don't see a car in your hands yet~ Equip an eligible car and bring it over, okay? 🌸",
-		"Oopsie, your hands are empty! Hold the car you'd like to sell, then come talk to me again. ♡",
-		"I'd be happy to buy one, but you'll need to equip a sellable car first. I'll wait right here! ✨",
+		"Hold the car you want to sell so I can take a look.",
+		"Which one are we selling? Equip it and come back to me.",
 	},
 	UnknownItem = {
-		"Hmm, I can't find a sell price for that item. Could you bring me an eligible car instead? 🌸",
-		"Oh! That doesn't look like a car I can buy. Try equipping one with a listed sell value, okay? ♡",
-		"My little price book doesn't recognize that item yet~ Let's try another car! ✨",
+		"I don't have a price for that one. Have you got another car?",
+		"Sorry, I can't buy that item. Show me a car from your inventory.",
 	},
 	SellOneSuccess = {
-		"Yay, sold! 🌟 The payment is in your wallet. Thanks for bringing me such a neat car! ♡",
-		"All done! ✨ I bought your car and added the payment to your wallet. Come back anytime!",
-		"Perfect—our deal is complete! 🌸 Your wallet has been updated, and your car is safely off to its new home.",
+		"Sold! The money's in your wallet. Thanks for bringing it over.",
+		"We've got a deal. I've added the payment to your wallet.",
 	},
 	SellAllSuccess = {
-		"All done! I bought %d inventory %s for <b><font color='%s'>$%s</font></b>. Your placed garage cars stayed safe and untouched. ✨",
-		"Yay! %d inventory %s sold for <b><font color='%s'>$%s</font></b>! Your garage display is exactly as you left it. ♡",
-		"What a lovely haul~ I bought %d inventory %s and added <b><font color='%s'>$%s</font></b> to your wallet. Your placed cars are still safe! 🌸",
+		"Sold %d inventory %s for <b><font color='%s'>$%s</font></b>. The money's in your wallet.",
+		"That's %d inventory %s sold for <b><font color='%s'>$%s</font></b>. You've got some room now!",
 	},
 	Failure = {
-		"Oh no, I couldn't complete that sale just yet. %s Please try again in a moment! 🌸",
-		"Oopsie—the transaction didn't go through. %s Nothing extra was sold or paid, so it's safe to try again. ♡",
-		"Aww, the sale had to stop. %s Check your car and come chat with me again, okay? ✨",
+		"I couldn't confirm the sale. %s",
+		"We need to check that deal. %s",
 	},
 }
 
@@ -242,7 +237,37 @@ local function getCleanTextLength(str)
 	return utf8.len(cleanStr) or #cleanStr
 end
 
+local function waitForInteraction(seconds)
+	local generation = interactionGeneration
+	task.wait(seconds)
+	return isInteracting and generation == interactionGeneration
+end
+
+local function invokeSale(...)
+	local generation = interactionGeneration
+	local args = table.pack(...)
+	local result, finished
+	local request = task.spawn(function()
+		result = table.pack(pcall(function() return SellFunction:InvokeServer(table.unpack(args, 1, args.n)) end))
+		finished = true
+	end)
+	local deadline = os.clock() + 10
+	while not finished and os.clock() < deadline and generation == interactionGeneration do task.wait() end
+	if not finished then
+		pcall(task.cancel, request)
+		return false, "I haven't heard back from the server. Check your wallet and cars before trying again."
+	end
+	if not result[1] then return false, "The server couldn't confirm the result. Check your wallet and cars." end
+	return table.unpack(result, 2, result.n)
+end
+
+local function clearConfirmationConnections()
+	for _, c in ipairs(confirmConnections) do if c then c:Disconnect() end end
+	confirmConnections = {}
+end
+
 local function typewrite(label, text, onComplete)
+	local generation = interactionGeneration
 	if not label then return end
 	label.RichText = true
 
@@ -258,7 +283,7 @@ local function typewrite(label, text, onComplete)
 
 	currentDialogueJob = task.spawn(function()
 		for i = 1, len do
-			if not isInteracting and not isLeaving then break end
+			if generation ~= interactionGeneration or (not isInteracting and not isLeaving) then return end
 			label.MaxVisibleGraphemes = i
 			if i % 3 == 0 then
 				local s = Instance.new("Sound", SoundService)
@@ -269,16 +294,21 @@ local function typewrite(label, text, onComplete)
 			end
 			task.wait(TYPEWRITER_SPEED)
 		end
+		if generation ~= interactionGeneration then return end
 		label.MaxVisibleGraphemes = -1
 		currentDialogueJob = nil
 
 		if onComplete and isInteracting then
-			task.spawn(onComplete)
+			task.spawn(function()
+				if generation == interactionGeneration and isInteracting then onComplete() end
+			end)
 		end
 	end)
 end
 
 local function stopInteraction()
+	interactionGeneration += 1
+	clearConfirmationConnections()
 	-- Safety cleanup, regardless of isInteracting flag
 	isInteracting = false
 	isLeaving = false
@@ -292,7 +322,8 @@ local function stopInteraction()
 	clearConnections()
 	setFocusMode(false) -- Restores GUIs even if bypassed previously
 
-	camera.CameraType = Enum.CameraType.Custom
+	local activeCamera = Workspace.CurrentCamera
+	if activeCamera then activeCamera.CameraType = Enum.CameraType.Custom end
 	if controls then controls:Enable() end
 
 	if player.Character then
@@ -307,8 +338,11 @@ local function stopInteraction()
 	end
 
 	local cGui, cMain = playerGui:FindFirstChild("Confirmation"), playerGui:FindFirstChild("Confirmation") and playerGui.Confirmation:FindFirstChild("MainFrame")
-	if cGui then cGui.Enabled = false end
-	if cMain and cMain:IsA("GuiObject") then cMain.Visible = false end
+	if ownsConfirmation then
+		if cGui then cGui.Enabled = false end
+		if cMain and cMain:IsA("GuiObject") then cMain.Visible = false end
+	end
+	ownsConfirmation = false
 end
 
 local function animateButton(btn)
@@ -363,10 +397,7 @@ end
 -- 🧠 CONFIRMATION UI
 -- ============================================================================
 
-local function clearConfirmationConnections()
-	for _, c in ipairs(confirmConnections) do if c then c:Disconnect() end end
-	confirmConnections = {}
-end
+
 
 local function addConfirmationConnection(conn)
 	if conn then table.insert(confirmConnections, conn) end
@@ -502,6 +533,7 @@ local function bindConfirmationButton(button, callback)
 end
 
 local function PromptConfirmation(text, callback)
+	local generation = interactionGeneration
 	local cGui, cMain = resolveConfirmationUi()
 	if not cGui or not cMain then
 		callback(false)
@@ -512,6 +544,9 @@ local function PromptConfirmation(text, callback)
 	local infoLabel = cMain:FindFirstChild("Information", true)
 	local btnYes    = resolveNamedConfirmationButton(cMain, "Yes",  { "Confirm", "Accept", "Okay", "Ok" })
 	local btnNo     = resolveNamedConfirmationButton(cMain, "No",   { "Cancel", "Decline", "Back", "Close" })
+	if generation ~= interactionGeneration or not isInteracting then return end
+	if not btnYes or not btnNo or not infoLabel then callback(false); return end
+	ownsConfirmation = true
 
 	if infoLabel then
 		pcall(function() infoLabel.RichText = true; infoLabel.TextWrapped = true; infoLabel.Text = text end)
@@ -531,6 +566,8 @@ local function PromptConfirmation(text, callback)
 	playConfirmationOpenTween(cMain)
 
 	local function finishChoice(confirmed)
+		if generation ~= interactionGeneration or not isInteracting or not ownsConfirmation then return end
+		ownsConfirmation = false
 		clearConfirmationConnections()
 		if cMain:IsA("GuiObject") then cMain.Visible = false end
 		cGui.Enabled = false
@@ -594,78 +631,54 @@ end
 
 local function handleSellEverything(dialogueLabel)
 	if isProcessingSell then return end
-
-	local totalValue, carCount = getInventorySellTotal()
-	if carCount <= 0 or totalValue <= 0 then
-		typewrite(dialogueLabel, chooseDialogue("NoCars"), function()
+	isProcessingSell = true
+	local generation = interactionGeneration
+	local quoted, quoteMessage, quote = invokeSale("QuoteSellAllCars")
+	if generation ~= interactionGeneration or not isInteracting then return end
+	if not quoted or type(quote) ~= "table" or type(quote.Id) ~= "string"
+		or type(quote.Count) ~= "number" or type(quote.Amount) ~= "number"
+		or quote.Count <= 0 or quote.Amount <= 0 then
+		typewrite(dialogueLabel, quoteMessage or "I couldn't get a sale price. Try speaking to me again.", function()
 			isProcessingSell = false
-			task.wait(2)
+			if not waitForInteraction(2) then return end
 			stopInteraction()
 		end)
 		return
 	end
 
-	isProcessingSell = true
-
-	local carWord = carCount == 1 and "car" or "cars"
+	local carWord = quote.Count == 1 and "car" or "cars"
 	local confirmText = string.format(
-		"<font color='%s'>Are you sure you want to sell all </font><b><font color='%s'>%d inventory %s</font></b><font color='%s'> for </font><b><font color='%s'>$%s</font></b><font color='%s'>? This cannot be undone, sweetie.</font>",
-		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target, carCount, carWord,
-		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, FormatCommas(totalValue),
-		CONFIRMATION_COLORS.Accent
+		"Sell <b><font color='%s'>%d inventory %s</font></b> for <b><font color='%s'>$%s</font></b>? Placed cars stay in your garage. This cannot be undone.",
+		CONFIRMATION_COLORS.Target, quote.Count, carWord,
+		CONFIRMATION_COLORS.Sacrifice, FormatCommas(quote.Amount)
 	)
-
 	PromptConfirmation(confirmText, function(confirmed)
-		if not isInteracting then return end
-
+		if generation ~= interactionGeneration or not isInteracting then return end
 		if not confirmed then
-			typewrite(dialogueLabel, "That's perfectly okay, darling~ Nothing has been sold. Take all the time you need. 💖", function()
+			typewrite(dialogueLabel, "No rush. Come back when you've decided.", function()
 				isProcessingSell = false
-				task.wait(1.5)
+				if not waitForInteraction(1.5) then return end
 				stopInteraction()
 			end)
 			return
 		end
-
 		task.spawn(function()
-			local success, msg, serverSellAmount, serverCarCount
-			local invokeCompleted = false
-
-			local invokeThread = task.spawn(function()
-				success, msg, serverSellAmount, serverCarCount = SellFunction:InvokeServer("SellAllCars")
-				invokeCompleted = true
-			end)
-
-			local elapsed = 0
-			local timeoutLimit = 10
-			while not invokeCompleted and elapsed < timeoutLimit do
-				elapsed += task.wait()
-			end
-
-			if not invokeCompleted then
-				pcall(task.cancel, invokeThread)
-				warn("⚠️ SofhiaSellFunction InvokeServer timed out.")
-				success = false
-				msg = "The server is taking too long to respond."
-			end
-
-			if not isInteracting then return end
-
-			if success then
+			local success, message, soldAmount, soldCount = invokeSale("SellAllCars", quote.Id)
+			if generation ~= interactionGeneration or not isInteracting then return end
+			if success and type(soldAmount) == "number" and type(soldCount) == "number" then
 				UIAudioConfig.PlayClick()
-				local soldCount = tonumber(serverCarCount) or carCount
-				local soldAmount = tonumber(serverSellAmount) or totalValue
-				local soldWord = soldCount == 1 and "car" or "cars"
-				local successText = string.format(chooseDialogue("SellAllSuccess"), soldCount, soldWord, PRICE_COLOR, FormatCommas(soldAmount))
-				typewrite(dialogueLabel, successText, function()
+				local text = string.format(chooseDialogue("SellAllSuccess"), soldCount,
+					soldCount == 1 and "car" or "cars", PRICE_COLOR, FormatCommas(soldAmount))
+				typewrite(dialogueLabel, text, function()
 					isProcessingSell = false
-					task.wait(1.5)
+					if not waitForInteraction(1.5) then return end
 					stopInteraction()
 				end)
 			else
-				typewrite(dialogueLabel, string.format(chooseDialogue("Failure"), msg or "Please try again later."), function()
+				typewrite(dialogueLabel, string.format(chooseDialogue("Failure"),
+					message or "Check your wallet and inventory before trying again."), function()
 					isProcessingSell = false
-					task.wait(2)
+					if not waitForInteraction(2) then return end
 					stopInteraction()
 				end)
 			end
@@ -675,12 +688,13 @@ end
 
 local function handleSell(dialogueLabel)
 	if isProcessingSell then return end
+	local generation = interactionGeneration
 
 	local equippedCarId = getEquippedCar()
 	if not equippedCarId then
 		-- No car equipped
 		typewrite(dialogueLabel, chooseDialogue("NoEquippedCar"), function()
-			task.wait(2)
+			if not waitForInteraction(2) then return end
 			stopInteraction()
 		end)
 		return
@@ -690,7 +704,7 @@ local function handleSell(dialogueLabel)
 	if not details then
 		-- Unknown item
 		typewrite(dialogueLabel, chooseDialogue("UnknownItem"), function()
-			task.wait(2)
+			if not waitForInteraction(2) then return end
 			stopInteraction()
 		end)
 		return
@@ -699,19 +713,19 @@ local function handleSell(dialogueLabel)
 	isProcessingSell = true
 
 	local confirmText = string.format(
-		"<font color='%s'>Are you absolutely sure, darling~? 💔 You wish to sell your </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>$%s</font></b><font color='%s'>? This cannot be undone~</font>",
+		"<font color='%s'>Sell your </font><b><font color='%s'>%s</font></b><font color='%s'> for </font><b><font color='%s'>$%s</font></b><font color='%s'>? This cannot be undone.</font>",
 		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Target, escapeRichText(details.Name),
 		CONFIRMATION_COLORS.Accent, CONFIRMATION_COLORS.Sacrifice, FormatCommas(details.SellPrice),
 		CONFIRMATION_COLORS.Accent
 	)
 
 	PromptConfirmation(confirmText, function(confirmed)
-		if not isInteracting then return end
+		if generation ~= interactionGeneration or not isInteracting then return end
 
 		if not confirmed then
-			typewrite(dialogueLabel, "Oh, changed your mind~? That's perfectly fine, darling 💅 Take all the time you need~", function()
+			typewrite(dialogueLabel, "Changed your mind? That's fine. Keep it for now.", function()
 				isProcessingSell = false
-				task.wait(1.5)
+				if not waitForInteraction(1.5) then return end
 				stopInteraction()
 			end)
 			return
@@ -723,35 +737,17 @@ local function handleSell(dialogueLabel)
 			-- switched tools while the confirmation dialog was open.
 			local freshCarId = getEquippedCar()
 			if not freshCarId or CarSellPrices.CleanId(freshCarId) ~= CarSellPrices.CleanId(equippedCarId) then
-				typewrite(dialogueLabel, "Oh my~ It seems you changed what you're holding, darling. Let's start over~ 🌸", function()
+				typewrite(dialogueLabel, "You've switched cars. Let's take another look.", function()
 					isProcessingSell = false
-					task.wait(2)
+					if not waitForInteraction(2) then return end
 					stopInteraction()
 				end)
 				return
 			end
 
-			local success, msg
-			local invokeCompleted = false
-
-			local invokeThread = task.spawn(function()
-				success, msg = SellFunction:InvokeServer(equippedCarId)
-				invokeCompleted = true
-			end)
-
-			-- Timeout mechanism (No artificial waiting, immediately breaks once invokeCompleted)
-			local elapsed = 0
-			local timeoutLimit = 10
-			while not invokeCompleted and elapsed < timeoutLimit do
-				elapsed += task.wait()
-			end
-
-			if not invokeCompleted then
-				pcall(task.cancel, invokeThread)
-				warn("⚠️ SofhiaSellFunction InvokeServer timed out.")
-				success = false
-				msg = "The server is taking too long to respond."
-			end
+			local generation = interactionGeneration
+			local success, msg = invokeSale(equippedCarId)
+			if generation ~= interactionGeneration then return end
 
 			if not isInteracting then return end
 
@@ -759,13 +755,13 @@ local function handleSell(dialogueLabel)
 				UIAudioConfig.PlayClick()
 				typewrite(dialogueLabel, chooseDialogue("SellOneSuccess"), function()
 					isProcessingSell = false
-					task.wait(1.5)
+					if not waitForInteraction(1.5) then return end
 					stopInteraction()
 				end)
 			else
 				typewrite(dialogueLabel, string.format(chooseDialogue("Failure"), msg or "Please try again later."), function()
 					isProcessingSell = false
-					task.wait(2)
+					if not waitForInteraction(2) then return end
 					stopInteraction()
 				end)
 			end
@@ -778,6 +774,17 @@ end
 -- ============================================================================
 local function startInteraction(npcModel)
 	if isInteracting or isLeaving then return end
+	if player:GetAttribute("MovementLock") == true or player:GetAttribute("TycoonDataLoaded") ~= true then return end
+	local readyGui = playerGui:FindFirstChild(GUI_ID)
+	local readyContainer = readyGui and readyGui:FindFirstChild(CONTAINER_ID, true)
+	local readyButtons = readyContainer and readyContainer:FindFirstChild(BUTTONS_FOLDER)
+	if not readyContainer or not readyContainer:FindFirstChild(TEXT_ID, true) or not readyButtons then return end
+	for _, id in ipairs(ALL_BUTTON_IDS) do
+		local button = readyButtons:FindFirstChild(id, true)
+		if not button or not button:IsA("GuiButton") then return end
+	end
+	camera = Workspace.CurrentCamera
+	if not camera or not npcModel:FindFirstChild(CAMERA_PART) then return end
 
 	-- Safety clear in case a previous interaction didn't clean up properly
 	stopInteraction()
@@ -852,10 +859,10 @@ local function startInteraction(npcModel)
 			clearConnections()
 			setButtonsState(false)
 			if dialogueLabel then
-				local goodbyeMsg = "Toodles~! 🌸 Do come back anytime, darling. My doors are always open for a lovely customer like you~ 💖"
+				local goodbyeMsg = "See you around. Bring me something good next time!"
 				typewrite(dialogueLabel, goodbyeMsg)
 			end
-			task.wait(LEAVE_DELAY)
+			if not waitForInteraction(LEAVE_DELAY) then return end
 			stopInteraction()
 		end)
 

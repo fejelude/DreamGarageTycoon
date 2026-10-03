@@ -4,6 +4,7 @@ local DataStoreService = game:GetService("DataStoreService")
 local ServerStorage = game:GetService("ServerStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
 
 local GiftEntitlementService = require(ServerScriptService:WaitForChild("GiftEntitlementService"))
 local store = DataStoreService:GetDataStore("DreamGarage_Inbox_V1")
@@ -12,6 +13,28 @@ local localLocks = {}
 local MAX_ENTRIES = 200
 local CLAIM_LEASE_SECONDS = 90
 local RESERVATION_RECOVERY_SECONDS = 120
+local MAX_ID_LENGTH = 256
+local CACHE_SECONDS = 3
+local cache, reads, versions = {}, {}, {}
+local readBudget = { Tokens = 30, UpdatedAt = os.clock() }
+
+local function validId(value)
+	return type(value) == "string" and #value > 0 and #value <= MAX_ID_LENGTH and not value:find("[%c]")
+end
+
+local function invalidate(userId)
+	cache[userId] = nil
+	versions[userId] = reads[userId] and ((versions[userId] or 0) + 1) or nil
+end
+
+local function takeReadBudget()
+	local now = os.clock()
+	readBudget.Tokens = math.min(30, readBudget.Tokens + (now - readBudget.UpdatedAt) * 5)
+	readBudget.UpdatedAt = now
+	if readBudget.Tokens < 1 then return false end
+	readBudget.Tokens -= 1
+	return true
+end
 
 local function key(userId)
 	return "User_" .. tostring(math.floor(tonumber(userId) or 0))
@@ -27,11 +50,12 @@ local function compact(entry)
 		DisplayName = tostring(entry.DisplayName or entry.RewardId or "Reward"),
 		SourceType = tostring(entry.SourceType or "System"),
 		Source = tostring(entry.Source or "Rewards"),
-		SenderUserId = math.floor(tonumber(entry.SenderUserId) or 0),
+		SenderUserId = math.floor(tonumber(entry.SenderUserId or entry.SourceUserId) or 0),
 		SenderUsername = tostring(entry.SenderUsername or ""),
-		SenderDisplayName = tostring(entry.SenderDisplayName or ""),
+		SenderDisplayName = tostring(entry.SenderDisplayName or entry.SourceDisplayName or ""),
 		Rarity = tostring(entry.Rarity or ""),
 		IsRobuxExclusive = entry.IsRobuxExclusive == true,
+		IssuedId = type(entry.IssuedId) == "string" and entry.IssuedId or nil,
 		Declineable = entry.Declineable == true,
 		CreatedAt = math.floor(tonumber(entry.CreatedAt) or os.time()),
 		State = entry.State == "Reserved" and "Reserved" or "Pending",
@@ -41,32 +65,41 @@ end
 function Service.Enqueue(userId, transactionId, reward)
 	userId = math.floor(tonumber(userId) or 0)
 	transactionId = tostring(transactionId or "")
-	if userId <= 0 or transactionId == "" or type(reward) ~= "table" then
+	if userId <= 0 or not validId(transactionId) or type(reward) ~= "table"
+		or (reward.Id ~= nil and not validId(reward.Id)) then
 		return false, "Invalid delivery"
 	end
 
 	local inserted = false
+	local delivery = table.clone(reward)
+	delivery.TransactionId = transactionId
+	delivery.Id = delivery.Id or transactionId
+	delivery.CreatedAt = delivery.CreatedAt or os.time()
 	local result
 	local ok, err = pcall(function()
 		result = store:UpdateAsync(key(userId), function(old)
-			old = type(old) == "table" and old or { Entries = {} }
-			old.Entries = type(old.Entries) == "table" and old.Entries or {}
+			inserted = false -- UpdateAsync may rerun an uncommitted transform.
+			if old ~= nil and type(old) ~= "table" then error("Inbox document has an invalid type") end
+			old = old or {Entries={}}
+			if old.Entries ~= nil and type(old.Entries) ~= "table" then error("Inbox entries have an invalid type") end
+			if old.Consumed ~= nil and type(old.Consumed) ~= "table" then error("Inbox journal has an invalid type") end
+			old.Entries = old.Entries or {}
+			old.Consumed = old.Consumed or {}
+			if old.Consumed[transactionId] or old.Consumed[delivery.Id] then return old end
 			for _, existing in ipairs(old.Entries) do
-				if existing.TransactionId == transactionId or existing.Id == transactionId then
+				if existing.TransactionId == transactionId or existing.Id == delivery.Id then
 					return old
 				end
 			end
 			if #old.Entries >= MAX_ENTRIES then return nil end
-			reward.TransactionId = transactionId
-			reward.Id = reward.Id or transactionId
-			reward.CreatedAt = reward.CreatedAt or os.time()
-			table.insert(old.Entries, compact(reward))
+			table.insert(old.Entries, compact(delivery))
 			inserted = true
 			old.Revision = (tonumber(old.Revision) or 0) + 1
 			return old
 		end)
 	end)
 	if not ok or not result then return false, tostring(err or "Inbox is full") end
+	invalidate(userId)
 	return true, inserted and "Inserted" or "Already delivered"
 end
 
@@ -74,6 +107,7 @@ function Service.Activate(userId, transactionId)
 	local activated = false
 	local ok, err = pcall(function()
 		store:UpdateAsync(key(userId), function(old)
+			activated = false
 			if type(old) ~= "table" or type(old.Entries) ~= "table" then return old end
 			for _, entry in ipairs(old.Entries) do
 				if entry.TransactionId == transactionId then
@@ -85,11 +119,12 @@ function Service.Activate(userId, transactionId)
 			return old
 		end)
 	end)
+	if ok then invalidate(userId) end
 	return ok and activated, ok and nil or tostring(err)
 end
 
 function Service.CancelReservation(userId, transactionId)
-	return pcall(function()
+	local ok, err = pcall(function()
 		store:UpdateAsync(key(userId), function(old)
 			if type(old) ~= "table" or type(old.Entries) ~= "table" then return old end
 			for index, entry in ipairs(old.Entries) do
@@ -101,13 +136,48 @@ function Service.CancelReservation(userId, transactionId)
 			return old
 		end)
 	end)
+	if ok then invalidate(userId) end
+	return ok, err
+end
+
+local function getData(userId)
+	local cached = cache[userId]
+	if cached and cached.ExpiresAt > os.clock() then return cached.Data end
+	local flight = reads[userId]
+	if flight then
+		local deadline = os.clock() + 10
+		repeat task.wait(0.05) until flight.Done or os.clock() >= deadline
+		if not flight.Done then return nil, "Inbox lookup is still processing." end
+		return flight.Data, flight.Error
+	end
+	if not takeReadBudget() then return nil, "Inbox is busy. Please try again shortly." end
+	flight = { Done = false }
+	reads[userId] = flight
+	local version = versions[userId] or 0
+	local ok, data = pcall(function() return store:GetAsync(key(userId)) end)
+	local schemaError
+	if ok then
+		if data ~= nil and type(data) ~= "table" then schemaError = "Inbox document has an invalid type"
+		elseif type(data) == "table" and data.Entries ~= nil and type(data.Entries) ~= "table" then schemaError = "Inbox entries have an invalid type"
+		elseif type(data) == "table" and data.Consumed ~= nil and type(data.Consumed) ~= "table" then schemaError = "Inbox journal has an invalid type" end
+	end
+	-- Do not turn malformed stored data into an empty mailbox or cache it.
+	flight.Data = ok and not schemaError and (data or {}) or nil
+	flight.Error = schemaError or (not ok and tostring(data) or nil)
+	flight.Done = true
+	if reads[userId] == flight then reads[userId] = nil end
+	if ok and not schemaError and version == (versions[userId] or 0) then
+		cache[userId] = { Data = flight.Data, ExpiresAt = os.clock() + CACHE_SECONDS }
+	end
+	if not reads[userId] then versions[userId] = nil end
+	return flight.Data, flight.Error
 end
 
 function Service.Get(userId)
-	local ok, data = pcall(function() return store:GetAsync(key(userId)) end)
-	if not ok then return nil, tostring(data) end
+	local data, err = getData(userId)
+	if not data then return nil, err end
 	local entries = {}
-	for _, entry in ipairs(type(data) == "table" and type(data.Entries) == "table" and data.Entries or {}) do
+	for _, entry in ipairs(type(data.Entries) == "table" and data.Entries or {}) do
 		if entry.State == "Pending"
 			or (entry.State == "Claiming" and (tonumber(entry.ClaimExpiresAt) or 0) <= os.time())
 			or (entry.State == "Reserved" and os.time() - (tonumber(entry.CreatedAt) or os.time()) >= RESERVATION_RECOVERY_SECONDS)
@@ -126,15 +196,42 @@ function Service.Get(userId)
 	return entries
 end
 
+function Service.HasConsumed(userId, entryId)
+	local data, err = getData(userId)
+	if not data then return nil, err end
+	return type(data.Consumed) == "table" and data.Consumed[entryId] ~= nil
+end
+
+function Service.HasIssued(userId, entryId)
+	local data, err = getData(userId)
+	if not data then return nil, err end
+	if type(data.Consumed) == "table" and data.Consumed[entryId] then return true end
+	for _, entry in ipairs(data.Entries or {}) do
+		if entry.Id == entryId or entry.TransactionId == entryId then return true end
+	end
+	return false
+end
+
+local function entryExists(userId, entryId)
+	local entries, err = Service.Get(userId)
+	if not entries then return false, err end
+	for _, entry in ipairs(entries) do
+		if entry.Id == entryId then return true end
+	end
+	return false, "Inbox entry is busy or no longer exists."
+end
+
 local function acquireClaim(userId, entryId, requireDeclineable)
 	local token = game.JobId .. ":" .. HttpService:GenerateGUID(false)
 	local claimedEntry
-	local now = os.time()
 	local ok, err = pcall(function()
 		store:UpdateAsync(key(userId), function(old)
+			claimedEntry = nil
+			local now = os.time()
 			if type(old) ~= "table" or type(old.Entries) ~= "table" then return old end
 			for _, entry in ipairs(old.Entries) do
 				if entry.Id == entryId then
+					if type(old.Consumed) == "table" and (old.Consumed[entryId] or old.Consumed[entry.TransactionId]) then return old end
 					local available = entry.State == "Pending"
 						or (entry.State == "Claiming" and (tonumber(entry.ClaimExpiresAt) or 0) <= now)
 						or (entry.State == "Reserved" and now - (tonumber(entry.CreatedAt) or now) >= RESERVATION_RECOVERY_SECONDS)
@@ -151,12 +248,13 @@ local function acquireClaim(userId, entryId, requireDeclineable)
 		end)
 	end)
 	if not ok then return nil, nil, tostring(err) end
+	invalidate(userId)
 	if not claimedEntry then return nil, nil, requireDeclineable and "This reward cannot be declined." or "Inbox entry is busy or no longer exists." end
 	return claimedEntry, token
 end
 
 local function releaseClaim(userId, entryId, token)
-	pcall(function()
+	local ok = pcall(function()
 		store:UpdateAsync(key(userId), function(old)
 			if type(old) ~= "table" or type(old.Entries) ~= "table" then return old end
 			for _, entry in ipairs(old.Entries) do
@@ -168,16 +266,27 @@ local function releaseClaim(userId, entryId, token)
 			return old
 		end)
 	end)
+	if ok then invalidate(userId) end
 end
 
 local function removeClaim(userId, entryId, token)
 	local removed = false
 	local ok = pcall(function()
 		store:UpdateAsync(key(userId), function(old)
-			if type(old) ~= "table" or type(old.Entries) ~= "table" then return old end
+			removed = false
+			if type(old) ~= "table" then return old end
+			if old.Consumed ~= nil and type(old.Consumed) ~= "table" then error("Inbox journal has an invalid type") end
+			old.Consumed = old.Consumed or {}
+			if old.Consumed[entryId] then removed = true; return old end
+			if type(old.Entries) ~= "table" then return old end
 			for index, entry in ipairs(old.Entries) do
 				if entry.Id == entryId and entry.State == "Claiming" and entry.ClaimToken == token then
+					-- Removal and replay protection share one atomic DataStore write.
+					-- Never prune these identities without a replacement durable ledger.
+					old.Consumed[entry.Id] = os.time()
+					old.Consumed[entry.TransactionId or entry.Id] = os.time()
 					table.remove(old.Entries, index)
+					old.Revision = (tonumber(old.Revision) or 0) + 1
 					removed = true
 					break
 				end
@@ -185,7 +294,26 @@ local function removeClaim(userId, entryId, token)
 			return old
 		end)
 	end)
+	if ok then invalidate(userId) end
 	return ok and removed
+end
+
+local function forgetProfileClaim(player, entryId)
+	local admin = ServerStorage:FindFirstChild("TycoonAdminAPI")
+	if admin and player.Parent then
+		task.spawn(function()
+			local ok, err = pcall(function() return admin:Invoke("ForgetInboxClaim", player, entryId) end)
+			if not ok then warn("[InboxService] Claim cleanup failed:", player.UserId, entryId, err) end
+		end)
+	end
+end
+
+local function finishCleanup(player, entryId, token)
+	if removeClaim(player.UserId, entryId, token) then
+		forgetProfileClaim(player, entryId)
+		return true
+	end
+	return false
 end
 
 local function grant(player, entry)
@@ -199,7 +327,11 @@ end
 
 function Service.Accept(player, entryId)
 	entryId = tostring(entryId or "")
-	if entryId == "" or localLocks[player] then return false, "Claim already in progress." end
+	if not validId(entryId) or localLocks[player] then return false, "Invalid request or claim already in progress." end
+	if player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("TycoonDataClosing") == true then return false, "Your data is not ready." end
+	local exists, lookupError = entryExists(player.UserId, entryId)
+	if not exists then return false, lookupError end
+	if localLocks[player] then return false, "Claim already in progress." end
 	localLocks[player] = true
 	local entry, token, acquireError = acquireClaim(player.UserId, entryId, false)
 	if not entry then localLocks[player] = nil return false, acquireError end
@@ -213,19 +345,29 @@ function Service.Accept(player, entryId)
 		end
 		return false, message
 	end
-	local removed = removeClaim(player.UserId, entryId, token)
+	local removed = finishCleanup(player, entryId, token)
 	localLocks[player] = nil
 	if not removed then
-		-- The profile receipt already prevents a second grant. Leaving the leased
-		-- entry intact makes a later retry safely finish mailbox cleanup.
-		return true, "Reward granted safely; Inbox cleanup will finish automatically."
+		-- Retain unresolved profile markers until a consumed tombstone commits.
+		-- Retry cleanup without reapplying the reward.
+		task.spawn(function()
+			for _, delaySeconds in ipairs({ 1, 3, 10, 30 }) do
+				task.wait(delaySeconds)
+				if finishCleanup(player, entryId, token) then return end
+			end
+		end)
+		return true, "Reward granted safely; Inbox cleanup is pending."
 	end
 	return true, "Successfully claimed " .. entry.DisplayName .. "!"
 end
 
 function Service.Decline(player, entryId)
 	entryId = tostring(entryId or "")
-	if entryId == "" or localLocks[player] then return false, "Request already in progress." end
+	if not validId(entryId) or localLocks[player] then return false, "Invalid request or request already in progress." end
+	if player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("TycoonDataClosing") == true then return false, "Your data is not ready." end
+	local exists, lookupError = entryExists(player.UserId, entryId)
+	if not exists then return false, lookupError end
+	if localLocks[player] then return false, "Request already in progress." end
 	localLocks[player] = true
 	local _, token, acquireError = acquireClaim(player.UserId, entryId, true)
 	if not token then localLocks[player] = nil return false, acquireError end
@@ -233,5 +375,10 @@ function Service.Decline(player, entryId)
 	localLocks[player] = nil
 	return removed, removed and "Gift declined." or "Unable to decline this gift right now."
 end
+
+Players.PlayerRemoving:Connect(function(player)
+	localLocks[player] = nil
+	invalidate(player.UserId)
+end)
 
 return Service

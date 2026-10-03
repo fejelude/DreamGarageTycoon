@@ -104,50 +104,60 @@ local function migratePadOccupancy(plot, fromLevel, toLevel)
 	local toModel = getLevelModel(plot, "Level" .. tostring(toLevel))
 	local fromPads = fromModel and fromModel.Parent:FindFirstChild("Pads")
 	local toPads = toModel and toModel.Parent:FindFirstChild("Pads")
-	if not fromPads or not toPads then
-		return false, "Base pads are unavailable. Please try again."
-	end
-
-	for _, fromPadObj in ipairs(fromPads:GetChildren()) do
-		local padNumber = fromPadObj.Name:match("Pad(%d+)")
-		local toPadObj = padNumber and toPads:FindFirstChild("Pad" .. padNumber)
-		if not toPadObj then
-			local fromPart = getMainPart(fromPadObj)
-			local fromOcc = fromPart and fromPart:FindFirstChild("IsOccupied")
-			local fromLink = fromPart and fromPart:FindFirstChild("LinkedCar")
-			if (fromOcc and fromOcc.Value) or (fromLink and fromLink.Value) then
-				return false, "Move cars off Level " .. tostring(fromLevel) .. "-only pads before switching bases."
+	if not fromPads or not toPads or fromPads == toPads then return false, "Base pads are unavailable." end
+	local moves = {}
+	for _, fromPad in ipairs(fromPads:GetChildren()) do
+		local fromPart = getMainPart(fromPad)
+		local occupied = fromPart and fromPart:FindFirstChild("IsOccupied")
+		local link = fromPart and fromPart:FindFirstChild("LinkedCar")
+		local car = link and link.Value
+		if (occupied and occupied.Value) or car then
+			local number = fromPad.Name:match("^Pad(%d+)$")
+			local toPad = number and toPads:FindFirstChild("Pad" .. number)
+			if not toPad then return false, "Move cars off pads that do not exist on the destination base." end
+			local toPart = getMainPart(toPad)
+			local toOcc = toPart and toPart:FindFirstChild("IsOccupied")
+			local toLink = toPart and toPart:FindFirstChild("LinkedCar")
+			if not occupied or not link or not car or not car:IsA("Model") or not car.Parent or not toOcc or not toLink then
+				return false, "A car pad is unavailable."
 			end
-		elseif toPadObj then
-			local fromPart = getMainPart(fromPadObj)
-			local toPart = getMainPart(toPadObj)
-			if fromPart and toPart then
-				local fromOcc = fromPart:FindFirstChild("IsOccupied")
-				local toOcc = toPart:FindFirstChild("IsOccupied")
-				local fromLink = fromPart:FindFirstChild("LinkedCar")
-				local toLink = toPart:FindFirstChild("LinkedCar")
-
-				if fromOcc and toOcc then toOcc.Value = fromOcc.Value end
-				if fromLink and toLink then
-					toLink.Value = fromLink.Value
-					if fromLink.Value and fromLink.Value:IsA("Model") then
-						local verticalOffset = 5
-						fromLink.Value:PivotTo(toPart.CFrame * CFrame.new(0, (toPart.Size.Y / 2) + verticalOffset, 0))
-					end
-				end
-
-				if fromOcc then fromOcc.Value = false end
-				if fromLink then fromLink.Value = nil end
-			end
+			if toOcc.Value or toLink.Value then return false, "The destination pads are occupied." end
+			table.insert(moves, {FromOcc=occupied, FromLink=link, ToOcc=toOcc, ToLink=toLink, Car=car,
+				OldOccupied=occupied.Value, OldToOccupied=toOcc.Value, OldToCar=toLink.Value,
+				Pivot=car:GetPivot(), Origin=car:GetAttribute("AnimationBaseCFrame"),
+				Target=toPart.CFrame * CFrame.new(0,(toPart.Size.Y/2)+6,0)})
 		end
 	end
-
+	local ok, err = pcall(function()
+		for _, move in ipairs(moves) do
+			move.Car:PivotTo(move.Target)
+			move.Car:SetAttribute("AnimationBaseCFrame", move.Target)
+			move.ToLink.Value, move.ToOcc.Value = move.Car, true
+			move.FromLink.Value, move.FromOcc.Value = nil, false
+		end
+	end)
+	if not ok then
+		for _, move in ipairs(moves) do
+			local restored, message = pcall(function()
+				move.FromLink.Value, move.FromOcc.Value = move.Car, move.OldOccupied
+				move.ToLink.Value, move.ToOcc.Value = move.OldToCar, move.OldToOccupied
+				move.Car:PivotTo(move.Pivot)
+				move.Car:SetAttribute("AnimationBaseCFrame", move.Origin or move.Pivot)
+			end)
+			if not restored then warn("[BaseMigration] Rollback failed: " .. tostring(message)) end
+		end
+		warn("[BaseMigration] Application failed: " .. tostring(err))
+		return false, "Base switch failed."
+	end
 	return true
 end
 
+
 -- 💰 UNIFIED TRANSACTION & EQUIP FUNCTION
 TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
-	if player:GetAttribute("TycoonDataLoaded") ~= true then
+	if player.Parent ~= Players or player:GetAttribute("TycoonDataLoaded") ~= true
+		or player:GetAttribute("DataLoadState") ~= "Ready"
+		or player:GetAttribute("TycoonDataClosing") == true then
 		return false, "Your data is still loading. Please try again."
 	end
 	-- Prevent remote spam & race conditions
@@ -158,6 +168,8 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 
 	-- Use a wrapper to ensure the lock is ALWAYS released, even if the script errors
 	local success, result, msg = pcall(function()
+		if type(skinName) ~= "string" and type(skinName) ~= "number" then return false, "Invalid skin." end
+		if type(actionType) ~= "string" then return false, "Invalid action." end
 		local skinData = StatsModule[skinName]
 
 
@@ -211,10 +223,8 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 			player:SetAttribute("BaseLevel", targetLevel)
 			local saveOk = forceSave(player)
 			if not saveOk then
-				migratePadOccupancy(plot, targetLevel, currentBaseLevel)
-				player:SetAttribute("BaseLevel", currentBaseLevel)
-				forceSave(player)
-				return false, "Base switch could not be saved. Please try again."
+				-- Keep the accepted layout on uncertain saves; a retry was queued.
+				return false, "Base switched, but saving is still retrying. Please wait before leaving."
 			end
 			return true, successMessage
 
@@ -231,13 +241,11 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 		-- ========================================================================
 		if actionType == "Equip" then
 			if ownsSkin then
-				local originalEquipped = player:GetAttribute("EquippedSkin") or "Default"
+				if player:GetAttribute("EquippedSkin") == skinName then return false, "Already equipped." end
 				player:SetAttribute("EquippedSkin", skinName)
 				local saveOk = forceSave(player)
 				if not saveOk then
-					player:SetAttribute("EquippedSkin", originalEquipped)
-					forceSave(player)
-					return false, "Equip could not be saved. Please try again."
+					return false, "Skin equipped, but saving is still retrying. Please wait before leaving."
 				end
 				print("✅ " .. player.Name .. " equipped " .. skinName)
 				return true, "Equipped"
@@ -246,13 +254,11 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 			end
 
 		elseif actionType == "Unequip" then
-			local originalEquipped = player:GetAttribute("EquippedSkin") or "Default"
+			if (player:GetAttribute("EquippedSkin") or "Default") == "Default" then return false, "Already unequipped." end
 			player:SetAttribute("EquippedSkin", "Default")
 			local saveOk = forceSave(player)
 			if not saveOk then
-				player:SetAttribute("EquippedSkin", originalEquipped)
-				forceSave(player)
-				return false, "Unequip could not be saved. Please try again."
+				return false, "Skin unequipped, but saving is still retrying. Please wait before leaving."
 			end
 			print("🚫 " .. player.Name .. " unequipped " .. skinName)
 			return true, "Unequipped"
@@ -268,10 +274,6 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 			local wallet = leaderstats and leaderstats:FindFirstChild("Wallet") 
 
 			if wallet and wallet.Value >= skinData.PriceCash then
-				local originalWallet = wallet.Value
-				local originalOwned = ownedRaw
-				local originalEquipped = player:GetAttribute("EquippedSkin") or "Default"
-
 				-- A. Deduct Money
 				wallet.Value = wallet.Value - skinData.PriceCash
 
@@ -283,11 +285,7 @@ TransactionFunc.OnServerInvoke = function(player, skinName, actionType)
 				player:SetAttribute("EquippedSkin", skinName) -- Auto-Equip on buy
 				local saveOk = forceSave(player)
 				if not saveOk then
-					wallet.Value = originalWallet
-					player:SetAttribute("OwnedBaseSkins", originalOwned)
-					player:SetAttribute("EquippedSkin", originalEquipped)
-					forceSave(player)
-					return false, "Skin purchase could not be saved. Your Wallet was not charged; please try again."
+					return false, "Skin purchased, but saving is still retrying. Please wait before leaving."
 				end
 
 				print("✅ " .. player.Name .. " bought " .. skinName .. " with Wallet Cash")

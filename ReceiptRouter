@@ -225,6 +225,14 @@ local function fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, isGift, tar
 	})
 end
 
+local function fireTabletDoubleClaimResult(player, amount, purchaseId)
+	local remote = ReplicatedStorage:FindFirstChild("TabletEvent")
+	if remote and remote:IsA("RemoteEvent") and player and player.Parent then
+		remote:FireClient(player, "DoubleClaimResult", player:GetAttribute("OccupiedPlot"), true,
+			math.max(0, tonumber(amount) or 0), tostring(purchaseId))
+	end
+end
+
 local function savePlayerNow(player, timeout)
 	local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")
 	if not TycoonAdminAPI then
@@ -330,6 +338,10 @@ local function wasPurchaseProcessed(purchaseKey)
 		end
 	end
 	return nil
+end
+
+_G.GiftReceiptWasFulfilled = function(buyerUserId, purchaseId)
+	return wasPurchaseProcessed(tostring(buyerUserId) .. "_" .. tostring(purchaseId))
 end
 
 local function bindPurchaseTarget(purchaseKey, receiptInfo, targetUserId)
@@ -605,7 +617,7 @@ local function processReceipt(receiptInfo)
 	local buyerId = receiptInfo.PlayerId
 	local buyerPlayer = Players:GetPlayerByUserId(buyerId)
 
-	if not buyerPlayer then
+	if not buyerPlayer or buyerPlayer:GetAttribute("TycoonDataLoaded") ~= true or buyerPlayer:GetAttribute("TycoonDataClosing") == true then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
@@ -627,9 +639,7 @@ local function processReceipt(receiptInfo)
 	local targetPlayer = buyerPlayer
 	local isGift = false
 	local giftReceiverId = nil
-	local consumeStaleGiftIntentAfterGrant = false
 	local giftFallbackMessage = nil
-	local giftIntentStatus = nil
 	local function enqueueRegisteredGift(targetUserId)
 		if not registeredGiftProduct then return false end
 		local reward
@@ -638,7 +648,7 @@ local function processReceipt(receiptInfo)
 				DisplayName=registeredGiftProduct.DisplayName }
 		elseif registeredGiftProduct.Kind == "Car" then
 			reward = { RewardType="Car", RewardId=registeredGiftProduct.CarName,
-				DisplayName=registeredGiftProduct.DisplayName, Rarity=registeredGiftProduct.Rarity }
+				DisplayName=registeredGiftProduct.DisplayName, Rarity=registeredGiftProduct.Rarity, IsRobuxExclusive=true }
 		elseif registeredGiftProduct.Kind == "CashPack" then
 			reward = { RewardType="Wallet", RewardId="Wallet", Amount=registeredGiftProduct.WalletReward,
 				DisplayName=registeredGiftProduct.DisplayName }
@@ -648,7 +658,17 @@ local function processReceipt(receiptInfo)
 		reward.SourceType, reward.Source = "Gift", "Player Gift"
 		reward.SenderUserId, reward.SenderUsername, reward.SenderDisplayName = buyerId, buyerPlayer.Name, buyerPlayer.DisplayName
 		reward.Declineable = true
-		return InboxService.Enqueue(targetUserId, "Receipt:" .. tostring(receiptInfo.PurchaseId), reward)
+		local transactionId = "Receipt:" .. tostring(receiptInfo.PurchaseId)
+		local delivered, message = InboxService.Enqueue(targetUserId, transactionId, reward)
+		if not delivered then return false, message end
+		if registeredGiftProduct.Kind == "Car" then
+			local rankApi = ServerStorage:FindFirstChild("RankProgressAPI")
+			if not rankApi or not rankApi:IsA("BindableFunction") then return false, "Rank service unavailable" end
+			local invokeOk, recorded = safeInvoke(rankApi, 20, "InboxGiftSent", buyerPlayer, transactionId, targetUserId)
+			if not invokeOk or recorded ~= true then return false, "Gift progress save is pending" end
+			if not savePlayerNow(buyerPlayer, 20) then return false, "Gift progress save is pending" end
+		end
+		return true, message
 	end
 
 	local purchaseKey = buyerId .. "_" .. receiptInfo.PurchaseId
@@ -670,6 +690,15 @@ local function processReceipt(receiptInfo)
 	end
 
 	if alreadyProcessed then
+		if pid == TABLET_2X_ID then
+			local confirmed, data = hasProfileReceiptGrant(buyerPlayer, receiptInfo.PurchaseId)
+			if confirmed == true then
+				fireTabletDoubleClaimResult(buyerPlayer, tonumber(data and data.GrantHash) or 0, receiptInfo.PurchaseId)
+			end
+		end
+		if type(purchaseRecord) == "table" and tonumber(purchaseRecord.TargetUserId) ~= buyerId and _G.ClearGiftIntent then
+			_G.ClearGiftIntent(buyerId, pid, receiptInfo.PurchaseId)
+		end
 		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
 	end
 
@@ -686,7 +715,7 @@ local function processReceipt(receiptInfo)
 			if registeredGiftProduct and targetUserId ~= buyerId then
 				local delivered = enqueueRegisteredGift(targetUserId)
 				if delivered and markPurchaseProcessed(purchaseKey) then
-					if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid) end
+					if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid, receiptInfo.PurchaseId) end
 					fireGiftPurchaseResult(buyerPlayer,{Success=true,ProductId=pid,ReceiverUserId=targetUserId,Message="Gift safely delivered to the recipient's Inbox!"})
 					return "DeliveredOffline"
 				end
@@ -700,68 +729,38 @@ local function processReceipt(receiptInfo)
 	end
 
 	local boundTargetUserId = type(purchaseRecord) == "table" and tonumber(purchaseRecord.TargetUserId) or nil
-	if boundTargetUserId then
-		if purchaseRecord.ProductId and tonumber(purchaseRecord.ProductId) ~= tonumber(pid) then
-			warn("[ReceiptRouter] PurchaseId/ProductId mismatch for " .. purchaseKey)
-			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-		end
-		local boundResult = useBoundTarget(boundTargetUserId)
-		if boundResult == "DeliveredOffline" then return finish(Enum.ProductPurchaseDecision.PurchaseGranted) end
-		if not boundResult then
-			-- The original recipient may simply be in another server/offline. Never
-			-- redirect an already-started paid grant to whoever a later client names.
-			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-		end
-	else
-		if isGiftableProduct and _G.GetGiftIntent then
-			local giftIntent = nil
-			giftIntent, giftIntentStatus = _G.GetGiftIntent(buyerId, pid, false)
+	if not boundTargetUserId then
+		local proposedTargetUserId = buyerId
+		if isGiftableProduct then
+			if type(_G.GetGiftIntent) ~= "function" then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+			local giftIntent, intentStatus = _G.GetGiftIntent(buyerId, pid, false)
+			if intentStatus == "Unavailable" then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
 			if giftIntent then
-				giftReceiverId = giftIntent.ReceiverUserId
-				local receiver = Players:GetPlayerByUserId(giftReceiverId)
-				if receiver and receiver ~= buyerPlayer then
-					targetPlayer = receiver
-					isGift = true
-				else
-					if registeredGiftProduct then
-						local delivered = enqueueRegisteredGift(giftReceiverId)
-						if delivered and markPurchaseProcessed(purchaseKey) then
-							if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId,pid) end
-							return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
-						end
-					end
-					return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-				end
-			elseif giftIntentStatus == "ProductMismatch" then
-				consumeStaleGiftIntentAfterGrant = true
+				if type(_G.BindGiftIntent) ~= "function" then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+				local intentBound, boundIntent = _G.BindGiftIntent(buyerId, pid, receiptInfo.PurchaseId, giftIntent)
+				if not intentBound or not boundIntent then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+				proposedTargetUserId = tonumber(boundIntent.ReceiverUserId)
 			end
-		elseif not isGiftableProduct and _G.GetGiftReceiver then
-			giftReceiverId = _G.GetGiftReceiver(buyerId, false)
-			consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 		end
-
-		-- Gift-only products must retain their original server intent. A missing
-		-- intent is not permission to bind the paid receipt back to its purchaser.
-		if registeredGiftProduct and registeredGiftProduct.Kind == "GamePassGift" and not isGift then
+		if registeredGiftProduct and registeredGiftProduct.Kind == "GamePassGift" and proposedTargetUserId == buyerId then
 			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 		end
-
-		local boundOk, newRecord = bindPurchaseTarget(purchaseKey, receiptInfo, targetPlayer.UserId)
-		if not boundOk or type(newRecord) ~= "table" then
-			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-		end
-		if newRecord.State == "Granted" then
-			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
-		end
-		if newRecord.ProductId and tonumber(newRecord.ProductId) ~= tonumber(pid) then
-			warn("[ReceiptRouter] Purchase target bind found a product mismatch for " .. purchaseKey)
-			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-		end
-		if tonumber(newRecord.TargetUserId) ~= targetPlayer.UserId
-			and not useBoundTarget(newRecord.TargetUserId)
-		then
-			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
-		end
+		local boundOk, newRecord = bindPurchaseTarget(purchaseKey, receiptInfo, proposedTargetUserId)
+		if not boundOk or type(newRecord) ~= "table" then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+		purchaseRecord = newRecord
+		if newRecord.State == "Granted" then return finish(Enum.ProductPurchaseDecision.PurchaseGranted) end
+		boundTargetUserId = tonumber(newRecord.TargetUserId)
+	end
+	if purchaseRecord.ProductId and tonumber(purchaseRecord.ProductId) ~= tonumber(pid)
+		or purchaseRecord.PlayerId and tonumber(purchaseRecord.PlayerId) ~= tonumber(buyerId) then
+		warn("[ReceiptRouter] Purchase identity mismatch for " .. purchaseKey)
+		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
+	end
+	local boundResult = useBoundTarget(boundTargetUserId)
+	if boundResult == "DeliveredOffline" then return finish(Enum.ProductPurchaseDecision.PurchaseGranted) end
+	if not boundResult then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
+	if targetPlayer:GetAttribute("TycoonDataLoaded") ~= true or targetPlayer:GetAttribute("TycoonDataClosing") == true then
+		return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 	end
 
 	local limitedCarProductInfo = LimitedCarsConfig.GetProductByProductId(pid)
@@ -777,7 +776,7 @@ local function processReceipt(receiptInfo)
 			end
 			if isGift then
 				NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, limitedCarProductInfo.DisplayName)
-				if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid) end
+				if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid, receiptInfo.PurchaseId) end
 			end
 			fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, isGift, targetPlayer, limitedCarProductInfo.DisplayName)
 			return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
@@ -795,7 +794,7 @@ local function processReceipt(receiptInfo)
 		if not markPurchaseProcessed(purchaseKey) then return finish(Enum.ProductPurchaseDecision.NotProcessedYet) end
 		if isGift then
 			NotifyGiftReceived:FireClient(targetPlayer, buyerPlayer.Name, inventorySlotProduct.DisplayName)
-			if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid) end
+			if _G.ClearGiftIntent then _G.ClearGiftIntent(buyerId, pid, receiptInfo.PurchaseId) end
 		end
 		fireConfirmedPurchaseResult(buyerPlayer, receiptInfo, isGift, targetPlayer, inventorySlotProduct.DisplayName)
 		return finish(Enum.ProductPurchaseDecision.PurchaseGranted)
@@ -880,6 +879,8 @@ local function processReceipt(receiptInfo)
 				local folder = ReplicatedStorage:FindFirstChild("OfflineEarningsRemotes")
 				local resultEvent = folder and folder:FindFirstChild("OfflinePremiumClaimResult")
 				if resultEvent then resultEvent:FireClient(buyerPlayer, true, "Claimed", tonumber(receiptData and receiptData.GrantHash) or 0) end
+			elseif profileReceiptAction == "TabletEarnings2x" then
+				fireTabletDoubleClaimResult(buyerPlayer, tonumber(receiptData and receiptData.GrantHash) or 0, receiptInfo.PurchaseId)
 			elseif profileReceiptAction == "BankTransferReset" and BankTimerResetFeedback then
 				BankTimerResetFeedback:FireClient(buyerPlayer, true, "Timer Reset Successful")
 			elseif profileReceiptAction == "RewardedAdCash" then
@@ -902,7 +903,6 @@ local function processReceipt(receiptInfo)
 		-- They use the universal gift target only when explicitly registered as giftable.
 		if not isGift then
 			targetPlayer = buyerPlayer
-			consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 		end
 
 		if isGift then
@@ -942,7 +942,6 @@ local function processReceipt(receiptInfo)
 		-- to be a non-random developer product, so this grants fixed Wallet Cash.
 		isGift = false
 		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 
 		local leaderstats = buyerPlayer:FindFirstChild("leaderstats")
 		local wallet = leaderstats and leaderstats:FindFirstChild("Wallet")
@@ -962,7 +961,6 @@ local function processReceipt(receiptInfo)
 		-- consume it only after the receipt is successfully granted/persisted.
 		isGift = false
 		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 
 		-- The product is no longer offered, but historical/pending receipts must be
 		-- acknowledged so Roblox does not retry them forever. No currency or limit
@@ -976,7 +974,6 @@ local function processReceipt(receiptInfo)
 	elseif pid == OFFLINE_10X_CLAIM_ID then
 		isGift = false
 		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 
 		if _G.OfflineEarningsService and _G.OfflineEarningsService.TryGrantPremium then
 			local ok, payout, msg = _G.OfflineEarningsService.TryGrantPremium(buyerPlayer, receiptInfo.PurchaseId)
@@ -992,7 +989,6 @@ local function processReceipt(receiptInfo)
 	elseif pid == STARTER_PACK_PRODUCT_ID then
 		isGift = false
 		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 
 		-- Single source of truth: ownership is stored by TycoonDataHandler in the
 		-- player's main data record. Always route the receipt through GrantStarterPack
@@ -1101,9 +1097,8 @@ local function processReceipt(receiptInfo)
 		-- buyer's own saved pending/active craft after they rejoin.
 		isGift = false
 		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 
-		local ok, success, msg = safeInvoke(SkipLegendaryCraftFunc, 20, targetPlayer)
+		local ok, success, msg = safeInvoke(SkipLegendaryCraftFunc, 20, targetPlayer, tostring(receiptInfo.PurchaseId))
 		if ok and success then
 			purchaseSuccess = true
 		else
@@ -1116,9 +1111,8 @@ local function processReceipt(receiptInfo)
 		-- buyer's own saved pending/active craft after they rejoin.
 		isGift = false
 		targetPlayer = buyerPlayer
-		consumeStaleGiftIntentAfterGrant = giftReceiverId ~= nil
 
-		local ok, success, msg = safeInvoke(SkipMythicalCraftFunc, 20, targetPlayer)
+		local ok, success, msg = safeInvoke(SkipMythicalCraftFunc, 20, targetPlayer, tostring(receiptInfo.PurchaseId))
 		if ok and success then
 			purchaseSuccess = true
 		else
@@ -1205,6 +1199,9 @@ local function processReceipt(receiptInfo)
 		if not markPurchaseProcessed(purchaseKey) then
 			return finish(Enum.ProductPurchaseDecision.NotProcessedYet)
 		end
+		if pid == TABLET_2X_ID then
+			fireTabletDoubleClaimResult(buyerPlayer, tonumber(profileGrantHash) or 0, receiptInfo.PurchaseId)
+		end
 		if not suppressConfirmedSuccess then
 			local fallbackName = carPostCommit and carPostCommit.CarName
 				or (appearanceFound and appearanceFound.DisplayName)
@@ -1246,16 +1243,8 @@ local function processReceipt(receiptInfo)
 			end
 		end
 
-		if _G.ClearGiftIntent then
-			if isGift and giftReceiverId then
-				_G.ClearGiftIntent(buyerId, pid)
-			elseif consumeStaleGiftIntentAfterGrant then
-				_G.ClearGiftIntent(buyerId)
-			end
-		elseif _G.GetGiftReceiver then
-			if (isGift and giftReceiverId) or consumeStaleGiftIntentAfterGrant then
-				_G.GetGiftReceiver(buyerId, true)
-			end
+		if isGift and giftReceiverId and _G.ClearGiftIntent then
+			_G.ClearGiftIntent(buyerId, pid, receiptInfo.PurchaseId)
 		end
 
 		local TycoonAdminAPI = ServerStorage:FindFirstChild("TycoonAdminAPI")

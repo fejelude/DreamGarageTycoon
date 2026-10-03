@@ -76,8 +76,21 @@ local camera    = Workspace.CurrentCamera
 local UIButtonUtils = require(ReplicatedStorage:WaitForChild("UIButtonUtils"))
 local UIAudioConfig = require(ReplicatedStorage:WaitForChild("UIAudioConfig"))
 
+-- CarStats
+local CarStats = nil
+pcall(function()
+	CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5))
+end)
+
+local function baseCarNameFromInventoryKey(key)
+	return tostring(key or ""):match("^Exclusive %((.+)%)$") or key
+end
+
+
+
 -- Controls
-local PlayerModule = require(player.PlayerScripts:WaitForChild("PlayerModule"))
+local playerScripts = player:WaitForChild("PlayerScripts")
+local PlayerModule = require(playerScripts:WaitForChild("PlayerModule"))
 local Controls     = PlayerModule:GetControls()
 
 -- Config
@@ -129,7 +142,7 @@ local selectedSlot = nil
 local SLOT_COUNT   = 6
 
 -- 📦 INVENTORY TRACKING (Moved to top to prevent scope errors)
-local toolToCleanName = {}
+local toolToCleanName = setmetatable({}, { __mode = "k" })
 local counts          = {}
 local sampleTool      = {}
 
@@ -140,7 +153,7 @@ local hotbarScrollFrame = slotsFolder and slotsFolder:FindFirstChildWhichIsA("Sc
 local function loadHotbarFromAttributes()
 	for i = 1, SLOT_COUNT do
 		local saved = player:GetAttribute("HotbarSlot" .. i)
-		if saved and saved ~= "" and CarStats and CarStats.Cars[saved] then
+		if typeof(saved) == "string" and saved ~= "" and CarStats and CarStats.Cars[baseCarNameFromInventoryKey(saved)] then
 			hotbarData[i] = saved
 		else
 			hotbarData[i] = nil
@@ -148,10 +161,28 @@ local function loadHotbarFromAttributes()
 	end
 end
 
+local HotbarPersistenceEvent = ReplicatedStorage:WaitForChild("HotbarPersistenceEvent", 30)
+local hotbarInitialized = false
+local hotbarRevision = 0
+local hotbarSendQueued = false
+
 local function saveHotbarToAttributes()
-	for i = 1, SLOT_COUNT do
-		player:SetAttribute("HotbarSlot" .. i, hotbarData[i] or "")
-	end
+	if not hotbarInitialized or player:GetAttribute("TycoonDataLoaded") ~= true then return end
+	if not HotbarPersistenceEvent or not HotbarPersistenceEvent:IsA("RemoteEvent") then return end
+	-- Optimistic UI edits are acknowledged by the server; local attributes are
+	-- never used as a persistence channel.
+	hotbarRevision += 1
+	if hotbarSendQueued then return end
+	hotbarSendQueued = true
+	task.delay(0.15, function()
+		hotbarSendQueued = false
+		if player:GetAttribute("TycoonDataLoaded") ~= true then return end
+		local keys = {}
+		for i = 1, SLOT_COUNT do
+			keys[i] = hotbarData[i] or ""
+		end
+		HotbarPersistenceEvent:FireServer(keys, hotbarRevision)
+	end)
 end
 
 -- Startup UI state
@@ -190,16 +221,6 @@ local savedFOV   = camera.FieldOfView
 local hiddenGuis = {}
 local isOpen     = false
 player:SetAttribute("InventoryUIOpen", false)
-
--- CarStats
-local CarStats = nil
-pcall(function()
-	CarStats = require(ReplicatedStorage:WaitForChild("CarStats", 5))
-end)
-
-local function baseCarNameFromInventoryKey(key)
-	return tostring(key or ""):match("^Exclusive %((.+)%)$") or key
-end
 
 local function inventoryKeyForTool(tool)
 	local raw = tostring(tool:GetAttribute("ToolId") or tool.Name or "")
@@ -1769,7 +1790,7 @@ local function onCharacter(char)
 end
 
 player.CharacterAdded:Connect(function(char)
-	toolToCleanName = {}
+	toolToCleanName = setmetatable({}, { __mode = "k" })
 	counts          = {}
 	sampleTool      = {}
 
@@ -2013,13 +2034,32 @@ task.spawn(function()
 	local maxWait = 15
 	local waited  = 0
 	while waited < maxWait do
-		if player:GetAttribute("HotbarSlot1") ~= nil then break end
+		if player:GetAttribute("TycoonDataLoaded") == true and player:GetAttribute("HotbarSlot1") ~= nil then break end
 		task.wait(0.5)
 		waited += 0.5
 	end
+	if player:GetAttribute("TycoonDataLoaded") ~= true then
+		-- A slow load must not turn the empty local UI into a saved empty hotbar.
+		repeat player:GetAttributeChangedSignal("TycoonDataLoaded"):Wait()
+		until player:GetAttribute("TycoonDataLoaded") == true
+	end
 	loadHotbarFromAttributes()
+	hotbarInitialized = true
 	updateHotbarUI()
 end)
+
+if HotbarPersistenceEvent and HotbarPersistenceEvent:IsA("RemoteEvent") then
+	HotbarPersistenceEvent.OnClientEvent:Connect(function(acceptedKeys, requestId)
+		if requestId ~= hotbarRevision or typeof(acceptedKeys) ~= "table" then return end
+		for i = 1, SLOT_COUNT do
+			local key = acceptedKeys[i]
+			hotbarData[i] = typeof(key) == "string" and key ~= ""
+				and CarStats and CarStats.Cars[baseCarNameFromInventoryKey(key)] and key or nil
+		end
+		updateHotbarUI()
+		if scheduleRender then scheduleRender() end
+	end)
+end
 
 addOpenButtonHover(openButton)
 UIButtonUtils.SetupStandardButton(closeButton, nil, performClose)

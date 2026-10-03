@@ -61,6 +61,7 @@ local plotDescendantRemovingConnection = nil
 
 local currentWatchedPlot = nil
 local refreshQueued = false
+local requestRefresh -- needed by the plot descendant callbacks
 local warned = {}
 
 -- ============================================================================
@@ -277,36 +278,16 @@ local function watchPlot(plot)
 	end
 
 	plotDescendantAddedConnection = plot.DescendantAdded:Connect(function()
-		task.delay(FAST_RETRY_INTERVAL, function()
-			refreshQueued = false
-			task.defer(function()
-				if script.Parent then
-					refreshQueued = true
-				end
-			end)
-		end)
-
-		task.delay(FAST_RETRY_INTERVAL, function()
-			if script.Parent then
-				refreshQueued = false
-				_G.__PlotMarkerForceRefresh = true
-			end
-		end)
+		requestRefresh(FAST_RETRY_INTERVAL)
 	end)
 
 	plotDescendantRemovingConnection = plot.DescendantRemoving:Connect(function(descendant)
-		if descendant == currentAdornee or descendant:IsAncestorOf(currentAdornee) then
-			task.delay(FAST_RETRY_INTERVAL, function()
-				if script.Parent then
-					cleanupIndicator()
-				end
-			end)
+		if currentAdornee and (descendant == currentAdornee or descendant:IsAncestorOf(currentAdornee)) then
+			cleanupIndicator()
+			requestRefresh(FAST_RETRY_INTERVAL)
 		end
 	end)
 end
-
--- Forward declaration.
-local requestRefresh
 
 local function createIndicator(adornee)
 	local template = ReplicatedStorage:FindFirstChild(INDICATOR_TEMPLATE_NAME)

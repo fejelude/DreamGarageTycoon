@@ -59,8 +59,19 @@ local function cancelAFKModeIdleSession(player, shouldNotifyClient)
 	if session then
 		session.Cancelled = true
 		if session.Task then
-			task.cancel(session.Task)
+			local pendingTask = session.Task
 			session.Task = nil
+			if pendingTask ~= coroutine.running() then
+				pcall(task.cancel, pendingTask)
+			end
+		end
+		if session.FadeOut then
+			local teleportUIEvent = ReplicatedStorage:FindFirstChild("TeleportUIEvent")
+			if teleportUIEvent and teleportUIEvent:IsA("RemoteEvent") and player.Parent == Players then
+				teleportUIEvent:FireClient(player, "FadeIn")
+			end
+			session.FadeOut = false
+			shouldNotifyClient = true
 		end
 	end
 
@@ -114,8 +125,15 @@ local function teleportPlayerForAFKMode(player, session)
 
 	local teleportUIEvent = ReplicatedStorage:FindFirstChild("TeleportUIEvent")
 	if teleportUIEvent and teleportUIEvent:IsA("RemoteEvent") then
+		session.FadeOut = true
 		teleportUIEvent:FireClient(player, "FadeOut")
 	end
+	-- TeleportAsync returning does not guarantee the player actually left.
+	task.delay(30, function()
+		if afkModeIdleSessions[userId] == session and player.Parent == Players then
+			cancelAFKModeIdleSession(player, true)
+		end
+	end)
 
 	-- Let the client fade out, then re-check all cancellation conditions.
 	-- This closes the race where the player turns AFK Mode off after the warning starts.
@@ -146,6 +164,13 @@ local function teleportPlayerForAFKMode(player, session)
 		teleportOptions.ReservedServerAccessCode = reservedServerCode
 	end
 
+	if afkModeIdleSessions[userId] ~= session or session.Cancelled then return end
+	if not isPlayerReadyForAFKMode(player) then
+		cancelAFKModeIdleSession(player, true)
+		return
+	end
+	session.State = "TeleportPending"
+	session.TeleportOptions = teleportOptions
 	local teleportOk, teleportErr = pcall(function()
 		TeleportService:TeleportAsync(game.PlaceId, { player }, teleportOptions)
 	end)
@@ -156,8 +181,15 @@ local function teleportPlayerForAFKMode(player, session)
 		return
 	end
 
-	clearAFKModeSessionIfCurrent(player, session)
+	-- Keep the session for TeleportInitFailed/the watchdog until PlayerRemoving.
 end
+
+TeleportService.TeleportInitFailed:Connect(function(player, _teleportResult, _errorMessage, placeId)
+	local session = player and afkModeIdleSessions[player.UserId]
+	if session and session.State == "TeleportPending" and placeId == game.PlaceId then
+		cancelAFKModeIdleSession(player, true)
+	end
+end)
 
 local function startAFKModeIdleSession(player)
 	if not player or player.Parent ~= Players then return end
@@ -179,6 +211,8 @@ local function startAFKModeIdleSession(player)
 
 	afkModeIdleSessions[userId] = session
 	session.Task = task.delay(AFK_RECONNECT_DELAY_SECONDS, function()
+		-- The delay is no longer pending; cancellation must not cancel itself.
+		session.Task = nil
 		if afkModeIdleSessions[userId] ~= session or session.Cancelled then return end
 		teleportPlayerForAFKMode(player, session)
 	end)
@@ -211,6 +245,16 @@ Players.PlayerAdded:Connect(watchAFKModeSetting)
 for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(watchAFKModeSetting, player)
 end
+
+Players.PlayerRemoving:Connect(function(player)
+	local userId = player.UserId
+	cancelAFKModeIdleSession(player, false)
+	afkModeLastTeleportRequest[userId] = nil
+	if afkModeSettingConnections[userId] then
+		afkModeSettingConnections[userId]:Disconnect()
+		afkModeSettingConnections[userId] = nil
+	end
+end)
 
 -- ============================================================================
 -- PHYSICAL 2X MONEY AFK STAND SETUP
@@ -501,14 +545,6 @@ end)
 Players.PlayerRemoving:Connect(function(player)
 	local userId = player.UserId
 	touchDebounce[userId] = nil
-	cancelAFKModeIdleSession(player, false)
-	afkModeLastTeleportRequest[userId] = nil
-
-	if afkModeSettingConnections[userId] then
-		afkModeSettingConnections[userId]:Disconnect()
-		afkModeSettingConnections[userId] = nil
-	end
-
 	clearAFKState(player)
 end)
 

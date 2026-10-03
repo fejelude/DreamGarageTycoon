@@ -7,6 +7,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
+local HttpService = game:GetService("HttpService")
 
 local Config = require(ReplicatedStorage:WaitForChild("PlaytimeRewardsConfig"))
 local CarStats = require(ReplicatedStorage:WaitForChild("CarStats"))
@@ -50,7 +51,14 @@ local function publicState(player)
 	if not session then return { IsLoaded = false, ServerElapsed = 0, Claimed = {}, SkipUnlocked = false } end
 	local claimed = {}
 	for index = 1, #Config.Rewards do claimed[index] = session.Claimed[index] == true end
-	return { IsLoaded = true, ServerElapsed = elapsed(session), Claimed = claimed, SkipUnlocked = session.SkipUnlocked == true }
+	local canSkip = not session.SkipUnlocked
+	if canSkip then
+		canSkip = false
+		for index, reward in ipairs(Config.Rewards) do
+			if not session.Claimed[index] and elapsed(session) < reward.RequiredSeconds then canSkip = true; break end
+		end
+	end
+	return { IsLoaded = player:GetAttribute("TycoonDataLoaded") == true and player:GetAttribute("TycoonDataClosing") ~= true, ServerElapsed = elapsed(session), Claimed = claimed, SkipUnlocked = session.SkipUnlocked == true, CanSkip = canSkip }
 end
 
 local function notify(player)
@@ -60,10 +68,10 @@ end
 local function prepare(player)
 	task.spawn(function()
 		while player.Parent and player:GetAttribute("TycoonDataLoaded") ~= true do task.wait(0.1) end
-		if not player.Parent then return end
+		if not player.Parent or player:GetAttribute("TycoonDataClosing") == true then return end
 		-- os.clock is monotonic and cannot be changed by a client. A new Player instance
 		-- always receives a new table, intentionally resetting this session-only cycle.
-		sessions[player] = { StartedAt = os.clock(), Claimed = {}, Locks = {}, SkipUnlocked = false }
+		sessions[player] = { Id = HttpService:GenerateGUID(false), StartedAt = os.clock(), Claimed = {}, Locks = {}, PendingRewards = {}, SkipUnlocked = false }
 		notify(player)
 	end)
 end
@@ -73,7 +81,7 @@ local function claim(player, requestedIndex, ...)
 		return { Success = false, Code = "Invalid", Message = "Unable to claim this reward right now. Please try again.", State = publicState(player) }
 	end
 	local reward, session = Config.Rewards[requestedIndex], sessions[player]
-	if not reward or not session or player:GetAttribute("TycoonDataLoaded") ~= true then
+	if not reward or not session or player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("TycoonDataClosing") == true then
 		return { Success = false, Code = "Loading", Message = "Unable to claim this reward right now. Please try again.", State = publicState(player) }
 	end
 	if session.Claimed[requestedIndex] then return { Success = false, Code = "Claimed", Message = "You've already claimed this reward!", State = publicState(player) } end
@@ -83,17 +91,18 @@ local function claim(player, requestedIndex, ...)
 	end
 
 	session.Locks[requestedIndex] = true
-	local transaction = { RewardIndex = requestedIndex, Type = reward.Type, Amount = reward.Amount }
-	if reward.Type == "CarPool" then
+	local transaction = session.PendingRewards[requestedIndex] or { RewardIndex = requestedIndex, Type = reward.Type, Amount = reward.Amount }
+	if reward.Type == "CarPool" and not transaction.CarId then
 		transaction.CarId, transaction.Rarity = rollCar(reward.Pool)
 		if not transaction.CarId then
 			session.Locks[requestedIndex] = nil
 			return { Success = false, Code = "Configuration", Message = "Unable to claim this reward right now. Please try again.", State = publicState(player) }
 		end
 	end
+	session.PendingRewards[requestedIndex] = transaction
 	local rewardType = reward.Type == "CarPool" and "Car" or reward.Type
 	local rewardId = rewardType == "Car" and transaction.CarId or reward.Type
-	local deliveryId = ("Playtime:%d:%d:%d"):format(player.UserId, math.floor(session.StartedAt * 1000), requestedIndex)
+	local deliveryId = ("Playtime:%d:%s:%d"):format(player.UserId, session.Id, requestedIndex)
 	local ok, committed, message = pcall(function()
 		return InboxService.Enqueue(player.UserId, deliveryId, { RewardType=rewardType, RewardId=rewardId,
 			Amount=reward.Amount, DisplayName=rewardType=="Wallet" and (("$%d Wallet Cash"):format(reward.Amount)) or rewardType=="FhiaTokens" and (("%d Fhia Tokens"):format(reward.Amount)) or transaction.CarId,
@@ -110,7 +119,7 @@ end
 
 function _G.GrantPlaytimeSkipReceipt(player)
 	local session = sessions[player]
-	if not session then return false, "Playtime session is not ready" end
+	if not session or player:GetAttribute("TycoonDataLoaded") ~= true or player:GetAttribute("TycoonDataClosing") == true then return false, "Playtime session is not ready" end
 	session.SkipUnlocked = true
 	notify(player)
 	return true
