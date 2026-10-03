@@ -146,7 +146,11 @@ local function claimAndClose(showSuccessMessage)
 	if ok and success then
 		baseAmount = 0
 		if showSuccessMessage then
-			setState(true, "$" .. formatMoney(amount) .. " has been sent to your Inbox.")
+			if msg == "Recovered" then
+				setState(true, "$" .. formatMoney(amount) .. " was secured in your Inbox for recovery.")
+			else
+				setState(true, "$" .. formatMoney(amount) .. " was added to your Wallet.")
+			end
 			task.delay(1.4, function() closeUi(true) end)
 		else
 			closeUi(true)
@@ -186,7 +190,11 @@ end)
 premiumResult.OnClientEvent:Connect(function(success, msg, amount)
 	if success then
 		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end
-		setState(true, "$" .. formatMoney(amount) .. " has been sent to your Inbox.")
+		if msg == "Recovered" then
+			setState(true, "$" .. formatMoney(amount) .. " was secured in your Inbox for recovery.")
+		else
+			setState(true, "$" .. formatMoney(amount) .. " was added to your Wallet.")
+		end
 		task.delay(1.4, function() closeUi(true) end)
 	else
 		if UIAudioConfig and UIAudioConfig.HidePurchaseLoading then UIAudioConfig.HidePurchaseLoading() end

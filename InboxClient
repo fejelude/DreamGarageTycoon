@@ -39,10 +39,23 @@ local BALANCE_INDICATOR_GUI_NAME = "Balance Indicator"
 local BLUR_SIZE = 18
 local BLUR_TWEEN = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
+-- UI layouts only arrange their siblings. The Studio layout was under the
+-- ScrollingFrame while runtime rows are children of ElementsFrame, so it never
+-- participated in row layout. Reuse (rather than duplicate) that layout in the
+-- actual item container.
+assert(listLayout, "Inbox scrolling hierarchy is missing its UIListLayout")
+if listLayout.Parent ~= holder then listLayout.Parent = holder end
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
 local function setButtonEnabled(button, enabled)
 	button.Active = enabled
 	button.Selectable = enabled
 	pcall(function() button.Interactable = enabled end)
+end
+
+local function escapeRichText(value)
+	return tostring(value or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+		:gsub('"', "&quot;"):gsub("'", "&apos;")
 end
 
 local function restoreHiddenGuis()
@@ -169,8 +182,19 @@ local function render(entries)
 		row.Visible = true
 		row:WaitForChild("FromWho?").Text = entry.SenderUsername ~= ""
 			and ("From: @" .. entry.SenderUsername) or ("From: " .. entry.Source)
-		row:WaitForChild("ItemReceived").Text = entry.DisplayName
+		local category, tier, color = InboxConfig.GetStyle(entry)
+		local itemLabel = row:WaitForChild("ItemReceived")
+		itemLabel.RichText = true
+		itemLabel.TextWrapped = true
+		itemLabel.Text = string.format("%s\n<font color=\"%s\"><b>%s • %s</b></font>",
+			escapeRichText(entry.DisplayName), color, escapeRichText(category), escapeRichText(tier))
 		row:WaitForChild("ItemImage").Image = InboxConfig.GetImage(entry)
+		local accent = row:FindFirstChild("InboxRewardAccent") or Instance.new("UIStroke")
+		accent.Name = "InboxRewardAccent"
+		accent.Color = Color3.fromHex(color:sub(2))
+		accent.Thickness = 2
+		accent.Transparency = 0.2
+		accent.Parent = row
 		local buttons = row:WaitForChild("Buttons")
 		local acceptButton = buttons:WaitForChild("Accept")
 		local declineButton = buttons:WaitForChild("Decline")
@@ -239,9 +263,9 @@ if closeButton and closeButton:IsA("GuiButton") then
 else
 	warn("[InboxClient] InboxGui > MainFrame close button is missing")
 end
-if listLayout and scrolling:IsA("ScrollingFrame") then
+if scrolling:IsA("ScrollingFrame") then
 	local function updateCanvas()
-		scrolling.CanvasSize = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y)
+		scrolling.CanvasSize = UDim2.fromOffset(0, math.max(0, listLayout.AbsoluteContentSize.Y))
 	end
 	listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvas)
 	updateCanvas()
