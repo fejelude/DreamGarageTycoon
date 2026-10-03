@@ -40,26 +40,13 @@ Offline earnings freeze an award before Inbox enqueue, and consume that frozen a
 
 The added profile/mailbox fields are additive. Do not run an older server build that strips new outboxes, ownership IDs, frozen claims, or consumed identities while testing this build. Back up test data before rollout and use a separate test universe.
 
-## Automated checks
+## Previous validation
 
-`Release safety` builds a pinned Luau compiler/runtime, compiles all tracked game scripts, and runs deterministic service regressions. The Inbox regression executes the actual repository service with mocked DataStore and grant APIs, covering:
+Before the automation files were removed, [checks on commit `58a6aefd`](https://github.com/fejelude/DreamGarageTycoon/actions/runs/37094163425) compiled all 169 Luau files and passed six regression suites covering Inbox, crafts, base migration, offline earnings, ownership and profile rewards.
 
-- accepted and declined entries cannot be replayed by re-enqueue;
-- a failed grant releases its mailbox claim lease;
-- a committed grant followed by failed mailbox cleanup remains exactly-once on retry;
-- invalid/unknown IDs do not trigger claim writes;
-- delivery retries after an injected DataStore outage;
-- car identity and paid variant survive delivery;
-- malformed Inbox documents fail closed without resetting replay journals, including corruption arriving during cleanup.
+The workflow and test harness are no longer included in this branch. These results describe the earlier checked commit; this branch does not run those checks automatically.
 
-The offline suite executes the actual service through freeze/save outages, reconnect recovery, premium binding and cancellation, legacy paid delivery, and zero awards. Craft tests execute both tiers' actual delivery and skip handlers, including failed binding/completion saves and old receipt retries during a new craft. Base migration tests execute both implementations, checking full preflight and rollback after a mid-move error. A profile reward regression executes the promo redemption handler with concurrent spending during a failed save, checking that the reward marker and later spending survive together. Ownership regressions execute the actual grant, Inbox claim and sacrifice-selection functions, checking that slow index updates cannot precede grant journals, lifecycle/capacity checks survive waits, and hotbar reservations protect the correct normal or exclusive copy.
-
-Run with:
-```sh
-python3 tests/run.py --compiler /path/to/luau-compile --runtime /path/to/luau
-```
-
-Compilation and mocks cannot validate Studio assets, replication, MarketplaceService receipts, Roblox throttling, or engine lifecycle ordering.
+Compilation and mocked tests cannot validate Studio assets, replication, MarketplaceService receipts, Roblox throttling or engine lifecycle ordering. Complete the Studio release gate below before publication.
 
 ## Studio release gate
 
