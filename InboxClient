@@ -20,6 +20,7 @@ local inboxChanged = remotes:WaitForChild("InboxChanged")
 
 local mainButtons = playerGui:WaitForChild("MainButtons")
 local openButton = mainButtons:FindFirstChild("Inbox", true)
+local inboxCountLabel = openButton and openButton:FindFirstChild("Information2", true)
 local scrolling = mainFrame:WaitForChild("Elements"):WaitForChild("ShopUIScrolling")
 local holder = scrolling:WaitForChild("ElementsFrame")
 local template = holder:WaitForChild("Template")
@@ -34,6 +35,7 @@ local inboxBlur
 local blurTween
 local confirmationCleanup
 local openGeneration = 0
+local inboxEntries = {}
 
 local BALANCE_INDICATOR_GUI_NAME = "Balance Indicator"
 local BLUR_SIZE = 18
@@ -107,6 +109,19 @@ local function clearRows()
 	for _, child in ipairs(holder:GetChildren()) do
 		if child ~= template and child:GetAttribute("InboxClone") == true then child:Destroy() end
 	end
+end
+
+-- The server response is the authoritative actionable set. Keep badge updates
+-- in one place rather than deriving the count from cloned UI rows.
+local function updateInboxCount(entries)
+	entries = entries or inboxEntries
+	local pending = 0
+	for _, entry in ipairs(entries) do
+		if type(entry) == "table" and (entry.State == nil or entry.State == "Pending") then
+			pending += 1
+		end
+	end
+	inboxCountLabel.Text = tostring(pending)
 end
 
 local refresh
@@ -217,11 +232,15 @@ refresh = function()
 	refreshGeneration += 1
 	local generation = refreshGeneration
 	local ok, result = pcall(function() return getInbox:InvokeServer() end)
-	if generation ~= refreshGeneration or not isOpen then return end
+	if generation ~= refreshGeneration then return end
 	if ok and type(result) == "table" and result.Success then
-		render(result.Entries)
+		inboxEntries = type(result.Entries) == "table" and result.Entries or {}
+		updateInboxCount()
+		if isOpen then render(inboxEntries) end
 	else
-		feedback:Failed(type(result) == "table" and result.Message or "Unable to load Inbox. Please try again.")
+		if isOpen then
+			feedback:Failed(type(result) == "table" and result.Message or "Unable to load Inbox. Please try again.")
+		end
 	end
 end
 
@@ -256,6 +275,8 @@ local function setOpen(open)
 end
 
 assert(openButton and openButton:IsA("GuiButton"), "MainButtons > Inbox ImageButton is missing")
+assert(inboxCountLabel and inboxCountLabel:IsA("TextLabel"), "MainButtons > Buttons > Inbox > Information2 is missing")
+updateInboxCount()
 UIButtonUtils.SetupButton(openButton, function() setOpen(true) end)
 local closeButton = mainFrame:FindFirstChild("ExitButton", true) or mainFrame:FindFirstChild("Close", true)
 if closeButton and closeButton:IsA("GuiButton") then
@@ -270,10 +291,17 @@ if scrolling:IsA("ScrollingFrame") then
 	listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvas)
 	updateCanvas()
 end
-inboxChanged.OnClientEvent:Connect(function() if isOpen then task.spawn(refresh) end end)
+inboxChanged.OnClientEvent:Connect(function() task.spawn(refresh) end)
 mainFrame:GetPropertyChangedSignal("Visible"):Connect(function()
 	if isOpen and not mainFrame.Visible then setOpen(false) end
 end)
 mainFrame.Visible = false
 template.Visible = false
 emptyIndicator.Visible = false
+task.spawn(function()
+	if player:GetAttribute("TycoonDataLoaded") ~= true then
+		repeat player:GetAttributeChangedSignal("TycoonDataLoaded"):Wait()
+		until player:GetAttribute("TycoonDataLoaded") == true
+	end
+	refresh()
+end)

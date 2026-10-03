@@ -83,7 +83,8 @@ pcall(function()
 end)
 
 local function baseCarNameFromInventoryKey(key)
-	return tostring(key or ""):match("^Exclusive %((.+)%)$") or key
+	local raw = tostring(key or ""):match("^Exclusive %((.+)%)$") or key
+	return CarStats and CarStats.GetCarId and CarStats.GetCarId(raw) or raw
 end
 
 
@@ -225,6 +226,7 @@ player:SetAttribute("InventoryUIOpen", false)
 local function inventoryKeyForTool(tool)
 	local raw = tostring(tool:GetAttribute("ToolId") or tool.Name or "")
 	local base = raw:gsub(" Item$", ""):gsub("Item$", "")
+	base = CarStats and CarStats.GetCarId and CarStats.GetCarId(base) or base
 	if not CarStats or not CarStats.Cars or not CarStats.Cars[base] then return nil end
 	return tool:GetAttribute("IsRobuxExclusive") == true and ("Exclusive (" .. base .. ")") or base
 end

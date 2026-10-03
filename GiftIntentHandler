@@ -9,6 +9,7 @@ local DataStoreService = game:GetService("DataStoreService")
 local StarterGui = game:GetService("StarterGui")
 local HttpService = game:GetService("HttpService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local RunService = game:GetService("RunService")
 local GiftProductRegistry = require(ReplicatedStorage:WaitForChild("GiftProductRegistry"))
 local GamePassConfig = require(ReplicatedStorage:WaitForChild("GamePassConfig"))
 
@@ -131,7 +132,9 @@ local function validateIntentRequest(buyer, productId, receiverUserId)
 		return false, "This product cannot be gifted"
 	end
 
-	if typeof(receiverUserId) ~= "number" or receiverUserId <= 0 or receiverUserId >= math.huge or receiverUserId ~= math.floor(receiverUserId) then
+	-- Local multi-client Studio players have generated negative UserIds. They
+	-- are safe only after resolving to an actual Player in this server below.
+	if typeof(receiverUserId) ~= "number" or receiverUserId == 0 or math.abs(receiverUserId) >= math.huge or receiverUserId ~= math.floor(receiverUserId) then
 		return false, "Invalid receiver"
 	end
 
@@ -148,6 +151,9 @@ local function validateIntentRequest(buyer, productId, receiverUserId)
 	local receiverPlayer = Players:GetPlayerByUserId(receiverUserId)
 	if not receiverPlayer then
 		return false, "Player left the server"
+	end
+	if receiverUserId < 0 and not RunService:IsStudio() then
+		return false, "Invalid receiver"
 	end
 	if receiverPlayer:GetAttribute("TycoonDataLoaded") ~= true then
 		return false, "This player's data is still loading"

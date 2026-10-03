@@ -5,6 +5,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 local GiftEntitlementService = require(ServerScriptService:WaitForChild("GiftEntitlementService"))
 local store = DataStoreService:GetDataStore("DreamGarage_Inbox_V1")
@@ -17,6 +18,16 @@ local MAX_ID_LENGTH = 256
 local CACHE_SECONDS = 3
 local cache, reads, versions = {}, {}, {}
 local readBudget = { Tokens = 30, UpdatedAt = os.clock() }
+local changedCallback
+
+function Service.SetChangedCallback(callback)
+	assert(callback == nil or type(callback) == "function", "Inbox changed callback must be a function")
+	changedCallback = callback
+end
+
+local function notifyChanged(userId)
+	if changedCallback then task.defer(changedCallback, userId) end
+end
 
 local function validId(value)
 	return type(value) == "string" and #value > 0 and #value <= MAX_ID_LENGTH and not value:find("[%c]")
@@ -65,7 +76,8 @@ end
 function Service.Enqueue(userId, transactionId, reward)
 	userId = math.floor(tonumber(userId) or 0)
 	transactionId = tostring(transactionId or "")
-	if userId <= 0 or not validId(transactionId) or type(reward) ~= "table"
+	local studioReceiver = RunService:IsStudio() and userId < 0 and Players:GetPlayerByUserId(userId) ~= nil
+	if (userId <= 0 and not studioReceiver) or not validId(transactionId) or type(reward) ~= "table"
 		or (reward.Id ~= nil and not validId(reward.Id)) then
 		return false, "Invalid delivery"
 	end
@@ -100,6 +112,7 @@ function Service.Enqueue(userId, transactionId, reward)
 	end)
 	if not ok or not result then return false, tostring(err or "Inbox is full") end
 	invalidate(userId)
+	if inserted then notifyChanged(userId) end
 	return true, inserted and "Inserted" or "Already delivered"
 end
 
@@ -119,7 +132,10 @@ function Service.Activate(userId, transactionId)
 			return old
 		end)
 	end)
-	if ok then invalidate(userId) end
+	if ok then
+		invalidate(userId)
+		if activated then notifyChanged(userId) end
+	end
 	return ok and activated, ok and nil or tostring(err)
 end
 
@@ -295,6 +311,7 @@ local function removeClaim(userId, entryId, token)
 		end)
 	end)
 	if ok then invalidate(userId) end
+	if ok and removed then notifyChanged(userId) end
 	return ok and removed
 end
 
