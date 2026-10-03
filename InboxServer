@@ -7,6 +7,11 @@ local folder = ReplicatedStorage:WaitForChild("InboxRemotes")
 local get, accept, decline, changed = folder:WaitForChild("GetInbox"), folder:WaitForChild("AcceptInboxEntry"), folder:WaitForChild("DeclineInboxEntry"), folder:WaitForChild("InboxChanged")
 assert(get:IsA("RemoteFunction") and accept:IsA("RemoteFunction") and decline:IsA("RemoteFunction") and changed:IsA("RemoteEvent"), "InboxRemotes hierarchy is invalid")
 
+Service.SetChangedCallback(function(userId)
+	local player = Players:GetPlayerByUserId(userId)
+	if player then changed:FireClient(player) end
+end)
+
 local requests = {}
 local aggregate = { Tokens = 30, UpdatedAt = os.clock() }
 local function take(bucket, capacity, refill)
@@ -42,14 +47,12 @@ accept.OnServerInvoke = function(player, id, ...)
 	if select("#", ...) > 0 or not validId(id) then return { Success = false, Message = "Invalid request" } end
 	if not allowed(player) then return unavailable() end
 	local ok, msg = Service.Accept(player, id)
-	if ok and player.Parent then changed:FireClient(player) end
 	return { Success = ok, Message = msg }
 end
 decline.OnServerInvoke = function(player, id, ...)
 	if select("#", ...) > 0 or not validId(id) then return { Success = false, Message = "Invalid request" } end
 	if not allowed(player) then return unavailable() end
 	local ok, msg = Service.Decline(player, id)
-	if ok and player.Parent then changed:FireClient(player) end
 	return { Success = ok, Message = msg }
 end
 Players.PlayerRemoving:Connect(function(player) requests[player] = nil end)

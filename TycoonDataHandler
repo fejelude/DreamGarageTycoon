@@ -835,8 +835,12 @@ local function applyHotbar(player)
 	for _, container in ipairs(containers) do
 		for _, tool in ipairs(container:GetChildren()) do
 			local issuedId = tool:GetAttribute("IssuedId")
-			if validateTool(tool) and type(issuedId) == "string" and issuedId ~= "" and not seen[issuedId] then
-				seen[issuedId] = true
+			-- Older valid server-issued cars can predate IssuedId. They are still
+			-- real inventory instances and must not be omitted from the ownership
+			-- snapshot (which made the acknowledgement erase their new slot).
+			local identity = type(issuedId) == "string" and issuedId ~= "" and issuedId or tool
+			if validateTool(tool) and not seen[identity] then
+				seen[identity] = true
 				local base = CarStats.GetCarId(tool:GetAttribute("ToolId"))
 				if base then
 					local key = tool:GetAttribute("IsRobuxExclusive") == true and ("Exclusive (" .. base .. ")") or base
